@@ -980,17 +980,171 @@ async def discover_task_and_subtask(
     return None
 
 
+def _wiki_attachment_filenames(text: str) -> set[str]:
+    """Filenames from Jira wiki ``!file.ext|...!`` markup (mirrors connector helper)."""
+    filenames: set[str] = set()
+    for match in re.finditer(r"!([^!]+)!", text):
+        filename_part = match.group(1).split("|", 1)[0].strip()
+        if filename_part:
+            filenames.add(filename_part.lower())
+    return filenames
+
+
+def _adf_media_filenames(node: Any) -> set[str]:
+    """ADF ``media`` / ``mediaInline`` ``alt`` filenames (+ nested wiki refs)."""
+    filenames: set[str] = set()
+    if isinstance(node, dict):
+        if node.get("type") in ("media", "mediaInline"):
+            alt = (node.get("attrs") or {}).get("alt")
+            if isinstance(alt, str) and alt.strip():
+                filenames.add(alt.strip().lower())
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                filenames |= _adf_media_filenames(value)
+            elif isinstance(value, str):
+                filenames |= _wiki_attachment_filenames(value)
+    elif isinstance(node, list):
+        for item in node:
+            filenames |= _adf_media_filenames(item)
+    return filenames
+
+
+def _attachment_ids_from_strings(node: Any) -> set[str]:
+    """Attachment ids embedded in HTML/URL strings inside ADF or free text."""
+    from app.connectors.sources.atlassian.core.html_utils import (  # type: ignore[import-not-found]
+        extract_attachment_ids,
+    )
+
+    ids: set[str] = set()
+    if isinstance(node, dict):
+        for value in node.values():
+            if isinstance(value, str):
+                ids |= extract_attachment_ids(value)
+            elif isinstance(value, (dict, list)):
+                ids |= _attachment_ids_from_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            ids |= _attachment_ids_from_strings(item)
+    return ids
+
+
+def _inline_refs_from_body(body: Any) -> tuple[set[str], set[str]]:
+    """Return ``(filenames_lower, attachment_ids)`` referenced as inline media in a body."""
+    from app.connectors.sources.atlassian.core.html_utils import (  # type: ignore[import-not-found]
+        extract_attachment_ids,
+    )
+
+    filenames: set[str] = set()
+    attachment_ids: set[str] = set()
+    if isinstance(body, dict):
+        filenames |= _adf_media_filenames(body)
+        attachment_ids |= _attachment_ids_from_strings(body)
+    elif isinstance(body, str):
+        filenames |= _wiki_attachment_filenames(body)
+        attachment_ids |= extract_attachment_ids(body)
+    return filenames, attachment_ids
+
+
+def resolve_inline_image_attachment_ids(issue_fields: dict[str, Any]) -> set[str]:
+    """Image attachment ids embedded in description/comment (sync-path parity).
+
+    Mirrors ``JiraCloudConnector._resolve_inline_image_attachment_ids``. Comment bodies
+    are only considered when ``comment`` is present on ``issue_fields`` (issue search
+    normally omits it).
+    """
+    filenames: set[str] = set()
+    referenced_ids: set[str] = set()
+
+    desc_names, desc_ids = _inline_refs_from_body(issue_fields.get("description"))
+    filenames |= desc_names
+    referenced_ids |= desc_ids
+
+    comment_field = issue_fields.get("comment")
+    if isinstance(comment_field, dict):
+        for comment in comment_field.get("comments") or []:
+            if not isinstance(comment, dict):
+                continue
+            c_names, c_ids = _inline_refs_from_body(comment.get("body"))
+            filenames |= c_names
+            referenced_ids |= c_ids
+
+    if not filenames and not referenced_ids:
+        return set()
+
+    inline_ids: set[str] = set()
+    for attachment in issue_fields.get("attachment") or []:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        mime = (attachment.get("mimeType") or "").lower()
+        if not mime.startswith("image/"):
+            continue
+        filename = (attachment.get("filename") or "").strip().lower()
+        att_id = str(attachment_id)
+        if att_id in referenced_ids or (filename and filename in filenames):
+            inline_ids.add(att_id)
+    return inline_ids
+
+
+def count_synced_file_attachments(issue_fields: dict[str, Any]) -> int:
+    """Attachments that become FILE records on a fresh sync (excludes new inline images)."""
+    attachments = issue_fields.get("attachment") or []
+    if not attachments:
+        return 0
+    inline_ids = resolve_inline_image_attachment_ids(issue_fields)
+    count = 0
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        if str(attachment_id) in inline_ids:
+            continue
+        count += 1
+    return count
+
+
+def first_synced_file_attachment(
+    issue_fields: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """First attachment that would be created as a FILE on a fresh sync, or None."""
+    attachments = issue_fields.get("attachment") or []
+    if not attachments:
+        return None
+    inline_ids = resolve_inline_image_attachment_ids(issue_fields)
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        if str(attachment_id) in inline_ids:
+            continue
+        return attachment
+    return None
+
+
 async def discover_attachment(
     datasource: JiraDataSource, project_key: str
 ) -> Optional[tuple[str, str, dict[str, Any]]]:
-    """Find the first issue with an attachment. Returns ``(issue_key, issue_id, attachment)`` or None."""
+    """Find an attachment that syncs as a FILE (skips new inline images).
+
+    Returns ``(issue_key, issue_id, attachment)`` or None when the project only has
+    inline-image attachments (no FileRecord created on fresh sync).
+    """
     issues = await search_issues_jql(
-        datasource, f'project = "{project_key}"', ["attachment"],
+        datasource,
+        f'project = "{project_key}"',
+        ["attachment", "description"],
     )
     for it in issues:
-        atts = (it.get("fields") or {}).get("attachment") or []
-        if atts:
-            return (it.get("key"), str(it.get("id")), atts[0])
+        fields = it.get("fields") or {}
+        attachment = first_synced_file_attachment(fields)
+        if attachment is not None:
+            return (it.get("key"), str(it.get("id")), attachment)
     return None
 
 
@@ -1001,14 +1155,16 @@ async def derive_jira_scope_counts(
 
     Mirrors the connector's sync-path record creation:
       - ``ticket``: one TICKET record per issue.
-      - ``file``: one FILE record per attachment. ``_fetch_issue_attachments`` creates a
-        FileRecord for **every** ``fields.attachment`` entry — no inline-image filtering on the
-        sync path (that only affects the streamed blocks) — so this is the exact FILE count.
+      - ``file``: one FILE record per attachment that is *not* a new inline image
+        (``_fetch_issue_attachments`` skips image attachments referenced in description;
+        comment bodies are not on the issue-search payload, same as production sync).
       - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
         epic child; attachments use ATTACHMENT, not PARENT_CHILD).
     """
     issues = await search_issues_jql(
-        datasource, f'project = "{project_key}"', ["parent", "attachment"],
+        datasource,
+        f'project = "{project_key}"',
+        ["parent", "attachment", "description"],
     )
     ticket = len(issues)
     files = 0
@@ -1017,6 +1173,6 @@ async def derive_jira_scope_counts(
         f = it.get("fields") or {}
         if f.get("parent"):
             parent_child += 1
-        files += len(f.get("attachment") or [])
+        files += count_synced_file_attachments(f)
     return {"ticket": ticket, "file": files, "parent_child": parent_child}
 
