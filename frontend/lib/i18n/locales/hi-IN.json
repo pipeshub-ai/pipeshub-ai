@@ -1196,7 +1196,7 @@
       "configInfoPlaceholderProvider": "प्रदाता",
       "downloadDialogTitle": "एम्बेडिंग मॉडल डाउनलोड हो रहा है",
       "downloadDialogDescription": "\"{{modelName}}\" डाउनलोड हो रहा है। मॉडल के आकार और आपके कनेक्शन के आधार पर इसमें कुछ मिनट लग सकते हैं।",
-      "downloadDialogHint": "आप इस पैनल को खुला रख सकते हैं — डाउनलोड बैकग्राउंड में जारी रहता है।",
+      "downloadDialogHint": "आप इस डायलॉग को बंद कर सकते हैं — डाउनलोड बैकग्राउंड में जारी रहता है। मॉडल तैयार होने पर फिर से सेव करें।",
       "downloadStatusChecking": "स्थानीय कैश जाँचा जा रहा है...",
       "downloadStatusDownloading": "मॉडल डाउनलोड हो रहा है...",
       "downloadStatusLoading": "मॉडल को मेमोरी में लोड किया जा रहा है...",

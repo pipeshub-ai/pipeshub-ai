@@ -134,15 +134,11 @@ export function EmbeddingDownloadProgress({
   }, [open, modelName, trustRemoteCode, retryToken]);
 
   const isFailed = status === 'failed';
-  const isTerminal = isFailed; // 'ready' closes the dialog via onReady before render.
+  // 'ready' closes the dialog via onReady before render.
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => !next && !isFailed && onCancel()}>
-      <Dialog.Content
-        style={{ maxWidth: '28rem', width: '100%' }}
-        onEscapeKeyDown={(e) => !isFailed && e.preventDefault()}
-        onInteractOutside={(e) => !isFailed && e.preventDefault()}
-      >
+    <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
+      <Dialog.Content style={{ maxWidth: '28rem', width: '100%' }}>
         <VisuallyHidden>
           <Dialog.Title>{t('workspace.aiModels.downloadDialogTitle')}</Dialog.Title>
         </VisuallyHidden>
@@ -188,20 +184,20 @@ export function EmbeddingDownloadProgress({
             </Text>
           )}
 
+          {!isFailed && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {t('workspace.aiModels.downloadDialogHint')}
+            </Text>
+          )}
+
           <Flex gap="2" justify="end">
-            {isTerminal ? (
-              <>
-                <Button variant="outline" color="gray" onClick={onCancel}>
-                  {t('workspace.aiModels.downloadClose')}
-                </Button>
-                <Button color="jade" onClick={() => setRetryToken((n) => n + 1)}>
-                  {t('workspace.aiModels.downloadRetry')}
-                </Button>
-              </>
-            ) : (
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
-                {t('workspace.aiModels.downloadDialogHint')}
-              </Text>
+            <Button variant="outline" color="gray" onClick={onCancel}>
+              {t('workspace.aiModels.downloadClose')}
+            </Button>
+            {isFailed && (
+              <Button color="jade" onClick={() => setRetryToken((n) => n + 1)}>
+                {t('workspace.aiModels.downloadRetry')}
+              </Button>
             )}
           </Flex>
         </Flex>

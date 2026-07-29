@@ -1193,7 +1193,7 @@
       "configInfoPlaceholderProvider": "Anbieter",
       "downloadDialogTitle": "Embedding-Modell wird heruntergeladen",
       "downloadDialogDescription": "\"{{modelName}}\" wird herunterladen. Dies kann je nach Modellgröße und Verbindung einige Minuten dauern.",
-      "downloadDialogHint": "Sie können dieses Fenster geöffnet lassen — der Download läuft im Hintergrund weiter.",
+      "downloadDialogHint": "Sie können diesen Dialog schließen — der Download läuft im Hintergrund weiter. Speichern Sie erneut, sobald das Modell bereit ist.",
       "downloadStatusChecking": "Lokaler Cache wird überprüft...",
       "downloadStatusDownloading": "Modell wird heruntergeladen...",
       "downloadStatusLoading": "Modell wird in den Speicher geladen...",

@@ -338,7 +338,6 @@ class EventProcessor:
         record_id = _record_key(doc) or "unknown"
         fields = {
             "indexingStatus": status.value,
-            "extractionStatus": status.value,
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
                 if status == ProgressStatus.IN_PROGRESS
