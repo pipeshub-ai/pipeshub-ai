@@ -197,6 +197,62 @@ async def create_shared_drive(drive: GoogleDriveDataSource, name: str) -> str:
     return str(drive_id)
 
 
+async def list_shared_drive_ids(drive: GoogleDriveDataSource) -> set[str]:
+    """Return all Shared Drive ids visible via member ``drives.list`` (paginated)."""
+    found: set[str] = set()
+    page_token: Optional[str] = None
+    while True:
+        resp = await drive.drives_list(pageSize=100, pageToken=page_token)
+        for entry in resp.get("drives") or []:
+            drive_id = entry.get("id")
+            if drive_id:
+                found.add(str(drive_id))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return found
+
+
+async def wait_until_shared_drives_listed(
+    drive: GoogleDriveDataSource,
+    drive_ids: list[str],
+    *,
+    timeout: float = 60.0,
+    interval: float = 2.0,
+) -> None:
+    """Poll member ``drives.list`` until every id is visible.
+
+    Connector per-user Shared Drive sync uses the same API (no domain-admin
+    access). Newly created Shared Drives can lag before they appear there even
+    when admin ``drives.list`` / folder probes already succeed.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    wanted = {str(d) for d in drive_ids if d}
+    if not wanted:
+        return
+
+    async def _all_visible() -> set[str] | None:
+        found = await list_shared_drive_ids(drive)
+        missing = wanted - found
+        if missing:
+            logger.info(
+                "Waiting for Shared Drives in drives.list; missing=%s (listed=%d)",
+                sorted(missing),
+                len(found),
+            )
+            return None
+        return found & wanted
+
+    await async_poll_until(
+        _all_visible,
+        timeout=timeout,
+        interval=interval,
+        description=f"Shared Drives visible in drives.list: {sorted(wanted)}",
+    )
+    logger.info("Shared Drives visible in drives.list: %s", sorted(wanted))
+
+
 async def delete_shared_drive(
     drive: GoogleDriveDataSource,
     drive_id: Optional[str],

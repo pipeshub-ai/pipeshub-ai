@@ -294,6 +294,9 @@ async def drive_individual_connector(
                     "TEARDOWN: delete/clean failed for %s: %s", connector_id, e
                 )
 
+        # Drive cleanup is fixture-scoped only: delete the IT root folder tree.
+        # Even after a cleared folder_ids sync may have indexed other My Drive
+        # content into Pipeshub, do not delete non-fixture Drive items here.
         await delete_drive_folder(
             drive_individual_datasource,
             fixtures.get("root_folder_id") or state.get("root_folder_id"),

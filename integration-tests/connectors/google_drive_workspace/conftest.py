@@ -48,6 +48,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # ty
     ensure_pipeshub_user_exists,
     load_service_account_info,
     require_drive_workspace_env,
+    wait_until_shared_drives_listed,
 )
 
 logger = logging.getLogger("drive-workspace-conftest")
@@ -250,6 +251,9 @@ async def drive_workspace_connector(
             except Exception as e:
                 logger.warning("TEARDOWN: delete/clean failed for %s: %s", connector_id, e)
 
+        # Drive cleanup is fixture-scoped only: delete the IT root folder tree.
+        # Even after a cleared folder_ids sync may have indexed other My Drive
+        # content into Pipeshub, do not delete non-fixture Drive items here.
         await delete_drive_folder(
             drive_workspace_datasource,
             fixtures.get("root_folder_id") or state.get("root_folder_id"),
@@ -311,6 +315,13 @@ async def drive_workspace_shared_drives(
                 "Failed to create Shared Drives for folder-filter ITs. Ensure the "
                 f"test user can create Shared Drives in Workspace admin. Error: {e}"
             )
+
+        # Per-user sync uses member drives.list (no domain admin). Wait until both
+        # drives appear there before fixtures/sync, or the first sync can finish
+        # with "No shared drives found" and 0 records.
+        await wait_until_shared_drives_listed(
+            drive_workspace_datasource, [drive_a_id, drive_b_id]
+        )
 
         try:
             admin_drive = await build_drive_datasource(
@@ -423,6 +434,12 @@ async def drive_workspace_shared_drive_connector(
             connector_id,
             drive_a_id,
             seed_folder_id,
+        )
+
+        # Re-check member visibility immediately before the first sync (same API
+        # the connector uses to discover Shared Drives for the test user).
+        await wait_until_shared_drives_listed(
+            drive_workspace_datasource, [drive_a_id]
         )
 
         pipeshub_client.toggle_sync(connector_id, enable=True)
@@ -547,6 +564,10 @@ async def drive_workspace_shared_drive_root_connector(
             "SETUP: Shared Drive root-seed connector %s folder_ids=[%s]",
             connector_id,
             drive_a_id,
+        )
+
+        await wait_until_shared_drives_listed(
+            drive_workspace_datasource, [drive_a_id]
         )
 
         pipeshub_client.toggle_sync(connector_id, enable=True)
