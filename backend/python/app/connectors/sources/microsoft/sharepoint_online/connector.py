@@ -94,6 +94,7 @@ from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
     get_sharepoint_auth_notification,
     sanitize_azure_error,
+    sanitize_graph_error,
 )
 from app.models.entities import (
     AppUser,
@@ -3938,14 +3939,12 @@ class SharePointConnector(BaseConnector):
             ("Sites.FullControl.All (Sharepoint REST API)", self._probe_legacy_sharepoint_sites_scope),
         ]
 
-        all_passed = True
         missing_scopes: List[str] = []
         for scope_name, probe in scope_probes:
             try:
                 await probe()
                 self.logger.info(f"✅ Permission verified: {scope_name}")
             except ODataError as e:
-                all_passed = False
                 error_code = (e.error.code or "") if e.error else ""
                 if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
                     missing_scopes.append(scope_name)
@@ -3954,29 +3953,39 @@ class SharePointConnector(BaseConnector):
                         f"(Azure error code: {error_code})"
                     )
                 else:
-                    # Transient error (429, 503, 500, …) — log only, no notification.
                     self.logger.error(
                         f"❌ Unexpected Graph API error while probing {scope_name} "
-                        f"(code={error_code}): {e}"
+                        f"(code={error_code}): {e}",
+                        exc_info=True,
                     )
+                    raise ConnectionError(
+                        f"Microsoft Graph error while checking {scope_name}: "
+                        f"{sanitize_graph_error(e)}"
+                    ) from e
             except PermissionError as e:
-                all_passed = False
                 missing_scopes.append(scope_name)
                 self.logger.error(f"❌ Missing required permission: {scope_name} — {e}")
             except Exception as e:
-                all_passed = False
-                self.logger.error(f"❌ Error testing {scope_name} permission: {e}")
+                self.logger.error(
+                    f"❌ Error testing {scope_name} permission: {e}",
+                    exc_info=True,
+                )
+                raise ConnectionError(
+                    f"Unable to check Microsoft Graph permission {scope_name}: "
+                    f"{sanitize_azure_error(e)}"
+                ) from e
 
         if missing_scopes:
+            message = (
+                f"SharePoint is missing the following Microsoft Graph permissions: "
+                f"{', '.join(missing_scopes)}. "
+                "Please grant these application permissions in Azure AD and provide admin consent."
+            )
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
                 title="SharePoint: missing API permissions",
-                message=(
-                    f"SharePoint is missing the following Microsoft Graph permissions: "
-                    f"{', '.join(missing_scopes)}. "
-                    "Please grant these application permissions in Azure AD and provide admin consent."
-                ),
+                message=message,
                 recipient_user_ids=[self.created_by],
                 payload={
                     "connector_id": self.connector_id,
@@ -3984,8 +3993,9 @@ class SharePointConnector(BaseConnector):
                     "connector_scope": self.scope,
                 },
             )
+            raise ConnectionError(message)
 
-        return all_passed
+        return True
 
     async def _probe_sp_users_scope(self) -> None:
         """Probe User.Read.All via GET /users?$top=1&$select=id."""
@@ -4023,13 +4033,33 @@ class SharePointConnector(BaseConnector):
         Unlike GET /sites/root or GET /sites/root/lists, the Microsoft Search API
         explicitly gates site entity access behind Sites.Read.All and returns a
         clear 403 Forbidden even when Files.ReadWrite.All is granted.
+
+        Only auth failures (403 / Authorization_RequestDenied) fail this probe.
+        Region misconfiguration, empty results, and transient Search errors are
+        treated as inconclusive and allowed to pass.
         """
-        await self.msgraph_client.search_query(
-            entity_types=["site"],
-            query="*",
-            limit=1,
-            region=self.tenant_region,
-        )
+        try:
+            await self.msgraph_client.search_query(
+                entity_types=["site"],
+                query="*",
+                limit=1,
+                region=self.tenant_region,
+            )
+        except ODataError as e:
+            error_code = (e.error.code or "") if e.error else ""
+            if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                raise
+            self.logger.warning(
+                f"⚠️ Sites search permission probe inconclusive "
+                f"(code={error_code}, status={e.response_status_code}); "
+                "treating as pass. Error: "
+                f"{sanitize_graph_error(e)}"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Sites search permission probe inconclusive; treating as pass. "
+                f"Error: {sanitize_azure_error(e)}"
+            )
 
     async def _probe_legacy_sharepoint_sites_scope(self) -> None:
         """
