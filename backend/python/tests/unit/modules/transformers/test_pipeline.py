@@ -120,16 +120,20 @@ class TestApplyEmpty:
         sink_orchestrator.enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_blocks_update_failure_raises(self, pipeline, doc_extraction, sink_orchestrator):
+    async def test_empty_blocks_update_failure_logs_and_returns(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
         doc_extraction.graph_provider.update_node = AsyncMock(return_value=False)
         record = _make_record(blocks=[], block_groups=[], record_id="rec-fail")
         ctx = _make_ctx(record)
 
-        with pytest.raises(RuntimeError, match="Failed to persist EMPTY status"):
-            await pipeline.apply(ctx)
+        await pipeline.apply(ctx)
 
+        pipeline.logger.warning.assert_called()
+        assert "Failed to update indexing status" in pipeline.logger.warning.call_args.args[0]
         doc_extraction.apply.assert_not_awaited()
-        sink_orchestrator.apply.assert_not_awaited()
+        sink_orchestrator.index.assert_not_awaited()
+        sink_orchestrator.enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_blocks_none_does_not_take_empty_path(self, pipeline, doc_extraction, sink_orchestrator):

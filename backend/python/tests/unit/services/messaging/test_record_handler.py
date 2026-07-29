@@ -1892,7 +1892,7 @@ class TestUpdateDocumentStatus:
             )
 
     @pytest.mark.asyncio
-    async def test_failed_status_write_propagates(self):
+    async def test_failed_status_write_returns_none(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         gp.get_document = AsyncMock(
@@ -1904,12 +1904,14 @@ class TestUpdateDocumentStatus:
         )
         gp.update_node = AsyncMock(return_value=False)
 
-        with pytest.raises(RuntimeError, match="Failed to persist document status"):
-            await handler._RecordEventHandler__update_document_status(
-                record_id="r1",
-                indexing_status=ProgressStatus.FAILED.value,
-                extraction_status=ProgressStatus.FAILED.value,
-            )
+        result = await handler._RecordEventHandler__update_document_status(
+            record_id="r1",
+            indexing_status=ProgressStatus.FAILED.value,
+            extraction_status=ProgressStatus.FAILED.value,
+        )
+
+        assert result is None
+        handler.logger.warning.assert_called()
 
 
 # ===================================================================

@@ -1025,19 +1025,19 @@ class TestMarkRecord:
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_update_failure_raises(self):
-        # RecordStatusUpdateError (not DocumentProcessingError): a transient
-        # DB write failure must stay retryable, not become a terminal error.
+    async def test_update_failure_logs_and_returns(self):
+        # Failed status writes are non-fatal: log a warning and return.
         from app.config.constants.arangodb import ProgressStatus
-        from app.exceptions.indexing_exceptions import RecordStatusUpdateError
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
         proc.graph_provider.update_node = AsyncMock(return_value=False)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
-            with pytest.raises(RecordStatusUpdateError, match="Failed to persist"):
-                await proc._mark_record("r1", ProgressStatus.EMPTY)
+            await proc._mark_record("r1", ProgressStatus.EMPTY)
+
+        proc.logger.warning.assert_called()
+        assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
 
 # ============================================================================
@@ -1841,7 +1841,7 @@ class TestProcessBlocksAdditional:
 
 class TestProcessImageStatusUpdateFailure:
     @pytest.mark.asyncio
-    async def test_non_multimodal_update_failure_raises(self):
+    async def test_non_multimodal_update_failure_still_completes(self):
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
@@ -1854,8 +1854,10 @@ class TestProcessImageStatusUpdateFailure:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             mock_emb.return_value = {"isMultimodal": False}
 
-            with pytest.raises(Exception, match="Failed to persist multimodal status"):
-                await _collect_events(proc.process_image("r1", b"imgdata", "vr1"))
+            events = await _collect_events(proc.process_image("r1", b"imgdata", "vr1"))
+
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        proc.logger.warning.assert_called()
 
 
 # ============================================================================

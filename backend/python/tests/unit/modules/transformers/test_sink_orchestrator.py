@@ -119,13 +119,15 @@ class TestApply:
 
     @pytest.mark.asyncio
     async def test_vector_store_returns_false_fails_pipeline(self):
+        from app.exceptions.indexing_exceptions import IndexingError
+
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "QUEUED"},
             vector_result=False,
         )
         ctx = _make_ctx()
 
-        with pytest.raises(RuntimeError, match="did not index"):
+        with pytest.raises(IndexingError, match="did not index"):
             await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
@@ -156,12 +158,14 @@ class TestApply:
         )
 
     @pytest.mark.asyncio
-    async def test_failed_completed_status_write_fails_pipeline(self):
+    async def test_failed_completed_status_write_is_non_fatal(self):
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
         orch.graph_provider.batch_upsert_nodes.return_value = False
 
-        with pytest.raises(RuntimeError, match="indexingStatus=COMPLETED"):
-            await orch.index(_make_ctx())
+        await orch.index(_make_ctx())
+
+        orch.vector_store.apply.assert_awaited_once()
+        orch.graph_provider.batch_upsert_nodes.assert_awaited()

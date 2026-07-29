@@ -133,7 +133,7 @@ class TestMarkRecordStatusEdgeCases:
         await ep.mark_record_status(doc, ProgressStatus.COMPLETED)
 
         assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
-        assert doc["extractionStatus"] == ProgressStatus.COMPLETED.value
+        assert "extractionStatus" not in doc
 
     @pytest.mark.asyncio
     async def test_failed_status(self):
@@ -144,7 +144,7 @@ class TestMarkRecordStatusEdgeCases:
         await ep.mark_record_status(doc, ProgressStatus.FAILED)
 
         assert doc["indexingStatus"] == ProgressStatus.FAILED.value
-        assert doc["extractionStatus"] == ProgressStatus.FAILED.value
+        assert "extractionStatus" not in doc
 
     @pytest.mark.asyncio
     async def test_not_started_status(self):
