@@ -134,32 +134,16 @@ def _issue_dict(issue_id="1001", key="PROJ-1", updated="2024-06-15T10:00:00.000+
 class TestRunSync:
 
     @pytest.mark.asyncio
-    async def test_run_sync_initializes_if_no_datasource(self):
+    async def test_run_sync_raises_when_not_initialized(self):
         connector = _make_connector()
         connector.data_source = None
         connector.init = AsyncMock(return_value=True)
-        # After init, data_source should be set, but we mock the rest
-        connector.data_source = MagicMock()
+        connector.notify = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
-            new_callable=AsyncMock,
-        ) as mock_filters:
-            from app.connectors.core.registry.filters import FilterCollection
-            mock_filters.return_value = (FilterCollection(), FilterCollection())
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._sync_user_groups = AsyncMock(return_value={})
-            connector._fetch_projects = AsyncMock(return_value=([], []))
-            connector._sync_project_roles = AsyncMock()
-            connector._sync_project_lead_roles = AsyncMock()
-            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-            connector._sync_all_project_issues = AsyncMock(return_value={
-                "total_synced": 0, "new_count": 0, "updated_count": 0
-            })
-            connector._update_issues_sync_checkpoint = AsyncMock()
-            connector._handle_issue_deletions = AsyncMock()
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
+        connector.init.assert_not_awaited()
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_run_sync_no_active_users_returns_early(self):
@@ -499,7 +483,9 @@ class TestBuildIssueRecords:
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
         tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
 
         records, _ = await connector._build_issue_records(
@@ -521,7 +507,9 @@ class TestBuildIssueRecords:
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
         tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
@@ -704,7 +692,7 @@ class TestDetectAndHandleDeletions:
     async def test_handles_each_deleted_issue(self):
         connector = _make_connector()
         connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1", "PROJ-2"], True))
-        connector._handle_deleted_issue = AsyncMock()
+        connector._handle_deleted_issue = AsyncMock(return_value=(1, 0))
 
         _checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
         assert success is True
@@ -722,6 +710,7 @@ class TestDetectAndHandleDeletions:
             call_count += 1
             if key == "PROJ-1":
                 raise RuntimeError("delete error")
+            return 1, 0
 
         connector._handle_deleted_issue = AsyncMock(side_effect=mock_delete)
 

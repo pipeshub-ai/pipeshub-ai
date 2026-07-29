@@ -1,14 +1,13 @@
-"""Shared helpers for turning Jira/Confluence rendered HTML into indexable blocks.
+"""Helpers for turning Jira Cloud rendered HTML into indexable blocks.
 
-The Atlassian connectors (Jira Cloud, Jira Data Center) all consume Jira's *rendered*
-HTML (`renderedFields`) for issue descriptions and comments, then hand it to docling for
-indexing. This module centralises the two operations that path needs so the logic is
-written and fixed once:
+Currently used by the Jira Cloud connector (not Confluence or Jira Data Center, which
+have their own HTML/media paths). It centralises the two operations that path needs:
 
   * find attachment ids referenced in the HTML (``<a href>`` links and ``<img>`` sources),
   * inline image attachments as base64 data URIs (for multimodal indexing).
 
-Attachment URLs differ between deployments, so the regex matches both:
+The attachment-URL regex also matches Data Center ``/secure/attachment|thumbnail/``
+shapes so the helpers stay reusable if DC migrates later:
   * Cloud: ``/rest/api/3/attachment/content/12345`` and ``.../thumbnail/12345``
   * Data Center: ``/secure/attachment/12345/name.png`` and ``/secure/thumbnail/12345/...``
 """

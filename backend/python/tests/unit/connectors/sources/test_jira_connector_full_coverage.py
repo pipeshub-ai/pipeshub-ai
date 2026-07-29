@@ -1546,7 +1546,7 @@ class TestDetectAndHandleDeletions:
     async def test_with_deletions(self):
         connector = _make_connector()
         connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1"], True))
-        connector._handle_deleted_issue = AsyncMock()
+        connector._handle_deleted_issue = AsyncMock(return_value=(1, 0))
 
         _checkpoint, success = await connector._detect_and_handle_deletions(1700000000000)
         assert success is True
@@ -1557,7 +1557,7 @@ class TestDetectAndHandleDeletions:
         connector = _make_connector()
         connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1", "PROJ-2"], True))
         connector._handle_deleted_issue = AsyncMock(
-            side_effect=[Exception("err"), None]
+            side_effect=[Exception("err"), (1, 0)]
         )
 
         # One deletion failed -> success is False so the caller retries the window.

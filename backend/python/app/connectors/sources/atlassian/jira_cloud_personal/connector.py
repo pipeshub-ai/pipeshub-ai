@@ -241,30 +241,15 @@ class JiraCloudPersonalConnector(JiraConnector):
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
         try:
+            # Init is done by event_service / setup before run_sync is scheduled
+            # (same as Confluence Cloud). Do not re-init here.
             if not self.data_source:
-                # ``init()`` returns False on missing/invalid auth config; check
-                # the return so a misconfigured connector raises here instead of
-                # surfacing ``ValueError("DataSource not initialized")`` from
-                # the first datasource call several layers down. Init does not
-                # notify (FE covers setup); notify here for background sync.
-                if not await self.init():
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_AUTH_ERROR,
-                        severity=NotificationSeverity.ERROR,
-                        title=self._notification_title("connection failed"),
-                        message=(
-                            "PipesHub couldn't connect to Jira during sync. "
-                            "Verify the connector's credentials and configuration, "
-                            "re-authenticate if needed, then sync again."
-                        ),
-                        recipient_user_ids=[self.created_by],
-                    )
-                    init_error = RuntimeError(
-                        f"Jira Cloud Personal connector {self.connector_id} init failed; "
-                        "check auth configuration"
-                    )
-                    init_error._notification_sent = True
-                    raise init_error
+                init_error = RuntimeError(
+                    f"Jira Cloud Personal connector {self.connector_id} not initialized. "
+                    "Call init() first."
+                )
+                init_error._notification_sent = True
+                raise init_error
 
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
