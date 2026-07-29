@@ -324,6 +324,7 @@ mongodb:
       - ALL
 
 redis:
+  enabled: true              # Toggle this OFF when running in cluster mode (redisCluster.enabled)
   architecture: replication  # 1 master + 1 replica for minimal read failover
   master:
     count: 1
@@ -341,6 +342,23 @@ redis:
   persistence:
     enabled: true
     storageClass: "" # Fill
+
+# Redis Cluster (horizontal sharding). Mutually exclusive with `redis:` —
+# when enabling, set `redis.enabled: false` and `redisCluster.enabled: true`.
+# The app reads REDIS_MODE=cluster and REDIS_NODES from env to switch backends.
+redisCluster:
+  enabled: false
+  cluster:
+    nodes: 6            # Total nodes (masters + replicas)
+    replicas: 1         # Replicas per master → 6 nodes ⇒ 3 masters + 3 replicas
+  usePassword: true
+  # password: ""        # Set via --set redisCluster.password=<value> or external secret
+  persistence:
+    enabled: true
+    storageClass: ""
+  # Celery/kombu is not cluster-aware. When cluster mode is on, point Celery at
+  # a standalone Redis here (required for the connectors service to start).
+  celeryRedisUrl: ""   # e.g. redis://:<password>@my-standalone-redis:6379/0
 
 arango:
   enabled: false

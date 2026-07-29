@@ -108,25 +108,41 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         """Create a Redis-backed key-value store."""
         self.logger.debug("Creating Redis store configuration...")
 
+        from app.utils.redis_util import parse_redis_nodes
+
         redis_host = os.getenv("REDIS_HOST", "localhost")
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_username = os.getenv("REDIS_USERNAME") or None
         redis_password = os.getenv("REDIS_PASSWORD", None)
         redis_db = int(os.getenv("REDIS_DB", "0"))
         redis_key_prefix = os.getenv("REDIS_KV_PREFIX", "pipeshub:kv:")
+        redis_mode = os.getenv("REDIS_MODE", "standalone").lower()
+        if redis_mode not in ("standalone", "cluster"):
+            redis_mode = "standalone"
+        redis_nodes = parse_redis_nodes(os.getenv("REDIS_NODES"))
+        if redis_mode == "cluster" and not redis_nodes:
+            raise ValueError(
+                "REDIS_MODE=cluster requires REDIS_NODES "
+                "(comma-separated host:port list)."
+            )
 
         self.logger.debug("Redis Host: %s", redis_host)
         self.logger.debug("Redis Port: %s", redis_port)
         self.logger.debug("Redis DB: %s", redis_db)
         self.logger.debug("Redis Key Prefix: %s", redis_key_prefix)
+        self.logger.debug("Redis Mode: %s (nodes=%s)", redis_mode, redis_nodes)
 
         config = StoreConfig(
             host=redis_host,
             port=redis_port,
+            username=redis_username,
             password=redis_password,
             db=redis_db,
             key_prefix=redis_key_prefix,
             # REDIS_TIMEOUT is in milliseconds (consistent with Node.js), convert to seconds
             timeout=float(os.getenv("REDIS_TIMEOUT", "10000")) / 1000,
+            mode=redis_mode,
+            nodes=redis_nodes,
         )
 
         store = KeyValueStoreFactory.create_store(

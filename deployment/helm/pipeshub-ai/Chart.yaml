@@ -31,3 +31,8 @@ dependencies:
   - name: redis
     version: 24.0.0
     repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: redis.enabled
+  - name: redis-cluster
+    version: 12.0.4
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: redisCluster.enabled

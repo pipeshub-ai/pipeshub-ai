@@ -30,6 +30,10 @@ describe('RedisService', () => {
   // Saved require.cache entries for exception-safe restoration in afterEach
   const ioredisPath = require.resolve('ioredis');
   const rsPath = require.resolve('../../../src/libs/services/redis.service');
+  // RedisService builds its client through redisClientFactory, which imports
+  // ioredis at module load — it must be reloaded too so the mocked ioredis
+  // is used (otherwise the factory keeps the real Redis).
+  const factoryPath = require.resolve('../../../src/libs/services/redisClientFactory');
   let savedIoredis: NodeModule | undefined;
 
   beforeEach(() => {
@@ -64,7 +68,8 @@ describe('RedisService', () => {
       exports: { Redis: FakeRedis, default: FakeRedis },
     } as any;
 
-    // Clear RedisService from cache so it picks up our fake ioredis
+    // Clear RedisService + factory from cache so they pick up our fake ioredis
+    delete require.cache[factoryPath];
     delete require.cache[rsPath];
 
     const config = {
@@ -91,6 +96,7 @@ describe('RedisService', () => {
     if (savedIoredis) {
       require.cache[ioredisPath] = savedIoredis;
     }
+    delete require.cache[factoryPath];
     delete require.cache[rsPath];
     sinon.restore();
   });

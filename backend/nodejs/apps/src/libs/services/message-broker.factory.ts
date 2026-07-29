@@ -204,12 +204,16 @@ export function buildRedisBrokerConfig(
     type: MessageBrokerType.REDIS,
     host: redisConfig.host,
     port: redisConfig.port,
+    username: redisConfig.username,
     password: redisConfig.password,
     db: redisConfig.db,
+    tls: redisConfig.tls,
     maxLen: env.redisStreamsMaxLen,
     keyPrefix: env.redisStreamsKeyPrefix,
     clientId: options?.clientId,
     groupId: options?.groupId,
+    mode: redisConfig.mode,
+    nodes: redisConfig.nodes,
   };
 }
 
