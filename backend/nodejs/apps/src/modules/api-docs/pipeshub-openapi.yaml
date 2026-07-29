@@ -3548,6 +3548,25 @@ components:
           type: integer
           format: int64
           description: Source last modified timestamp (from connector)
+        processingStartedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        parsingStatus:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
+          description: |
+            Parse-phase status (ahead of indexing/extraction):
+            - NOT_STARTED: Awaiting parsing
+            - QUEUED: In parsing queue
+            - IN_PROGRESS: Currently being parsed
+            - COMPLETED: Successfully parsed
+            - FAILED: Parsing failed
+            - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
+            - AUTO_INDEX_OFF: Auto-indexing disabled for this record
+            - EMPTY: File has no extractable content
+          example: "COMPLETED"
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -3753,6 +3772,13 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            parsingStatus:
+              type: string
+              nullable: true
             indexingStatus:
               type: string
             extractionStatus:
@@ -7008,6 +7034,12 @@ components:
           type: boolean
           nullable: true
         deletedByUserId:
+          type: string
+          nullable: true
+        processingStartedAt:
+          type: number
+          nullable: true
+        parsingStatus:
           type: string
           nullable: true
         indexingStatus:

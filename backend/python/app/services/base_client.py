@@ -332,7 +332,6 @@ class BaseServiceClient:
                         "[%s] %s returned %d on attempt %d",
                         self.service_name, operation, response.status_code, attempt,
                     )
-
                 except (
                     TimeoutError,
                     httpx.TimeoutException,

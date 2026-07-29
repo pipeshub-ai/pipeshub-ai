@@ -44,6 +44,12 @@ fields:
   indexing_status:
     required: false
     type: string
+  parsing_status:
+    required: false
+    type: string
+  processing_started_at:
+    required: false
+    type: integer
   inherit_permissions:
     required: false
     type: boolean

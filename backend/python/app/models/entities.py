@@ -221,6 +221,7 @@ class Record(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
 
     # Source information
     weburl: str | None = None
@@ -324,6 +325,7 @@ class Record(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "processingStartedAt": self.processing_started_at,
             "parsingStatus": self.parsing_status,
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
@@ -378,6 +380,7 @@ class Record(BaseModel):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
             indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
@@ -2567,6 +2570,7 @@ class CodeFileRecord(Record):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
             indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
