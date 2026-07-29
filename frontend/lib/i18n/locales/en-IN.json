@@ -218,7 +218,20 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification"
+    "removeFailed": "Could not remove notification",
+    "desktop": {
+      "promptTitle": "Turn on desktop notifications",
+      "promptDescription": "Get alerts when you're working elsewhere so you never miss an update.",
+      "allow": "Allow",
+      "askLater": "Ask me later",
+      "dismiss": "Dismiss",
+      "enabledTitle": "Desktop notifications enabled",
+      "blockedTitle": "Notifications blocked",
+      "blockedDescription": "Allow notifications for this site in your browser settings to receive desktop alerts.",
+      "promptAckTitle": "Got it",
+      "settingsHint": "You can enable desktop notifications anytime under Workspace → Profile → Notifications.",
+      "openSettings": "Open settings"
+    }
   },
   "action": {
     "find": "Find",
@@ -2099,6 +2112,13 @@
         "accountPassword": "Account Password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
         "changePassword": "Change Password"
+      },
+      "notifications": {
+        "title": "Notifications",
+        "desktop": "Desktop notifications",
+        "desktopDescription": "Show browser alerts when you receive new notifications while working elsewhere.",
+        "blockedHint": "Notifications are blocked for this site. Allow them in your browser settings to enable desktop alerts.",
+        "unsupported": "Desktop notifications are not supported in this browser."
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",

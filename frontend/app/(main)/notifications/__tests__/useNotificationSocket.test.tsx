@@ -12,11 +12,19 @@ vi.mock('@/lib/store/auth-store', () => ({
   useAuthStore: (fn: (s: typeof authState) => unknown) => fn(authState),
 }));
 
-const connectMock = vi.fn(() => ({
-  connected: false,
-  on: vi.fn(),
-  off: vi.fn(),
-}));
+const connectMock = vi.fn(() => {
+  const handlers = new Map<string, (payload: unknown) => void>();
+  return {
+    connected: false,
+    on: vi.fn((event: string, handler: (payload: unknown) => void) => {
+      handlers.set(event, handler);
+    }),
+    off: vi.fn(),
+    emitNewNotification: (payload: unknown) => {
+      handlers.get('newNotification')?.(payload);
+    },
+  };
+});
 
 const disconnectMock = vi.fn();
 
@@ -49,6 +57,17 @@ vi.mock('../api', async (importOriginal) => {
       list: (...args: unknown[]) => listMock(...args),
       getStats: () => getStatsMock(),
     },
+  };
+});
+
+const showDesktopNotificationMock = vi.fn();
+
+vi.mock('../browser-notifications', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser-notifications')>();
+  return {
+    ...actual,
+    showDesktopNotification: (...args: unknown[]) =>
+      showDesktopNotificationMock(...args),
   };
 });
 
@@ -105,5 +124,25 @@ describe('useNotificationSocket', () => {
 
     expect(connectMock).toHaveBeenCalledWith('jwt-rotated');
     expect(disconnectMock).toHaveBeenCalled();
+  });
+
+  it('forwards new socket notifications to desktop notifications', () => {
+    renderHook(() => {
+      useNotificationSocket();
+    });
+
+    const socket = connectMock.mock.results[0]?.value as {
+      emitNewNotification: (payload: unknown) => void;
+    };
+    const payload = {
+      _id: 'n-42',
+      type: 'test',
+      title: 'Hello',
+      status: 'unread',
+    };
+
+    socket.emitNewNotification(payload);
+
+    expect(showDesktopNotificationMock).toHaveBeenCalledWith(payload);
   });
 });

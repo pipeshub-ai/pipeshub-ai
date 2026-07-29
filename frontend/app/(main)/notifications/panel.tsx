@@ -31,6 +31,7 @@ import {
   PANEL_MIN_WIDTH,
   useNotificationPanelWidthStore,
 } from './panel-width-store';
+import { useDesktopNotificationPrompt } from './browser-notifications-prompt';
 
 const TRANSITION = '0.25s cubic-bezier(0.4, 0, 0.2, 1)';
 
@@ -63,6 +64,8 @@ export function NotificationsPanel() {
   const listFilter = useNotificationStore((s) => s.listFilter);
   const setListFilter = useNotificationStore((s) => s.setListFilter);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+
+  useDesktopNotificationPrompt(isPanelOpen, unreadCount);
 
   const pathname = usePathname();
   const searchParams = useSearchParams();

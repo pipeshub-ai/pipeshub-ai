@@ -11,6 +11,8 @@ import { immer } from 'zustand/middleware/immer';
 export type ToastVariant = 'loading' | 'success' | 'error' | 'info' | 'warning';
 export type ToastPlacement = 'top' | 'bottom';
 
+export type ToastActionVariant = 'primary' | 'secondary';
+
 export interface ToastAction {
   label: string;
   icon?: string;
@@ -18,6 +20,7 @@ export interface ToastAction {
   /** Renders as a link when set (use with `openInNewTab` for external/same-app new tab). */
   href?: string;
   openInNewTab?: boolean;
+  variant?: ToastActionVariant;
 }
 
 export interface Toast {
@@ -32,6 +35,7 @@ export interface Toast {
   icon?: string;                    // Custom icon (e.g., connector icon like 'chat')
   showCloseButton?: boolean;        // Default: true for non-loading toasts
   action?: ToastAction;             // Optional action button
+  actions?: ToastAction[];          // Optional actions buttons
   duration?: number | null;         // Auto-dismiss duration in ms (null = persist)
   /** Wider layout for scrollable multi-line content. */
   contentLayout?: 'default' | 'expanded';
@@ -47,6 +51,7 @@ export interface ToastOptions {
   icon?: string;
   showCloseButton?: boolean;
   action?: ToastAction;
+  actions?: ToastAction[];
   duration?: number | null;         // Override default duration
   contentLayout?: 'default' | 'expanded';
   placement?: ToastPlacement;
@@ -117,9 +122,12 @@ export const useToastStore = create<ToastStore>()(
           renderDescriptionByToastId.set(id, renderDescription);
         }
         // Toasts with action buttons persist until user interaction
-        const duration = toastFields.duration !== undefined
-          ? toastFields.duration
-          : toastFields.action
+        const hasActions =
+          Boolean(toastData.action) ||
+          Boolean(toastData.actions && toastData.actions.length > 0);
+        const duration = toastData.duration !== undefined
+          ? toastData.duration
+          : hasActions
             ? null
             : DEFAULT_DURATIONS[toastFields.variant];
 
@@ -188,7 +196,12 @@ export const useToastStore = create<ToastStore>()(
             // If variant changed and no explicit duration provided, set up auto-dismiss
             if (toastUpdates.variant && toastUpdates.duration === undefined) {
               // Toasts with action buttons persist until user interaction
-              const newDuration = toastUpdates.action || toast.action
+              const hasActions =
+                Boolean(updates.action ?? toast.action) ||
+                Boolean(
+                  (updates.actions ?? toast.actions)?.length,
+                );
+              const newDuration = hasActions
                 ? null
                 : DEFAULT_DURATIONS[toastUpdates.variant];
               toast.duration = newDuration;
