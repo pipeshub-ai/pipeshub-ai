@@ -54,6 +54,10 @@ def _make_mock_deps():
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_record_deleted = AsyncMock()
+    data_entities_processor.on_records_deleted_with_attachments = AsyncMock(return_value={
+        "success": True, "deleted_records": [], "failed_records": [],
+        "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+    })
     data_entities_processor.on_new_app_roles = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="active@example.com"),
@@ -428,7 +432,7 @@ class TestDeletionHandling:
     async def test_handle_deleted_issue_cascade_deletes(self):
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
-        dep.on_records_deleted_cascade = AsyncMock(return_value={
+        dep.on_records_deleted_with_attachments = AsyncMock(return_value={
             "success": True, "deleted_records": [], "failed_records": [],
             "total_requested": 1, "successfully_deleted": 3, "failed_count": 0,
         })
@@ -444,17 +448,17 @@ class TestDeletionHandling:
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-1")
 
-        # cascade_children=False: the cascade traverses ATTACHMENT edges (deleting
-        # the issue's own files) but leaves PARENT_CHILD children alive.
-        dep.on_records_deleted_cascade.assert_called_once_with(
-            ["internal-1"], connector.connector_id, cascade_children=False,
+        # Attachment-only delete: traverses ATTACHMENT edges (deleting the issue's
+        # own files) but leaves PARENT_CHILD children alive.
+        dep.on_records_deleted_with_attachments.assert_called_once_with(
+            ["internal-1"], connector.connector_id,
         )
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_not_found_in_db(self):
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
-        dep.on_records_deleted_cascade = AsyncMock()
+        dep.on_records_deleted_with_attachments = AsyncMock()
 
         mock_ds = MagicMock()
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(404))
@@ -464,7 +468,7 @@ class TestDeletionHandling:
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-2")
 
-        dep.on_records_deleted_cascade.assert_not_awaited()
+        dep.on_records_deleted_with_attachments.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_detect_and_handle_deletions(self):
@@ -473,7 +477,7 @@ class TestDeletionHandling:
 
         # _fetch_deleted_issues_from_audit now returns (keys, ok).
         connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1"], True))
-        connector._handle_deleted_issue = AsyncMock()
+        connector._handle_deleted_issue = AsyncMock(return_value=(1, 0))
 
         # _detect_and_handle_deletions returns (checkpoint_ms, success).
         _checkpoint_ms, success = await connector._detect_and_handle_deletions(1000)
@@ -610,25 +614,16 @@ class TestJiraFullSync:
             dep.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_sync_inits_if_no_datasource(self):
+    async def test_run_sync_raises_when_not_initialized(self):
         connector, dep, *_ = _make_connector()
         connector.data_source = None
+        connector.init = AsyncMock()
+        connector.notify = AsyncMock()
 
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
-                    new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            connector.init = AsyncMock()
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._sync_user_groups = AsyncMock(return_value={})
-            connector._fetch_projects = AsyncMock(return_value=([], []))
-            connector._sync_project_roles = AsyncMock()
-            connector._sync_project_lead_roles = AsyncMock()
-            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-            connector._sync_all_project_issues = AsyncMock(return_value={"total_synced": 0, "new_count": 0, "updated_count": 0})
-            connector._update_issues_sync_checkpoint = AsyncMock()
-            connector._handle_issue_deletions = AsyncMock()
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
-            connector.init.assert_called_once()
+        connector.init.assert_not_awaited()
+        connector.notify.assert_not_awaited()
 
 
 # ===========================================================================

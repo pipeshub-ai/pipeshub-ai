@@ -410,8 +410,8 @@ class JiraConnector(BaseConnector):
             await self._notify_multi_site_ambiguity(e)
             raise ConnectorInitError(str(e)) from e
         except Exception as e:
-            # Setup/HTTP callers surface this via return False → FE error. Background
-            # run_sync notifies on init failure (avoid duplicate inbox alerts on connect).
+            # Setup/HTTP callers surface this via return False → FE error. No inbox
+            # notify here (avoids duplicate alerts on connect).
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
             return False
 
@@ -476,26 +476,13 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
-            # 1. Ensure client is ready. Init itself does not notify (FE shows setup
-            # errors); notify here for background sync when auth/config is broken.
+            # 1. Init is done by event_service / setup before run_sync is scheduled
             if not self.data_source:
-                if not await self.init():
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_AUTH_ERROR,
-                        severity=NotificationSeverity.ERROR,
-                        title=self._notification_title("connection failed"),
-                        message=(
-                            f"PipesHub couldn't connect to Jira during sync. "
-                            "Verify the connector's credentials and configuration, "
-                            "re-authenticate if needed, then sync again."
-                        ),
-                        recipient_roles=[NotificationRecipientRole.ADMIN],
-                    )
-                    init_error = RuntimeError(
-                        f"Jira connector {self.connector_id} init failed; check auth configuration"
-                    )
-                    init_error._notification_sent = True
-                    raise init_error
+                init_error = RuntimeError(
+                    f"Jira connector {self.connector_id} not initialized. Call init() first."
+                )
+                init_error._notification_sent = True
+                raise init_error
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -790,14 +777,22 @@ class JiraConnector(BaseConnector):
                 return checkpoint_ms, True
 
             all_handled = True
+            issues_deleted = 0
+            attachments_deleted = 0
             for issue_key in deleted_issue_keys:
                 try:
-                    await self._handle_deleted_issue(issue_key)
+                    issue_count, attachment_count = await self._handle_deleted_issue(issue_key)
+                    issues_deleted += issue_count
+                    attachments_deleted += attachment_count
                 except Exception:
                     # _handle_deleted_issue already logged with a traceback; record the
                     # failure so the checkpoint holds and this window is retried.
                     all_handled = False
 
+            self.logger.info(
+                f"🗑️ Deleted {issues_deleted} issue(s) and {attachments_deleted} attachment(s) "
+                f"(total: {issues_deleted + attachments_deleted})"
+            )
             return checkpoint_ms, all_handled
 
         except Exception as e:
@@ -888,9 +883,12 @@ class JiraConnector(BaseConnector):
 
         return deleted_issue_keys, ok
 
-    async def _handle_deleted_issue(self, issue_key: str) -> None:
+    async def _handle_deleted_issue(self, issue_key: str) -> tuple[int, int]:
         """
         Hard-delete a source-deleted issue and its owned attachments.
+
+        Returns ``(issues_deleted, attachments_deleted)`` — ``(0, 0)`` when the
+        issue is skipped (still in Jira or not in our DB).
 
         Jira logs a separate ISSUE_DELETE audit event for EVERY deleted issue —
         including each sub-task when a parent is deleted (verified) — so every
@@ -898,19 +896,19 @@ class JiraConnector(BaseConnector):
         needed. Levels that are not deleted (an epic's stories, a story's tasks)
         never appear in the audit and are correctly left untouched.
 
-        Uses ``cascade_children=False`` so only ATTACHMENT edges are traversed —
-        the issue's FILE records are deleted together with it, but child tickets
-        (stories under an epic, subtasks under a story) are not touched.  Their
-        outgoing PARENT_CHILD edges are swept by the edge cleanup, so the child
-        tickets simply lose their parent link and remain otherwise intact.
+        Uses ``on_records_deleted_with_attachments`` so only ATTACHMENT edges are
+        traversed — the issue's FILE records are deleted together with it, but
+        child tickets (stories under an epic, subtasks under a story) are not
+        touched. Their PARENT_CHILD edges are swept by the edge cleanup, so the
+        child tickets simply lose their parent link and remain otherwise intact.
         """
         try:
-            self.logger.info(f"🗑️ Handling deletion of issue {issue_key}")
+            self.logger.debug(f"🗑️ Handling deletion of issue {issue_key}")
 
             response = await self._get_issue_with_retry(issue_key, fields=["id"])
             if response.status == HttpStatusCode.OK.value:
                 self.logger.warning(f"⚠️ Issue {issue_key} still exists in Jira (not deleted, maybe moved?)")
-                return
+                return 0, 0
             if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
                 raise Exception(
                     f"Deletion of {issue_key} unconfirmed: get_issue returned "
@@ -925,19 +923,25 @@ class JiraConnector(BaseConnector):
 
             if not issue_record:
                 self.logger.warning(f"⚠️ Issue {issue_key} not found in database (already deleted or never synced?)")
-                return
+                return 0, 0
 
-            self.logger.info(
+            self.logger.debug(
                 f"✅ Found issue {issue_key} with internal ID {issue_record.id}, "
                 f"external ID {issue_record.external_record_id}"
             )
 
-            result = await self.data_entities_processor.on_records_deleted_cascade(
-                [issue_record.id], self.connector_id, cascade_children=False,
+            result = await self.data_entities_processor.on_records_deleted_with_attachments(
+                [issue_record.id], self.connector_id,
             )
 
-            deleted_count = result.get("successfully_deleted", 0)
-            self.logger.info(f"🗑️ Deleted issue {issue_key} and {deleted_count - 1} attachment(s)")
+            # successfully_deleted counts only root IDs; deleted_records includes attachments.
+            total_deleted = len(result.get("deleted_records") or [])
+            attachment_count = max(total_deleted - 1, 0)
+            self.logger.debug(
+                f"🗑️ Deleted issue {issue_key} and {attachment_count} attachment(s) "
+                f"(total: {total_deleted})"
+            )
+            return 1, attachment_count
 
         except Exception as e:
             self.logger.error(f"❌ Error handling deleted issue {issue_key}: {e}", exc_info=True)
@@ -2667,11 +2671,11 @@ class JiraConnector(BaseConnector):
                 )
 
             # Hard-delete source-removed attachments (with Qdrant vector cleanup).
-            # cascade_children=False is safe: FILE records have no outgoing
+            # Attachment-only delete is safe: FILE records have no outgoing
             # PARENT_CHILD or ATTACHMENT edges, so only the files themselves are deleted.
             if delete_ids:
-                await self.data_entities_processor.on_records_deleted_cascade(
-                    delete_ids, self.connector_id, cascade_children=False,
+                await self.data_entities_processor.on_records_deleted_with_attachments(
+                    delete_ids, self.connector_id,
                 )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
@@ -3007,9 +3011,9 @@ class JiraConnector(BaseConnector):
         )
 
         # Check for existing record (works for both Epics and regular issues)
-        existing_record = await tx_store.get_record_by_external_id(
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id,
-            external_id=issue_id
+            external_record_id=issue_id,
         )
 
         record_id = existing_record.id if existing_record else str(uuid4())
@@ -3122,6 +3126,94 @@ class JiraConnector(BaseConnector):
     # Attachments
     # ============================================================================
 
+    def _collect_adf_media_filenames(self, node: Any) -> set[str]:
+        """Collect media ``alt`` filenames (and wiki ``!file!`` refs) from an ADF tree."""
+        filenames: set[str] = set()
+        if isinstance(node, dict):
+            if node.get("type") in ("media", "mediaInline"):
+                alt = (node.get("attrs") or {}).get("alt")
+                if isinstance(alt, str) and alt.strip():
+                    filenames.add(alt.strip().lower())
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    filenames |= self._collect_adf_media_filenames(value)
+                elif isinstance(value, str):
+                    filenames |= self._extract_attachment_filenames_from_wiki(value)
+        elif isinstance(node, list):
+            for item in node:
+                filenames |= self._collect_adf_media_filenames(item)
+        return filenames
+
+    def _collect_attachment_ids_from_strings(self, node: Any) -> set[str]:
+        """Collect attachment ids embedded in HTML/URL strings inside ADF or free text."""
+        ids: set[str] = set()
+        if isinstance(node, dict):
+            for value in node.values():
+                if isinstance(value, str):
+                    ids |= extract_attachment_ids(value)
+                elif isinstance(value, (dict, list)):
+                    ids |= self._collect_attachment_ids_from_strings(value)
+        elif isinstance(node, list):
+            for item in node:
+                ids |= self._collect_attachment_ids_from_strings(item)
+        return ids
+
+    def _inline_refs_from_body(self, body: Any) -> tuple[set[str], set[str]]:
+        """Return ``(filenames_lower, attachment_ids)`` referenced as inline media in a body."""
+        filenames: set[str] = set()
+        attachment_ids: set[str] = set()
+        if isinstance(body, dict):
+            filenames |= self._collect_adf_media_filenames(body)
+            attachment_ids |= self._collect_attachment_ids_from_strings(body)
+        elif isinstance(body, str):
+            filenames |= self._extract_attachment_filenames_from_wiki(body)
+            attachment_ids |= extract_attachment_ids(body)
+        return filenames, attachment_ids
+
+    def _resolve_inline_image_attachment_ids(
+        self,
+        issue_fields: dict[str, Any],
+    ) -> set[str]:
+        """Image attachment ids embedded in description/comment (ADF/wiki/HTML).
+
+        Uses fields already on the issue search payload — no extra Jira API calls.
+        Comment bodies are parsed only when ``comment`` is present on ``issue_fields``.
+        """
+        filenames: set[str] = set()
+        referenced_ids: set[str] = set()
+
+        desc_names, desc_ids = self._inline_refs_from_body(issue_fields.get("description"))
+        filenames |= desc_names
+        referenced_ids |= desc_ids
+
+        comment_field = issue_fields.get("comment")
+        if isinstance(comment_field, dict):
+            for comment in comment_field.get("comments") or []:
+                if not isinstance(comment, dict):
+                    continue
+                c_names, c_ids = self._inline_refs_from_body(comment.get("body"))
+                filenames |= c_names
+                referenced_ids |= c_ids
+
+        if not filenames and not referenced_ids:
+            return set()
+
+        inline_ids: set[str] = set()
+        for attachment in issue_fields.get("attachment") or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_id = attachment.get("id")
+            if attachment_id is None:
+                continue
+            mime = (attachment.get("mimeType") or "").lower()
+            if not mime.startswith("image/"):
+                continue
+            filename = (attachment.get("filename") or "").strip().lower()
+            att_id = str(attachment_id)
+            if att_id in referenced_ids or (filename and filename in filenames):
+                inline_ids.add(att_id)
+        return inline_ids
+
     async def _fetch_issue_attachments(
         self,
         issue_id: str,
@@ -3136,6 +3228,10 @@ class JiraConnector(BaseConnector):
         """
         Fetch attachments for an issue from issue fields.
         All attachments have the issue as their parent.
+
+        New inline image attachments (referenced in description/comment) are not
+        created as FileRecords — they are base64-inlined at index time. FileRecords
+        already created by earlier syncs are left untouched and still updated.
         """
         attachment_records: list[tuple[FileRecord, list[Permission]]] = []
 
@@ -3145,6 +3241,8 @@ class JiraConnector(BaseConnector):
 
             if not attachments:
                 return []
+
+            inline_image_ids = self._resolve_inline_image_attachment_ids(issue_fields)
 
             # Construct web URL for attachments - use issue browse URL
             weburl = None
@@ -3160,10 +3258,20 @@ class JiraConnector(BaseConnector):
                 # every attachment on the issue (the outer handler returns []).
                 try:
                     # Check for existing attachment record
-                    existing_record = await tx_store.get_record_by_external_id(
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
                         connector_id=self.connector_id,
-                        external_id=f"attachment_{attachment_id}"
+                        external_record_id=f"attachment_{attachment_id}",
                     )
+
+                    # Forward-only: skip creating new FileRecords for inline images.
+                    # Previously synced ones remain and continue through the update path.
+                    if str(attachment_id) in inline_image_ids and existing_record is None:
+                        self.logger.debug(
+                            "Skipping new inline image attachment %s on issue %s",
+                            attachment_id,
+                            issue_key,
+                        )
+                        continue
 
                     filename, mime_type, file_size, created_at = self._parse_attachment_metadata(attachment)
 
@@ -3227,17 +3335,11 @@ class JiraConnector(BaseConnector):
     async def _find_attachment_record_by_id(
         self,
         attachment_id: str,
-        tx_store
     ) -> Optional[Record]:
-        """
-        Find attachment record by ID
-        """
-        external_id = f"attachment_{attachment_id}"
-
-        # First try new-style external ID (attachment_<id>)
-        return await tx_store.get_record_by_external_id(
+        """Find attachment FileRecord by Jira attachment id."""
+        return await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id,
-            external_id=external_id,
+            external_record_id=f"attachment_{attachment_id}",
         )
 
 
@@ -3325,7 +3427,7 @@ class JiraConnector(BaseConnector):
             # Case 1: Delete attachments with explicit IDs from changelog
             deleted_count = 0
             for attachment_id in deleted_attachment_ids:
-                record = await self._find_attachment_record_by_id(attachment_id, tx_store)
+                record = await self._find_attachment_record_by_id(attachment_id)
                 if not record:
                     self.logger.debug(
                         f"Attachment attachment_{attachment_id} referenced in changelog for issue {issue_key} "
@@ -3652,13 +3754,15 @@ class JiraConnector(BaseConnector):
         issue_node_id: str,
         project_id: str,
         issue_weburl: Optional[str],
-        tx_store,
+        issue_fields: Optional[dict[str, Any]] = None,
     ) -> dict[str, ChildRecord]:
         """
         Process issue attachments and create ChildRecords for TableRowMetadata.
         Creates FileRecords if they don't exist (for new attachments added after sync).
 
-        ALL attachments are processed including images.
+        New inline image attachments are not created as FileRecords (same rule as sync).
+        Previously created FileRecords remain and are still mapped for children_records.
+
         Returns a MAP of attachment_id -> ChildRecord for proper mapping to description/comments.
 
         Args:
@@ -3667,7 +3771,7 @@ class JiraConnector(BaseConnector):
             issue_node_id: Internal record ID of issue
             project_id: Project ID for external_record_group_id
             issue_weburl: Issue web URL (used as weburl for FileRecords)
-            tx_store: Transaction store for looking up existing records
+            issue_fields: Issue ``fields`` (description/comment/attachment) for inline detection
 
         Returns:
             Dict mapping attachment_id -> ChildRecord for proper location assignment
@@ -3675,18 +3779,28 @@ class JiraConnector(BaseConnector):
         attachment_children_map: dict[str, ChildRecord] = {}
         new_file_records: list[tuple[FileRecord, list[Permission]]] = []
 
+        resolve_fields = issue_fields if issue_fields is not None else {"attachment": attachments_data}
+        inline_image_ids = self._resolve_inline_image_attachment_ids(resolve_fields)
+
         for attachment in attachments_data:
             try:
                 attachment_id = attachment.get("id", "")
                 if not attachment_id:
                     continue
 
-                # Look up existing attachment record from database
-                external_id = f"attachment_{attachment_id}"
-                existing_record = await tx_store.get_record_by_external_id(
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=external_id
+                    external_record_id=f"attachment_{attachment_id}",
                 )
+
+                # Forward-only: do not create FileRecords for new inline images.
+                if not existing_record and str(attachment_id) in inline_image_ids:
+                    self.logger.debug(
+                        "Skipping new inline image attachment %s on issue %s (stream)",
+                        attachment_id,
+                        issue_id,
+                    )
+                    continue
 
                 # Create FileRecord if it doesn't exist (new attachment added after sync)
                 if not existing_record:
@@ -3912,17 +4026,15 @@ class JiraConnector(BaseConnector):
         # Fetch child records from database - get map of attachment_id -> ChildRecord.
         # Also creates FileRecords for any attachments added since the last sync.
         attachment_children_map: dict[str, ChildRecord] = {}
-
-        async with self.data_store_provider.transaction() as tx_store:
-            if attachments_data:
-                attachment_children_map = await self._process_issue_attachments_for_children(
-                    attachments_data=attachments_data,
-                    issue_id=issue_id,
-                    issue_node_id=record.id,
-                    project_id=project_id,
-                    issue_weburl=issue_weburl,
-                    tx_store=tx_store
-                )
+        if attachments_data:
+            attachment_children_map = await self._process_issue_attachments_for_children(
+                attachments_data=attachments_data,
+                issue_id=issue_id,
+                issue_node_id=record.id,
+                project_id=project_id,
+                issue_weburl=issue_weburl,
+                issue_fields=fields,
+            )
 
         # Parse issue to BlocksContainer from Jira's rendered HTML (renderedFields).
         rendered_fields = issue_data.get("renderedFields") or {}
@@ -4575,11 +4687,10 @@ class JiraConnector(BaseConnector):
                 return None
 
             # Get parent ticket's internal record ID
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_ticket_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=issue_id
-                )
+            parent_ticket_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=issue_id,
+            )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
