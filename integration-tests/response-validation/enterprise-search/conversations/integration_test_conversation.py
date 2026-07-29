@@ -24,6 +24,7 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from ai_models_setup import SeededAIModel
 from helper.agui_sse import (
     AGUI,
     answer_from_completion,
@@ -56,9 +57,11 @@ class _BaseEnterpriseConversationIntegration:
         self,
         conversations_client: ConversationsClient,
         session_kb: dict,
+        reasoning_multimodal_llm_model: SeededAIModel,
     ) -> None:
         self.conversations = conversations_client
         self.kb_id = session_kb["kb_id"]
+        self.reasoning_model = reasoning_multimodal_llm_model
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -66,6 +69,16 @@ class _BaseEnterpriseConversationIntegration:
             if stream_override
             else max(self.timeout, 120)
         )
+
+    def _model_fields(self, chat_mode: str) -> dict[str, str]:
+        """Agent mode is gated on ``isReasoning`` server-side and the org default
+        LLM is not one, so agent-mode streams must name the seeded reasoning model."""
+        if chat_mode != "agent":
+            return {}
+        return {
+            "modelKey": self.reasoning_model.model_key,
+            "modelName": self.reasoning_model.model_name,
+        }
 
 
 # ============================================================================
@@ -308,6 +321,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         with self.conversations.stream_conversation(
             query=query,
             chatMode=chat_mode,
+            **self._model_fields(chat_mode),
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -1110,6 +1124,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             conversation_id,
             query=query,
             chatMode=chat_mode,
+            **self._model_fields(chat_mode),
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"

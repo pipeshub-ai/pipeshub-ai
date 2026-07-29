@@ -73,7 +73,6 @@ def _build_payload(
     knowledge: list[dict[str, Any]] | None = None,
     web_search: str | dict[str, Any] | None = None,
     toolsets: list[dict[str, Any]] | None = None,
-    skills: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "name": name,
@@ -105,8 +104,6 @@ def _build_payload(
         payload["webSearch"] = web_search
     if toolsets is not None:
         payload["toolsets"] = toolsets
-    if skills is not None:
-        payload["skills"] = skills
 
     return payload
 
@@ -126,7 +123,6 @@ def _build_update_payload(
     knowledge: list[dict[str, Any]] | None = None,
     web_search: str | dict[str, Any] | None = None,
     toolsets: list[dict[str, Any]] | None = None,
-    skills: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Partial update payload — only includes explicitly provided fields."""
     payload: dict[str, Any] = {}
@@ -164,8 +160,6 @@ def _build_update_payload(
         payload["webSearch"] = web_search
     if toolsets is not None:
         payload["toolsets"] = toolsets
-    if skills is not None:
-        payload["skills"] = skills
 
     return payload
 
@@ -221,38 +215,17 @@ class AgentsTestBase:
     """Shared agents_client fixture and agent create/cleanup helpers."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, agents_client: AgentsClient, pipeshub_client: PipeshubClient) -> None:
+    def _setup(
+        self,
+        agents_client: AgentsClient,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
         self.agents = agents_client
         self.client = pipeshub_client
         self.org_id = pipeshub_client.org_id
 
     @pytest.fixture
-    def created_skill_names(self) -> Iterator[list[str]]:
-        created: list[str] = []
-        yield created
-        for skill_name in reversed(created):
-            try:
-                resp = self.client.request(
-                    "DELETE",
-                    f"/api/v1/skills/{skill_name}",
-                )
-                if resp.status_code >= 300:
-                    logger.warning(
-                        "Skill delete failed for %s: HTTP %s %s",
-                        skill_name,
-                        resp.status_code,
-                        resp.text[:300],
-                    )
-            except Exception:
-                pass
-
-    @pytest.fixture
-    def created_agent_keys(
-        self,
-        created_skill_names: list[str],
-    ) -> Iterator[list[str]]:
-        # Depend on created_skill_names so agents are deleted before their skill
-        # fixtures during teardown.
+    def created_agent_keys(self) -> Iterator[list[str]]:
         created: list[str] = []
         yield created
         for agent_key in reversed(created):
@@ -265,23 +238,6 @@ class AgentsTestBase:
                     )
             except Exception:
                 pass
-
-    def _create_skill_fixture(self, created_skill_names: list[str]) -> str:
-        skill_name = f"it-agent-skill-{uuid4().hex[:12]}"
-        resp = self.client.request(
-            "POST",
-            "/api/v1/skills/",
-            json={
-                "name": skill_name,
-                "description": "Integration-test skill for agent assignment",
-                "body": "Use this skill when validating agent skill assignment.",
-            },
-        )
-        assert resp.status_code == 201, (
-            f"Skill fixture create failed: {resp.status_code}: {resp.text}"
-        )
-        created_skill_names.append(skill_name)
-        return skill_name
 
     def _create_agent_raw(self, payload: dict[str, Any]) -> requests.Response:
         return self.agents.create_agent(**payload)
@@ -383,34 +339,6 @@ class TestCreateAgent(AgentsTestBase):
         created_agent_keys.append(agent_key)
 
         assert_response_matches_openapi_operation(body, "createAgent", status_code="201")
-
-    def test_create_agent_with_skill_assignment(
-        self,
-        reasoning_multimodal_llm_model: SeededAIModel,
-        created_agent_keys: list[str],
-        created_skill_names: list[str],
-    ) -> None:
-        skill_name = self._create_skill_fixture(created_skill_names)
-        payload = _build_payload(
-            name=f"it-agent-create-skill-{uuid4().hex[:8]}",
-            seeded_model=reasoning_multimodal_llm_model,
-            skills=[{"name": skill_name}],
-        )
-        assert_request_body_matches_openapi_operation(payload, "createAgent")
-
-        resp = self._create_agent_raw(payload)
-        assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
-        body = _response_json(resp)
-        agent_key = self._created_agent_key(body)
-        created_agent_keys.append(agent_key)
-
-        skills = body["agent"].get("skills")
-        assert isinstance(skills, list) and any(
-            isinstance(skill, dict) and skill.get("name") == skill_name
-            for skill in skills
-        ), (
-            f"Expected assigned skill in create response, got: {body!r}"
-        )
 
     def test_create_agent_response_matches_openapi_spec(
         self,
@@ -1170,62 +1098,6 @@ class TestUpdateAgent(AgentsTestBase):
         )
         assert agent.get("tags") == ["integration", "update-rich"], (
             f"Expected updated tags on GET, got: {get_body!r}"
-        )
-
-    def test_update_agent_assigns_and_clears_skills(
-        self,
-        reasoning_multimodal_llm_model: SeededAIModel,
-        created_agent_keys: list[str],
-        created_skill_names: list[str],
-    ) -> None:
-        skill_name = self._create_skill_fixture(created_skill_names)
-        agent_key = self._create_agent_for_update_test(
-            name=f"it-agent-update-skill-{uuid4().hex[:8]}",
-            seeded_model=reasoning_multimodal_llm_model,
-            created_agent_keys=created_agent_keys,
-        )
-
-        assign_payload = _build_update_payload(skills=[{"name": skill_name}])
-        assert_request_body_matches_openapi_operation(assign_payload, "updateAgent")
-        assign_resp = self._update_agent_raw(
-            agent_key,
-            json_body=assign_payload,
-        )
-        assert assign_resp.status_code == 200, (
-            f"Expected skill assignment update 200, got "
-            f"{assign_resp.status_code}: {assign_resp.text}"
-        )
-
-        assigned_get = self._get_agent_raw(agent_key)
-        assert assigned_get.status_code == 200, (
-            f"Expected GET 200 after skill assignment, got "
-            f"{assigned_get.status_code}: {assigned_get.text}"
-        )
-        assigned_agent = _response_json(assigned_get)["agent"]
-        assigned_skills = assigned_agent.get("skills")
-        assert isinstance(assigned_skills, list) and any(
-            isinstance(skill, dict) and skill.get("name") == skill_name
-            for skill in assigned_skills
-        ), (
-            f"Expected assigned skill on GET, got: {assigned_agent!r}"
-        )
-
-        clear_payload = _build_update_payload(skills=[])
-        assert_request_body_matches_openapi_operation(clear_payload, "updateAgent")
-        clear_resp = self._update_agent_raw(agent_key, json_body=clear_payload)
-        assert clear_resp.status_code == 200, (
-            f"Expected skill clear update 200, got "
-            f"{clear_resp.status_code}: {clear_resp.text}"
-        )
-
-        cleared_get = self._get_agent_raw(agent_key)
-        assert cleared_get.status_code == 200, (
-            f"Expected GET 200 after skill clear, got "
-            f"{cleared_get.status_code}: {cleared_get.text}"
-        )
-        cleared_agent = _response_json(cleared_get)["agent"]
-        assert cleared_agent.get("skills") == [], (
-            f"Expected skills to be cleared, got: {cleared_agent!r}"
         )
 
     def test_update_agent_accepts_valid_models_array(

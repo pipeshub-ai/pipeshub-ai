@@ -68,6 +68,14 @@ on:
 permissions:
   contents: read
 
+# The matrix reads labels from each event's frozen payload, so an opened/synchronize
+# event firing before a label lands resolves to the default "both" and would otherwise
+# burn a runner alongside the labeled run. Non-PR events get a unique group per run so
+# a manual dispatch never cancels the nightly cron.
+concurrency:
+  group: integration-tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}

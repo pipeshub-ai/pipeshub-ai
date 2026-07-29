@@ -13,6 +13,7 @@ name and ``data:`` carries the full JSON including a matching ``"type"``.
 
 from __future__ import annotations
 
+import codecs
 import json
 from collections.abc import Iterator
 from typing import Any, NamedTuple
@@ -21,6 +22,8 @@ import requests
 
 SSE_MAX_EVENTS = 10_000
 SSEEnvelope = dict[str, str]
+
+_READ_CHUNK_SIZE = 512
 
 
 class StreamOutcome(NamedTuple):
@@ -60,6 +63,26 @@ CONVERSATION_CREATED = "conversation_created"
 _NORMALIZED_ANSWER_PATH = "/normalizedAnswer"
 
 
+def _parse_frame(raw: str) -> SSEEnvelope | None:
+    """One frame's lines → envelope, or ``None`` when the frame carries nothing."""
+    event_name: str | None = None
+    data_lines: list[str] = []
+
+    for raw_line in raw.split("\n"):
+        line = raw_line.rstrip("\r")
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:") :].removeprefix(" "))
+        # Ignore optional SSE fields (id:, retry:, etc.)
+
+    if event_name is None and not data_lines:
+        return None
+    return {"event": event_name or "", "data": "\n".join(data_lines)}
+
+
 def iter_sse_envelopes(
     resp: requests.Response,
     *,
@@ -73,46 +96,38 @@ def iter_sse_envelopes(
 
     Frames are separated by a blank line. Returns envelopes:
     { "event": <name>, "data": <string> }.
+
+    Frames are cut out of a buffer here rather than read via
+    ``resp.iter_lines(delimiter="\\n")``: when a socket read happens to end on a
+    newline, ``iter_lines`` yields a trailing empty string that is
+    indistinguishable from a real frame separator. A read boundary landing
+    between an ``event:`` line and its ``data:`` line therefore splits one frame
+    into an empty-``data`` envelope plus an orphan, which is why callers used to
+    see ``JSONDecodeError`` on arbitrary frames. Owning the buffer keeps framing
+    independent of where reads land. Bytes are decoded incrementally so a read
+    splitting a multi-byte character is also safe.
     """
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buffer = ""
     emitted = 0
-    # Literal LF delimiter so requests does not split on Unicode line-separator
-    # characters that can appear inside JSON string values.
-    for raw in resp.iter_lines(delimiter="\n", decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
 
-        if line.startswith(":"):
+    for chunk in resp.iter_content(chunk_size=_READ_CHUNK_SIZE):
+        if not chunk:
             continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].removeprefix(" "))
-            continue
-        # Ignore optional SSE fields (id:, retry:, etc.)
+        buffer += decoder.decode(chunk) if isinstance(chunk, bytes) else chunk
+        buffer = buffer.replace("\r\n", "\n")
+        while "\n\n" in buffer:
+            raw, buffer = buffer.split("\n\n", 1)
+            env = _parse_frame(raw)
+            if env is None:
+                continue
+            yield env
+            emitted += 1
+            if emitted >= max_events:
+                raise AssertionError(f"SSE exceeded max_events={max_events}")
 
-    env = flush()
+    buffer += decoder.decode(b"", final=True)
+    env = _parse_frame(buffer)
     if env is not None:
         yield env
 
