@@ -185,7 +185,7 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
-      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 

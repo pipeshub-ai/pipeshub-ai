@@ -30,6 +30,7 @@ def _make_orchestrator(*, graph_doc=None, vector_result=None):
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
+    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     orch = SinkOrchestrator(
         graphdb=graphdb,
         blob_storage=blob_storage,

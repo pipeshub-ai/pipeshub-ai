@@ -70,15 +70,35 @@ export function EmbeddingDownloadProgress({
     setError(null);
 
     const run = async () => {
-      try {
-        await AIModelsApi.prepareModel(modelName, trustRemoteCode);
-      } catch (err) {
+      const MAX_PREPARE_RETRIES = 30;
+      const PREPARE_RETRY_INTERVAL_MS = 3000;
+
+      let prepared = false;
+      for (let attempt = 0; attempt < MAX_PREPARE_RETRIES; attempt++) {
+        if (controller.signal.aborted) return;
+        try {
+          const result = await AIModelsApi.prepareModel(modelName, trustRemoteCode);
+          if (result?.status === 'ready') {
+            settled = true;
+            onReadyRef.current();
+            return;
+          }
+          prepared = true;
+          break;
+        } catch {
+          if (controller.signal.aborted) return;
+          if (attempt < MAX_PREPARE_RETRIES - 1) {
+            setStatus('checking');
+            await new Promise((r) => setTimeout(r, PREPARE_RETRY_INTERVAL_MS));
+          }
+        }
+      }
+
+      if (!prepared) {
         if (controller.signal.aborted) return;
         settled = true;
         setStatus('failed');
-        setError(
-          err instanceof Error ? err.message : t('workspace.aiModels.downloadPrepareError')
-        );
+        setError(t('workspace.aiModels.downloadPrepareError'));
         return;
       }
 
@@ -114,15 +134,11 @@ export function EmbeddingDownloadProgress({
   }, [open, modelName, trustRemoteCode, retryToken]);
 
   const isFailed = status === 'failed';
-  const isTerminal = isFailed; // 'ready' closes the dialog via onReady before render.
+  // 'ready' closes the dialog via onReady before render.
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => !next && !isFailed && onCancel()}>
-      <Dialog.Content
-        style={{ maxWidth: '28rem', width: '100%' }}
-        onEscapeKeyDown={(e) => !isFailed && e.preventDefault()}
-        onInteractOutside={(e) => !isFailed && e.preventDefault()}
-      >
+    <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
+      <Dialog.Content style={{ maxWidth: '28rem', width: '100%' }}>
         <VisuallyHidden>
           <Dialog.Title>{t('workspace.aiModels.downloadDialogTitle')}</Dialog.Title>
         </VisuallyHidden>
@@ -168,20 +184,20 @@ export function EmbeddingDownloadProgress({
             </Text>
           )}
 
+          {!isFailed && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {t('workspace.aiModels.downloadDialogHint')}
+            </Text>
+          )}
+
           <Flex gap="2" justify="end">
-            {isTerminal ? (
-              <>
-                <Button variant="outline" color="gray" onClick={onCancel}>
-                  {t('workspace.aiModels.downloadClose')}
-                </Button>
-                <Button color="jade" onClick={() => setRetryToken((n) => n + 1)}>
-                  {t('workspace.aiModels.downloadRetry')}
-                </Button>
-              </>
-            ) : (
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
-                {t('workspace.aiModels.downloadDialogHint')}
-              </Text>
+            <Button variant="outline" color="gray" onClick={onCancel}>
+              {t('workspace.aiModels.downloadClose')}
+            </Button>
+            {isFailed && (
+              <Button color="jade" onClick={() => setRetryToken((n) => n + 1)}>
+                {t('workspace.aiModels.downloadRetry')}
+              </Button>
             )}
           </Flex>
         </Flex>

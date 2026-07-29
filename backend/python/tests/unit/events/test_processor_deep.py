@@ -482,7 +482,7 @@ class TestProcessImage:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
             recordName="photo.png", mimeType="image/png",
         ))
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.update_node = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
@@ -1002,16 +1002,15 @@ class TestMarkRecord:
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.update_node = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
-        proc.graph_provider.batch_update_nodes.assert_called_once()
-        call_args = proc.graph_provider.batch_update_nodes.call_args[0]
-        doc = call_args[0][0]
-        assert doc["indexingStatus"] == "EMPTY"
-        assert doc["isDirty"] is False
+        proc.graph_provider.update_node.assert_awaited_once()
+        fields = proc.graph_provider.update_node.await_args.args[2]
+        assert fields["indexingStatus"] == "EMPTY"
+        assert fields["isDirty"] is False
 
     @pytest.mark.asyncio
     async def test_record_not_found_raises(self):
@@ -1026,18 +1025,19 @@ class TestMarkRecord:
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_update_failure_logs_warning(self):
-        """_mark_record logs warning when batch_update_nodes returns False."""
+    async def test_update_failure_logs_and_returns(self):
+        # Failed status writes are non-fatal: log a warning and return.
         from app.config.constants.arangodb import ProgressStatus
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        proc.graph_provider.update_node = AsyncMock(return_value=False)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
         proc.logger.warning.assert_called()
+        assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
 
 # ============================================================================
@@ -1839,27 +1839,24 @@ class TestProcessBlocksAdditional:
 # process_image — batch_update_nodes failure
 # ============================================================================
 
-class TestProcessImageBatchUpdateFailure:
+class TestProcessImageStatusUpdateFailure:
     @pytest.mark.asyncio
-    async def test_non_multimodal_update_failure_yields_events(self):
-        """When batch_update_nodes returns False during non-multimodal status update, yields events."""
+    async def test_non_multimodal_update_failure_still_completes(self):
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
             recordName="photo.png", mimeType="image/png",
         ))
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        proc.graph_provider.update_node = AsyncMock(return_value=False)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             mock_emb.return_value = {"isMultimodal": False}
 
-            events = await _collect_events(
-                proc.process_image("r1", b"imgdata", "vr1")
-            )
+            events = await _collect_events(proc.process_image("r1", b"imgdata", "vr1"))
 
-        assert len(events) == 2
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
         proc.logger.warning.assert_called()
 
 

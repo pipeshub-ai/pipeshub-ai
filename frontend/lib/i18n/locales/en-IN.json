@@ -1196,7 +1196,7 @@
       "configInfoPlaceholderProvider": "provider",
       "downloadDialogTitle": "Downloading Embedding Model",
       "downloadDialogDescription": "\"{{modelName}}\" is downloading. This can take a few minutes depending on model size and your connection.",
-      "downloadDialogHint": "You can keep this panel open — the download continues in the background.",
+      "downloadDialogHint": "You can close this dialog — the download continues in the background. Save again once the model is ready.",
       "downloadStatusChecking": "Checking local cache...",
       "downloadStatusDownloading": "Downloading model...",
       "downloadStatusLoading": "Loading model into memory...",

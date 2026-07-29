@@ -172,8 +172,13 @@ class KafkaUtils:
     @staticmethod
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
+        producer: Any = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
+
+        `producer` is used to publish follow-up events (e.g. re-triggering the
+        next queued duplicate); pass the same producer used for retries so we
+        don't spin up a second Kafka connection.
 
         Returns an async generator function that yields PipelineEvent during processing.
         """
@@ -186,6 +191,7 @@ class KafkaUtils:
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
+            producer=producer,
         )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:

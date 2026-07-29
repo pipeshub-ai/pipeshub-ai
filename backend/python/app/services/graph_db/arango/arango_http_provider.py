@@ -5219,6 +5219,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filters: dict | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch a page of documents from a collection using AQL LIMIT so that
@@ -5260,6 +5261,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 collection,
                 str(e),
             )
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_creator_user(

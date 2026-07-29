@@ -73,6 +73,7 @@ def _make_event_processor(
         graph_provider.get_departments = AsyncMock(return_value=["Engineering"])
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        graph_provider.update_node = AsyncMock(return_value=True)
         graph_provider.find_duplicate_records = AsyncMock(return_value=[])
 
     return EventProcessor(
@@ -136,6 +137,7 @@ def _noop_gen():
 async def test_full_pipeline_happy_path() -> None:
     """parse → index → enrich all succeed."""
     parsing_client = MagicMock()
+    parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
 
     extraction_client = MagicMock()
@@ -173,6 +175,7 @@ async def test_full_pipeline_happy_path() -> None:
 async def test_enrichment_failure_does_not_block_indexing() -> None:
     """When enrich raises, the INDEXING_COMPLETE event is still yielded."""
     parsing_client = MagicMock()
+    parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
 
     extraction_client = MagicMock()
@@ -201,6 +204,14 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     # INDEXING_COMPLETE is still emitted even though extraction failed
     event_types = [e.event for e in events]
     assert IndexingEvent.INDEXING_COMPLETE in event_types
+    updates = [
+        call.args[2]
+        for call in ep.graph_provider.update_node.await_args_list
+    ]
+    assert any(
+        update.get("extractionStatus") == "FAILED"
+        for update in updates
+    )
 
 
 @pytest.mark.asyncio
@@ -208,6 +219,7 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
 async def test_deferred_extraction_skips_extraction_client() -> None:
     """When DEFER_EXTRACTION=true the extraction service is not called inline."""
     parsing_client = MagicMock()
+    parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
 
     extraction_client = MagicMock()
@@ -234,6 +246,99 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     extraction_client.classify.assert_not_awaited()
     # But indexing should have happened
     sink_orchestrator.index.assert_awaited_once()
+    updates = [
+        call.args[2]
+        for call in ep.graph_provider.update_node.await_args_list
+    ]
+    assert any(
+        update.get("extractionStatus") == "NOT_STARTED"
+        for update in updates
+    )
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_statuses_track_active_parse_and_index_phases() -> None:
+    """The active pipeline is visible through indexingStatus while
+    parsingStatus reflects whether parsing itself is still running."""
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+
+    graph_provider = MagicMock()
+    persisted_record = {
+        "_key": "rec-1",
+        "orgId": "org-1",
+        "recordName": "test.pdf",
+        "recordType": "FILE",
+        "indexingStatus": "NOT_STARTED",
+        "mimeType": "application/pdf",
+        "connectorName": None,
+        "origin": "UPLOAD",
+        "externalRecordId": "ext-rec-1",
+        "connectorId": "connector-1",
+        "createdAtTimestamp": 1000000,
+        "updatedAtTimestamp": 1000000,
+    }
+    graph_provider.get_document = AsyncMock(
+        side_effect=lambda *_args: dict(persisted_record)
+    )
+    graph_provider.get_departments = AsyncMock(return_value=[])
+    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+    graph_provider.find_duplicate_records = AsyncMock(return_value=[])
+
+    status_writes: list[dict] = []
+
+    async def _capture_update(_record_id, _collection, fields):
+        persisted_record.update(fields)
+        status_writes.append({
+            k: persisted_record.get(k)
+            for k in ("parsingStatus", "indexingStatus", "extractionStatus")
+        })
+        return True
+
+    graph_provider.update_node = AsyncMock(side_effect=_capture_update)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        graph_provider=graph_provider,
+    )
+
+    gen = ep.on_event(_make_event_data())
+
+    first = await gen.__anext__()
+    assert first.event == IndexingEvent.START_PARSING
+    assert {
+        "parsingStatus": "IN_PROGRESS",
+        "indexingStatus": "IN_PROGRESS",
+        "extractionStatus": None,
+    } in status_writes
+
+    second = await gen.__anext__()
+    assert second.event == IndexingEvent.PARSING_COMPLETE
+    assert status_writes[-1]["parsingStatus"] == "COMPLETED"
+    assert status_writes[-1]["indexingStatus"] == "IN_PROGRESS"
+
+    third = await gen.__anext__()
+    assert third.event == IndexingEvent.INDEXING_COMPLETE
+    assert {
+        "parsingStatus": "COMPLETED",
+        "indexingStatus": "IN_PROGRESS",
+        "extractionStatus": "IN_PROGRESS",
+    } in status_writes
+
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
 
 
 @pytest.mark.asyncio
@@ -241,6 +346,7 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
 async def test_duplicate_record_skips_service_pipeline() -> None:
     """Duplicate detection should short-circuit before reaching service pipeline."""
     parsing_client = MagicMock()
+    parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
 
     graph_provider = MagicMock()
@@ -262,6 +368,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     })
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+    graph_provider.update_node = AsyncMock(return_value=True)
     graph_provider.find_duplicate_records = AsyncMock(return_value=[{
         "_key": "rec-2",
         "virtualRecordId": "vr-existing",

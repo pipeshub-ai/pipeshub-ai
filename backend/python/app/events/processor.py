@@ -12,7 +12,11 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.service import config_node_constants
-from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    IndexingError,
+    RecordStatusUpdateError,
+)
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.models.blocks import (
     Block,
@@ -148,15 +152,15 @@ class Processor:
             is_multimodal_embedding = embedding_config.get("isMultimodal") if embedding_config else False
             if not is_multimodal_embedding and not is_multimodal_llm:
                 try:
-                    record.update(
-                        {
-                            "indexingStatus": ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
-                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        })
-
-                    docs = [record]
-                    success = await self.graph_provider.batch_update_nodes(
-                        docs, CollectionNames.RECORDS.value
+                    status_fields = {
+                        "indexingStatus": ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        "processingStartedAt": None,
+                    }
+                    success = await self.graph_provider.update_node(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                        status_fields,
                     )
                     if not success:
                         self.logger.warning(
@@ -167,7 +171,7 @@ class Processor:
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
-                except DocumentProcessingError:
+                except IndexingError:
                     raise
                 except Exception as e:
                     raise DocumentProcessingError(
@@ -795,7 +799,7 @@ class Processor:
                             non_header_row_dicts.append(row_dict)
                             non_header_row_indices.append(i)
 
-                    if non_header_row_dicts:
+                    if any(non_header_row_dicts):
                         try:
                             # get_rows_text skips row 0 when column_headers is provided
                             cols = column_headers or []
@@ -1609,10 +1613,10 @@ class Processor:
                 "Record not found in database",
                 doc_id=record_id,
             )
-        doc = dict(record)
         timestamp = get_epoch_timestamp_in_ms()
         status_update: dict[str, Any] = {
             "indexingStatus": indexing_status.value,
+            "processingStartedAt": None,
             "isDirty": False,
             "lastIndexTimestamp": timestamp,
             "extractionStatus": ProgressStatus.EMPTY.value,
@@ -1620,12 +1624,11 @@ class Processor:
         }
         if indexing_status == ProgressStatus.EMPTY:
             status_update["reason"] = ""
-        doc.update(status_update)
 
-        docs = [doc]
-
-        success = await self.graph_provider.batch_update_nodes(
-            docs, CollectionNames.RECORDS.value
+        success = await self.graph_provider.update_node(
+            record_id,
+            CollectionNames.RECORDS.value,
+            status_update,
         )
         if not success:
             self.logger.warning(
@@ -1658,7 +1661,7 @@ class Processor:
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
-                except DocumentProcessingError:
+                except IndexingError:
                     raise
                 except Exception as e:
                     raise DocumentProcessingError(
@@ -1782,7 +1785,7 @@ class Processor:
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     return
-                except DocumentProcessingError:
+                except IndexingError:
                     raise
                 except Exception as e:
                     raise DocumentProcessingError(

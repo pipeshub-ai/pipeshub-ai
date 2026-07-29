@@ -1195,7 +1195,7 @@
       "configInfoPlaceholderProvider": "proveedor",
       "downloadDialogTitle": "Descargando modelo de embedding",
       "downloadDialogDescription": "\"{{modelName}}\" se está descargando. Esto puede tardar unos minutos según el tamaño del modelo y tu conexión.",
-      "downloadDialogHint": "Puedes mantener este panel abierto: la descarga continúa en segundo plano.",
+      "downloadDialogHint": "Puedes cerrar este diálogo: la descarga continúa en segundo plano. Vuelve a guardar cuando el modelo esté listo.",
       "downloadStatusChecking": "Comprobando caché local...",
       "downloadStatusDownloading": "Descargando modelo...",
       "downloadStatusLoading": "Cargando modelo en memoria...",

@@ -212,7 +212,8 @@ class Record(BaseModel):
     size_in_bytes: int | None = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
-    indexing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Indexing status for the record")
+    parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
+    indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
     reason: str | None = Field(default=None, description="Reason for the record status")
     # Epoch Timestamps
@@ -220,6 +221,7 @@ class Record(BaseModel):
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
 
     # Source information
     weburl: str | None = None
@@ -323,6 +325,8 @@ class Record(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "processingStartedAt": self.processing_started_at,
+            "parsingStatus": self.parsing_status,
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
             "reason": self.reason,
@@ -376,8 +380,10 @@ class Record(BaseModel):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.NOT_STARTED.value),
+            parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
+            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
@@ -2564,8 +2570,10 @@ class CodeFileRecord(Record):
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
+            processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.NOT_STARTED.value),
+            parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
+            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),

@@ -100,6 +100,7 @@ def _make_record(**kwargs):
         external_revision_id="rev-1",
         parent_external_record_id=None,
         version=0,
+        parsing_status=ProgressStatus.NOT_STARTED.value,
         indexing_status=ProgressStatus.QUEUED.value,
         extraction_status=ProgressStatus.NOT_STARTED.value,
         is_shared=False,
@@ -120,6 +121,7 @@ def _make_existing_file_record(**kwargs):
         external_record_group_id="drive-1",
         parent_external_record_id=None,
         version=1,
+        parsing_status=ProgressStatus.NOT_STARTED.value,
         indexing_status=ProgressStatus.QUEUED.value,
         extraction_status=ProgressStatus.NOT_STARTED.value,
         is_shared=False,
@@ -978,12 +980,13 @@ class TestProcessDriveItem:
 
     @pytest.mark.asyncio
     async def test_existing_record_content_not_changed_preserves_statuses(self, connector):
-        """When content is not changed, indexing_status and extraction_status are preserved."""
+        """When content is not changed, parsing_status/indexing_status/extraction_status are preserved."""
         existing = _make_existing_file_record(
             record_name="test.txt",
             external_revision_id="rev-1",
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
+            parsing_status=ProgressStatus.COMPLETED.value,
             indexing_status=ProgressStatus.COMPLETED.value,
             extraction_status=ProgressStatus.COMPLETED.value,
         )
@@ -993,6 +996,7 @@ class TestProcessDriveItem:
 
         meta = _make_file_metadata(parents=["parent-1"])
         result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
+        assert result.record.parsing_status == ProgressStatus.COMPLETED.value
         assert result.record.indexing_status == ProgressStatus.COMPLETED.value
         assert result.record.extraction_status == ProgressStatus.COMPLETED.value
 
