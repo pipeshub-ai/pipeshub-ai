@@ -166,6 +166,20 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Agent Skills
+  'skill:read': {
+    name: 'skill:read',
+    description: 'Read custom agent skills',
+    category: 'Agents',
+    requiresUserConsent: true,
+  },
+  'skill:write': {
+    name: 'skill:write',
+    description: 'Create and manage custom agent skills',
+    category: 'Agents',
+    requiresUserConsent: true,
+  },
+
   // Connectors
   'connector:read': {
     name: 'connector:read',
@@ -280,6 +294,9 @@ export const DefaultMcpScopes = [
   'team:read',
   'user:read',
   'config:read',
+  'agent:read',
+  'agent:execute',
+  'connector:read',
 ];
 
 export const ScopeCategories = [

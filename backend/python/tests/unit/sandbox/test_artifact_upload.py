@@ -273,10 +273,12 @@ class TestCreateArtifactRecord:
 
     @pytest.mark.asyncio
     async def test_raises_on_missing_user(self):
+        from app.services.artifact_registry.access import ArtifactNotFoundError
+
         mock_graph = AsyncMock()
         mock_graph.get_user_by_user_id = AsyncMock(return_value=None)
 
-        with pytest.raises(ValueError, match="User not found"):
+        with pytest.raises(ArtifactNotFoundError, match="User not found"):
             await create_artifact_record(
                 graph_provider=mock_graph,
                 document_id="doc-ext-123",
@@ -294,18 +296,25 @@ class TestUploadBytesArtifactWithRecord:
 
     @pytest.mark.asyncio
     async def test_creates_record_when_user_and_graph_present(self):
+        """`user_id` + `graph_provider` present routes through
+        `ArtifactRegistryService.register_output` directly (see that
+        function's docstring) — NOT through the standalone
+        `create_artifact_record` helper, which only the (unversioned,
+        pre-existing-document) `upload_artifacts_to_blob` path still uses."""
         blob_store = AsyncMock()
-        blob_store.save_conversation_file_to_storage = AsyncMock(return_value={
+        blob_store.save_versioned_artifact_to_storage = AsyncMock(return_value={
             "documentId": "doc-record-1",
-            "fileName": "img.png",
-            "signedUrl": "https://blob/x",
         })
         mock_graph = AsyncMock()
+        mock_graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        mock_graph.get_documents_paginated = AsyncMock(return_value=[])  # no pre-existing artifact -> create(), not add_version()
+        mock_graph.batch_upsert_nodes = AsyncMock(return_value=True)
+        mock_graph.batch_create_edges = AsyncMock(return_value=True)
 
         with patch(
-            "app.sandbox.artifact_upload.create_artifact_record",
-            AsyncMock(return_value="rec-42"),
-        ) as mock_create:
+            "app.services.artifact_registry.registry.ArtifactRegistryService.get_download_url",
+            AsyncMock(return_value="https://blob/x"),
+        ):
             result = await upload_bytes_artifact(
                 file_name="img.png",
                 file_bytes=b"\x89PNG-fake",
@@ -318,40 +327,35 @@ class TestUploadBytesArtifactWithRecord:
             )
 
         assert result is not None
-        assert result["recordId"] == "rec-42"
-        mock_create.assert_awaited_once()
-        call_kwargs = mock_create.await_args.kwargs
-        assert call_kwargs["document_id"] == "doc-record-1"
-        assert call_kwargs["file_name"] == "img.png"
+        assert result["recordId"]  # a fresh uuid — only its presence is asserted
+        assert result["version"] == 1
+        assert result["documentId"] == "doc-record-1"
+        assert result["downloadUrl"] == "https://blob/x"
+        blob_store.save_versioned_artifact_to_storage.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_record_creation_failure_does_not_break_upload(self):
+    async def test_registry_failure_does_not_raise_returns_none(self):
+        """A registry-level failure (e.g. the graph write raising) must
+        make `upload_bytes_artifact` return `None`, never propagate — a
+        caller in a POST_TOOL_USE hook must not have the whole tool
+        response blow up because artifact bookkeeping failed."""
         blob_store = AsyncMock()
-        blob_store.save_conversation_file_to_storage = AsyncMock(return_value={
-            "documentId": "doc-record-2",
-            "fileName": "img2.png",
-            "signedUrl": "https://blob/y",
-        })
         mock_graph = AsyncMock()
+        mock_graph.get_documents_paginated = AsyncMock(return_value=[])
+        mock_graph.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph failure"))
 
-        with patch(
-            "app.sandbox.artifact_upload.create_artifact_record",
-            AsyncMock(side_effect=RuntimeError("graph failure")),
-        ):
-            result = await upload_bytes_artifact(
-                file_name="img2.png",
-                file_bytes=b"\x89PNG-fake2",
-                mime_type="image/png",
-                blob_store=blob_store,
-                org_id="org-1",
-                conversation_id="conv-1",
-                user_id="user-1",
-                graph_provider=mock_graph,
-            )
+        result = await upload_bytes_artifact(
+            file_name="img2.png",
+            file_bytes=b"\x89PNG-fake2",
+            mime_type="image/png",
+            blob_store=blob_store,
+            org_id="org-1",
+            conversation_id="conv-1",
+            user_id="user-1",
+            graph_provider=mock_graph,
+        )
 
-        assert result is not None
-        assert "recordId" not in result
-        assert result["documentId"] == "doc-record-2"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_blob_save_failure_returns_none(self):

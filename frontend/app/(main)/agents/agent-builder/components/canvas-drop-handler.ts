@@ -626,6 +626,18 @@ export function handleFlowCanvasDrop(
     }
   }
 
+  // Check for duplicate skill nodes (each skill is dragged individually, unlike KB-group's multi-select).
+  if (template.type.startsWith('skill-')) {
+    const skillName = template.defaultConfig?.skillName as string | undefined;
+    const duplicate =
+      skillName &&
+      nodes.some((n) => n.data?.type?.startsWith('skill-') && n.data.config?.skillName === skillName);
+    if (duplicate) {
+      onError?.(t('agentBuilder.dropDuplicateSkill', { name: template.label }));
+      return;
+    }
+  }
+
   const fallbackId = `${type}-${Date.now()}`;
   appendNodeWithAutoConnect({
     id: fallbackId,
@@ -654,7 +666,11 @@ export function handleFlowCanvasDrop(
       inputs: template.inputs,
       outputs: template.outputs,
       isConfigured:
-        template.type.startsWith('app-') || template.type.startsWith('tool-group-') ? true : false,
+        template.type.startsWith('app-') ||
+        template.type.startsWith('tool-group-') ||
+        template.type.startsWith('skill-')
+          ? true
+          : false,
     },
   });
 }

@@ -1855,10 +1855,19 @@ export const getConnectorStats =
 
         queryParams.append('org_id', orgId);
         queryParams.append('connector_id', req.params.connectorId);
+
+        // Forward the admin flag so stats visibility matches connector-list
+        // visibility (admins see team connectors they don't own).
+        const isAdmin = await isUserAdmin(req);
+        const headers: Record<string, string> = {
+          ...(req.headers as Record<string, string>),
+          'X-Is-Admin': isAdmin ? 'true' : 'false',
+        };
+
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
           HttpMethod.GET,
-          req.headers as Record<string, string>,
+          headers,
         );
 
         if (response.statusCode !== 200) {
@@ -1912,6 +1921,47 @@ export const getConnectorStats =
       });
       next(error);
       return; // Added return statement
+    }
+  };
+
+export const getRecordContent =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      const { userId, orgId } = req.user || {};
+
+      // Validate user authentication
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
+      // the Python side trusts it for authorization. This route needs no admin rights.
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
+        HttpMethod.GET,
+        buildProxyHeaders(req, false),
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting record content',
+        'Record content not found',
+      );
+
+      logger.info('Record content retrieved successfully');
+    } catch (error: any) {
+      logger.error('Error getting record content', {
+        recordId: req.params.recordId,
+        error,
+      });
+      const handleError = handleBackendError(error, 'get record content');
+      next(handleError);
+      return;
     }
   };
 
@@ -2009,10 +2059,13 @@ export const reindexConnector =
         reindexBody.statusFilters = statusFilters;
       }
 
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
         HttpMethod.POST,
-        req.headers as Record<string, string>,
+        headers,
         reindexBody,
       );
 
@@ -2045,16 +2098,19 @@ export const resyncConnectorRecords =
         throw new BadRequestError('Connector ID is required');
       }
 
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+
       await validateActiveConnector(
         connectorId,
         appConfig,
-        req.headers as Record<string, string>,
+        headers,
       );
 
       await validateConnectorNotLocked(
         connectorId,
         appConfig,
-        req.headers as Record<string, string>,
+        headers,
       );
 
       const resyncConnectorPayload = {

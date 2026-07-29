@@ -44,7 +44,9 @@ class TestParse:
         mock_docx_bytes = BytesIO(b"converted")
         parser = DocParser(docx_parser=mock_inner)
 
-        with patch.object(parser, "convert_doc_to_docx", return_value=mock_docx_bytes) as mock_convert:
+        with patch.object(
+            parser, "convert_doc_to_docx_async", AsyncMock(return_value=mock_docx_bytes)
+        ) as mock_convert:
             result = await parser.parse(b"doc bytes", "doc.doc", {"key": "val"})
 
         mock_convert.assert_called_once_with(b"doc bytes")
@@ -58,7 +60,9 @@ class TestParse:
         parser = DocParser(docx_parser=mock_inner)
 
         mock_converted = BytesIO(b"")
-        with patch.object(parser, "convert_doc_to_docx", return_value=mock_converted):
+        with patch.object(
+            parser, "convert_doc_to_docx_async", AsyncMock(return_value=mock_converted)
+        ):
             await parser.parse(b"data", "name.doc")
 
         args, kwargs = mock_inner.parse.call_args

@@ -20,36 +20,38 @@ from app.utils.oauth_config import (
 class TestExtractOAuthErrorMessage:
     """Covers lines 52-138 — the entire extract_oauth_error_message function."""
 
-    # --- Path 1: JSON body with error_description > 5 chars (lines 77-79, 84-95) ---
+    # --- Path 1: JSON body with error_description is logged, never echoed back ---
 
-    def test_json_body_with_error_description(self):
+    def test_json_body_with_error_description_not_echoed(self):
+        """The provider's raw description must never appear in the returned message —
+        only the mapped error code's fixed, safe string should be used."""
         exc = Exception(
             'Token request failed. Response: {"error": "invalid_grant", '
-            '"error_description": "The authorization code has expired"}'
+            '"error_description": "Grant xyz789-secret-internal-id has expired"}'
         )
         result = extract_oauth_error_message(exc)
-        assert result.startswith("OAuth provider error:")
-        assert "authorization code has expired" in result
-        assert result.endswith("Please verify your OAuth credentials in the admin settings.")
+        assert "authorization code has expired or was already used" in result
+        assert "xyz789-secret-internal-id" not in result
+        assert not result.startswith("OAuth provider error:")
 
-    def test_json_body_error_description_strips_trailing_dot(self):
+    def test_json_body_error_description_not_echoed_when_no_error_code(self):
         exc = Exception(
             'Token request failed. Response: {"error_description": "Token was revoked."}'
         )
         result = extract_oauth_error_message(exc)
-        assert "OAuth provider error: Token was revoked." in result
-        assert not result.startswith("OAuth provider error: Token was revoked..")
-        assert "Token was revoked" in result
+        assert "Token was revoked" not in result
+        assert "unexpected error" in result.lower()
 
     def test_json_body_with_notion_message_field(self):
-        """Notion returns {"error": "unauthorized", "message": "..."} — line 88-89."""
+        """Notion returns {"error": "unauthorized", "message": "..."} — the raw message
+        must be logged, not returned, but the mapped error code string still is."""
         exc = Exception(
             'Token request failed. Response: {"error": "unauthorized", '
             '"message": "API token is invalid or has been revoked"}'
         )
         result = extract_oauth_error_message(exc)
-        assert result.startswith("OAuth provider error:")
-        assert "API token is invalid" in result
+        assert "Notion rejected the request" in result
+        assert "API token is invalid or has been revoked" not in result
 
     def test_json_body_short_description_falls_through_to_error_code(self):
         """Description <= 5 chars should be ignored; fall through to error code map."""

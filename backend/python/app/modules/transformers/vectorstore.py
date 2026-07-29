@@ -20,12 +20,9 @@ import uuid
 from typing import Any, List, Optional
 
 import httpx
-import spacy
 from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from spacy.language import Language
-from spacy.tokens import Doc
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
@@ -39,6 +36,7 @@ from app.exceptions.indexing_exceptions import (
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.extraction.prompt_template import prompt_for_image_description
+from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -55,32 +53,148 @@ from app.utils.aimodels import (
 )
 from app.utils.llm import get_llm
 
-# Module-level shared spaCy pipeline to avoid repeated heavy loads
-_SHARED_NLP: Optional[Language] = None
-
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
-
-def _get_shared_nlp() -> Language:
-    cached = getattr(_get_shared_nlp, "_cached_nlp", None)
-    if cached is None:
-        nlp = spacy.load("en_core_web_sm")
-        if "sentencizer" not in nlp.pipe_names:
-            nlp.add_pipe("sentencizer", before="parser")
-        if "custom_sentence_boundary" not in nlp.pipe_names:
-            try:
-                nlp.add_pipe("custom_sentence_boundary", after="sentencizer")
-            except Exception:
-                pass
-        setattr(_get_shared_nlp, "_cached_nlp", nlp)
-        return nlp
-    return cached
-
-
-LENGTH_THRESHOLD = 2
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 50
+
+# Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
+# but connector-authored blocks can bypass that path — guard defensively here too.
+_MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
+_OVERSIZED_CHUNK_SIZE = 1500
+_OVERSIZED_CHUNK_OVERLAP = 200
+_LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
+
+# Safety-net timeouts — prevent any single step from blocking the pipeline forever.
+# asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
+# timeout, but the caller unblocks, releases semaphores, and the consumer can retry
+# or skip the record.
+_TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
+_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch
+
+
+def _detect_record_language(text_blocks: List) -> str:
+    """Detect language once per record from a sample of its text blocks.
+
+    Per-block detection is wasteful and unstable on short blocks (headings,
+    list items), so a handful of blocks are sampled up to a char budget and
+    detected together.
+    """
+    sample_parts: List[str] = []
+    sample_len = 0
+    for block in text_blocks:
+        text = block.data or ""
+        if not text:
+            continue
+        sample_parts.append(text)
+        sample_len += len(text)
+        if sample_len >= _LANGUAGE_DETECTION_SAMPLE_CHARS:
+            break
+    if not sample_parts:
+        return "en"
+    return detect_language(" ".join(sample_parts))
+
+
+def _chunk_oversized_text(
+    text: str,
+    language: str,
+    chunk_size: int = _OVERSIZED_CHUNK_SIZE,
+    overlap: int = _OVERSIZED_CHUNK_OVERLAP,
+) -> List[str]:
+    """Pack sentences into overlapping ~chunk_size windows.
+
+    Used for blocks too large to embed as a single whole-block document.
+    Overlap preserves cross-boundary context between adjacent chunks.
+    """
+    sentences = split_into_sentences(text, language=language)
+    if not sentences:
+        return [text]
+
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+
+    for sentence in sentences:
+        added_len = len(sentence) + (1 if current else 0)
+        if current and current_len + added_len > chunk_size:
+            chunks.append(" ".join(current))
+            overlap_sentences: List[str] = []
+            overlap_len = 0
+            for s in reversed(current):
+                if overlap_len + len(s) > overlap:
+                    break
+                overlap_sentences.insert(0, s)
+                overlap_len += len(s) + 1
+            current, current_len = overlap_sentences, overlap_len
+            added_len = len(sentence) + (1 if current else 0)
+        current.append(sentence)
+        current_len += added_len
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks or [text]
+
+
+def _build_text_documents(
+    text_blocks: List,
+    virtual_record_id: str,
+    org_id: str,
+    language: str,
+) -> List[Document]:
+    """Sentence-split each text block into embeddable Documents.
+
+    CPU-bound (regex/rule-based sentence segmentation); callers should run
+    this via ``asyncio.to_thread`` to keep the event loop responsive.
+    """
+    documents: List[Document] = []
+    for block in text_blocks:
+        block_text = block.data
+        metadata = {
+            "virtualRecordId": virtual_record_id,
+            "blockId": block.id,
+            "blockIndex": block.index,
+            "orgId": org_id,
+            "isBlockGroup": False,
+        }
+
+        if len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
+            # Too large to also embed as one whole-block document (would be a
+            # useless retrieval unit) — pack into overlapping windows instead.
+            documents.extend(
+                Document(page_content=chunk, metadata={**metadata, "isBlock": False})
+                for chunk in _chunk_oversized_text(block_text, language)
+            )
+            continue
+
+        sentences = split_into_sentences(block_text, language=language)
+        if len(sentences) > 1:
+            documents.extend(
+                Document(page_content=sentence, metadata={**metadata, "isBlock": False})
+                for sentence in sentences
+            )
+        documents.append(
+            Document(
+                page_content=block_text,
+                metadata={**metadata, "isBlock": True},
+            )
+        )
+    return documents
+
+
+def _process_text_blocks(
+    text_blocks: List,
+    virtual_record_id: str,
+    org_id: str,
+) -> List[Document]:
+    """Detect language and build embeddable Documents for a record's text blocks.
+
+    Combines detection + sentence splitting so both run inside one
+    ``asyncio.to_thread`` call (see call site in ``index_documents``).
+    """
+    language = _detect_record_language(text_blocks)
+    return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
 
 
 class VectorStore(Transformer):
@@ -97,7 +211,6 @@ class VectorStore(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
-        self.nlp = _get_shared_nlp()
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
 
@@ -146,40 +259,6 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
     # Transformer protocol
     # ------------------------------------------------------------------
-
-    @Language.component("custom_sentence_boundary")
-    def custom_sentence_boundary(doc) -> Doc:  # noqa: N805
-        for token in doc[:-1]:
-            next_token = doc[token.i + 1]
-            if token.like_num and next_token.text == ".":
-                next_token.is_sent_start = False
-            elif (
-                token.text.lower()
-                in [
-                    "mr", "mrs", "dr", "ms", "prof", "sr", "jr", "inc",
-                    "ltd", "co", "etc", "vs", "fig", "et", "al", "e.g",
-                    "i.e", "vol", "pg", "pp", "pvt", "llc", "llp", "lp",
-                    "ll", "corp",
-                ]
-                and next_token.text == "."
-            ):
-                next_token.is_sent_start = False
-            elif (
-                (token.like_num and next_token.text == "." and len(token.text) <= LENGTH_THRESHOLD)
-                or (len(token.text) == 1 and token.text.isalpha() and next_token.text == ".")
-                or token.text in ["•", "∙", "·", "○", "●", "-", "–", "—"]
-            ):
-                next_token.is_sent_start = False
-            elif (
-                token.text.isupper()
-                and len(token.text) > 1
-                and not any(c.isdigit() for c in token.text)
-            ):
-                if next_token.i < len(doc) - 1:
-                    next_token.is_sent_start = False
-            elif token.text == "." and next_token.text == ".":
-                next_token.is_sent_start = False
-        return doc
 
     async def apply(self, ctx: TransformContext) -> bool | None:
         record = ctx.record
@@ -433,7 +512,7 @@ class VectorStore(Transformer):
             is_multimodal = config.get("isMultimodal")
 
         try:
-            sample = dense_embeddings.embed_query("test")
+            sample = await dense_embeddings.aembed_query("test")
             embedding_size = len(sample)
         except Exception as e:
             raise IndexingError(
@@ -853,12 +932,17 @@ class VectorStore(Transformer):
             return
 
         texts = [doc.page_content for doc in documents]
-        loop = asyncio.get_running_loop()
 
-        # Dense embeddings (sync call in thread)
-        dense_embeddings = await loop.run_in_executor(
-            None, self.dense_embeddings.embed_documents, texts
-        )
+        try:
+            dense_embeddings = await asyncio.wait_for(
+                self.dense_embeddings.aembed_documents(texts),
+                timeout=_EMBEDDING_BATCH_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise EmbeddingError(
+                f"Dense embedding timed out after {_EMBEDDING_BATCH_TIMEOUT_S}s "
+                f"for batch of {len(texts)} texts (record {record_id})"
+            )
 
         # Sparse embeddings (provider-dependent)
         sparse_embeddings = await self._compute_sparse_embeddings(texts)
@@ -1077,32 +1161,20 @@ class VectorStore(Transformer):
             # ── Text blocks ──
             if text_blocks:
                 try:
-                    for block in text_blocks:
-                        block_text = block.data
-                        metadata = {
-                            "virtualRecordId": virtual_record_id,
-                            "blockId": block.id,
-                            "blockIndex": block.index,
-                            "orgId": org_id,
-                            "isBlockGroup": False,
-                        }
-                        doc = self.nlp(block_text)
-                        sentences = [s.text for s in doc.sents]
-                        if len(sentences) > 1:
-                            for sentence in sentences:
-                                documents_to_embed.append(
-                                    Document(
-                                        page_content=sentence,
-                                        metadata={**metadata, "isBlock": False},
-                                    )
-                                )
-                        documents_to_embed.append(
-                            Document(
-                                page_content=block_text,
-                                metadata={**metadata, "isBlock": True},
-                            )
-                        )
+                    text_documents = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _process_text_blocks, text_blocks, virtual_record_id, org_id
+                        ),
+                        timeout=_TEXT_PROCESSING_TIMEOUT_S,
+                    )
+                    documents_to_embed.extend(text_documents)
                     self.logger.info("✅ Added text documents for embedding")
+                except asyncio.TimeoutError:
+                    raise DocumentProcessingError(
+                        f"Text processing timed out after {_TEXT_PROCESSING_TIMEOUT_S}s "
+                        f"for record {record_id} ({len(text_blocks)} blocks)",
+                        details={"record_id": record_id, "block_count": len(text_blocks)},
+                    )
                 except Exception as e:
                     raise DocumentProcessingError(
                         "Failed to create text document objects: " + str(e),

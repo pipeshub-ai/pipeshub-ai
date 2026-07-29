@@ -3,7 +3,7 @@ Full coverage tests for app.modules.parsers.pdf.vlm_ocr_strategy.VLMOCRStrategy.
 
 Targets all uncovered lines and branches:
 - _create_llm_from_config (lines 95-103): model string parsing
-- _render_all_pages_to_base64 / _preload_page_images: batch rendering off event loop
+- _render_page_batch_to_base64 / _preload_page_images: batched rendering off event loop
 - process_page (lines 265-284): single page processing
 - _preprocess_document: task cancellation of not-done tasks (line 329)
 - load_document (lines 358-368): full success path
@@ -144,14 +144,14 @@ class TestCreateLLMFromConfig:
 
 
 # ============================================================================
-# _render_all_pages_to_base64 / _preload_page_images
+# _render_page_batch_to_base64 / _preload_page_images
 # ============================================================================
 
 
-class TestRenderAllPagesToBase64:
-    """Cover batch page rendering helpers."""
+class TestRenderPageBatchToBase64:
+    """Cover batched page rendering helpers."""
 
-    def test_render_all_pages_success(self):
+    def test_render_batch_success(self):
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
@@ -161,36 +161,49 @@ class TestRenderAllPagesToBase64:
         mock_img.save.side_effect = lambda buf, format=None: buf.write(b"\x89PNG\r\nfake")
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.render_all_pages_from_path_sync",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.render_batch_from_path_sync",
             return_value={1: (np.zeros((10, 10, 3), dtype=np.uint8), strategy.RENDER_DPI / 72.0)},
         ) as mock_render, patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.Image.fromarray",
             return_value=mock_img,
         ):
-            result = strategy._render_all_pages_to_base64()
+            result = strategy._render_page_batch_to_base64([1])
 
-        mock_render.assert_called_once_with("/tmp/test.pdf", strategy.RENDER_DPI)
+        mock_render.assert_called_once_with("/tmp/test.pdf", [1], strategy.RENDER_DPI)
         assert result[1].startswith("data:image/png;base64,")
 
-    @pytest.mark.asyncio
-    async def test_preload_dispatches_to_thread(self):
+    def test_render_batch_no_pdf_path_raises(self):
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
+        strategy._pdf_path = None
 
-        with patch.object(
-            strategy,
-            "_render_all_pages_to_base64",
-            return_value={1: "data:image/png;base64,abc"},
-        ), patch(
+        with pytest.raises(RuntimeError, match="PDF source path not initialized"):
+            strategy._render_page_batch_to_base64([1])
+
+    @pytest.mark.asyncio
+    async def test_preload_dispatches_batches_to_thread(self):
+        logger = logging.getLogger("test")
+        config = MagicMock()
+        strategy = VLMOCRStrategy(logger, config)
+        strategy.PAGE_RENDER_BATCH_SIZE = 2
+
+        mock_doc = MagicMock()
+        mock_doc.pages = [MagicMock(), MagicMock(), MagicMock()]
+        strategy.doc = mock_doc
+
+        async def fake_to_thread(fn, batch):
+            return {p: f"data:image/png;base64,page{p}" for p in batch}
+
+        with patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.asyncio.to_thread",
-            new_callable=AsyncMock,
-            return_value={1: "data:image/png;base64,abc"},
-        ) as mock_to_thread:
+            side_effect=fake_to_thread,
+        ):
             await strategy._preload_page_images()
 
-        mock_to_thread.assert_awaited_once()
-        assert strategy._page_images[1] == "data:image/png;base64,abc"
+        assert len(strategy._page_images) == 3
+        assert strategy._page_images[1] == "data:image/png;base64,page1"
+        assert strategy._page_images[3] == "data:image/png;base64,page3"
 
 
 # ============================================================================

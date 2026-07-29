@@ -430,7 +430,9 @@ class TestLists:
         html = "<ul><li>Item 1</li> hello world <li>Item 2</li></ul>"
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "Item 1"
         assert list_items[1].data == "Item 2"
@@ -442,7 +444,9 @@ class TestLists:
         html = "<ul><div>orphan in div</div><li>Real</li></ul>"
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 1
         assert list_items[0].data == "Real"
         assert len(paragraphs) == 1
@@ -452,7 +456,9 @@ class TestLists:
         html = '<ol><li>First</li><a href="https://x.com">link</a><li>Second</li></ol>'
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "First"
         assert list_items[1].data == "Second"
@@ -474,12 +480,33 @@ class TestLists:
         )
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "Item 1"
         assert list_items[1].data == "Item 2"
         assert len(paragraphs) == 1
         assert paragraphs[0].data == "hello world"
+
+    def test_bare_text_sibling_of_nested_blocks_emitted_as_paragraph(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        """Gmail-style mixed content: text + nested div/img must keep the text."""
+        html = (
+            '<div dir="ltr">'
+            "An airplane is a fixed-wing aircraft."
+            "<div><br></div>"
+            '<div><img src="cid:ii_mrtb2uoe0" alt="image.png"><br></div>'
+            "</div>"
+        )
+        container = converter.convert(html)
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "An airplane is a fixed-wing aircraft."
+        assert paragraphs[0].format == DataFormat.TXT
 
 
 class TestTables:
@@ -493,6 +520,7 @@ class TestTables:
         container = converter.convert(html)
         assert len(container.block_groups) == 1
         assert container.block_groups[0].type == GroupType.TABLE
+        assert container.block_groups[0].format == DataFormat.JSON
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -1249,3 +1277,114 @@ class TestSelectolaxHtmlParserCleanHtml:
         assert "<noscript>" not in result
         assert "<iframe>" not in result
         assert "<p>Content</p>" in result
+
+    def test_returns_original_on_parse_error(self, parser: SelectolaxHtmlParser) -> None:
+        with patch.object(parser, "_logger") as mock_logger:
+            with patch(
+                "app.modules.parsers.html_parser.selectolax_html_parser.BeautifulSoup",
+                side_effect=Exception("parse error"),
+            ):
+                result = parser.clean_html("<p>Content</p>")
+        assert result == "<p>Content</p>"
+        mock_logger.warning.assert_called_once()
+
+
+class TestSelectolaxExtractAndReplaceImages:
+    def test_srcset_used_when_src_empty(self, parser: SelectolaxHtmlParser) -> None:
+        html = '<img srcset="https://cdn.example.com/p.png 1x" alt="a">'
+        _, images = parser.extract_and_replace_images(html)
+        assert len(images) == 1
+        assert images[0]["new_alt_text"] == "Image_1"
+
+    def test_skips_data_uri(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images(
+            '<img src="data:image/png;base64,xx" alt="inline">'
+        )
+        assert images == []
+
+    def test_skips_img_without_usable_src(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images('<img srcset="   " alt="x">')
+        assert images == []
+
+    def test_multiple_images_numbered(self, parser: SelectolaxHtmlParser) -> None:
+        html = (
+            '<img src="https://a.com/1.png" alt="one">'
+            '<img src="https://a.com/2.png" alt="two">'
+        )
+        _, images = parser.extract_and_replace_images(html)
+        assert [img["new_alt_text"] for img in images] == ["Image_1", "Image_2"]
+
+    def test_srcset_with_empty_first_entry(self, parser: SelectolaxHtmlParser) -> None:
+        html = '<img src="" srcset=", https://example.com/b.png 2x" alt="x">'
+        _, images = parser.extract_and_replace_images(html)
+        assert images == []
+
+    def test_skips_img_without_src_or_srcset(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images('<img alt="no-src-no-srcset">')
+        assert images == []
+
+
+class TestSelectolaxHtmlParserParseFlow:
+    @pytest.mark.asyncio
+    async def test_parse_with_images_builds_caption_map(
+        self, parser: SelectolaxHtmlParser
+    ) -> None:
+        images = [
+            {
+                "url": "https://example.com/i.png",
+                "alt_text": "",
+                "new_alt_text": "Image_1",
+            }
+        ]
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>x</p>", images)), \
+             patch(
+                 "app.modules.parsers.html_parser.selectolax_html_parser.ImageParser.urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=["data:image/png;base64,ZZ"],
+             ), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ) as mock_blocks:
+            result = await parser.parse(b"<img>", "file.html")
+
+        mock_blocks.assert_awaited_once_with(
+            "<p>x</p>",
+            caption_map={"Image_1": "data:image/png;base64,ZZ"},
+        )
+        assert result.block_container is expected
+
+    @pytest.mark.asyncio
+    async def test_parse_accepts_str_content(self, parser: SelectolaxHtmlParser) -> None:
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>ok</p>", [])), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ):
+            result = await parser.parse("<p>ok</p>", "s.html")
+        assert result.metadata == {"record_name": "s.html"}
+
+    @pytest.mark.asyncio
+    async def test_parse_skips_none_base64_urls(
+        self, parser: SelectolaxHtmlParser
+    ) -> None:
+        images = [
+            {"url": "https://a.com/1.png", "alt_text": "", "new_alt_text": "Image_1"},
+            {"url": "https://a.com/2.png", "alt_text": "", "new_alt_text": "Image_2"},
+        ]
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>x</p>", images)), \
+             patch(
+                 "app.modules.parsers.html_parser.selectolax_html_parser.ImageParser.urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=[None, "data:image/png;base64,OK"],
+             ), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ) as mock_blocks:
+            await parser.parse(b"<img>", "doc.html")
+
+        mock_blocks.assert_awaited_once_with(
+            "<p>x</p>",
+            caption_map={"Image_2": "data:image/png;base64,OK"},
+        )

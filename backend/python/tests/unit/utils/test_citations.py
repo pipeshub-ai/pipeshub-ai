@@ -1051,6 +1051,37 @@ class TestFindWebRecordByUrl:
     def test_empty_url_returns_none_without_iterating(self):
         assert _find_web_record_by_url("", [{"url": "x"}]) is None
 
+    def test_exact_match_wins_over_page_level_fallback(self):
+        """Two records share a page but only one matches the exact
+        fragment-keyed URL cited — the exact match must win."""
+        page = "https://example.com/article"
+        exact = f"{page}#:~:text=exact%20block"
+        other = f"{page}#:~:text=other%20block"
+        records = [{"url": other, "content": "other block"}, {"url": exact, "content": "exact block"}]
+        assert _find_web_record_by_url(exact, records)["content"] == "exact block"
+
+    def test_bare_page_url_falls_back_to_fragment_keyed_record(self):
+        """A model that paraphrases a per-block citation down to the bare
+        page URL must still resolve to that page's record instead of
+        being dropped."""
+        page = "https://example.com/article"
+        fragment_url = f"{page}#:~:text=highlighted%20text"
+        records = [{"url": fragment_url, "content": "highlighted text"}]
+        assert _find_web_record_by_url(page, records)["content"] == "highlighted text"
+
+    def test_page_level_fallback_uses_precomputed_index(self):
+        page = "https://example.com/article"
+        fragment_url = f"{page}#:~:text=highlighted%20text"
+        records = [{"url": fragment_url, "content": "highlighted text"}]
+        index = {page: records[0]}
+        assert _find_web_record_by_url(page, [], page_index=index)["content"] == "highlighted text"
+
+    def test_no_fragment_and_no_exact_match_returns_none(self):
+        """A bare URL with no matching page in `web_records` at all must
+        not spuriously match some unrelated page."""
+        records = [{"url": "https://example.com/other-page", "content": "x"}]
+        assert _find_web_record_by_url("https://example.com/article", records) is None
+
 
 class TestDetectHallucinatedExtras:
     def test_duplicate_tiny_refs_count_once(self):
@@ -1121,6 +1152,147 @@ class TestWebRecordsCitationsPath:
             answer, docs, web_records=decoy
         )
         assert len(cites) == 1 and cites[0]["content"] == "from vector agent"
+
+    def test_normalize_chat_resolves_bare_page_url_against_fragment_record(self):
+        """The specific failure this fix addresses: the model cites the
+        bare page URL (no `#:~:text=` fragment) instead of the exact
+        per-block citation it was shown — the page-level fallback in
+        `_find_web_record_by_url` must still resolve it to a numbered
+        citation instead of silently dropping it."""
+        page = "https://example.com/article"
+        fragment_url = f"{page}#:~:text=some%20highlighted%20text"
+        answer = f"Found [source]({page})."
+        rows = [{"url": fragment_url, "content": "some highlighted text", "org_id": ""}]
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, [], records=[], web_records=rows,
+        )
+
+        assert normalized == "Found [1](https://example.com/article)."
+        assert len(cites) == 1
+        assert cites[0]["citationType"] == "web|url"
+        assert cites[0]["content"] == "some highlighted text"
+
+    def test_normalize_chat_exact_fragment_match_beats_page_fallback(self):
+        """When two fragment-keyed records share a page, citing the exact
+        fragment URL must resolve to THAT block, not an arbitrary page match."""
+        page = "https://example.com/article"
+        first = f"{page}#:~:text=first%20block"
+        second = f"{page}#:~:text=second%20block"
+        answer = f"See [source]({second})."
+        rows = [
+            {"url": first, "content": "first block text", "org_id": ""},
+            {"url": second, "content": "second block text", "org_id": ""},
+        ]
+
+        _, cites = normalize_citations_and_chunks(answer, [], records=[], web_records=rows)
+
+        assert len(cites) == 1
+        assert cites[0]["content"] == "second block text"
+
+
+class TestNonPipesHubLinksPassThrough:
+    """Service-tool links (Jira issues, Drive files, Slack permalinks) are
+    matched by `_MD_LINK_PATTERN` like any other markdown link, so they enter
+    the resolver — but renumbering only rewrites a link whose target resolved
+    to a citation (`_renumber_citation_links`). An unresolvable target is left
+    exactly as the model wrote it, keeping its own display text.
+
+    This is what keeps `[PROJ-123](https://jira.example.com/browse/PROJ-123)`
+    a normal clickable link instead of a `[1](...)` citation chip."""
+
+    JIRA = "https://jira.example.com/browse/PROJ-123"
+
+    def test_service_link_alone_is_untouched_and_produces_no_citation(self):
+        answer = f"Fixed in [PROJ-123]({self.JIRA})."
+
+        normalized, cites = normalize_citations_and_chunks(answer, [], records=[])
+
+        assert normalized == answer
+        assert cites == []
+
+    def test_service_link_survives_alongside_an_internal_ref_citation(self):
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "runbook step", block_web_url=url)]
+        answer = f"Fixed in [PROJ-123]({self.JIRA}) per the runbook [source](ref1)."
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, docs, records=[], ref_to_url={"ref1": url},
+        )
+
+        assert f"[PROJ-123]({self.JIRA})" in normalized
+        assert f"[1]({url})" in normalized
+        assert len(cites) == 1
+
+    def test_service_link_survives_alongside_a_web_citation(self):
+        web_url = "https://news.example.com/story"
+        answer = (
+            f"Tracked in [PROJ-123]({self.JIRA}); coverage confirms it "
+            "[source](https://ref7.xyz)."
+        )
+        rows = [{"url": web_url, "content": "story body", "org_id": ""}]
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, [], records=[], ref_to_url={"ref7": web_url}, web_records=rows,
+        )
+
+        assert f"[PROJ-123]({self.JIRA})" in normalized
+        assert f"[1]({web_url})" in normalized
+        assert len(cites) == 1
+        assert cites[0]["citationType"] == "web|url"
+
+    def test_citation_numbering_ignores_unresolvable_service_links(self):
+        """Two service links before a real citation must not consume citation
+        numbers — the resolved one is still `[1]`."""
+        docs = [_make_doc(REC1, 0, "block text", block_web_url=_url(REC1, 0))]
+        answer = (
+            f"See [PROJ-123]({self.JIRA}) and "
+            "[the doc](https://drive.example.com/file/d/abc/view), plus "
+            "[source](ref1)."
+        )
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, docs, records=[], ref_to_url={"ref1": _url(REC1, 0)},
+        )
+
+        assert len(cites) == 1
+        assert cites[0]["chunkIndex"] == 1
+        assert "[1](" in normalized
+        assert "[2](" not in normalized
+
+    def test_adjacent_service_link_and_citation_are_both_kept(self):
+        """`_clean_duplicate_citation_links` collapses two consecutive links
+        only when they resolve to the SAME target — a service link followed by
+        a citation for a different source must survive intact."""
+        web_url = "https://news.example.com/story"
+        answer = f"[PROJ-123]({self.JIRA}) [source](https://ref7.xyz)"
+        rows = [{"url": web_url, "content": "story body", "org_id": ""}]
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, [], records=[], ref_to_url={"ref7": web_url}, web_records=rows,
+        )
+
+        assert f"[PROJ-123]({self.JIRA})" in normalized
+        assert f"[1]({web_url})" in normalized
+        assert len(cites) == 1
+
+    def test_parenthesized_ref_after_a_service_link_keeps_both(self):
+        """`_TRAILING_PAREN_URL_RE` drops a trailing parenthesized tiny ref
+        unconditionally (the LLM double-citing one source). That would eat a
+        real citation written as `[PROJ-123](jira) (https://ref7.xyz)` — except
+        `normalize_malformed_citations` runs FIRST and wraps the bare ref into
+        `[source](...)`, so the dedup pattern no longer matches it."""
+        web_url = "https://news.example.com/story"
+        answer = f"Tracked in [PROJ-123]({self.JIRA}) (https://ref7.xyz)."
+        rows = [{"url": web_url, "content": "story body", "org_id": ""}]
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, [], records=[], ref_to_url={"ref7": web_url}, web_records=rows,
+        )
+
+        assert f"[PROJ-123]({self.JIRA})" in normalized
+        assert f"[1]({web_url})" in normalized
+        assert len(cites) == 1
 
 
 class TestFlattenListGroupDocs:

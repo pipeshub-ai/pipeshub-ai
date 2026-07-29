@@ -51,7 +51,6 @@ COPY ./backend/python/pyproject.toml ./
 RUN uv pip install --system -e . && \
     uv pip install --system watchdog && \
     # Download ML models (no-op when already present in the base image)
-    python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
     python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
     # Clean up caches to save space
@@ -120,6 +119,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
     libreoffice-impress-nogui \
+    fonts-noto-cjk \
     procps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

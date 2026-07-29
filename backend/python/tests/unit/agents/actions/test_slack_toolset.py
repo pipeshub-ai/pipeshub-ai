@@ -47,6 +47,7 @@ from app.agents.actions.slack.slack import (
     ScheduleMessageInput,
     SearchAllInput,
     SearchMessagesInput,
+    SearchUsersInput,
     SendDirectMessageInput,
     SendMessageInput,
     SendMessageToMultipleChannelsInput,
@@ -742,6 +743,21 @@ class TestResolveUserInput:
     def test_user_id_required(self):
         with pytest.raises(Exception):
             ResolveUserInput()  # type: ignore[call-arg]
+
+
+class TestSearchUsersInput:
+    def test_name_required(self):
+        with pytest.raises(Exception):
+            SearchUsersInput()  # type: ignore[call-arg]
+
+    def test_defaults(self):
+        data = SearchUsersInput(name="alice")
+        assert data.name == "alice"
+        assert data.include_bots is False
+
+    def test_include_bots(self):
+        data = SearchUsersInput(name="bot", include_bots=True)
+        assert data.include_bots is True
 
 
 class TestAddReactionInput:
@@ -1836,6 +1852,191 @@ class TestResolveUser:
         ok, payload = await slack.resolve_user("U101")
         assert ok is False
         assert "boom" in json.loads(payload)["error"]
+
+
+# ===========================================================================
+# search_users
+# ===========================================================================
+
+class TestSearchUsers:
+    def _members_page(self, members, next_cursor=None):
+        data = {"members": members}
+        if next_cursor:
+            data["response_metadata"] = {"next_cursor": next_cursor}
+        return _ok(data)
+
+    @pytest.mark.asyncio
+    async def test_exact_match(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice Smith",
+             "profile": {"display_name": "alice", "real_name": "Alice Smith",
+                         "display_name_normalized": "alice", "real_name_normalized": "alice smith",
+                         "email": "alice@example.com"}},
+            {"id": "U102", "name": "bob", "real_name": "Bob Jones",
+             "profile": {"display_name": "bob", "real_name": "Bob Jones",
+                         "display_name_normalized": "bob", "real_name_normalized": "bob jones",
+                         "email": "bob@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("alice")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 1
+        assert data["users"][0]["id"] == "U101"
+        assert data["users"][0]["email"] == "alice@example.com"
+
+    @pytest.mark.asyncio
+    async def test_partial_match(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "ajohnson", "real_name": "Alice Johnson",
+             "profile": {"display_name": "ajohnson", "real_name": "Alice Johnson",
+                         "display_name_normalized": "ajohnson", "real_name_normalized": "alice johnson",
+                         "email": "aj@example.com"}},
+            {"id": "U102", "name": "jdoe", "real_name": "John Doe",
+             "profile": {"display_name": "jdoe", "real_name": "John Doe",
+                         "display_name_normalized": "jdoe", "real_name_normalized": "john doe",
+                         "email": "john@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("john")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 2
+        ids = {u["id"] for u in data["users"]}
+        assert ids == {"U101", "U102"}
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice Smith",
+             "profile": {"display_name": "Alice", "real_name": "Alice Smith",
+                         "display_name_normalized": "alice", "real_name_normalized": "alice smith",
+                         "email": "alice@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("ALICE")
+        assert ok is True
+        assert json.loads(payload)["data"]["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_deleted_users(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice", "deleted": True,
+             "profile": {"display_name": "alice", "real_name_normalized": "alice"}},
+            {"id": "U102", "name": "alice2", "real_name": "Alice Two",
+             "profile": {"display_name": "alice2", "real_name_normalized": "alice two",
+                         "email": "alice2@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("alice")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 1
+        assert data["users"][0]["id"] == "U102"
+
+    @pytest.mark.asyncio
+    async def test_skips_bots_by_default(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "slackbot", "real_name": "Slackbot", "is_bot": True,
+             "profile": {"display_name": "slackbot", "real_name_normalized": "slackbot"}},
+            {"id": "U102", "name": "alice", "real_name": "Alice",
+             "profile": {"display_name": "alice", "real_name_normalized": "alice",
+                         "email": "alice@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("slack")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_include_bots(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "mybot", "real_name": "My Bot", "is_bot": True,
+             "profile": {"display_name": "mybot", "real_name_normalized": "my bot"}},
+        ]))
+        ok, payload = await slack.search_users("bot", include_bots=True)
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 1
+        assert data["users"][0]["is_bot"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_matches(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice",
+             "profile": {"display_name": "alice", "real_name_normalized": "alice"}},
+        ]))
+        ok, payload = await slack.search_users("zzznotfound")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 0
+        assert data["users"] == []
+
+    @pytest.mark.asyncio
+    async def test_query_too_short(self):
+        slack = _build_slack()
+        ok, payload = await slack.search_users("a")
+        assert ok is False
+        assert "2 characters" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_empty_query(self):
+        slack = _build_slack()
+        ok, payload = await slack.search_users("")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_pagination(self):
+        slack = _build_slack()
+        page1 = self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice",
+             "profile": {"display_name": "alice", "real_name_normalized": "alice",
+                         "email": "alice@example.com"}},
+        ], next_cursor="cursor2")
+        page2 = self._members_page([
+            {"id": "U102", "name": "alicia", "real_name": "Alicia",
+             "profile": {"display_name": "alicia", "real_name_normalized": "alicia",
+                         "email": "alicia@example.com"}},
+        ])
+        slack.client.users_list = AsyncMock(side_effect=[page1, page2])
+        ok, payload = await slack.search_users("ali")
+        assert ok is True
+        data = json.loads(payload)["data"]
+        assert data["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_exception_wrapped(self):
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(side_effect=RuntimeError("network error"))
+        ok, payload = await slack.search_users("alice")
+        assert ok is False
+        assert "network error" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_response_fields(self):
+        """Verify the shape of each user dict in the response."""
+        slack = _build_slack()
+        slack.client.users_list = AsyncMock(return_value=self._members_page([
+            {"id": "U101", "name": "alice", "real_name": "Alice Smith",
+             "is_bot": False, "is_admin": True, "team_id": "T123",
+             "profile": {"display_name": "alice.s", "real_name": "Alice Smith",
+                         "display_name_normalized": "alice.s", "real_name_normalized": "alice smith",
+                         "email": "alice@example.com"}},
+        ]))
+        ok, payload = await slack.search_users("alice")
+        assert ok is True
+        user = json.loads(payload)["data"]["users"][0]
+        assert user["id"] == "U101"
+        assert user["name"] == "alice"
+        assert user["real_name"] == "Alice Smith"
+        assert user["display_name"] == "alice.s"
+        assert user["email"] == "alice@example.com"
+        assert user["is_bot"] is False
+        assert user["is_admin"] is True
+        assert user["team_id"] == "T123"
 
 
 # ===========================================================================

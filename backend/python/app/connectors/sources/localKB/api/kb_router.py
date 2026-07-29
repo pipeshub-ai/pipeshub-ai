@@ -42,7 +42,15 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
     logger = container.logger()
     graph_provider = request.app.state.graph_provider
     kafka_service = container.kafka_service()
-    return KnowledgeBaseService(logger=logger, graph_provider=graph_provider, kafka_service=kafka_service)
+    processor = request.app.state.kb_entities_processor
+    config_service = container.config_service()
+    return KnowledgeBaseService(
+        logger=logger,
+        graph_provider=graph_provider,
+        kafka_service=kafka_service,
+        processor=processor,
+        config_service=config_service,
+    )
 
 
 async def get_kafka_service(request: Request) -> KafkaService:
@@ -287,7 +295,8 @@ async def delete_knowledge_base(
         container = request.app.container
         logger = container.logger()
         user_id = request.state.user.get("userId")
-        result = await kb_service.delete_knowledge_base(kb_id=kb_id, user_id=user_id)
+        org_id = request.state.user.get("orgId")
+        result = await kb_service.delete_knowledge_base(kb_id=kb_id, user_id=user_id, org_id=org_id)
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
             error_reason = result.get("reason", "Unknown error")
@@ -301,19 +310,18 @@ async def delete_knowledge_base(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} deletion events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish deletion events: {str(e)}")
 
@@ -451,19 +459,18 @@ async def upload_records_to_kb(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
@@ -557,19 +564,18 @@ async def upload_records_to_folder(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
@@ -854,19 +860,18 @@ async def delete_folder(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
             except Exception as e:
                 logger.error(f"❌ Failed to publish folder deletion events: {str(e)}")
 
@@ -1355,20 +1360,21 @@ async def update_record(
         # Enrich response with required fields for UpdateRecordResponse
         graph_provider = request.app.state.graph_provider
         try:
-            # Get KB context for the record
+            # Get KB context for the record. The write already succeeded, so a missing
+            # context is an enrichment miss — degrade gracefully rather than turning a
+            # completed update into a misleading 404.
             kb_context = await graph_provider._get_kb_context_for_record(record_id)
-            if not kb_context:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Knowledge base not found for record"
-                )
-
-            kb_id = kb_context.get("kb_id")
+            kb_id = kb_context.get("kb_id") if kb_context else None
             if not kb_id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Knowledge base ID not found for record"
-                )
+                logger.warning(f"⚠️ KB context unavailable for updated record {record_id}; returning un-enriched response")
+                return {
+                    **result,
+                    "fileUpdated": body.get("fileMetadata") is not None,
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "location": "kb_root",
+                    "kb": {},
+                    "userPermission": "NONE",
+                }
 
             # Get user permission
             user_key = user_id

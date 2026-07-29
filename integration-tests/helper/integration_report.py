@@ -245,6 +245,7 @@ def write_html_report(
     base_url: str,
     exitstatus: int,
     session_wall_s: Optional[float] = None,
+    graph_db: str = "",
 ) -> None:
     """Write a single self-contained HTML report."""
     passed = sum(1 for e in entries if e.outcome == "passed")
@@ -317,6 +318,8 @@ def write_html_report(
 
     meta_row("Report file", f"<code>{html.escape(report_path.name)}</code>")
     meta_row("Generated (UTC)", f"<code>{html.escape(timestamp_title)}</code>")
+    if graph_db:
+        meta_row("Graph DB", f"<code>{html.escape(graph_db)}</code>")
     meta_row("Environment", f"<code>{html.escape(env_label)}</code>")
     meta_row("Base URL", f"<code>{html.escape(base_url or '(not set)')}</code>")
     meta_row("Python", f"<code>{html.escape(sys.version.split()[0])}</code>")

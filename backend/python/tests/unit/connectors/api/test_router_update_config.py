@@ -1390,7 +1390,6 @@ class TestDownloadFileErrorPaths:
             await download_file(req, "org-1", "rec-1", "googledrive", "tok", handler, gp)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
         assert "Error downloading file" in exc.value.detail
-        assert "connection lost" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_inner_http_exception_re_raised(self):

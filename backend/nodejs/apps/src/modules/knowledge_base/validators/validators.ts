@@ -14,7 +14,13 @@ const rejectedFileSchema = z.object({
 
 export const getRecordByIdSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
-  query: z.object({ convertTo: z.string().optional() }),
+  query: z.object({
+    convertTo: z.string().optional(),
+    // Registry version number for artifact records — resolved to a
+    // storage-layer version index further downstream. Validated as a
+    // plain non-negative integer string; never passed through unchecked.
+    version: z.string().regex(/^\d+$/).optional(),
+  }),
 });
 
 export const updateRecordSchema = z.object({

@@ -1,14 +1,13 @@
 """Additional unit tests for DoclingClient to push coverage above 97%.
 
 Targets missing lines/branches:
-- Lines 170-171: process_pdf loop fallthrough (all retries exhausted via loop exit)
-- Line 260->262: parse_pdf non-503 HTTP error (non-retryable status codes)
-- Lines 287-288: parse_pdf loop fallthrough (all retries exhausted)
-- Lines 353->355: create_blocks non-503 HTTP error
-- Lines 380-381: create_blocks loop fallthrough (all retries exhausted)
+- parse_pdf non-503 HTTP error (non-retryable status codes)
+- parse_pdf loop fallthrough (all retries exhausted)
+- parse_pdf retryable HTTP 502/504 status
+- create_blocks non-503 HTTP error
+- create_blocks loop fallthrough (all retries exhausted)
 """
 
-import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -42,56 +41,12 @@ def _make_response(status_code=200, json_data=None, text=""):
 
 
 # ===========================================================================
-# process_pdf - loop fallthrough (all retries exhausted without exception)
-# ===========================================================================
-
-
-class TestProcessPdfLoopFallthrough:
-    """Cover lines 170-171: after all retries, the loop exits and returns None."""
-
-    @pytest.mark.asyncio
-    async def test_all_retries_exhausted_loop_exit(self, client, small_pdf):
-        """When all retries are used up via HTTP errors, the loop ends and returns None.
-
-        The key is to get max_retries=1 so there's only attempt 0.
-        On attempt 0, it's the last attempt (attempt < max_retries - 1 is False),
-        so it returns None inside the loop. We need max_retries=3 (default) and
-        every attempt to succeed in entering retry branch but the last to also return None.
-        Actually, the fallthrough on line 170 can only be reached if the loop exits normally
-        (i.e., all iterations complete without any return/break/continue). This happens
-        when every iteration enters a continue branch - which means HTTP errors with retries.
-        But on the last attempt, the code returns None.
-
-        Actually, for process_pdf, every error path either returns None or continues.
-        The fallthrough on line 170 is actually unreachable in practice because the last
-        attempt always hits a return None. But it's there as a safety net.
-        Let's check: for an HTTP error on the last attempt, attempt < self.max_retries - 1
-        is False, so it returns None (line 120). So line 170 should not be reachable.
-
-        But wait - there IS a scenario: if max_retries = 0, the loop body never runs at all.
-        """
-        client.max_retries = 0
-        client.retry_delay = 0.001
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=_make_response(status_code=500, text="Error"))
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.process_pdf("doc.pdf", small_pdf)
-
-        assert result is None
-        mock_http.post.assert_not_awaited()
-
-
-# ===========================================================================
 # parse_pdf - non-503 HTTP error + loop fallthrough
 # ===========================================================================
 
 
 class TestParsePdfNon503Error:
-    """Cover line 260->262: parse_pdf HTTP error not in [502, 503, 504]."""
+    """Cover parse_pdf HTTP error not in [502, 503, 504]."""
 
     @pytest.mark.asyncio
     async def test_non_retryable_http_error(self, client, small_pdf):
@@ -132,7 +87,7 @@ class TestParsePdfNon503Error:
 
 
 class TestParsePdfLoopFallthrough:
-    """Cover lines 287-288: parse_pdf loop fallthrough."""
+    """Cover parse_pdf loop fallthrough."""
 
     @pytest.mark.asyncio
     async def test_parse_pdf_zero_retries(self, client, small_pdf):
@@ -150,6 +105,68 @@ class TestParsePdfLoopFallthrough:
         assert result is None
         mock_http.post.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_all_retries_exhausted_loop_exit(self, client, small_pdf):
+        """When max_retries=0, the loop body never runs and fallthrough returns None."""
+        client.max_retries = 0
+        client.retry_delay = 0.001
+
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=_make_response(status_code=500, text="Error"))
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.parse_pdf("doc.pdf", small_pdf)
+
+        assert result is None
+        mock_http.post.assert_not_awaited()
+
+
+# ===========================================================================
+# parse_pdf - retryable HTTP 502/504 status
+# ===========================================================================
+
+
+class TestParsePdf502:
+    """Cover the 502/504 status code paths for parse_pdf."""
+
+    @pytest.mark.asyncio
+    async def test_http_502_retries_and_logs_warning(self, client, small_pdf):
+        """HTTP 502 triggers both the warning and the retry."""
+        client.max_retries = 2
+        client.retry_delay = 0.001
+
+        mock_response = _make_response(status_code=502, text="Bad Gateway")
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.parse_pdf("doc.pdf", small_pdf)
+
+        assert result is None
+        assert mock_http.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_http_504_retries_and_logs_warning(self, client, small_pdf):
+        """HTTP 504 triggers both the warning and the retry."""
+        client.max_retries = 2
+        client.retry_delay = 0.001
+
+        mock_response = _make_response(status_code=504, text="Gateway Timeout")
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.parse_pdf("doc.pdf", small_pdf)
+
+        assert result is None
+        assert mock_http.post.await_count == 2
+
 
 # ===========================================================================
 # create_blocks - non-503 HTTP error + loop fallthrough
@@ -157,7 +174,7 @@ class TestParsePdfLoopFallthrough:
 
 
 class TestCreateBlocksNon503Error:
-    """Cover line 353->355: create_blocks HTTP error not in [502, 503, 504]."""
+    """Cover create_blocks HTTP error not in [502, 503, 504]."""
 
     @pytest.mark.asyncio
     async def test_non_retryable_http_error(self, client):
@@ -198,7 +215,7 @@ class TestCreateBlocksNon503Error:
 
 
 class TestCreateBlocksLoopFallthrough:
-    """Cover lines 380-381: create_blocks loop fallthrough."""
+    """Cover create_blocks loop fallthrough."""
 
     @pytest.mark.asyncio
     async def test_create_blocks_zero_retries(self, client):
@@ -215,48 +232,3 @@ class TestCreateBlocksLoopFallthrough:
 
         assert result is None
         mock_http.post.assert_not_awaited()
-
-
-# ===========================================================================
-# process_pdf - retryable HTTP 502 status
-# ===========================================================================
-
-
-class TestProcessPdf502:
-    """Cover the 502 status code path for process_pdf."""
-
-    @pytest.mark.asyncio
-    async def test_http_502_retries_and_logs_warning(self, client, small_pdf):
-        """HTTP 502 triggers both the warning and the retry."""
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_response = _make_response(status_code=502, text="Bad Gateway")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.process_pdf("doc.pdf", small_pdf)
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_http_504_retries_and_logs_warning(self, client, small_pdf):
-        """HTTP 504 triggers both the warning and the retry."""
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_response = _make_response(status_code=504, text="Gateway Timeout")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.process_pdf("doc.pdf", small_pdf)
-
-        assert result is None
-        assert mock_http.post.await_count == 2

@@ -5,6 +5,7 @@ from io import BytesIO
 
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
 class DocParser:
@@ -19,8 +20,18 @@ class DocParser:
                 ParseErrorCode.PROVIDER_UNAVAILABLE,
                 "DOC parsing requires a docx_parser; none was configured",
             )
-        doc_result = self.convert_doc_to_docx(content)
+        doc_result = await self.convert_doc_to_docx_async(content)
         return await self.docx_parser.parse(doc_result, record_name, config)
+
+    async def convert_doc_to_docx_async(self, binary: bytes) -> BytesIO:
+        """Async .doc -> .docx conversion for use on an event loop (e.g. the
+        parsing service). Prefer this over the synchronous
+        ``convert_doc_to_docx`` from any async caller: it runs LibreOffice via
+        ``asyncio.create_subprocess_exec`` instead of blocking a thread for the
+        whole conversion.
+        """
+        docx_bytes = await convert_with_libreoffice(binary, "doc", "docx")
+        return BytesIO(docx_bytes)
 
     def convert_doc_to_docx(self, binary: bytes) -> BytesIO:
         """Convert .doc file to .docx using LibreOffice

@@ -8,7 +8,8 @@ Unit tests for the PipesHub Python microservices using **pytest**.
 cd backend/python
 python3.12 -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install -e .
+pip install uv
+uv pip install -e .
 ```
 
 ## Running Tests

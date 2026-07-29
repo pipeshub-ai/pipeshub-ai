@@ -37,6 +37,24 @@ import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
 
+/** Prefer the `isFinal` text part from the transcript over `msg.content`.
+ * Handles pre-fix conversations where `content` had narration mixed in,
+ * and guards against backend regressions. Mirrors Python's extraction in
+ * `AnswerFinalizer._run_success_path` (respond.py). */
+function extractFinalAnswer(
+  parts: ConversationMessage['parts'],
+  fallback: string,
+): string {
+  if (!parts?.length) return fallback;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (p.type === 'text' && p.isFinal && p.content) {
+      return p.content;
+    }
+  }
+  return fallback;
+}
+
 /**
  * Extract text content from assistant-ui message content
  */
@@ -238,7 +256,7 @@ export function buildStreamChatRequestForSlot(
   const request: StreamChatRequest = {
     query,
     ...effectiveModel,
-    ...buildStreamRequestModeFields(currentState.settings),
+    ...buildStreamRequestModeFields(currentState.settings, isAgent),
     timezone: getClientTimezone(),
     currentTime: getClientCurrentTime(),
     filters: resolvedFilters,
@@ -247,11 +265,22 @@ export function buildStreamChatRequestForSlot(
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
-          agentStreamTools: streamTools,
+          // `toolsSel === null` means "everything selected" (no explicit
+          // filter) — omit `agentStreamTools` entirely rather than sending
+          // every toolCatalog fullName exploded out. The backend already
+          // treats a missing/`None` `tools` field as "use every configured
+          // toolset" (see agent.py), so this is both smaller on the wire
+          // and semantically correct — an exploded full list would defeat
+          // that "no filter" meaning and needlessly re-approach the
+          // request-size cap on agents with many multi-action toolsets.
+          ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
+          agentCapabilities: currentState.scopedAgentCapabilities[effectiveAgentId]
+            ?? { internalSearch: true, webSearch: true },
         }
-      : isUniversalAgentMode && toolsSel !== null
+      : isUniversalAgentMode
         ? {
-            agentStreamTools: streamTools,
+            ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
+            agentCapabilities: currentState.settings.agentCapabilities,
           }
         : {}),
   };
@@ -338,10 +367,11 @@ export function loadHistoricalMessages(
           ? { value: 'dislike' as const }
           : undefined;
 
+      const answerText = extractFinalAnswer(msg.parts, msg.content);
       result.push({
         id: msg._id,
         role: 'assistant' as const,
-        content: [{ type: 'text' as const, text: msg.content }],
+        content: [{ type: 'text' as const, text: answerText }],
         metadata: {
           custom: {
             messageId: msg._id,
@@ -352,6 +382,11 @@ export function loadHistoricalMessages(
             ...(capturedPayload && isAnswered
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
+            // Agent-activity transcript (`agui` protocol only — see
+            // TranscriptCollector/buildAIResponseMessage). Absent for the
+            // legacy protocol and every pre-existing conversation; consumers
+            // fall back to plain `content` (see AgentActivityTimeline).
+            ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
           },
         },
       });

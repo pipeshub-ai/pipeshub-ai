@@ -346,23 +346,19 @@ export class StorageController {
       }
 
       const document = docResult.document;
+      const resolvedVersion = version !== undefined ? Number(version) : undefined;
+
       if (
-        version &&
-        Number(version) >= (document.versionHistory?.length ?? 0)
+        resolvedVersion !== undefined &&
+        resolvedVersion >= (document.versionHistory?.length ?? 0)
       ) {
         throw new BadRequestError("This version doesn't exist");
       }
 
-      if (document.isVersionedFile === false && version !== undefined) {
+      if (document.isVersionedFile === false && resolvedVersion !== undefined) {
         throw new BadRequestError('This is a non-versioned document');
       }
 
-      if (
-        version &&
-        Number(version) >= (document.versionHistory?.length ?? 0)
-      ) {
-        throw new BadRequestError("This version doesn't exist");
-      }
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
       const { storageType } = JSON.parse(storageConfig);
@@ -377,13 +373,13 @@ export class StorageController {
 
       const signedUrlResult = await adapter.getSignedUrl(
         document,
-        version ? Number(version) : undefined,
+        resolvedVersion,
         undefined, // fileName is not required for download TODO: fix this usage
         expirationTimeInSeconds ? Number(expirationTimeInSeconds) : 3600,
       );
 
       if (document.storageVendor === StorageVendor.Local) {
-        serveFileFromLocalStorage(document, res);
+        serveFileFromLocalStorage(document, res, resolvedVersion);
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }
@@ -412,14 +408,16 @@ export class StorageController {
         ? document.versionHistory.length
         : 0;
 
-      if (version && Number(version) > lengthOfVersionHistory) {
+      const resolvedVersion = version !== undefined ? Number(version) : undefined;
+
+      if (resolvedVersion !== undefined && resolvedVersion > lengthOfVersionHistory) {
         throw new BadRequestError("This version doesn't exist");
       }
 
       const adapter = await this.initializeStorageAdapter(req);
       const bufferResult = await adapter.getBufferFromStorageService(
         document,
-        version ? Number(version) : undefined,
+        resolvedVersion,
       );
 
       if (bufferResult.statusCode === HTTP_STATUS.OK) {

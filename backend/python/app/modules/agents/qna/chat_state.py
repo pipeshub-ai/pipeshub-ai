@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from logging import Logger
 from typing import Any
 
@@ -6,7 +7,6 @@ from langchain_core.messages import BaseMessage
 from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
-from app.agents.actions.util.blob_staging import StagedDocumentEntry
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
 from app.config.configuration_service import ConfigurationService
@@ -18,10 +18,22 @@ from app.utils.chat_helpers import CitationRefMapper
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
 
+_DEFAULT_PROMPTS = frozenset({
+    DEFAULT_AGENT_SYSTEM_PROMPT,
+    "You are a helpful assistant",
+    "You are a helpful assistant.",
+    "You are a helpful, friendly AI assistant",
+    "You are a helpful, friendly AI assistant.",
+    "You are a helpful, friendly AI assistant. Respond naturally and concisely.",
+    "You are a workplace productivity assistant. Help users with their connected work tools.",
+    "You are a workplace productivity assistant. Help users with their connected work tools",
+})
+
+
 def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
     """True when the workspace supplied a persona distinct from the default placeholder."""
     s = (system_prompt or "").strip()
-    return bool(s) and s != DEFAULT_AGENT_SYSTEM_PROMPT
+    return bool(s) and s not in _DEFAULT_PROMPTS
 
 
 class Document(TypedDict):
@@ -78,11 +90,13 @@ class ChatState(TypedDict):
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
     instructions: str | None  # Agent-specific instructions for the LLM
+    custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
+    agent_skills: list[str] | None  # Names of skills explicitly assigned to this agent (AGENT_HAS_SKILL edges) — see AgentContext.agent_skills
     connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
@@ -136,7 +150,7 @@ class ChatState(TypedDict):
     max_iterations: int | None  # Maximum tool iteration limit
 
     # Web search specific fields
-    web_search_results: list[dict[str, Any]] | None  # Stored web search results
+    web_records: list[dict[str, Any]] | None  # Citation-ready web_search/fetch_url records, accumulated by WebToolAdapter — see app.agents.agent_loop.web_tool_adapter
     web_search_template_context: dict[str, Any] | None  # Template context for web search formatting
 
     # Pure registry integration - no executor
@@ -154,11 +168,11 @@ class ChatState(TypedDict):
 
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
+    known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
 
-    document_id_to_url: dict[str, StagedDocumentEntry] | None
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
@@ -345,6 +359,34 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
+def remember_record_ids(state: ChatState | dict[str, Any] | None, record_ids: Iterable[str]) -> None:
+    """Note that the model has now been shown these Record IDs.
+
+    `dynamic_fetch_full_record` is registered mid-run only once the model
+    holds IDs it could legitimately pass to it, so it cannot invent one on
+    its first turn (see `agents/agent_loop/hooks/citations.py`). Retrieval
+    proves that implicitly by populating `virtual_record_id_to_result`;
+    `knowledgegraph.navigate`, `knowledgegraph.lookup_record` and
+    `knowledgehub.list_files` surface Record IDs without any citation
+    payload to contribute, so they signal it here instead. Without this an
+    agent that found its records by walking the hierarchy would have no
+    tool able to read them.
+
+    Mutates the existing set in place when present — `state` IS the live
+    `AgentContext.tool_state` dict the hook reads.
+    """
+    if state is None:
+        return
+    ids = {rid for rid in record_ids if rid}
+    if not ids:
+        return
+    existing = state.get("known_record_ids")
+    if isinstance(existing, set):
+        existing.update(ids)
+    else:
+        state["known_record_ids"] = ids
+
+
 def cleanup_state_after_retrieval(state: ChatState) -> None:
     """
     Clean up state after retrieval phase to reduce memory pollution.
@@ -407,6 +449,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", DEFAULT_AGENT_SYSTEM_PROMPT)
     instructions = chat_query.get("instructions")
+    # Org-level Custom Instructions (Chat Assistant / Universal Agent Mode only).
+    # Real Agent Builder agents leave this unset.
+    custom_instructions = chat_query.get("custom_instructions")
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
     output_file_path = chat_query.get("outputFilePath")
@@ -494,11 +539,13 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # Enhanced features - using new graph-based format
         "system_prompt": system_prompt,
         "instructions": instructions,
+        "custom_instructions": custom_instructions,
         "timezone": timezone,
         "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        "agent_skills": chat_query.get("skills"),
         "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead
@@ -529,7 +576,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "loop_reason": None,
 
         # Web search specific fields
-        "web_search_results": None,
+        "web_records": [],
         "web_search_template_context": None,
 
         # Pure registry integration - no executor dependency
@@ -550,10 +597,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
+        "known_record_ids": set(),
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
-        "document_id_to_url": {},
         "is_multimodal_llm": is_multimodal_llm,
         "citation_ref_mapper": None,
 

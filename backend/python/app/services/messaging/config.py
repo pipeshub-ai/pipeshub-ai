@@ -141,6 +141,11 @@ class MessagingEnvConfig:
         return int(os.getenv("MESSAGE_TIMEOUT_MS", "2000"))
 
     @property
+    def record_processing_timeout(self) -> float:
+        """Max seconds a single record is allowed to process before being timed out."""
+        return float(os.getenv("RECORD_PROCESSING_TIMEOUT", "1800"))
+
+    @property
     def max_pending_indexing_tasks(self) -> int:
         return int(
             os.getenv(

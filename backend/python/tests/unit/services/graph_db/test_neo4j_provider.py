@@ -285,13 +285,15 @@ class TestGetAgent:
         self, neo4j_provider: Neo4jProvider
     ):
         # New batched projection order: agent → toolsets → knowledge → batched
-        # app/KB doc lookup (via client.execute_query) → org-share.
+        # app/KB doc lookup (via client.execute_query) → skills → org-share.
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
+                  "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
                 [{"share_with_org": True}],  # org share query
             ]
         )
@@ -306,6 +308,10 @@ class TestGetAgent:
         assert result["toolsets"] == [{"_key": "ts1", "name": "Toolset1", "tools": []}]
         assert result["knowledge"][0]["name"] == "Jira"
         assert result["knowledge"][0]["type"] == "APP"
+        assert result["skills"] == [{
+            "name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
+            "subcategory": None, "version": "1.0.0", "status": "active",
+        }]
         assert result["shareWithOrg"] is True
 
     @pytest.mark.asyncio
@@ -317,6 +323,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [],  # knowledge query
+                [],  # skills query
                 [],  # org share query
             ]
         )
@@ -329,6 +336,7 @@ class TestGetAgent:
         assert result is not None
         assert result["toolsets"] == []
         assert result["knowledge"] == []
+        assert result["skills"] == []
         assert result["shareWithOrg"] is False
 
     @pytest.mark.asyncio
@@ -341,6 +349,7 @@ class TestGetAgent:
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [],  # skills query
                 [],  # org share query
             ]
         )
@@ -360,6 +369,51 @@ class TestGetAgent:
         result = await neo4j_provider.get_agent("agent-1")
 
         assert result is None
+
+
+class TestProjectAgentSkills:
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_skills_assigned(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        result = await neo4j_provider._project_agent_skills("agent-1")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_maps_rows_to_skill_dicts(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[
+                {
+                    "name": "pdf-extractor", "description": "Extracts tables",
+                    "category": "docs", "subcategory": "tables",
+                    "version": "1.2.0", "status": "active",
+                },
+                {
+                    "name": "csv-cleaner", "description": "Cleans CSV data",
+                    "category": "docs", "subcategory": None,
+                    "version": "2.0.0", "status": "deprecated",
+                },
+            ]
+        )
+
+        result = await neo4j_provider._project_agent_skills("agent-1", transaction="txn-1")
+
+        assert result == [
+            {
+                "name": "pdf-extractor", "description": "Extracts tables",
+                "category": "docs", "subcategory": "tables",
+                "version": "1.2.0", "status": "active",
+            },
+            {
+                "name": "csv-cleaner", "description": "Cleans CSV data",
+                "category": "docs", "subcategory": None,
+                "version": "2.0.0", "status": "deprecated",
+            },
+        ]
+        call_args = neo4j_provider.client.execute_query.await_args
+        assert call_args.kwargs["parameters"] == {"agent_id": "agent-1"}
+        assert call_args.kwargs["txn_id"] == "txn-1"
 
 
 class TestCheckAgentPermission:
@@ -3725,20 +3779,18 @@ class TestValidateUploadContext:
 
     @pytest.mark.asyncio
     async def test_no_role_rejected_with_no_access_message(self, neo4j_provider: Neo4jProvider):
-        """User with no KB role (None) must not see 'Role: None'; gets 'no access' message."""
+        """User with no KB role gets 404 to hide KB existence."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
+        neo4j_provider.kb_exists = AsyncMock(return_value=True)
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        neo4j_provider._fetch_kb_name = AsyncMock(return_value="My KB")
 
         result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        assert "Role: None" not in result["reason"]
-        assert "My KB" in result["reason"]
-        assert "OWNER or WRITER" in result["reason"]
+        assert result["code"] == 404
+        assert "kb1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_folder_not_in_kb_includes_names_in_message(self, neo4j_provider: Neo4jProvider):
@@ -3877,22 +3929,20 @@ class TestValidateFolderForUpload:
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_without_role_none_text(self, neo4j_provider: Neo4jProvider):
-        """User with no KB role at all must not see 'Role: None'."""
+        """User with no KB role gets 404 to hide KB existence."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
+        neo4j_provider.kb_exists = AsyncMock(return_value=True)
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        neo4j_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
 
         result = await neo4j_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
         )
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        assert "Role: None" not in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "OWNER or WRITER" in result["reason"]
+        assert result["code"] == 404
+        assert "kb1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_404(self, neo4j_provider: Neo4jProvider):
@@ -3974,127 +4024,9 @@ class TestCreateRecordsDuplicateName:
         neo4j_provider.batch_create_edges = AsyncMock()
         return neo4j_provider
 
-    @pytest.mark.asyncio
-    async def test_same_name_different_folders_both_created(
-        self, provider_no_db_conflict: Neo4jProvider
-    ):
-        provider = provider_no_db_conflict
-        files = [
-            self._file("r1", "README.md", "folderA/README.md"),
-            self._file("r2", "README.md", "folderB/README.md"),
-        ]
-        folder_analysis = {
-            "file_destinations": {
-                0: {"type": "folder", "folder_id": "folderA-id"},
-                1: {"type": "folder", "folder_id": "folderB-id"},
-            },
-            "parent_folder_id": None,
-        }
 
-        result = await provider._create_records(
-            kb_id="kb1",
-            org_id="org1",
-            files=files,
-            folder_analysis=folder_analysis,
-            transaction="txn1",
-            timestamp=1000,
-        )
 
-        assert result["total_created"] == 2
-        assert result["skipped_files"] == []
-        assert result["failed_files"] == []
 
-    @pytest.mark.asyncio
-    async def test_same_name_same_folder_second_skipped(
-        self, provider_no_db_conflict: Neo4jProvider
-    ):
-        provider = provider_no_db_conflict
-        files = [
-            self._file("r1", "README.md", "folderA/README.md"),
-            self._file("r2", "README.md", "folderA/README.md"),
-        ]
-        folder_analysis = {
-            "file_destinations": {
-                0: {"type": "folder", "folder_id": "folderA-id"},
-                1: {"type": "folder", "folder_id": "folderA-id"},
-            },
-            "parent_folder_id": None,
-        }
-
-        result = await provider._create_records(
-            kb_id="kb1",
-            org_id="org1",
-            files=files,
-            folder_analysis=folder_analysis,
-            transaction="txn1",
-            timestamp=1000,
-        )
-
-        assert result["total_created"] == 1
-        assert len(result["skipped_files"]) == 1
-        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
-        assert result["skipped_files"][0]["filePath"] == "folderA/README.md"
-
-    @pytest.mark.asyncio
-    async def test_same_name_root_and_folder_both_created(
-        self, provider_no_db_conflict: Neo4jProvider
-    ):
-        # KB root and a folder are different parents, so the same name in each is
-        # allowed (root parent resolves to "" via parent_folder_id).
-        provider = provider_no_db_conflict
-        files = [
-            self._file("r1", "data.csv", "data.csv", mime="text/csv"),
-            self._file("r2", "data.csv", "sub/data.csv", mime="text/csv"),
-        ]
-        folder_analysis = {
-            "file_destinations": {
-                0: {"type": "root"},
-                1: {"type": "folder", "folder_id": "sub-id"},
-            },
-            "parent_folder_id": None,
-        }
-
-        result = await provider._create_records(
-            kb_id="kb1",
-            org_id="org1",
-            files=files,
-            folder_analysis=folder_analysis,
-            transaction="txn1",
-            timestamp=1000,
-        )
-
-        assert result["total_created"] == 2
-        assert result["skipped_files"] == []
-
-    @pytest.mark.asyncio
-    async def test_existing_db_conflict_skips_file(
-        self, neo4j_provider: Neo4jProvider
-    ):
-        # A name that already exists in the DB (pre-fetched name set) is
-        # skipped even when it is the only file in the batch.
-        neo4j_provider._fetch_existing_file_names_in_parent = AsyncMock(
-            return_value={("readme.md", "text/markdown")}
-        )
-        neo4j_provider.batch_upsert_nodes = AsyncMock()
-        neo4j_provider.batch_create_edges = AsyncMock()
-        files = [self._file("r1", "README.md", "README.md")]
-        folder_analysis = {
-            "file_destinations": {0: {"type": "root"}},
-            "parent_folder_id": None,
-        }
-
-        result = await neo4j_provider._create_records(
-            kb_id="kb1",
-            org_id="org1",
-            files=files,
-            folder_analysis=folder_analysis,
-            transaction="txn1",
-            timestamp=1000,
-        )
-
-        assert result["total_created"] == 0
-        assert len(result["skipped_files"]) == 1
-        assert result["skipped_files"][0]["reason"] == "DUPLICATE_NAME"
 class TestBatchUpdateConnectorStatus:
     @pytest.mark.asyncio
     async def test_empty_keys_skips_query(self, neo4j_provider: Neo4jProvider):

@@ -1,11 +1,14 @@
 """Redact sandbox filesystem paths from tool output before it reaches the LLM.
 
 The coding/database sandboxes run user code inside either a local subprocess
-tree (under ``/tmp/pipeshub_sandbox/<id>/``) or a Docker container
+tree (under ``/tmp/pipeshub_sandbox/<id>/``), a Docker container
 (``/output`` inside the container, backed by ``/tmp/pipeshub_sandbox_docker/
-<id>/`` on the host). When user code prints such a path -- e.g.
-``print(f"Saved at: {os.path.join(os.environ['OUTPUT_DIR'], name)}")`` --
-the host path ends up in ``stdout`` and, without redaction, is handed
+<id>/`` on the host), or -- on the agent-loop path -- ``agent_loop_lib``'s own
+sandbox working directory (``/tmp/alcs-<id>/`` for the local backend,
+``/tmp/alcs-docker-<id>/`` for the Docker backend; see
+``app/agents/agent_loop/sandbox_bridge.py``). When user code prints such a
+path -- e.g. ``print(f"Saved at: {os.path.join(os.environ['OUTPUT_DIR'], name)}")``
+-- the host path ends up in ``stdout`` and, without redaction, is handed
 verbatim to the LLM, which then echoes it in the user-facing answer.
 
 These helpers replace every known sandbox path with a stable placeholder
@@ -32,6 +35,18 @@ _HOST_WORKDIR_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:/private)?/tmp/pipeshub_sandbox(?:_docker)?/[^/\s]+"
 )
 
+# agent_loop_lib coding-sandbox working dirs (agent-loop path only): local
+# backend uses ``alcs-<id>``, Docker backend uses ``alcs-docker-<id>`` — see
+# ``sandbox_bridge.py``'s ``working_dir_root``. Same output-then-workdir
+# ordering rationale as the two patterns above.
+_ALCS_OUTPUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:/private)?/tmp/alcs(?:-docker)?-[^/\s]+/output"
+    r"(?=[/\s)\],.;:]|$)"
+)
+_ALCS_WORKDIR_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:/private)?/tmp/alcs(?:-docker)?-[^/\s]+"
+)
+
 # Bare ``/output`` — the Docker executor maps OUTPUT_DIR to ``/output``
 # inside the container, so user prints inside Docker look like
 # ``/output/file.pdf``. Require a non-alphanumeric char before the slash to
@@ -52,6 +67,8 @@ def redact_sandbox_paths(text: str | None) -> str:
         return text or ""
     text = _HOST_OUTPUT_RE.sub("<output>", text)
     text = _HOST_WORKDIR_RE.sub("<workdir>", text)
+    text = _ALCS_OUTPUT_RE.sub("<output>", text)
+    text = _ALCS_WORKDIR_RE.sub("<workdir>", text)
     text = _DOCKER_OUTPUT_RE.sub("<output>", text)
     return text
 

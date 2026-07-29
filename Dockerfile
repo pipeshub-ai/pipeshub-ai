@@ -18,9 +18,22 @@ FROM ${PYTHON_DEPS_IMAGE} AS python-deps
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --system -e .
+    uv pip install --system -e . && \
+    crawl4ai-setup && \
+    playwright install chromium
+
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
+
+# Presentation previews are converted to PDF at request time. The published
+# runtime base historically included Writer and Calc only, leaving the soffice
+# wrapper present but unable to load PPT/PPTX files.
+# Install CJK fallback fonts until they are available in the published runtime
+# base image. LibreOffice uses these when documents reference unavailable fonts.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-impress-nogui fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
@@ -96,6 +109,9 @@ COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
 COPY --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --from=python-deps /root/nltk_data /root/nltk_data
+
+# Copy Playwright browser binaries
+COPY --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist

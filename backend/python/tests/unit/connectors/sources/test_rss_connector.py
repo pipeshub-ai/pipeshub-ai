@@ -17,7 +17,9 @@ from app.models.permission import EntityType, PermissionType
 import asyncio
 import hashlib
 from io import BytesIO
+from fastapi import HTTPException
 from app.connectors.sources.rss.connector import RSSConnector
+from app.connectors.sources.web.fetch_strategy import FetchResponse
 from app.models.entities import FileRecord, RecordType
 
 
@@ -347,8 +349,8 @@ class TestRSSConnectorEntryProcessing:
         file_record, permissions = result
         assert file_record.record_name == "My Article"
         assert file_record.weburl == "https://example.com/article-1"
-        assert file_record.mime_type == MimeTypes.HTML.value
-        assert file_record.extension == "html"
+        assert file_record.mime_type == MimeTypes.PLAIN_TEXT.value
+        assert file_record.extension == "txt"
         assert file_record.connector_name == Connectors.RSS
         assert len(permissions) == 1
         assert permissions[0].entity_type == EntityType.ORG
@@ -603,6 +605,26 @@ def _make_session(response):
     return session
 
 
+def _make_fetch_response(status=200, content=b"<html>body</html>", headers=None,
+                         final_url="https://example.com/article"):
+    """Build a FetchResponse as returned by fetch_url_with_fallback."""
+    return FetchResponse(
+        status_code=status,
+        content_bytes=content,
+        headers=headers or {"Content-Type": "text/html"},
+        final_url=final_url,
+        strategy="aiohttp",
+    )
+
+
+def _patch_fetch(**kwargs):
+    """Patch the connector's fetch_url_with_fallback to return a FetchResponse."""
+    return patch(
+        "app.connectors.sources.rss.connector.fetch_url_with_fallback",
+        new=AsyncMock(return_value=_make_fetch_response(**kwargs)),
+    )
+
+
 def _make_record(**overrides):
     """Build a minimal Record for testing."""
     defaults = {
@@ -649,9 +671,8 @@ class TestFetchAndParseFeed:
                 </item>
             </channel>
         </rss>"""
-        resp = _make_mock_response(status=200, content=feed_xml)
-        conn.session = _make_session(resp)
-        result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        with _patch_fetch(status=200, content=feed_xml):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is not None
         assert len(result.entries) == 1
 
@@ -673,15 +694,14 @@ class TestFetchAndParseFeed:
     @pytest.mark.asyncio
     async def test_bozo_feed_with_entries_returns_feed(self):
         conn = _make_connector_cov()
-        resp = _make_mock_response(status=200, content=b"<xml>something</xml>")
-        conn.session = _make_session(resp)
-        with patch("app.connectors.sources.rss.connector.feedparser") as mock_fp:
-            mock_feed = MagicMock()
-            mock_feed.bozo = True
-            mock_feed.entries = [{"title": "Article"}]
-            mock_fp.parse.return_value = mock_feed
-            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
-            assert result is not None
+        with _patch_fetch(status=200, content=b"<xml>something</xml>"):
+            with patch("app.connectors.sources.rss.connector.feedparser") as mock_fp:
+                mock_feed = MagicMock()
+                mock_feed.bozo = True
+                mock_feed.entries = [{"title": "Article"}]
+                mock_fp.parse.return_value = mock_feed
+                result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+                assert result is not None
 
     @pytest.mark.asyncio
     async def test_timeout_returns_none(self):
@@ -714,12 +734,11 @@ class TestFetchArticleContent:
     @pytest.mark.asyncio
     async def test_success_returns_text(self):
         conn = _make_connector_cov()
-        resp = _make_mock_response(status=200, content=b"<html><body>Hello world</body></html>")
-        resp.headers = {"Content-Type": "text/html; charset=utf-8"}
-        conn.session = _make_session(resp)
-        with patch.object(conn, "_extract_text_content", return_value="Hello world"):
-            result = await conn._fetch_article_content("https://example.com/article")
-            assert result == "Hello world"
+        with _patch_fetch(status=200, content=b"<html><body>Hello world</body></html>",
+                          headers={"Content-Type": "text/html; charset=utf-8"}):
+            with patch.object(conn, "_extract_text_content", return_value="Hello world"):
+                result = await conn._fetch_article_content("https://example.com/article")
+                assert result == "Hello world"
 
     @pytest.mark.asyncio
     async def test_http_error_returns_empty(self):
@@ -741,12 +760,11 @@ class TestFetchArticleContent:
     @pytest.mark.asyncio
     async def test_xml_content_type_succeeds(self):
         conn = _make_connector_cov()
-        resp = _make_mock_response(status=200, content=b"<xml>data</xml>")
-        resp.headers = {"Content-Type": "application/xml"}
-        conn.session = _make_session(resp)
-        with patch.object(conn, "_extract_text_content", return_value="data"):
-            result = await conn._fetch_article_content("https://example.com/feed.xml")
-            assert result == "data"
+        with _patch_fetch(status=200, content=b"<xml>data</xml>",
+                          headers={"Content-Type": "application/xml"}):
+            with patch.object(conn, "_extract_text_content", return_value="data"):
+                result = await conn._fetch_article_content("https://example.com/feed.xml")
+                assert result == "data"
 
     @pytest.mark.asyncio
     async def test_timeout_returns_empty(self):
@@ -972,28 +990,27 @@ class TestProcessEntryFetchFullContent:
 class TestStreamRecord:
 
     @pytest.mark.asyncio
-    async def test_no_weburl_returns_none(self):
+    async def test_no_weburl_no_feed_raises(self):
+        # No article URL and no feed to reparse -> content unresolvable -> 502.
         conn = _make_connector_cov()
         record = _make_record(weburl="")
-        result = await conn.stream_record(record)
-        assert result is None
+        with pytest.raises(HTTPException):
+            await conn.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_http_error_returns_none(self):
+    async def test_unresolvable_content_raises(self):
+        # No feed on the record, article crawl yields nothing -> 502.
         conn = _make_connector_cov()
         record = _make_record()
-        resp = _make_mock_response(status=500)
-        conn.session = _make_session(resp)
-        result = await conn.stream_record(record)
-        assert result is None
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock, return_value=""):
+            with pytest.raises(HTTPException):
+                await conn.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_success_html_content_cleaned(self):
+    async def test_success_article_fallback_serves_plain_text(self):
         conn = _make_connector_cov()
-        record = _make_record(mime_type="text/html")
-        resp = _make_mock_response(status=200, content=b"<html><body>Hello</body></html>")
-        conn.session = _make_session(resp)
-        with patch.object(conn, "_extract_text_content", return_value="Hello"):
+        record = _make_record()  # no external_record_group_id -> article crawl fallback
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock, return_value="Hello world"):
             with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
                 mock_stream.return_value = MagicMock()
                 result = await conn.stream_record(record)
@@ -1001,53 +1018,51 @@ class TestStreamRecord:
                 mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_success_non_html_content_not_cleaned(self):
+    async def test_success_resolves_from_feed_by_guid(self):
+        conn = _make_connector_cov()
+        record = _make_record(
+            external_record_id="guid-1",
+            external_record_group_id="https://feed.com/rss",
+        )
+        fake_entry = {"id": "guid-1", "link": "https://example.com/article-1", "summary": "hi"}
+        fake_feed = MagicMock()
+        fake_feed.entries = [fake_entry]
+        with patch.object(conn, "_fetch_and_parse_feed", new_callable=AsyncMock, return_value=fake_feed):
+            with patch.object(conn, "_resolve_entry_text", new_callable=AsyncMock, return_value="Resolved text"):
+                with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
+                    mock_stream.return_value = MagicMock()
+                    result = await conn.stream_record(record)
+                    assert result is not None
+                    mock_stream.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_success_uses_record_mime_type(self):
         conn = _make_connector_cov()
         record = _make_record(mime_type="application/pdf")
-        resp = _make_mock_response(status=200, content=b"pdf binary data")
-        conn.session = _make_session(resp)
-        with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await conn.stream_record(record)
-            assert result is not None
-            mock_stream.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_success_html_no_cleaned_text(self):
-        conn = _make_connector_cov()
-        record = _make_record(mime_type="text/html")
-        resp = _make_mock_response(status=200, content=b"<html></html>")
-        conn.session = _make_session(resp)
-        with patch.object(conn, "_extract_text_content", return_value=""):
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock, return_value="data"):
             with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
                 mock_stream.return_value = MagicMock()
-                result = await conn.stream_record(record)
-                assert result is not None
+                await conn.stream_record(record)
+                assert mock_stream.call_args[1]["mime_type"] == "application/pdf"
 
     @pytest.mark.asyncio
-    async def test_success_no_mime_type_defaults(self):
+    async def test_success_no_mime_type_defaults_plain_text(self):
         conn = _make_connector_cov()
         record = _make_record()
         record.mime_type = None  # Set to None after creation to bypass validation
-        resp = _make_mock_response(status=200, content=b"data")
-        conn.session = _make_session(resp)
-        with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await conn.stream_record(record)
-            assert result is not None
-            # Should use "text/html" as default
-            call_kwargs = mock_stream.call_args
-            assert call_kwargs[1]["mime_type"] == "text/html"
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock, return_value="data"):
+            with patch("app.connectors.sources.rss.connector.create_stream_record_response") as mock_stream:
+                mock_stream.return_value = MagicMock()
+                await conn.stream_record(record)
+                assert mock_stream.call_args[1]["mime_type"] == MimeTypes.PLAIN_TEXT.value
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_propagates(self):
         conn = _make_connector_cov()
         record = _make_record()
-        session = MagicMock()
-        session.get = MagicMock(side_effect=Exception("network error"))
-        conn.session = session
-        result = await conn.stream_record(record)
-        assert result is None
+        with patch.object(conn, "_fetch_article_content", new_callable=AsyncMock, side_effect=Exception("network error")):
+            with pytest.raises(Exception):
+                await conn.stream_record(record)
 
 
 # ===================================================================

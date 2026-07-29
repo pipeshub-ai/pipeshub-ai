@@ -809,6 +809,7 @@ class KnowledgeHubService:
             permission=permission,
             sharingStatus=doc.get('sharingStatus'),
             isInternal=bool(doc.get('isInternal', False)),
+            isPlaceholder=bool(doc.get('isPlaceholder', False)),
         )
 
 

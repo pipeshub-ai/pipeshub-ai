@@ -656,6 +656,12 @@ def create_execute_query_tool(
     ) -> Dict[str, Any]:
         """Execute a read-only SQL query against an external data source.
 
+        Runs against the **live** database instance (not indexed rows). The
+        `connector_id` and table schema come from the indexed `SQL_TABLE` record
+        shown in context — use that schema to construct the query. This tool is
+        distinct from `mariadb__execute_query` and `database_sandbox__execute_sqlite`:
+        use this when an indexed SQL_TABLE record provides the connector context.
+
         Supported sources: PostgreSQL, Snowflake, MariaDB.
 
         IMPORTANT — connector_id is required:
@@ -668,7 +674,7 @@ def create_execute_query_tool(
         - One connector per call. If tables live in different connectors, make
           separate calls and merge results yourself.
         - Only SELECT / read-only queries are allowed.
-        
+
         Args:
             query: The SQL query to execute (SELECT queries only for safety)
             source_name: Name of the data source (e.g., 'PostgreSQL', 'Snowflake', 'MariaDB')

@@ -992,7 +992,11 @@ class IGraphDBProvider(ABC):
         status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1005,9 +1009,17 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return
             offset (int): Number of records to skip
             transaction (Optional[Any]): Optional transaction context
+            record_group_id (Optional[str]): Scope results to a specific record group
+            is_placeholder (Optional[bool]): Filter on placeholder flag - True returns only 
+                        stubs, False excludes them, None ignores the flag
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Dict]: List of records matching the status filters
+            list[Record]: Typed records matching the filters, sorted by key.
         """
         pass
 
@@ -1107,14 +1119,68 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def reset_indexing_status_to_queued_for_record_ids(
-        self, record_ids: list[str]
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str
     ) -> None:
         """
-        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
+        Set indexingStatus to the specified status for each id (deduplicated).
         Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
-        for a single record. Used before reindex (API and batched sync). Skips missing records;
-        logs errors without raising.
+        for a single record. Generic method for updating record status during reindex operations.
+        Skips missing records; logs errors without raising.
+        
+        Args:
+            record_ids: List of record IDs to update
+            status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+        """
+        pass
+
+    @abstractmethod
+    async def compare_and_set_indexing_status(
+        self,
+        record_ids: list[str],
+        expected: str,
+        new_status: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        Atomically set indexingStatus to `new_status` on each id, but only while that
+        id still holds `expected`. One round-trip regardless of how many ids.
+
+        Publishing to the message broker and updating the record are two writes to
+        two systems, so they cannot be made atomic. The indexing service may consume
+        the event and advance the record (IN_PROGRESS, COMPLETED) before the producer
+        gets to mark it QUEUED. An unconditional write would clobber that and strand
+        the record at QUEUED forever, so the write has to be conditional rather than
+        merely ordered.
+
+        Args:
+            record_ids: Record keys to attempt the swap on. Pass a one-element list
+                        for a single record.
+            expected: Status a record must currently hold for its write to apply
+            new_status: Status to write
+            transaction: Optional transaction context
+
+        Returns:
+            list[str]: The ids actually updated. Ids absent from the result held some
+                       other status and were left alone - a normal outcome, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def get_existing_record_keys(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """
+        Return the subset of record_ids that exist, in one round-trip.
+
+        Args:
+            record_ids: Record keys to check
+            transaction: Optional transaction context
+
+        Returns:
+            set[str]: Keys that exist. Missing ids are simply absent.
         """
         pass
 
@@ -1239,6 +1305,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -1263,6 +1331,11 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
             List[Record]: List of properly typed Record instances. Origin is not
@@ -1283,6 +1356,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -1303,9 +1378,14 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Record]: List of properly typed Record instances
+            List[Record]: List of properly typed Record instances, sorted by key.
         """
         pass
 
@@ -1651,14 +1731,6 @@ class IGraphDBProvider(ABC):
         """Update knowledge base."""
         pass
 
-    @abstractmethod
-    async def delete_knowledge_base(
-        self,
-        kb_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Delete a knowledge base and all nested content."""
-        pass
 
     @abstractmethod
     async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
@@ -1707,17 +1779,6 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def create_folder(
-        self,
-        kb_id: str,
-        folder_name: str,
-        org_id: str,
-        parent_folder_id: str | None = None,
-        transaction: str | None = None,
-    ) -> dict | None:
-        """Create folder with proper RECORDS document and edges."""
-        pass
 
     @abstractmethod
     async def get_folder_contents(
@@ -1739,48 +1800,9 @@ class IGraphDBProvider(ABC):
         """Validate that a folder exists and belongs to the KB."""
         pass
 
-    @abstractmethod
-    async def update_folder(
-        self,
-        folder_id: str,
-        updates: dict,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """Update folder."""
-        pass
 
-    @abstractmethod
-    async def delete_folder(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """Delete a folder and all nested content."""
-        pass
 
-    @abstractmethod
-    async def update_record(
-        self,
-        record_id: str,
-        user_id: str,
-        updates: dict,
-        file_metadata: dict | None = None,
-        transaction: str | None = None,
-    ) -> dict | None:
-        """Update a record by ID with automatic KB and permission detection."""
-        pass
 
-    @abstractmethod
-    async def delete_records(
-        self,
-        record_ids: list[str],
-        kb_id: str,
-        folder_id: str | None = None,
-        transaction: str | None = None,
-    ) -> dict:
-        """Delete multiple records and publish delete events."""
-        pass
 
     @abstractmethod
     async def create_kb_permissions(
@@ -1824,17 +1846,6 @@ class IGraphDBProvider(ABC):
         """Get user's permission role on a KB (direct or via team)."""
         pass
 
-    @abstractmethod
-    async def upload_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        files: list[dict],
-        parent_folder_id: str | None = None,
-    ) -> dict:
-        """Upload records to KB root or a folder."""
-        pass
 
     @abstractmethod
     async def is_record_folder(self, record_id: str, transaction: str | None = None) -> bool:
@@ -1869,25 +1880,7 @@ class IGraphDBProvider(ABC):
         """Delete the incoming PARENT_CHILD edge to a record."""
         pass
 
-    @abstractmethod
-    async def create_parent_child_edge(
-        self,
-        parent_id: str,
-        child_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Create PARENT_CHILD edge from parent to child record."""
-        pass
 
-    @abstractmethod
-    async def update_record_external_parent_id(
-        self,
-        record_id: str,
-        new_parent_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Update record's externalParentId."""
-        pass
 
     @abstractmethod
     async def get_kb_permissions(
@@ -3057,6 +3050,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_records_recursive(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Delete records (files, folders, or any type) and all their containment
+        descendants — the single generic recursive delete for KB and connectors.
+
+        A folder is just a record with children, so there is no folder/file special-casing:
+        each root id is deleted with its whole containment subtree (PARENT_CHILD + ATTACHMENT;
+        reference edges are cleaned but not traversed), scoped by ``connectorId == connector_id``
+        (kb_id for a KB). All edges touching the deleted records are swept, type docs removed
+        from any collection, and a deleteRecord event emitted per record with a virtualRecordId.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_connector_instance(
         self,
         connector_id: str,
@@ -3338,6 +3349,29 @@ class IGraphDBProvider(ABC):
             Tuple of (documents, total_count):
                 - List of connector documents
                 - Total count of matching documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ids of team-scoped apps this user may access.
+
+        Mirrors the team-visibility rules used by
+        :meth:`get_filtered_connector_instances` for non-admin users: an app is
+        accessible when the user has a direct ``userAppRelation`` edge to it, or
+        reaches it through a team ``PERMISSION`` edge. Used to gate read-only
+        access (e.g. connector stats) so it matches connector-list visibility.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of accessible team app ids (empty when the user has none).
         """
         pass
 
@@ -3752,6 +3786,62 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with id, name, nodeType, subType or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Resolve a node to its metadata ONLY if it belongs to org_id and user_key
+        holds any permission role on it.
+
+        Returns a dict with keys: id, name, nodeType, subType, connector,
+        webUrl, recordType, indexingStatus, userRole.
+        Returns None for missing nodes AND for permission-denied — callers
+        must not distinguish between the two cases.
+
+        Args:
+            node_id: Node ID (record _key, recordGroup _key, or app _key)
+            user_key: User's internal key
+            org_id: Organization ID
+            folder_mime_types: MIME types that classify a record as a folder
+            transaction: Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return cross-reference edges (anything except PARENT_CHILD / ATTACHMENT)
+        enriched with recordName, recordType, connectorName, webUrl,
+        permission-filtered and bounded, in a single query.
+
+        Args:
+            record_id: Source record ID (_key)
+            org_id: Organization ID (used to scope results)
+            user_key: User's internal key (used for permission filtering)
+            relation_types: Relation types to include (e.g. LINKED_TO, RELATED, BLOCKS …)
+            limit: Maximum number of results to return
+            transaction: Optional transaction context
+
+        Returns:
+            List of dicts with id, name, recordType, connectorName, webUrl,
+            relationshipType, hasChildren.
         """
         pass
 
@@ -4308,5 +4398,42 @@ class IGraphDBProvider(ABC):
             Dict with ``valid: True`` and context on success, or
             ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
             on failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_locations(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 6,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Batched immediate-parent lookup for a list of record IDs.
+
+        Resolves ONE level of ancestry per record in a single round trip so
+        the retrieval hot-path can annotate results with a breadcrumb without
+        incurring an N+1 per-record query.  Deeper traversal (full breadcrumb
+        trail) uses the existing ``get_knowledge_hub_breadcrumbs`` method.
+
+        Priority order:
+          1. ``parentNodeId`` denormalized field on the record (attachments).
+          2. ``recordGroupId`` denormalized field on the record (project/space).
+          3. Parent Record via recordRelations PARENT_CHILD / ATTACHMENT.
+          4. Parent RecordGroup via belongsTo record→recordGroup.
+          5. Parent App via belongsTo record→app (KB records / no RecordGroup).
+
+        Returns a dict keyed by record_id.  Each value is::
+
+            {
+              "path":     [str],        # [parentName] or [] if root/orphan
+              "parentId": str | None,   # nearest ancestor's node key
+              "truncated": False,       # always False (1-level impl)
+            }
+
+        Records not found in the graph or with a non-matching orgId are
+        omitted from the result (callers should treat missing keys as
+        "no parent known").
         """
         pass

@@ -781,7 +781,7 @@ class TestFetchPermissionsDeep:
                 "permissions": [{"id": "p2", "role": "writer", "type": "user", "emailAddress": "b@t.com"}],
             },
         ])
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 2
         assert is_fallback is False
 
@@ -792,7 +792,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p1", "role": "reader", "type": "anyone", "emailAddress": None},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@t.com"
         )
         assert is_fallback is True
@@ -807,7 +807,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "user@t.com"},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@t.com"
         )
         assert is_fallback is False  # Not fallback since user has explicit permission
@@ -831,7 +831,7 @@ class TestFetchPermissionsDeep:
         mock_resp.status = 500
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
         assert is_fallback is False
 
@@ -848,7 +848,7 @@ class TestFetchPermissionsDeep:
         connector.drive_data_source.permissions_list = AsyncMock(
             side_effect=RuntimeError("network error")
         )
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
 
     async def test_group_permission_maps_external_id_to_email(self, connector):
@@ -858,7 +858,7 @@ class TestFetchPermissionsDeep:
                 {"id": "p1", "role": "reader", "type": "group", "emailAddress": "group@t.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 1
         assert perms[0].entity_type == EntityType.GROUP
         assert perms[0].external_id == "group@t.com"

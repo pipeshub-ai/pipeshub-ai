@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | 高性能な Python Web フレームワーク |
 | LangChain | LLM パイプライン向けフレームワーク |
-| LangGraph | LLM ワークフロー向けの状態グラフ |
 | Qdrant | ベクトル類似度検索エンジン |
 | Neo4j / ArangoDB | グラフデータベース |
 | Kafka / Redis Streams | 分散イベントストリーミングプラットフォーム |
@@ -265,7 +264,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub はどの LLM プロバイダーに対応していますか？
 
-PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain と LangGraph が含まれます。
+PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain が含まれます。
 
 ### ナレッジグラフ検索機能とは何ですか？
 

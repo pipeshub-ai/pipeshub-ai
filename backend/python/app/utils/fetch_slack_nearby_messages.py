@@ -527,6 +527,10 @@ def create_fetch_slack_nearby_messages_tool(
     ) -> FetchSlackNearbyMessagesResult:
         """Fetch Slack channel messages adjacent to an ISO anchor time.
 
+        Calls the **live** Slack API using the `connector_id` from the indexed
+        record. Results are raw API messages with no Citation IDs — do not cite
+        them with ref tokens.
+
         ``before`` loads messages immediately before ``timestamp``; ``after`` loads
         messages immediately after it. Each message includes ``timestamp`` /
         ``iso_timestamp`` in UTC. To page further in the same direction, call again

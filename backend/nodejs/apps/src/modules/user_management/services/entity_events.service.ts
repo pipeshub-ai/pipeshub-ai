@@ -38,6 +38,7 @@ export interface OrgAddedEvent {
   orgId: string;
   accountType: AccountType;
   registeredName: string;
+  userId?: string;
 }
 export interface OrgUpdatedEvent {
   orgId: string;

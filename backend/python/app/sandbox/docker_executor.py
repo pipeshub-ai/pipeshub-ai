@@ -266,6 +266,10 @@ class DockerExecutor(BaseExecutor):
                 detach=True,
             )
             try:
+                if language == SandboxLanguage.PYTHON:
+                    container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
+                elif language == SandboxLanguage.TYPESCRIPT:
+                    container.put_archive("/", _tar_empty_dir("install", mode=0o777))
                 container.start()
                 exit_info = container.wait(timeout=timeout + 30)
                 exit_code = exit_info.get("StatusCode", -1)
@@ -398,8 +402,9 @@ class DockerExecutor(BaseExecutor):
                 detach=True,
             )
 
-            # Inject source files and create output directory inside the
-            # container (avoids host-path volume mounts entirely).
+            # Ensure /src is writable by the sandbox user, then inject source
+            # files and create the output directory (no host-path volume mounts).
+            container.put_archive("/", _tar_empty_dir("src", mode=0o777))
             container.put_archive("/src", _tar_directory(src_dir))
             container.put_archive("/", _tar_empty_dir("output", mode=0o777))
             if deps_tar and deps_target:

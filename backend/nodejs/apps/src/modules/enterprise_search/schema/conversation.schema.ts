@@ -8,6 +8,24 @@ import {
 } from '../types/conversation.interfaces';
 import { CONFIDENCE_LEVELS } from '../constants/constants';
 
+const toolCallItemSchema = new Schema(
+  {
+    toolName: { type: String, required: true },
+    toolResult: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
+// Chain-of-thought turns (opt-out on the Python side — see reasoning_persistence.py).
+const reasoningTurnSchema = new Schema(
+  {
+    messageId: { type: String },
+    turnIndex: { type: Number },
+    content: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const followUpQuestionSchema = new Schema<IFollowUpQuestion>(
   {
     question: { type: String, required: true },
@@ -96,12 +114,12 @@ const feedbackSchema = new Schema<IFeedback>(
 // Schema for reference data items (IDs for follow-up queries)
 const referenceDataItemSchema = new Schema(
   {
-    name: { type: String, required: false },  // Display name
-    id: { type: String, required: false },    // Technical ID (numeric ID, UUID, etc.) - Optional
-    type: { type: String },                  // Item type (e.g., "project", "issue", "file", "notebook", "page")
-    app: { type: String },                   // Application name (jira, confluence, sharepoint, slack, etc.)
-    webUrl: { type: String },               // Web URL to open the item in the browser
-    metadata: { type: Map, of: String },    // App-specific fields (e.g. key for Jira, siteId for SharePoint)
+    name: { type: String, required: false }, // Display name
+    id: { type: String, required: false }, // Technical ID (numeric ID, UUID, etc.) - Optional
+    type: { type: String }, // Item type (e.g., "project", "issue", "file", "notebook", "page")
+    app: { type: String }, // Application name (jira, confluence, sharepoint, slack, etc.)
+    webUrl: { type: String }, // Web URL to open the item in the browser
+    metadata: { type: Map, of: String }, // App-specific fields (e.g. key for Jira, siteId for SharePoint)
   },
   { _id: false },
 );
@@ -117,15 +135,21 @@ const attachmentRefSchema = new Schema(
   { _id: false },
 );
 
-
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
       type: String,
-      enum: ['user_query', 'bot_response', 'error', 'feedback', 'system'],
+      enum: [
+        'user_query',
+        'bot_response',
+        'error',
+        'feedback',
+        'system',
+        'tool_call',
+      ],
       required: true,
     },
-    content: { type: String, required: true },
+    content: { type: String, default: '' },
     contentFormat: {
       type: String,
       enum: ['MARKDOWN', 'JSON', 'HTML'],
@@ -148,12 +172,39 @@ const messageSchema = new Schema<IMessage>(
       modelFriendlyName: { type: String },
     },
     appliedFilters: {
-      apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
-      kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      apps: [
+        {
+          id: String,
+          name: String,
+          nodeType: String,
+          connector: String,
+          _id: false,
+        },
+      ],
+      kb: [
+        {
+          id: String,
+          name: String,
+          nodeType: String,
+          connector: String,
+          _id: false,
+        },
+      ],
     },
     attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
+    // Tool call data for tool_call messageType
+    tools: [toolCallItemSchema],
+    // Persisted chain-of-thought (additive, opt-out — see reasoningTurnSchema).
+    reasoning: [reasoningTurnSchema],
+    // Ordered agent-activity transcript (additive, `agui` protocol only) --
+    // now populated for internal_search/web_search/universal-agent turns
+    // too, since all three run through the same agent loop as agent-key
+    // conversations. `Mixed` for the same reason as agent.conversation.
+    // schema.ts's identical field: shape varies by `type`, and `sub_agent`
+    // nests the same shape recursively.
+    parts: [Schema.Types.Mixed],
   },
   { timestamps: true },
 );

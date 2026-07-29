@@ -41,6 +41,10 @@ export type FailReasonType =
 export const PIPESHUB_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',
+  // Universal (non-scoped-agent) "Agent" query mode -- Python's agent loop
+  // decides internal-search vs web-search vs both per query. See
+  // `frontend/.../chat/types.ts::StreamChatModePayload`.
+  AGENT: 'agent',
   DEEP: 'deep',
   QUICK: 'quick',
   VERIFICATION: 'verification',

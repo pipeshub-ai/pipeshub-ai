@@ -7,6 +7,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.services.parsing.interface import ParseResult
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
 class XLSParser:
@@ -21,8 +22,15 @@ class XLSParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        xlsx_bytes = self.convert_xls_to_xlsx(content)
+        xlsx_bytes = await self.convert_xls_to_xlsx_async(content)
         return await self._excel_parser.parse(xlsx_bytes, record_name)
+
+    async def convert_xls_to_xlsx_async(self, binary: bytes) -> bytes:
+        """Async .xls -> .xlsx conversion for use on an event loop (e.g. the
+        parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
+        rationale.
+        """
+        return await convert_with_libreoffice(binary, "xls", "xlsx")
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:
         """

@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | 高性能的 Python Web 框架 |
 | LangChain | 用于 LLM 流水线的框架 |
-| LangGraph | 用于 LLM 工作流的状态图 |
 | Qdrant | 向量相似度搜索引擎 |
 | Neo4j / ArangoDB | 图数据库 |
 | Kafka / Redis Streams | 分布式事件流平台 |
@@ -265,7 +264,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub 支持哪些 LLM 提供商？
 
-PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。技术栈包括用于 LLM 流水线和工作流的 LangChain 与 LangGraph。
+PipesHub 是“自带模型”——你可以使用任意 LLM 提供商。在你的 VPC 中部署你偏好的模型。技术栈包括用于 LLM 流水线和工作流的 LangChain。
 
 ### 什么是知识图谱检索功能？
 

@@ -470,6 +470,10 @@ function GridCard({
               <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
                 <FolderIcon variant="default" size={20} color="var(--emerald-11)" />
               </Box>
+            ) : isKnowledgeHubNode(item) && item.isPlaceholder ? (
+              <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
+                <MaterialIcon name="description" size={24} color="var(--slate-9)" />
+              </Box>
             ) : (
               <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
                 <FileIcon

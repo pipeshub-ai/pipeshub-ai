@@ -88,9 +88,34 @@ class TestCreateParsersExtended:
                 "doc", "pptx", "ppt", "html", "md", "mdx",
                 "csv", "tsv", "xlsx", "xls",
                 "png", "jpg", "jpeg", "webp", "svg", "heic", "heif",
+                "sql_table", "sql_view",
+                "json", "yaml", "yml",
             ]
             for key in expected_keys:
                 assert key in parsers, f"Missing parser for extension: {key}"
+
+    @pytest.mark.asyncio
+    async def test_json_and_yaml_parsers_registered(self):
+        """Indexing create_parsers must wire JSON/YAML so events routing can resolve them."""
+        from app.modules.parsers.json.json_parser import JSONParser
+        from app.modules.parsers.yaml.yaml_parser import YAMLParser
+
+        cu = ContainerUtils()
+        with patch("app.containers.utils.utils.DocParser"), \
+             patch("app.containers.utils.utils.PPTXParser"), \
+             patch("app.containers.utils.utils.PPTParser"), \
+             patch("app.containers.utils.utils.HTMLParser"), \
+             patch("app.containers.utils.utils.MarkdownParser"), \
+             patch("app.containers.utils.utils.MDXParser"), \
+             patch("app.containers.utils.utils.CSVParser"), \
+             patch("app.containers.utils.utils.ExcelParser"), \
+             patch("app.containers.utils.utils.XLSParser"), \
+             patch("app.containers.utils.utils.ImageParser"):
+            parsers = await cu.create_parsers(MagicMock(), MagicMock())
+
+            assert isinstance(parsers["json"], JSONParser)
+            assert isinstance(parsers["yaml"], YAMLParser)
+            assert isinstance(parsers["yml"], YAMLParser)
 
     @pytest.mark.asyncio
     async def test_image_parsers_share_same_instance(self):

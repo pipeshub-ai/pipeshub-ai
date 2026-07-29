@@ -44,7 +44,9 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -80,6 +82,7 @@ from app.connectors.core.registry.filters import (
     FilterOption,
     FilterOptionsResponse,
     FilterType,
+    IndexingFilterKey,
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
@@ -128,14 +131,30 @@ if TYPE_CHECKING:
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
-PAGE_SIZE_MESSAGES          = 100
+PAGE_SIZE_MESSAGES          = 200
 PAGE_SIZE_THREADS           = 200
-PAGE_SIZE_USERS             = 200
-PAGE_SIZE_CHANNELS          = 200
+PAGE_SIZE_USERS             = 500
+PAGE_SIZE_CHANNELS          = 500
 PAGE_SIZE_MEMBERS           = 200
-RATE_LIMIT_CALLS_PER_MINUTE = 50
+
+CHANNEL_TYPE_LABEL_TO_API = {
+    "public channel": "public_channel",
+    "private channel": "private_channel",
+    "Direct Messages": "im",
+    "Group Direct Messages": "mpim",
+}
+ALL_CHANNEL_API_TYPES = set(CHANNEL_TYPE_LABEL_TO_API.values())
+
+SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
+    2: 20,
+    3: 50,
+    4: 100,
+}
+RATE_LIMIT_HEADROOM = 0.9
 
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
+MAX_CONCURRENT_USER_INFO = 10
+_USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
 
 
 def _numeric_epoch_to_ms(value: int | float | str | None) -> int | None:
@@ -191,30 +210,65 @@ class DeferredThread:
     rg_id: Optional[str]
 
 
-class RateLimiter:
-    """Sliding-window rate limiter shared across the entire connector instance."""
+class Tier(IntEnum):
+    """Slack Web API rate-limit tier."""
 
-    def __init__(self, calls_per_minute: int = RATE_LIMIT_CALLS_PER_MINUTE,
-                 logger: Optional[Logger] = None) -> None:
-        self.calls_per_minute = calls_per_minute
-        self._call_times: list[datetime] = []
+    T2 = 2
+    T3 = 3
+    T4 = 4
+
+
+class RateLimiter:
+    """Per-tier sliding-window limiter for Slack's Web API."""
+
+    def __init__(
+        self,
+        limits: Optional[dict[int, int]] = None,
+        headroom: float = RATE_LIMIT_HEADROOM,
+        logger: Optional[Logger] = None,
+    ) -> None:
+        src = limits if limits is not None else SLACK_TIER_LIMITS_PER_MINUTE
+        self._limits = {
+            tier: max(1, int(limit * headroom))
+            for tier, limit in src.items()
+        }
+        self._calls: dict[int, list[datetime]] = {
+            tier: [] for tier in self._limits
+        }
+        self._locks: dict[int, asyncio.Lock] = {
+            tier: asyncio.Lock() for tier in self._limits
+        }
         self._logger = logger
 
-    async def acquire(self) -> None:
-        now = datetime.now()
-        # Evict stale entries
-        self._call_times = [t for t in self._call_times if now - t < timedelta(minutes=1)]
+    async def acquire(self, tier: Tier) -> None:
+        key = int(tier)
+        async with self._locks[key]:
+            window = self._calls[key]
+            now = datetime.now()
+            window[:] = [
+                call_time
+                for call_time in window
+                if now - call_time < timedelta(minutes=1)
+            ]
 
-        if len(self._call_times) >= self.calls_per_minute:
-            wait = (self._call_times[0] + timedelta(minutes=1) - now).total_seconds()
-            if wait > 0:
-                if self._logger:
-                    self._logger.debug(f"⏱️  Rate limit — waiting {wait:.2f}s")
-                await asyncio.sleep(wait)
-                return await self.acquire()
+            if len(window) >= self._limits[key]:
+                wait = (
+                    window[0] + timedelta(minutes=1) - now
+                ).total_seconds()
+                if wait > 0:
+                    if self._logger:
+                        self._logger.debug(
+                            f"⏱️  Tier {key} rate limit — waiting {wait:.2f}s"
+                        )
+                    await asyncio.sleep(wait)
+                    now = datetime.now()
+                    window[:] = [
+                        call_time
+                        for call_time in window
+                        if now - call_time < timedelta(minutes=1)
+                    ]
 
-        self._call_times.append(now)
-        return None
+            window.append(datetime.now())
 
 
 # ── Connector declaration ──────────────────────────────────────────────────────
@@ -279,9 +333,9 @@ class RateLimiter:
             name="channel_types", display_name="Channel Types",
             description="Filter by channel type (public, private, DM, group DM)",
             filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
-            options=["public_channel", "private_channel", "im", "mpim"],
+            options=list(CHANNEL_TYPE_LABEL_TO_API),
             option_source_type=OptionSourceType.STATIC,
-            default_value=["public_channel", "private_channel", "im", "mpim"]))
+            default_value=list(CHANNEL_TYPE_LABEL_TO_API)))
         .add_filter_field(FilterField(
             name="sync_window",
             display_name="Sync Messages From",
@@ -299,6 +353,18 @@ class RateLimiter:
             name="threads", display_name="Index Threads",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
             description="Enable indexing of thread replies", default_value=True))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.DIRECT_MESSAGES.value,
+            display_name="Index Direct Messages",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
+            description="Enable indexing of 1:1 direct messages",
+            default_value=True))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.GROUP_DIRECT_MESSAGES.value,
+            display_name="Index Group Direct Messages",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
+            description="Enable indexing of group direct messages",
+            default_value=True))
         .add_filter_field(FilterField(
             name="files", display_name="Index Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING,
@@ -340,11 +406,14 @@ class SlackIndividualConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
+        scope: str,
+        created_by: str,
     ) -> None:
         super().__init__(
             SlackApp(connector_id), logger,
             data_entities_processor, data_store_provider,
             config_service, connector_id,
+            scope, created_by,
         )
 
         self.connector_id = connector_id
@@ -358,6 +427,7 @@ class SlackIndividualConnector(BaseConnector):
         # Authenticated user identity (set in init() via auth.test)
         self.authenticated_user_id:    Optional[str] = None
         self.authenticated_user_email: Optional[str] = None
+        self.authenticated_user_name:  Optional[str] = None
 
         # ── Sync points ──────────────────────────────────────────────────────
         def _sp(t: SyncDataPointType) -> SyncPoint:
@@ -388,12 +458,20 @@ class SlackIndividualConnector(BaseConnector):
         # Key: Slack user_id  Value: user full_name
         # Used to replace @mentions in message content with display names.
         self.user_id_to_name_cache:        dict[str, str] = {}
+        # Slack user IDs marked deleted/deactivated in users.list.
+        self.deactivated_user_ids:         set[str] = set()
         # Populated during _sync_channels(); extended lazily.
         self.channel_groups_cache:         dict[str, str] = {}
         # Populated during _sync_channels().
         # Key: Slack channel_id  Value: channel name
         # Used to replace channel mentions in message content.
         self.channel_id_to_name_cache:     dict[str, str] = {}
+        # Key: Slack channel_id  Value: im, mpim, or channel.
+        self.channel_type_cache:           dict[str, str] = {}
+
+        # ── Channel-filter cache ──────────────────────────────────────────
+        self.channel_filter_cache: dict[str, dict[str, str]] = {}
+        self._cache_rebuild_event: Optional[asyncio.Event] = None
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -457,20 +535,56 @@ class SlackIndividualConnector(BaseConnector):
             self.data_source = SlackDataSource(self.external_client)
 
             ds = await self._fresh_datasource()
-            resp = await ds.team_info()
-            if resp and resp.success:
-                team = resp.data.get("team", {})
-                self.workspace_domain = team.get("domain")
-                self.team_id = team.get("id")
-                self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
-
-            # Identify the authenticated user via auth.test
             auth_resp = await ds.auth_test()
             if auth_resp and auth_resp.success:
-                self.authenticated_user_id = auth_resp.data.get("user_id")
+                auth_data = auth_resp.data or {}
+                self.authenticated_user_id = auth_data.get("user_id")
+                self.team_id = auth_data.get("team_id")
+                auth_url = auth_data.get("url", "")
+                if auth_url:
+                    try:
+                        host = urlparse(auth_url).hostname or ""
+                        if host.endswith(".slack.com"):
+                            self.workspace_domain = host.replace(".slack.com", "")
+                    except Exception:
+                        pass
+                self.logger.info(
+                    f"Workspace: {self.workspace_domain} ({self.team_id})"
+                )
                 self.logger.info(
                     f"Authenticated user: {self.authenticated_user_id}"
                 )
+                if self.authenticated_user_id:
+                    try:
+                        user_resp = await ds.users_info(
+                            user=self.authenticated_user_id
+                        )
+                        if user_resp and user_resp.success:
+                            profile = (
+                                (user_resp.data or {})
+                                .get("user", {})
+                                .get("profile", {})
+                            )
+                            self.authenticated_user_email = (
+                                profile.get("email") or ""
+                            ).strip() or None
+                            self.authenticated_user_name = (
+                                profile.get("real_name")
+                                or profile.get("display_name")
+                                or self.authenticated_user_id
+                            )
+                        else:
+                            self.logger.warning(
+                                "users.info failed for authenticated user %s: %s",
+                                self.authenticated_user_id,
+                                getattr(user_resp, "error", "no response"),
+                            )
+                    except Exception as exc:
+                        self.logger.warning(
+                            "Could not fetch Slack profile for authenticated user %s: %s",
+                            self.authenticated_user_id,
+                            exc,
+                        )
             else:
                 self.logger.warning(
                     f"⚠️  auth.test failed: {getattr(auth_resp, 'error', 'no response')}"
@@ -489,7 +603,8 @@ class SlackIndividualConnector(BaseConnector):
             raise RuntimeError("Call init() first.")
 
         cfg = await self.config_service.get_config(
-            f"/services/connectors/{self.connector_id}/config"
+            f"/services/connectors/{self.connector_id}/config",
+            use_cache=True,
         )
         if not cfg:
             raise RuntimeError("Connector config not found.")
@@ -560,47 +675,34 @@ class SlackIndividualConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack", self.connector_id, self.logger
             )
+            self.logger.info(
+                "sync_filters: %s", self.sync_filters
+            )
 
             # Phase 1 — Users (warms all user caches as a side-effect)
             # Only the authenticated user gets an AppUser node + User-App edge.
             # All other workspace members are cached in-memory only (for @mention
             # text replacement and display names).
-
-
-            if not self.authenticated_user_email:
-                self.logger.info(
-                    "Getting email for authenticated user"
-                )
-                try:
-                    creator = await self.data_entities_processor.get_app_creator_user(
-                        self.connector_id
-                    )
-                    if creator and getattr(creator, "email", None):
-                        self.authenticated_user_email = creator.email
-                        self.logger.info(
-                            f"Using connector creator email for permissions: {self.authenticated_user_email}"
-                        )
-                    elif creator:
-                        self.logger.warning(
-                            "Error: creator user has no email."
-                        )
-                    else:
-                        self.logger.warning(
-                            "Error: no creator user found for this connector."
-                        )
-                except Exception:
-                    self.logger.warning(
-                        f"⚠️  Could not resolve email for authenticated user "
-                        f"{self.authenticated_user_id}"
-                    )
             await self._sync_users()
+            if not self.authenticated_user_email:
+                raise RuntimeError(
+                    "Cannot proceed: authenticated user email could not be resolved. "
+                    "Aborting sync to prevent creating inaccessible records."
+                )
             # Phase 2 — Channels → RecordGroups + HAS_PERMISSION (auth user only)
             channels = await self._sync_channels()
 
             # Phase 3 — Messages per channel (per-RecordGroup sync point)
             for rg in channels:
                 if rg.external_group_id:
-                    await self.sync_channel_messages(rg.external_group_id)
+                    try:
+                        await self.sync_channel_messages(rg.external_group_id)
+                    except Exception as exc:
+                        self.logger.error(
+                            f"Channel message sync failed for "
+                            f"{rg.external_group_id}: {exc}",
+                            exc_info=True,
+                        )
 
             # Phase 4 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
@@ -616,34 +718,50 @@ class SlackIndividualConnector(BaseConnector):
     # =========================================================================
 
     async def _sync_users(self) -> None:
-        """
-        Individual connector: sync the connector creator as the single AppUser (User→App edge).
-        No Slack API call — we use the auth user we already have (creator).
-        """
+        """Sync the authenticated Slack user as the connector's AppUser."""
         self.logger.info("👥 Syncing user…")
         self.user_id_to_email_cache.clear()
         self.user_id_to_internal_id_cache.clear()
         self.user_id_to_name_cache.clear()
 
-        creator = await self.data_entities_processor.get_app_creator_user(self.connector_id)
-        if creator and getattr(creator, "email", None):
-            now = get_epoch_timestamp_in_ms()
-            creator_app_user = AppUser(
-                app_name=Connectors.SLACK,
-                connector_id=self.connector_id,
-                source_user_id=getattr(creator, "id", "") or "creator",
-                org_id=self.data_entities_processor.org_id,
-                email=creator.email,
-                full_name=getattr(creator, "full_name", None) or creator.email,
-                is_active=True,
-                created_at=now,
-                updated_at=now,
+        email = self.authenticated_user_email
+        if not email:
+            try:
+                creator = await self.data_entities_processor.get_app_creator_user(
+                    self.connector_id
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not resolve connector creator email: %s", exc
+                )
+                creator = None
+            if creator and getattr(creator, "email", None):
+                email = creator.email
+                self.authenticated_user_email = email
+
+        slack_uid = self.authenticated_user_id
+        if not slack_uid or not email:
+            self.logger.error(
+                "Cannot sync user: missing Slack user ID or email"
             )
-            await self.data_entities_processor.on_new_app_users([creator_app_user])
-            self.authenticated_user_email = creator.email
-            self.user_id_to_email_cache[creator_app_user.source_user_id] = creator.email
-            if creator_app_user.full_name:
-                self.user_id_to_name_cache[creator_app_user.source_user_id] = creator_app_user.full_name
+            return
+
+        now = get_epoch_timestamp_in_ms()
+        app_user = AppUser(
+            app_name=Connectors.SLACK,
+            connector_id=self.connector_id,
+            source_user_id=slack_uid,
+            org_id=self.data_entities_processor.org_id,
+            email=email,
+            full_name=self.authenticated_user_name or email,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+        await self.data_entities_processor.on_new_app_users([app_user])
+        self.user_id_to_email_cache[slack_uid] = email
+        if app_user.full_name:
+            self.user_id_to_name_cache[slack_uid] = app_user.full_name
 
         await self._build_user_id_caches()
         await self._warm_all_user_caches()
@@ -733,10 +851,11 @@ class SlackIndividualConnector(BaseConnector):
         self.logger.info("🔄 Warming user caches from Slack API…")
         count = 0
         cursor: Optional[str] = None
+        self.deactivated_user_ids.clear()
 
         try:
             while True:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
                 if not resp or not resp.success:
@@ -749,6 +868,8 @@ class SlackIndividualConnector(BaseConnector):
                     uid = m.get("id")
                     if not uid:
                         continue
+                    if m.get("deleted"):
+                        self.deactivated_user_ids.add(uid)
                     # Include bots and deactivated users so their DM labels
                     # and @mentions resolve to names rather than raw IDs.
                     profile = m.get("profile", {})
@@ -778,6 +899,45 @@ class SlackIndividualConnector(BaseConnector):
         except Exception as exc:
             self.logger.error(f"❌ Failed to warm user caches: {exc}", exc_info=True)
 
+    async def _sync_deactivated_user_ids(self) -> None:
+        """Refresh deactivated Slack user IDs used to hide stale DM filter options."""
+        self.deactivated_user_ids.clear()
+        cursor: Optional[str] = None
+
+        try:
+            while True:
+                await self.rate_limiter.acquire(Tier.T2)
+                ds = await self._fresh_datasource()
+                resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
+                if not resp or not resp.success:
+                    self.logger.warning(
+                        "users.list failed while loading deactivated users: %s",
+                        getattr(resp, "error", "no response"),
+                    )
+                    break
+
+                for member in (resp.data or {}).get("members", []):
+                    uid = member.get("id")
+                    if uid and member.get("deleted"):
+                        self.deactivated_user_ids.add(uid)
+
+                cursor = (resp.data or {}).get(
+                    "response_metadata", {}
+                ).get("next_cursor", "")
+                if not cursor:
+                    break
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to refresh deactivated user IDs for channel filter: %s",
+                exc,
+            )
+
+    def _should_include_channel_in_filter(self, ch: dict[str, Any]) -> bool:
+        if not ch.get("is_im"):
+            return True
+        peer_id = ch.get("user", "")
+        return not peer_id or peer_id not in self.deactivated_user_ids
+
     # =========================================================================
     # 3.  Channel sync → RecordGroups + HAS_PERMISSION edges
     # =========================================================================
@@ -803,22 +963,36 @@ class SlackIndividualConnector(BaseConnector):
             elif op == FilterOperator.NOT_IN:
                 exclude_ids = set(ch_filter.get_value() or [])
 
-        # Apply channel_types filter (public, private, im, mpim)
+        # Apply channel_types filter (public, private, im, mpim).
+        # NOT_IN is inverted to IN against the fixed 4-type universe.
+        # Empty value = no explicit selection → default to all types.
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[set[str]] = None
+        allowed_types: set[str] | None = None
         if ch_types_filter is not None:
-            allowed_types = set(ch_types_filter.get_value() or [])
+            raw = {
+                CHANNEL_TYPE_LABEL_TO_API.get(value, value)
+                for value in ch_types_filter.get_value() or []
+            }
+            if raw:
+                if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
+                    allowed_types = ALL_CHANNEL_API_TYPES - raw
+                else:
+                    allowed_types = raw
+                if not allowed_types:
+                    self.logger.info("channel_types filter excludes all types — nothing to sync")
+                    return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel,im,mpim"
 
-        # Clear channel name cache
+        self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
+        self.channel_type_cache.clear()
 
         cursor: Optional[str] = None
         record_groups: list[RecordGroup] = []
         total = 0
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T2)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_list(
                 exclude_archived=True,
@@ -848,10 +1022,25 @@ class SlackIndividualConnector(BaseConnector):
                 cid = cd.get("id")
                 if not cid:
                     continue
+                if not self._should_include_channel_in_filter(cd):
+                    continue
+                if (
+                    not cd.get("is_im")
+                    and not cd.get("is_mpim")
+                    and not cd.get("is_member")
+                ):
+                    continue
                 if include_ids and cid not in include_ids:
                     continue
 
                 try:
+                    if cd.get("is_im"):
+                        self.channel_type_cache[cid] = "im"
+                    elif cd.get("is_mpim"):
+                        self.channel_type_cache[cid] = "mpim"
+                    else:
+                        self.channel_type_cache[cid] = "channel"
+
                     rg = self._to_channel_record_group(cd)
                     if not rg:
                         continue
@@ -920,7 +1109,7 @@ class SlackIndividualConnector(BaseConnector):
 
         while True:
             try:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T4)
                 ds   = await self._fresh_datasource()
                 resp = await ds.conversations_members(
                     channel=channel_id,
@@ -1075,6 +1264,40 @@ class SlackIndividualConnector(BaseConnector):
     # 4.  Messages (per-RecordGroup / per-channel sync point)
     # =========================================================================
 
+    def _is_channel_indexing_enabled(self, channel_id: str) -> bool:
+        channel_type = self.channel_type_cache.get(channel_id)
+        if channel_type == "im":
+            return self.indexing_filters.is_enabled(
+                IndexingFilterKey.DIRECT_MESSAGES
+            )
+        if channel_type == "mpim":
+            return self.indexing_filters.is_enabled(
+                IndexingFilterKey.GROUP_DIRECT_MESSAGES
+            )
+        return True
+
+    def _apply_record_indexing_filters(
+        self,
+        records: list[tuple[Record, list[Permission]]],
+        channel_id: str,
+        *,
+        message_key: IndexingFilterKey,
+    ) -> None:
+        channel_enabled = self._is_channel_indexing_enabled(channel_id)
+        message_enabled = self.indexing_filters.is_enabled(message_key)
+        file_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+        link_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.LINKS)
+
+        for record, _ in records:
+            if not channel_enabled:
+                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            elif record.record_type == RecordType.MESSAGE and not message_enabled:
+                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            elif record.record_type == RecordType.FILE and not file_enabled:
+                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            elif record.record_type == RecordType.LINK and not link_enabled:
+                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
     async def sync_channel_messages(self, channel_id: str) -> None:
         """
         Incremental message sync for one channel.
@@ -1111,17 +1334,13 @@ class SlackIndividualConnector(BaseConnector):
             rate_limiter=self.rate_limiter,
         )
 
-        msg_enabled  = self.indexing_filters.is_enabled("messages")
-        file_enabled = self.indexing_filters.is_enabled("files")
-        link_enabled = self.indexing_filters.is_enabled("links")
-
         cursor:     Optional[str] = None
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
         total_msgs = 0
         all_deferred_threads: list[DeferredThread] = []
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=channel_id,
@@ -1153,14 +1372,11 @@ class SlackIndividualConnector(BaseConnector):
 
             records, deferred_threads = await self._process_message_batch(msgs, ctx)
 
-            # Apply indexing filters
-            for rec, _ in records:
-                if rec.record_type == RecordType.MESSAGE and not msg_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.FILE and not file_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.LINK and not link_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            self._apply_record_indexing_filters(
+                records,
+                channel_id,
+                message_key=IndexingFilterKey.MESSAGES,
+            )
 
             await self._enrich_link_records_linked_id(records)
             if records:
@@ -1263,6 +1479,7 @@ class SlackIndividualConnector(BaseConnector):
     ) -> tuple[list[tuple[Record, list[Permission]]], list[DeferredThread]]:
         out: list[tuple[Record, list[Permission]]] = []
         deferred_threads: list[DeferredThread] = []
+        await self._warm_user_cache_for_messages(msgs, ctx)
         for burst in self._detect_bursts(msgs):
             if burst.message_count > 1:
                 recs, threads = await self._process_burst(burst, ctx)
@@ -1311,7 +1528,12 @@ class SlackIndividualConnector(BaseConnector):
 
         # Prefix the message content with the author name
         user_id = msg.get("user", "")
-        author_name = ctx.user_id_to_name.get(user_id) or ctx.user_id_to_email.get(user_id) or user_id
+        author_name = (
+            ctx.user_id_to_name.get(user_id)
+            or ctx.user_id_to_email.get(user_id)
+            or self._bot_display_name(msg)
+            or user_id
+        )
         if author_name and text:
             block_data = f"**{author_name}**: {text}"
         elif author_name:
@@ -1532,7 +1754,7 @@ class SlackIndividualConnector(BaseConnector):
         seen:    set[str] = set()
 
         while True:
-            await ctx.rate_limiter.acquire()
+            await ctx.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             kwargs: dict[str, Any] = dict(
                 channel=channel_id, ts=thread_ts,
@@ -1699,6 +1921,7 @@ class SlackIndividualConnector(BaseConnector):
 
         replies = await self._fetch_thread_replies_raw(ctx.channel_id, ts, ctx)
         all_msgs = [parent_msg] + replies
+        await self._warm_user_cache_for_messages(all_msgs, ctx)
         self.logger.info(
             f"[ThreadProcess] Fetched {len(replies)} replies for thread ts={ts}"
         )
@@ -1770,16 +1993,11 @@ class SlackIndividualConnector(BaseConnector):
             burst_rec.involved_user_source_ids = burst_authors
 
         if burst_recs_batch:
-            thread_enabled = self.indexing_filters.is_enabled("threads")
-            file_enabled = self.indexing_filters.is_enabled("files")
-            link_enabled = self.indexing_filters.is_enabled("links")
-            for rec, _ in burst_recs_batch:
-                if rec.record_type == RecordType.MESSAGE and not thread_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.FILE and not file_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.LINK and not link_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            self._apply_record_indexing_filters(
+                burst_recs_batch,
+                ctx.channel_id,
+                message_key=IndexingFilterKey.THREADS,
+            )
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
             burst_msg_count = sum(
@@ -1819,6 +2037,7 @@ class SlackIndividualConnector(BaseConnector):
         )
         if not new_replies:
             return
+        await self._warm_user_cache_for_messages(new_replies, ctx)
 
         self.logger.info(
             f"  Thread {thread_ts}: {len(new_replies)} new replies "
@@ -1888,16 +2107,11 @@ class SlackIndividualConnector(BaseConnector):
             burst_rec.involved_user_source_ids = burst_authors
 
         if burst_recs_batch:
-            thread_enabled = self.indexing_filters.is_enabled("threads")
-            file_enabled = self.indexing_filters.is_enabled("files")
-            link_enabled = self.indexing_filters.is_enabled("links")
-            for rec, _ in burst_recs_batch:
-                if rec.record_type == RecordType.MESSAGE and not thread_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.FILE and not file_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                elif rec.record_type == RecordType.LINK and not link_enabled:
-                    rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            self._apply_record_indexing_filters(
+                burst_recs_batch,
+                ctx.channel_id,
+                message_key=IndexingFilterKey.THREADS,
+            )
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
             await self.data_entities_processor.on_new_records(burst_recs_batch)
@@ -2252,7 +2466,7 @@ class SlackIndividualConnector(BaseConnector):
         url_dl = fd.get("url_private_download") or fd.get("url_private")
         if url_dl:
             try:
-                await ctx.rate_limiter.acquire()
+                await ctx.rate_limiter.acquire(Tier.T4)
                 token = getattr(
                     self.external_client.get_client(), "get_token", lambda: None
                 )()
@@ -2520,8 +2734,8 @@ class SlackIndividualConnector(BaseConnector):
             curr = sorted_msgs[i]
             prev = sorted_msgs[i - 1]
 
-            # Hard break: bot or system message
-            if curr.get("bot_id") or curr.get("subtype") in SYSTEM:
+            # Hard break: system message
+            if curr.get("subtype") in SYSTEM:
                 bursts.append(ConversationalBurst(
                     messages=cur,
                     start_ts=float(cur[0].get("ts", "0")),
@@ -2591,7 +2805,7 @@ class SlackIndividualConnector(BaseConnector):
 
                 oldest_ts: Optional[str] = None
                 if last and last.get("last_check_time"):
-                    oldest_ts = str(last["last_check_time"] / 1000.0)
+                    oldest_ts = f"{last['last_check_time'] / 1000.0:.6f}"
                 else:
                     oldest_ts = sync_window_ts
 
@@ -2619,7 +2833,6 @@ class SlackIndividualConnector(BaseConnector):
         ``_handle_new_thread()`` for every thread-root message (reply_count > 0).
         """
         SKIP_SUBTYPES: frozenset = frozenset({
-            "bot_message",
             "channel_join",        "channel_leave",
             "channel_archive",     "channel_unarchive",
             "channel_name",        "channel_purpose",      "channel_topic",
@@ -2632,10 +2845,10 @@ class SlackIndividualConnector(BaseConnector):
         })
 
         cursor: Optional[str] = None
-        now_ts = str(time.time())
+        now_ts = f"{time.time():.6f}"
 
         while True:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds = await self._fresh_datasource()
 
             try:
@@ -2676,8 +2889,6 @@ class SlackIndividualConnector(BaseConnector):
                         subtype = md.get("subtype", "")
 
                 if subtype in SKIP_SUBTYPES:
-                    continue
-                if md.get("bot_id") and not md.get("user"):
                     continue
                 if md.get("thread_ts") and md.get("thread_ts") != ts:
                     continue
@@ -2750,7 +2961,7 @@ class SlackIndividualConnector(BaseConnector):
 
                 oldest_ts: Optional[str] = None
                 if last and last.get("last_check_time"):
-                    oldest_ts = str(last["last_check_time"] / 1000.0)
+                    oldest_ts = f"{last['last_check_time'] / 1000.0:.6f}"
                 else:
                     oldest_ts = sync_window_ts
 
@@ -2856,9 +3067,7 @@ class SlackIndividualConnector(BaseConnector):
         Returns:
           Count of records that were updated (Cases A + B).
         """
-        # Subtypes that carry no meaningful content — skip entirely
         SKIP_SUBTYPES: frozenset = frozenset({
-            "bot_message",
             "channel_join",        "channel_leave",
             "channel_archive",     "channel_unarchive",
             "channel_name",        "channel_purpose",      "channel_topic",
@@ -2882,11 +3091,11 @@ class SlackIndividualConnector(BaseConnector):
 
         # Stable upper-bound for the window — avoids fetching messages posted
         # mid-run that have not yet been processed by the messages sync phase.
-        now_ts = str(time.time())
+        now_ts = f"{time.time():.6f}"
 
         while True:
             page += 1
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds = await self._fresh_datasource()
 
             try:
@@ -2944,10 +3153,6 @@ class SlackIndividualConnector(BaseConnector):
 
                 # ── Skip non-content messages ──────────────────────────────
                 if subtype in SKIP_SUBTYPES:
-                    continue
-
-                # Skip pure bot messages (bot_id set but no human user)
-                if md.get("bot_id") and not md.get("user"):
                     continue
 
                 # Skip deleted messages
@@ -3076,7 +3281,7 @@ class SlackIndividualConnector(BaseConnector):
         # Fetch all messages in the burst window from Slack and rebuild block_containers
         # (block_containers are NOT stored in the DB; we must reconstruct them).
         try:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=channel_id,
@@ -3281,6 +3486,67 @@ class SlackIndividualConnector(BaseConnector):
     # 9.  Text extraction utilities
     # =========================================================================
 
+    async def _warm_user_cache_for_messages(
+        self,
+        msgs: list[dict[str, Any]],
+        ctx: Optional[ProcessingContext] = None,
+    ) -> None:
+        """Resolve mention IDs missing from the name cache via ``users.info``."""
+        seen = self.user_id_to_name_cache
+        ctx_names = ctx.user_id_to_name if ctx is not None else None
+        unknown: set[str] = set()
+        for msg in msgs:
+            text = msg.get("text") or ""
+            if "<@" not in text:
+                continue
+            for match in _USER_MENTION_RE.finditer(text):
+                user_id = match.group(1)
+                if user_id in seen:
+                    continue
+                if ctx_names is not None and user_id in ctx_names:
+                    continue
+                unknown.add(user_id)
+
+        if not unknown:
+            return
+
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_USER_INFO)
+        resolved: dict[str, tuple[Optional[str], Optional[str]]] = {}
+
+        async def _fetch(user_id: str) -> None:
+            async with semaphore:
+                try:
+                    await self.rate_limiter.acquire(Tier.T4)
+                    ds = await self._fresh_datasource()
+                    resp = await ds.users_info(user=user_id)
+                except Exception as exc:
+                    self.logger.debug(f"users.info({user_id}) failed: {exc}")
+                    return
+                if not resp or not resp.success:
+                    return
+                user = (resp.data or {}).get("user", {}) or {}
+                profile = user.get("profile", {}) or {}
+                name = (
+                    profile.get("real_name")
+                    or profile.get("display_name")
+                    or user.get("name")
+                )
+                email = (profile.get("email") or "").strip() or None
+                if name or email:
+                    resolved[user_id] = (name, email)
+
+        await asyncio.gather(*(_fetch(user_id) for user_id in unknown))
+
+        for user_id, (name, email) in resolved.items():
+            if name:
+                self.user_id_to_name_cache[user_id] = name
+                if ctx is not None:
+                    ctx.user_id_to_name[user_id] = name
+            if email:
+                self.user_id_to_email_cache.setdefault(user_id, email)
+                if ctx is not None:
+                    ctx.user_id_to_email.setdefault(user_id, email)
+
     @staticmethod
     def _extract_user_mentions(text: str) -> list[str]:
         """Extract Slack user IDs from <@U…> / <@W…> syntax."""
@@ -3375,6 +3641,12 @@ class SlackIndividualConnector(BaseConnector):
     # =========================================================================
     # 10.  Link classification
     # =========================================================================
+
+    @staticmethod
+    def _bot_display_name(msg: dict[str, Any]) -> Optional[str]:
+        bot_profile = msg.get("bot_profile") or {}
+        name = bot_profile.get("name") or msg.get("username")
+        return name.strip() if isinstance(name, str) and name.strip() else None
 
     @staticmethod
     def _classify_url(url: str) -> tuple[str, dict[str, Any]]:
@@ -3506,7 +3778,7 @@ class SlackIndividualConnector(BaseConnector):
             if not start_ts or not end_ts:
                 raise HTTPException(400, f"Burst record {ext_id} missing start_ts/end_ts")
 
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=ch, oldest=start_ts, latest=end_ts,
@@ -3561,7 +3833,7 @@ class SlackIndividualConnector(BaseConnector):
                     f"Thread burst record {ext_id} missing start_ts/end_ts/thread_id",
                 )
 
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_replies(
                 channel=ch, ts=thread_ts_val,
@@ -3607,7 +3879,7 @@ class SlackIndividualConnector(BaseConnector):
 
         # ── Single message record ─────────────────────────────────────────
         else:
-            await self.rate_limiter.acquire()
+            await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
             resp = await ds.conversations_history(
                 channel=ch, oldest=ext_id, latest=ext_id,
@@ -3622,7 +3894,7 @@ class SlackIndividualConnector(BaseConnector):
             if not msg:
                 tid = getattr(record, "thread_id", None)
                 if tid and tid != ext_id:
-                    await self.rate_limiter.acquire()
+                    await self.rate_limiter.acquire(Tier.T3)
                     resp = await (await self._fresh_datasource()).conversations_replies(
                         channel=ch, ts=tid, oldest=ext_id, latest=ext_id,
                         inclusive=True, limit=1,
@@ -3665,7 +3937,7 @@ class SlackIndividualConnector(BaseConnector):
         if not fid:
             raise HTTPException(400, f"No file ID for {record.id}")
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource()
         info = await ds.files_info(file=fid)
         if not info or not info.success:
@@ -3754,7 +4026,7 @@ class SlackIndividualConnector(BaseConnector):
         if rec.external_record_id and rec.external_record_id.startswith(("burst_", "thread_burst_")):
             return None
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T3)
         ds   = await self._fresh_datasource()
         resp = await ds.conversations_history(
             channel=ch, oldest=ts, latest=ts, inclusive=True, limit=1
@@ -3769,7 +4041,7 @@ class SlackIndividualConnector(BaseConnector):
         if not md:
             tid = getattr(rec, "thread_id", None)
             if tid and tid != ts:
-                await self.rate_limiter.acquire()
+                await self.rate_limiter.acquire(Tier.T3)
                 r2 = await (await self._fresh_datasource()).conversations_replies(
                     channel=ch, ts=tid, oldest=ts, latest=ts, inclusive=True, limit=1
                 )
@@ -3808,7 +4080,7 @@ class SlackIndividualConnector(BaseConnector):
         if not fid:
             return None
 
-        await self.rate_limiter.acquire()
+        await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource()
         info = await ds.files_info(file=fid)
         if not info or not info.success:
@@ -3871,7 +4143,8 @@ class SlackIndividualConnector(BaseConnector):
         await self._refresh_user_caches()
 
         if self.user_id_to_name_cache:
-            return  # DB or prior warm-up had enough data
+            await self._sync_deactivated_user_ids()
+            return
 
         # Fallback: warm from the Slack API
         self.logger.debug("User name cache empty after DB refresh — warming via API")
@@ -3897,6 +4170,64 @@ class SlackIndividualConnector(BaseConnector):
 
         return c.get("name") or f"Channel: {cid}"
 
+    async def _populate_channel_filter_cache(self) -> None:
+        """Fetch all channels from Slack and rebuild the in-memory filter cache."""
+        if self._cache_rebuild_event is not None:
+            await self._cache_rebuild_event.wait()
+            return
+
+        self._cache_rebuild_event = asyncio.Event()
+        try:
+            await self._ensure_user_caches_for_filters()
+
+            tmp: dict[str, dict[str, str]] = {}
+            api_cursor: Optional[str] = None
+
+            while True:
+                await self.rate_limiter.acquire(Tier.T2)
+                ds = await self._fresh_datasource()
+                resp = await ds.conversations_list(
+                    exclude_archived=True,
+                    types="public_channel,private_channel,im,mpim",
+                    limit=PAGE_SIZE_CHANNELS,
+                    cursor=api_cursor,
+                )
+
+                if not resp or not resp.success:
+                    error = getattr(resp, "error", "no response") if resp else "no response"
+                    raise RuntimeError(f"conversations.list cache rebuild failed: {error}")
+
+                data = resp.data or {}
+                for ch in data.get("channels", []):
+                    cid = ch.get("id")
+                    if not cid:
+                        continue
+                    if (
+                        not ch.get("is_im")
+                        and not ch.get("is_mpim")
+                        and not ch.get("is_member")
+                    ):
+                        continue
+                    if not self._should_include_channel_in_filter(ch):
+                        continue
+                    tmp[cid] = {
+                        "id": cid,
+                        "label": self._channel_display_name(ch),
+                    }
+
+                api_cursor = data.get("response_metadata", {}).get("next_cursor") or None
+                if not api_cursor:
+                    break
+
+            self.channel_filter_cache = tmp
+            self.logger.info(
+                "Channel filter cache rebuilt: %d channels", len(self.channel_filter_cache)
+            )
+        finally:
+            ev = self._cache_rebuild_event
+            self._cache_rebuild_event = None
+            ev.set()
+
     async def get_filter_options(
         self,
         filter_key: str,
@@ -3909,43 +4240,44 @@ class SlackIndividualConnector(BaseConnector):
             raise ValueError(f"Unknown filter key: {filter_key}")
 
         try:
-            # Warm user caches so DM / MPIM labels show real display names
-            await self._ensure_user_caches_for_filters()
+            page  = max(1, page)
+            limit = max(1, min(limit, 100))
 
-            await self.rate_limiter.acquire()
-            ds   = await self._fresh_datasource()
-            resp = await ds.conversations_list(
-                exclude_archived=True,
-                types="public_channel,private_channel,im,mpim",
-                limit=min(limit, 1000),
-                cursor=cursor,
-            )
+            if not self.channel_filter_cache or not search or not search.strip():
+                await self._populate_channel_filter_cache()
 
-            if not resp or not resp.success:
-                raise RuntimeError(getattr(resp, "error", "no response"))
+            channels = list(self.channel_filter_cache.values())
+            channels.sort(key=lambda c: (c.get("label", "").lower(), c.get("id", "")))
 
-            data     = resp.data
-            channels = data.get("channels", [])
-
-            if search:
-                sl = search.lower()
+            if search and search.strip():
+                sl = search.strip().lower()
                 channels = [
                     c for c in channels
-                    if sl in self._channel_display_name(c).lower()
+                    if sl in c.get("label", "").lower() or sl in c.get("id", "").lower()
                 ]
 
-            options: list[FilterOption] = []
-            for c in channels:
-                cid = c.get("id")
-                if not cid:
-                    continue
-                label = self._channel_display_name(c)
-                options.append(FilterOption(id=cid, label=label))
+            if cursor:
+                try:
+                    offset = max(0, int(cursor))
+                except ValueError:
+                    offset = 0
+            else:
+                offset = (page - 1) * limit
 
-            next_cur = data.get("response_metadata", {}).get("next_cursor", "")
+            page_items = channels[offset : offset + limit]
+            options = [
+                FilterOption(id=item["id"], label=item["label"])
+                for item in page_items
+            ]
+
+            next_offset = offset + len(page_items)
+            has_more    = next_offset < len(channels)
+            next_cursor = str(next_offset) if has_more else None
+
             return FilterOptionsResponse(
                 success=True, options=options, page=page, limit=limit,
-                has_more=bool(next_cur), cursor=next_cur or None,
+                has_more=has_more,
+                cursor=next_cursor,
             )
 
         except Exception as exc:
@@ -3991,7 +4323,12 @@ class SlackIndividualConnector(BaseConnector):
         data_store_provider:  DataStoreProvider,
         config_service:       ConfigurationService,
         connector_id:         str,
+        scope:                str,
+        created_by:           str,
     ) -> "SlackIndividualConnector":
         dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await dep.initialize()
-        return cls(logger, dep, data_store_provider, config_service, connector_id)
+        return cls(
+            logger, dep, data_store_provider, config_service,
+            connector_id, scope, created_by,
+        )

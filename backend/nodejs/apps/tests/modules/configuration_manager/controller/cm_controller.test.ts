@@ -1490,7 +1490,11 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: '', customSystemPromptWebSearch: '' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        customSystemPrompt: '',
+        customSystemPromptWebSearch: '',
+        customSystemPromptAgent: '',
+      })
     })
 
     it('should return custom prompt when it exists', async () => {
@@ -1506,7 +1510,11 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: 'Be helpful', customSystemPromptWebSearch: '' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        customSystemPrompt: 'Be helpful',
+        customSystemPromptWebSearch: '',
+        customSystemPromptAgent: '',
+      })
     })
   })
 
@@ -1538,6 +1546,53 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].customSystemPrompt).to.equal('Be concise')
+    })
+
+    it('should round-trip all three mode prompts including agent mode', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      const handler = setCustomSystemPrompt(kvs)
+      const req = createMockRequest({
+        body: {
+          customSystemPrompt: 'Internal prompt',
+          customSystemPromptWebSearch: 'Web prompt',
+          customSystemPromptAgent: 'Agent prompt',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        message: 'Custom system prompts updated successfully',
+        customSystemPrompt: 'Internal prompt',
+        customSystemPromptWebSearch: 'Web prompt',
+        customSystemPromptAgent: 'Agent prompt',
+      })
+    })
+
+    it('should default customSystemPromptAgent to empty string when omitted', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      const handler = setCustomSystemPrompt(kvs)
+      const req = createMockRequest({
+        body: { customSystemPrompt: 'Be concise', customSystemPromptWebSearch: '' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].customSystemPromptAgent).to.equal('')
     })
   })
 
@@ -3733,6 +3788,103 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // createSmtpConfig - placeholder merge behavior
+  // -----------------------------------------------------------------------
+  describe('createSmtpConfig (placeholder merge)', () => {
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    beforeEach(() => {
+      sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('test-token')
+    })
+
+    it('restores masked placeholder fields from the previously stored config', async () => {
+      const existing = {
+        host: 'smtp.real.com',
+        port: 25,
+        username: 'real-user',
+        password: 'real-pass',
+        fromEmail: 'real@example.com',
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(`encrypted:${JSON.stringify(existing)}`),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: {
+          host: '****************',
+          port: 587,
+          username: '****************',
+          password: '****************',
+          fromEmail: '****************',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(kvs.get.calledOnce).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored).to.deep.equal({
+        host: 'smtp.real.com',
+        port: 587,
+        username: 'real-user',
+        password: 'real-pass',
+        fromEmail: 'real@example.com',
+      })
+    })
+
+    it('does not look up the existing config when the body has no placeholders', async () => {
+      const kvs = createMockKeyValueStore()
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: { host: 'smtp.new.com', port: 587, fromEmail: 'new@example.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(kvs.get.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored).to.deep.equal({
+        host: 'smtp.new.com',
+        port: 587,
+        fromEmail: 'new@example.com',
+      })
+    })
+
+    it('leaves placeholder fields untouched when no prior config exists to restore from', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(null),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: { host: '****************', port: 587, fromEmail: 'new@example.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(kvs.get.calledOnce).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored.host).to.equal('****************')
     })
   })
 

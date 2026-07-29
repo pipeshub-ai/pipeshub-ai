@@ -25,7 +25,6 @@ import {
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { MobileQueryModesSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-modes-sheet';
-import { AgentStrategyDropdown } from '@/chat/components/agent-strategy-dropdown';
 import { getQueryModeConfig } from '@/chat/constants';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -592,21 +591,32 @@ export function ChatInput({
         return colon >= 0 ? key.slice(colon + 1) : key;
       };
 
-      // Count resolved (stripped + deduped) tools — mirrors the wire format
-      // in runtime.ts where prefixed keys are stripped then deduped via Set.
-      const resolvedCount =
-        toolsSel === null
-          ? new Set(groups.flatMap((g) => g.fullNames).map(stripPrefix)).size
-          : new Set(toolsSel.map(stripPrefix)).size;
+      // `toolsSel === null` means "everything selected" (no explicit
+      // filter) — the wire format (runtime.ts) omits `tools` entirely in
+      // that case, so the backend treats it as "use every configured
+      // toolset" rather than an exploded per-action list. Lazy tool
+      // disclosure (backend default ON) means the number of schemas bound
+      // to the model no longer scales with toolset count either, so there
+      // is nothing to guard here — only an actual explicit selection
+      // (`toolsSel !== null`) needs a sanity cap, and even that is now
+      // generous (matches the backend's own bound — see agent.py) rather
+      // than a tight per-action count that a handful of multi-action
+      // toolsets already exceeded with nothing deselected.
+      if (toolsSel !== null) {
+        // Count resolved (stripped + deduped) tools — mirrors the wire
+        // format in runtime.ts where prefixed keys are stripped then deduped
+        // via Set.
+        const resolvedCount = new Set(toolsSel.map(stripPrefix)).size;
 
-      if (resolvedCount > 128) {
-        toast.error(
-          t('chat.toolValidation.tooManyTools', {
-            defaultValue:
-              'Too many tools selected. Maximum 128 tools are allowed per request due to performance limits.',
-          })
-        );
-        return;
+        if (resolvedCount > 1024) {
+          toast.error(
+            t('chat.toolValidation.tooManyTools', {
+              defaultValue:
+                'Too many tools selected. Maximum 1024 tools are allowed per request due to performance limits.',
+            })
+          );
+          return;
+        }
       }
 
       // Detect multiple selected instances of the same toolset type.
@@ -1122,15 +1132,7 @@ export function ChatInput({
       >
         {/* Single row: mode-switcher + input + send */}
         <Flex align="center" justify="between" gap="3">
-          {isAgentChat ? (
-            <AgentStrategyModeSwitcher
-              activeStrategy={settings.agentStrategy}
-              modeColors={agentStrategyToolbarColors}
-              isPanelOpen={false}
-              showFullUI={false}
-              onClick={handleExpand}
-            />
-          ) : (
+          {!isAgentChat && (
             <ModeSwitcher
               activeQueryConfig={activeQueryConfig}
               modeColors={modeColors}
@@ -1734,27 +1736,27 @@ export function ChatInput({
 
       {/* Bottom controls */}
       <Flex align="center" justify="between">
-        {/* Left side — query ModeSwitcher disabled in regenerate (avoid mode churn); agent strategy stays active so regen can use quick/verify/deep. */}
-        <Box style={isRegenerateMode && !isAgentChat ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
-          {isAgentChat ? (
-            <AgentStrategyModeSwitcher
-              activeStrategy={settings.agentStrategy}
-              modeColors={agentStrategyToolbarColors}
-              isPanelOpen={isMobile ? isMobileModesOpen : isAgentStrategyPanelOpen}
-              showFullUI={showFullUI}
-              onClick={() => {
-                if (isMobile) {
-                  setIsMobileModesOpen(true);
-                  return;
-                }
-                setIsAgentStrategyPanelOpen((prev) => !prev);
-                setIsCollectionsPanelOpen(false);
-                setIsAgentResourcesPanelOpen(false);
-                setIsModelPanelOpen(false);
-                setShowUploadArea(false);
-              }}
-            />
-          ) : (
+        {/* Left side — query ModeSwitcher or agent badge. */}
+        {isAgentChat ? (
+          <Flex
+            align="center"
+            gap="2"
+            style={{
+              height: '32px',
+              borderRadius: 'var(--radius-2)',
+              background: 'var(--accent-3)',
+              paddingLeft: 'var(--space-3)',
+              paddingRight: 'var(--space-3)',
+              flexShrink: 0,
+            }}
+          >
+            <MaterialIcon name="bolt" size={ICON_SIZES.MINIMAL} color="var(--accent-11)" />
+            <Text size="2" weight="medium" style={{ color: 'var(--accent-11)', whiteSpace: 'nowrap' }}>
+              {t('chat.queryModes.agent.toolbarLabel', { defaultValue: 'Agent' })}
+            </Text>
+          </Flex>
+        ) : (
+          <Box style={isRegenerateMode ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
             <ModeSwitcher
               activeQueryConfig={activeQueryConfig}
               modeColors={modeColors}
@@ -1787,8 +1789,8 @@ export function ChatInput({
                     }
               }
             />
-          )}
-        </Box>
+          </Box>
+        )}
 
         {/* Right side - Controls */}
         <Flex align="center" gap="2">
@@ -1841,16 +1843,6 @@ export function ChatInput({
                 }}
               >
                 <Flex direction="column" gap="1">
-                  {/* Agent Strategy (when applicable) */}
-                  {settings.queryMode === 'agent' && !isAgentChat && (
-                    <Box style={{ padding: 'var(--space-1) var(--space-2)' }}>
-                      <AgentStrategyDropdown
-                        value={settings.agentStrategy}
-                        onChange={setAgentStrategy}
-                        accentColor={activeToggleColor}
-                      />
-                    </Box>
-                  )}
 
                   {/* Collections / Connectors */}
                   {settings.queryMode !== 'web-search' && (
@@ -1986,13 +1978,6 @@ export function ChatInput({
           ) : (
             /* Desktop: full controls */
             <>
-              {settings.queryMode === 'agent' && !isAgentChat ? (
-                <AgentStrategyDropdown
-                  value={settings.agentStrategy}
-                  onChange={setAgentStrategy}
-                  accentColor={activeToggleColor}
-                />
-              ) : null}
 
               {/* Action buttons group */}
               <Flex align="center" gap="1">

@@ -21,9 +21,14 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
@@ -34,8 +39,6 @@ from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
 
 logger = logging.getLogger(__name__)
-
-_APP = "jiradatacenter"
 
 # Jira serializes some fields (dev-status "development" summary, greenhopper sprints) as Java
 # toString dumps like "SummaryBean@742a6b3[...]" — pure noise for an LLM. This matches that shape.
@@ -266,6 +269,38 @@ class GetCreateIssueFieldsInput(BaseModel):
     class Config:
         populate_by_name = True
         extra = "ignore"
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see `jira.py`'s equivalent block; kept as
+# a separate copy rather than a shared import, mirroring this module's own
+# "independent of the Cloud action" design note above (its success envelope
+# is the same `{"message": ..., "data": ...}` shape, but usernames are
+# `name`/`key` here, not `accountId`).
+# ---------------------------------------------------------------------------
+
+
+def _jira_dc_issue_label(issue: dict[str, Any]) -> str:
+    key = issue.get("key") or "?"
+    fields = issue.get("fields")
+    summary = fields.get("summary") if isinstance(fields, dict) else None
+    return f"{key}: {summary}" if summary else key
+
+
+def _jira_dc_project_label(project: dict[str, Any]) -> str:
+    key = project.get("key") or "?"
+    name = project.get("name")
+    return f"{key}: {name}" if name else key
+
+
+def _jira_dc_user_label(user: dict[str, Any]) -> str:
+    return user.get("displayName") or user.get("name") or user.get("key") or "?"
+
+
+def _jira_dc_comment_label(comment: dict[str, Any]) -> str:
+    author = comment.get("author")
+    name = author.get("displayName") if isinstance(author, dict) else None
+    return name or "comment"
 
 
 @ToolsetBuilder("JiraDataCenter")\
@@ -914,26 +949,14 @@ class JiraDataCenter:
     # Tools
     # ------------------------------------------------------------------
     @tool(
-        app_name=_APP,
-        tool_name="validate_connection",
-        description="Validate the Jira Data Center connection and provide diagnostics",
-        parameters=[],
-        returns="Connection validation status with diagnostics",
-        llm_description=(
+        path="/tools/jira_data_center/validate_connection",
+        short_description="Validate Jira Data Center connection and provide diagnostics",
+        description=(
             "Check that the Jira Data Center connection (base URL + PAT/Basic auth) works and report the "
-            "authenticated user. Use as a first-step health check before other Jira actions."
+            "authenticated user. Use as a first-step health check before other Jira Data Center actions."
         ),
-        when_to_use=[
-            "User asks whether the Jira connection/integration is working",
-            "Diagnosing auth or base-URL problems before running other Jira tools",
-        ],
-        when_not_to_use=[
-            "Just need the current user's details (use get_current_user)",
-            "Performing an actual Jira action like search or create",
-        ],
-        typical_queries=["Is my Jira connection working?", "Test the Jira Data Center integration", "Why can't I access Jira?"],
-        primary_intent=ToolIntent.UTILITY,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        parameters=[],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         try:
@@ -955,26 +978,14 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_current_user",
-        description="Get the current authenticated Jira Data Center user's details (name, key, displayName, email)",
-        parameters=[],
-        returns="Current user's account details",
-        llm_description=(
+        path="/tools/jira_data_center/get_current_user",
+        short_description="Get the current authenticated Jira Data Center user's details",
+        description=(
             "Return the authenticated Jira Data Center user (name, key, displayName, email). Use to resolve "
             "'me'/'my' before building JQL such as `assignee = currentUser()`."
         ),
-        when_to_use=[
-            "User refers to themselves ('my issues', 'assigned to me')",
-            "Need the current account's username/key/email",
-        ],
-        when_not_to_use=[
-            "Looking up a different person (use search_users)",
-            "Only checking connectivity (use validate_connection)",
-        ],
-        typical_queries=["Who am I in Jira?", "What's my Jira username?", "Show my account details"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        parameters=[],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         try:
@@ -996,26 +1007,30 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_create_issue_fields",
-        description="Get the fields required to create an issue for a project and issue type",
-        args_schema=GetCreateIssueFieldsInput,
-        returns="Required and optional fields with IDs, types, value formats, and allowed values",
-        llm_description=(
+        path="/tools/jira_data_center/get_create_issue_fields",
+        short_description="Get all fields required to create a Jira Data Center issue for a project and issue type",
+        description=(
             "Returns all fields (required and optional) for a specific issue type in a Jira Data Center "
-            "project. Call this before create_issue, and before update_issue when changing the issue type."
+            "project, including field IDs, types, allowed values, and whether each field has a default value.\n"
+            "\n"
+            "Call this before create_issue, and before update_issue when changing the issue type. "
+            "Projects often have required custom fields (Story Points, Sprint, Due Date, etc.) "
+            "that are not standard parameters — submitting without them causes HTTP 400 failures.\n"
+            "\n"
+            "For every required field where has_default_value=false: check whether the user already "
+            "stated a value in the conversation. If they did not, ask them before proceeding. "
+            "Never assume or invent values for required fields.\n"
+            "\n"
+            "Standard fields (summary, description, etc.) "
+            "are passed as named parameters to create_issue or update_issue. All other fields — "
+            "especially required custom fields — are passed via custom_fields using the field_id as key "
+            "and value_format from this response as a guide."
         ),
-        when_to_use=[
-            "Before create_issue (or changing issue type) to discover required/allowed fields for a project + issue type",
-            "User hits a 'field is required' error on create or update",
+        parameters=[
+            ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project (e.g., 'PA')", required=True),
+            ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the issue type (e.g., 'Task', 'Bug', 'Story')", required=True),
         ],
-        when_not_to_use=[
-            "Creating a standard issue with already-known fields (go straight to create_issue)",
-            "Reading an existing issue (use get_issue)",
-        ],
-        typical_queries=["What fields are required to create a Bug in PA?", "Show the create fields for a Story", "Which fields must I set for this issue type?"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def get_create_issue_fields(self, project_key: str, issue_type_name: str) -> tuple[bool, str]:
         try:
@@ -1099,26 +1114,40 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="create_issue",
-        description="Create a new Jira Data Center issue",
-        args_schema=CreateIssueInput,
-        returns="Created issue key and details",
-        llm_description=(
-            "Create a new Jira Data Center issue in a project. Resolves the assignee username and validates "
-            "fields; call get_create_issue_fields first if the issue type has required custom fields."
+        path="/tools/jira_data_center/create_issue",
+        short_description="Create a new Jira Data Center issue",
+        description=(
+            "Create a new Jira Data Center issue. Call get_create_issue_fields first to discover "
+            "required fields for the target project and issue type — projects often have mandatory "
+            "custom fields (Story Points, Sprint, Due Date, etc.) that are not standard parameters, "
+            "and omitting them causes HTTP 400 failures.\n"
+            "\n"
+            "For every required field where has_default_value=false: check whether the user stated "
+            "a value in the conversation. If not, ask them before calling this tool. "
+            "Never assume or guess required field values.\n"
+            "\n"
+            "Pass standard fields (summary, description, assignee_name, priority_name, labels, components, "
+            "parent_key) as named parameters. Pass all other fields via custom_fields using field IDs "
+            "and value formats from get_create_issue_fields.\n"
+            "\n"
+            "Do not use this tool when the user wants to modify an existing issue — use update_issue instead."
         ),
-        when_to_use=[
-            "User wants to file/open/create a new issue, bug, task, or story",
-            "Logging a new ticket in a project",
+        parameters=[
+            ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
+            ToolParameter(name="summary", type=ParameterType.STRING, description="Issue summary", required=True),
+            ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="Issue type (e.g., 'Task', 'Bug', 'Story')", required=True),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Issue description (plain text / wiki markup)", required=False),
+            ToolParameter(name="assignee_name", type=ParameterType.STRING, description="Assignee username (Data Center 'name')", required=False),
+            ToolParameter(name="assignee_query", type=ParameterType.STRING, description="Name or email to resolve the assignee's username", required=False),
+            ToolParameter(name="priority_name", type=ParameterType.STRING, description="Priority name", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of labels", required=False),
+            ToolParameter(name="components", type=ParameterType.ARRAY, description="List of component names", required=False),
+            ToolParameter(name="parent_key", type=ParameterType.STRING, description="Parent issue key for sub-tasks", required=False),
+            ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Additional fields as {field_id: value} from get_create_issue_fields", required=False),
         ],
-        when_not_to_use=[
-            "Modifying an existing issue (use update_issue)",
-            "Only adding a note to an issue (use add_comment)",
-        ],
-        typical_queries=["Create a bug in PA titled 'Login fails'", "Open a new task assigned to jdoe", "File a story in the ENG project"],
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
+        result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
     async def create_issue(
         self,
@@ -1229,27 +1258,43 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="update_issue",
-        description="Update an existing Jira Data Center issue (fields, status, assignee, type)",
-        args_schema=UpdateIssueInput,
-        returns="Update result",
-        llm_description=(
-            "Update an existing issue's fields, assignee, reporter, priority, labels, components, issue type, "
-            "or transition its status. Fetches the issue and applies only the provided changes."
+        path="/tools/jira_data_center/update_issue",
+        short_description="Update an existing Jira Data Center issue",
+        description=(
+            "Modify one or more fields on an existing Jira Data Center issue. Supports any combination of: "
+            "summary, description, issue type, assignee, reporter, priority, labels, components, "
+            "status, and project-specific custom fields.\n"
+            "\n"
+            "issue_type_name changes the type of the issue (e.g. Bug → Story). "
+            "The target type may have required custom fields — use get_create_issue_fields to discover "
+            "them, collect any missing values from the user, then pass them via custom_fields. "
+            "Do not assume values for required fields.\n"
+            "\n"
+            "custom_fields accepts any field the user explicitly provides that is not covered by "
+            "the named parameters. Use get_create_issue_fields for the correct field IDs and value formats.\n"
+            "\n"
+            "Status changes are resolved through Jira workflow transitions automatically.\n"
+            "\n"
+            "Always include at least one field to change alongside issue_key."
         ),
-        when_to_use=[
-            "User wants to change/edit/assign/reassign/close/transition an existing issue",
-            "Move an issue to a new status or change its issue type",
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
+            ToolParameter(name="summary", type=ParameterType.STRING, description="Issue summary", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Issue description (plain text / wiki markup)", required=False),
+            ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="New issue type name", required=False),
+            ToolParameter(name="assignee_name", type=ParameterType.STRING, description="Assignee username (Data Center 'name')", required=False),
+            ToolParameter(name="assignee_query", type=ParameterType.STRING, description="Name or email to resolve the assignee's username", required=False),
+            ToolParameter(name="reporter_name", type=ParameterType.STRING, description="Reporter username (Data Center 'name')", required=False),
+            ToolParameter(name="reporter_query", type=ParameterType.STRING, description="Name or email to resolve the reporter's username", required=False),
+            ToolParameter(name="priority_name", type=ParameterType.STRING, description="Priority name", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of labels", required=False),
+            ToolParameter(name="components", type=ParameterType.ARRAY, description="List of component names", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Target status to transition to (e.g., 'In Progress', 'Done')", required=False),
+            ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Additional fields as {field_id: value}", required=False),
         ],
-        when_not_to_use=[
-            "Creating a brand-new issue (use create_issue)",
-            "Only commenting (use add_comment)",
-            "Just reading the issue (use get_issue)",
-        ],
-        typical_queries=["Assign PA-123 to jdoe", "Move PA-45 to In Progress", "Change the priority of PA-9 to High"],
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
+        result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )
     async def update_issue(
         self,
@@ -1452,26 +1497,13 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_projects",
-        description="Get all Jira Data Center projects",
+        path="/tools/jira_data_center/get_projects",
+        short_description="Get all Jira Data Center projects",
+        description="Get all Jira Data Center projects accessible by the current user.",
         parameters=[],
-        returns="List of projects",
-        llm_description=(
-            "List all Jira Data Center projects the user can see (key, name, id). Use to discover a project "
-            "key before other project-scoped calls."
-        ),
-        when_to_use=[
-            "User asks what projects exist or to list projects",
-            "Need a project key but only know the project name",
-        ],
-        when_not_to_use=[
-            "Details of one known project (use get_project)",
-            "Issues inside a project (use search_issues)",
-        ],
-        typical_queries=["List my Jira projects", "What projects can I access?", "Show all Jira projects"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=lambda args: "Fetching Jira Data Center projects",
+        result_summary=list_summary(("data",), _jira_dc_project_label, "project"),
     )
     async def get_projects(self) -> tuple[bool, str]:
         try:
@@ -1495,23 +1527,15 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_project",
-        description="Get a specific Jira Data Center project",
-        args_schema=GetProjectInput,
-        returns="Project details",
-        llm_description="Get details of a single Jira Data Center project by key (name, lead, description, URL).",
-        when_to_use=[
-            "User asks about a specific project by key or name",
-            "Need one project's lead or description",
+        path="/tools/jira_data_center/get_project",
+        short_description="Get a specific Jira Data Center project",
+        description="Get details for a specific Jira Data Center project by its project key.",
+        parameters=[
+            ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        when_not_to_use=[
-            "Listing all projects (use get_projects)",
-            "Issue types/components for creating issues (use get_project_metadata)",
-        ],
-        typical_queries=["Show the PA project", "Who leads the ENG project?", "Details of project PA"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Jira project {project_key}", "project_key"),
+        result_summary=entity_summary(_jira_dc_project_label),
     )
     async def get_project(self, project_key: str) -> tuple[bool, str]:
         try:
@@ -1536,26 +1560,15 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_issue",
-        description="Get a specific Jira Data Center issue",
-        args_schema=GetIssueInput,
-        returns="Issue details",
-        llm_description=(
-            "Fetch one Jira Data Center issue by key with full fields, a readable (rendered) description, and "
-            "a browse URL."
-        ),
-        when_to_use=[
-            "User references a specific issue key (e.g. PA-123)",
-            "Need the full details or description of one issue",
+        path="/tools/jira_data_center/get_issue",
+        short_description="Get a specific Jira Data Center issue",
+        description="Get details for a specific Jira Data Center issue by its issue key.",
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        when_not_to_use=[
-            "Searching or filtering many issues (use search_issues)",
-            "Only the comments (use get_comments)",
-        ],
-        typical_queries=["Show PA-123", "What's the status of PA-45?", "Get details of issue ENG-7"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Jira issue {issue_key}", "issue_key"),
+        result_summary=entity_summary(lambda e: f"Fetched {_jira_dc_issue_label(e)}"),
     )
     async def get_issue(self, issue_key: str) -> tuple[bool, str]:
         try:
@@ -1594,27 +1607,35 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="search_issues",
-        description="Search Jira Data Center issues using JQL",
-        args_schema=SearchIssuesInput,
-        returns="Matching issues",
-        llm_description=(
-            "Run a JQL query against Jira Data Center and return matching issues (single page, with a "
-            "truncation note). Build JQL for any filter: project, assignee, status, dates, or text. For recent "
-            "issues in a project use `project = KEY AND updated >= -30d ORDER BY updated DESC`."
+        path="/tools/jira_data_center/search_issues",
+        short_description="Search Jira Data Center issues using JQL",
+        description=(
+            "Search for Jira Data Center issues using JQL (Jira Query Language).\n"
+            "\n"
+            "CURRENT USER QUERIES:\n"
+            "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
+            "- Do NOT call search_users first - currentUser() auto-resolves\n"
+            "\n"
+            "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
+            "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
+            "\n"
+            "JQL SYNTAX RULES:\n"
+            "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
+            "- Current user: `currentUser()` with parentheses\n"
+            "- Status values: `status = \"Open\"` with quotes\n"
+            "\n"
+            "EXAMPLES:\n"
+            "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
+            "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
+            "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
         ),
-        when_to_use=[
-            "Any filtered list of issues: by project, assignee, status, label, date, or free text",
-            "User asks for 'my issues', 'open bugs', or 'issues updated this week'",
+        parameters=[
+            ToolParameter(name="jql", type=ParameterType.STRING, description="JQL query string with time filter", required=True),
+            ToolParameter(name="maxResults", type=ParameterType.INTEGER, description="Max results to return (default 50)", required=False),
         ],
-        when_not_to_use=[
-            "A single known issue key (use get_issue)",
-            "Listing projects (use get_projects)",
-        ],
-        typical_queries=["Show open bugs in PA", "Issues assigned to me", "Tickets updated in the last 7 days in ENG"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Jira issues: "{jql}"', "jql"),
+        result_summary=list_summary("issues", _jira_dc_issue_label, "issue"),
     )
     async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -1661,26 +1682,16 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e), "jql_query": jql})
 
     @tool(
-        app_name=_APP,
-        tool_name="add_comment",
-        description="Add a comment to a Jira Data Center issue",
-        args_schema=AddCommentInput,
-        returns="Comment result",
-        llm_description=(
-            "Add a comment (plain text / wiki markup) to a Jira Data Center issue and return a permalink to "
-            "the new comment."
-        ),
-        when_to_use=[
-            "User wants to comment on or add a note/update to an issue",
-            "Reply or log progress on a ticket",
+        path="/tools/jira_data_center/add_comment",
+        short_description="Add a comment to a Jira Data Center issue",
+        description="Add a comment (plain text / wiki markup) to an existing Jira Data Center issue.",
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
+            ToolParameter(name="comment", type=ParameterType.STRING, description="Comment text (plain text / wiki markup)", required=True),
         ],
-        when_not_to_use=[
-            "Changing issue fields or status (use update_issue)",
-            "Reading existing comments (use get_comments)",
-        ],
-        typical_queries=["Comment 'fixed in build 42' on PA-123", "Add a note to PA-9", "Leave an update on ENG-7"],
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Adding comment to {issue_key}", "issue_key"),
+        result_summary=confirmation("Comment added to {issue_key}", "issue_key"),
     )
     async def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
         try:
@@ -1710,23 +1721,15 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_comments",
-        description="Get comments for a Jira Data Center issue",
-        args_schema=GetCommentsInput,
-        returns="List of comments",
-        llm_description="List the comments on a Jira Data Center issue with author, timestamp, body, and a permalink each.",
-        when_to_use=[
-            "User wants to read the discussion or comments on an issue",
-            "Summarize what people said on a ticket",
+        path="/tools/jira_data_center/get_comments",
+        short_description="Get comments for a Jira Data Center issue",
+        description="Get all comments for a specific Jira Data Center issue.",
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        when_not_to_use=[
-            "Adding a comment (use add_comment)",
-            "Full issue details (use get_issue)",
-        ],
-        typical_queries=["Show comments on PA-123", "What did people say on ENG-7?", "Read the discussion for PA-45"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching comments for {issue_key}", "issue_key"),
+        result_summary=list_summary("comments", _jira_dc_comment_label, "comment"),
     )
     async def get_comments(self, issue_key: str) -> tuple[bool, str]:
         try:
@@ -1753,26 +1756,21 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="search_users",
-        description="Search Jira Data Center users by name or email",
-        args_schema=SearchUsersInput,
-        returns="List of users (name, key, displayName, emailAddress)",
-        llm_description=(
+        path="/tools/jira_data_center/search_users",
+        short_description="Search Jira Data Center users by name or email",
+        description=(
             "Search Jira Data Center users by name or email. Returns the username ('name') needed to set "
-            "an assignee. For issues assigned to the current user, use `assignee = currentUser()` in JQL instead."
+            "an assignee or reporter.\n"
+            "NOTE: For searching issues assigned to the CURRENT user (self), use "
+            "`assignee = currentUser()` in JQL instead of calling this tool."
         ),
-        when_to_use=[
-            "Need a user's username ('name') to set an assignee or reporter",
-            "User asks to find a person by name or email",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query (name or email)", required=True),
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max results (default 20)", required=False),
         ],
-        when_not_to_use=[
-            "Referring to the current user (use get_current_user or `currentUser()` in JQL)",
-            "Finding issues assigned to someone (use search_issues with an assignee clause)",
-        ],
-        typical_queries=["Find the user John Smith", "What's the Jira username for jane@acme.com?", "Look up a user to assign"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Jira users: "{query}"', "query"),
+        result_summary=list_summary(("data", "results"), _jira_dc_user_label, "user"),
     )
     async def search_users(self, query: str, max_results: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -1816,26 +1814,13 @@ class JiraDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_project_metadata",
-        description="Get Jira Data Center project metadata (issue types, components, lead)",
-        args_schema=GetProjectMetadataInput,
-        returns="Project metadata",
-        llm_description=(
-            "Get a project's issue types, components, and lead — the reference data needed to pick a valid "
-            "issue type or component when creating or updating issues."
-        ),
-        when_to_use=[
-            "Need the valid issue types or components for a project",
-            "Deciding which issue type/component to use before create/update",
+        path="/tools/jira_data_center/get_project_metadata",
+        short_description="Get project metadata including issue types and components",
+        description="Get Jira Data Center project metadata including available issue types, components, and project lead.",
+        parameters=[
+            ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        when_not_to_use=[
-            "Required fields for a specific issue type (use get_create_issue_fields)",
-            "General project details (use get_project)",
-        ],
-        typical_queries=["What issue types does PA have?", "List components in the ENG project", "Who's the lead and what types exist for PA?"],
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         try:

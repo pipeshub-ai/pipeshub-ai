@@ -29,6 +29,40 @@ class TokenType(Enum):
     MAC = "MAC"
 
 
+class RefreshTokenInvalidError(Exception):
+    """The OAuth provider permanently rejected the refresh token (expired or
+    revoked). Retrying cannot succeed — the user must re-authenticate."""
+
+
+_PERMANENT_REFRESH_ERROR_MARKERS = (
+    "invalid_grant",
+    "refresh_token is invalid",
+    "refresh token is invalid",
+    "refresh token has expired",
+    "invalid_refresh_token",
+    "bad_refresh_token",
+)
+
+
+def _is_permanent_refresh_rejection(error_str: str) -> bool:
+    lowered = error_str.lower()
+    return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+
+
+_SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
+
+# servicenow specific check for refresh token rejection
+def _is_servicenow_refresh_rejection(error_str: str, token_url: str) -> bool:
+    """ServiceNow reports a dead refresh token as 401 server_error/access_denied"""
+    if _SERVICENOW_TOKEN_ENDPOINT not in token_url.lower():
+        return False
+    status_match = re.search(r"status (\d+)", error_str)
+    if not status_match or int(status_match.group(1)) != HttpStatusCode.UNAUTHORIZED.value:
+        return False
+    lowered = error_str.lower()
+    return "server_error" in lowered and "access_denied" in lowered
+
+
 @dataclass
 class OAuthConfig:
     """OAuth Configuration"""
@@ -312,12 +346,13 @@ class OAuthProvider:
         try:
             token_data = await self._make_token_request(data)
         except Exception as e:
-            # Enhance error message for 403 errors (common with expired/invalid refresh tokens)
             error_str = str(e)
-            # Extract status code from error message using regex for more reliable matching
+            if _is_permanent_refresh_rejection(error_str) or _is_servicenow_refresh_rejection(error_str, self.config.token_url):
+                raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required. {error_str}") from e
             status_match = re.search(r"status (\d+)", error_str)
+            # Bare 403 stays transient — may be a WAF block, not a dead token
             if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:
-                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}")
+                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}") from e
             raise
 
         # Normalize only if configured (backward compatible)

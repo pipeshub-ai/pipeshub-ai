@@ -44,7 +44,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/sdk"><img src="https://img.shields.io/npm/v/@pipeshub-ai/sdk?logo=npm&amp;logoColor=white&amp;label=node%20sdk" alt="Node.js SDK" /></a>
   <a href="https://pypi.org/project/pipeshub-sdk/"><img src="https://img.shields.io/pypi/v/pipeshub-sdk?logo=python&amp;logoColor=white&amp;label=python%20sdk" alt="Python SDK" /></a>
   <a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/github/v/release/pipeshub-ai/pipeshub-sdk-go?logo=go&amp;logoColor=white&amp;label=go%20sdk" alt="Go SDK" /></a>
-  <a href="https://www.npmjs.com/package/pipeshub"><img src="https://img.shields.io/npm/v/pipeshub?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
+  <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
 </div>
@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Framework web de Python de alto rendimiento |
 | LangChain | Framework para pipelines de LLM |
-| LangGraph | Grafo de estados para flujos de trabajo de LLM |
 | Qdrant | Motor de búsqueda por similitud vectorial |
 | Neo4j / ArangoDB | Base de datos de grafos |
 | Kafka / Redis Streams | Plataforma de streaming de eventos distribuida |
@@ -265,7 +264,7 @@ Nota: Usa HTTPS para los despliegues en la nube. HTTP puede provocar bloqueos de
 
 ### ¿Qué proveedores de LLM admite PipesHub?
 
-PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras. El stack tecnológico incluye LangChain y LangGraph para pipelines y flujos de trabajo de LLM.
+PipesHub funciona con el modelo "Usa tu propio modelo": puedes usar cualquier proveedor de LLM. Despliega en tu VPC con los modelos que prefieras. El stack tecnológico incluye LangChain para pipelines y flujos de trabajo de LLM.
 
 ### ¿Qué es la función de recuperación con grafo de conocimiento?
 

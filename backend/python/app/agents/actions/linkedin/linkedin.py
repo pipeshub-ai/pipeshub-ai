@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Coroutine, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -182,13 +181,13 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="get_userinfo",
-        description="Get current user information using OpenID Connect",
+        path="/tools/linkedin/get_userinfo",
+        short_description="Get current user information using OpenID Connect",
+        description="Get current LinkedIn user information using OpenID Connect.",
         parameters=[],
-        returns="JSON with user information"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read")],
     )
-    def get_userinfo(self) -> Tuple[bool, str]:
+    async def get_userinfo(self) -> Tuple[bool, str]:
         """Get current user information using OpenID Connect."""
         try:
             response = self.client.get_userinfo()
@@ -198,9 +197,9 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="create_post",
-        description="Create a new post on LinkedIn",
+        path="/tools/linkedin/create_post",
+        short_description="Create a new post on LinkedIn",
+        description="Create a new post on LinkedIn with author, commentary text, and optional visibility/lifecycle settings.",
         parameters=[
             ToolParameter(
                 name="author",
@@ -225,7 +224,7 @@ class LinkedIn:
                 required=False
             )
         ],
-        returns="JSON with post creation result"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="create")],
     )
     def create_post(
         self,
@@ -248,9 +247,9 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="get_post",
-        description="Get a post by ID from LinkedIn",
+        path="/tools/linkedin/get_post",
+        short_description="Get a post by ID from LinkedIn",
+        description="Get a LinkedIn post by its URN or ID.",
         parameters=[
             ToolParameter(
                 name="post_id",
@@ -258,9 +257,9 @@ class LinkedIn:
                 description="Post URN or ID"
             )
         ],
-        returns="JSON with post data"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read")],
     )
-    def get_post(self, post_id: str) -> Tuple[bool, str]:
+    async def get_post(self, post_id: str) -> Tuple[bool, str]:
         """Get a post by ID from LinkedIn."""
         try:
             response = self.client.get_post(post_id=post_id)
@@ -270,9 +269,9 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="update_post",
-        description="Update an existing post on LinkedIn",
+        path="/tools/linkedin/update_post",
+        short_description="Update an existing post on LinkedIn",
+        description="Update an existing LinkedIn post using patch operations.",
         parameters=[
             ToolParameter(
                 name="post_id",
@@ -285,7 +284,7 @@ class LinkedIn:
                 description="JSON object with patch operations (e.g., {'$set': {'commentary': 'New text'}})"
             )
         ],
-        returns="JSON with post update result"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="update")],
     )
     def update_post(
         self,
@@ -312,9 +311,9 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="delete_post",
-        description="Delete a post from LinkedIn",
+        path="/tools/linkedin/delete_post",
+        short_description="Delete a post from LinkedIn",
+        description="Delete a post from LinkedIn by its URN or ID.",
         parameters=[
             ToolParameter(
                 name="post_id",
@@ -322,9 +321,9 @@ class LinkedIn:
                 description="Post URN or ID to delete"
             )
         ],
-        returns="JSON with deletion result"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="delete")],
     )
-    def delete_post(self, post_id: str) -> Tuple[bool, str]:
+    async def delete_post(self, post_id: str) -> Tuple[bool, str]:
         """Delete a post from LinkedIn."""
         try:
             response = self.client.delete_post(post_id=post_id)
@@ -334,9 +333,9 @@ class LinkedIn:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linkedin",
-        tool_name="search_people",
-        description="Search for people on LinkedIn",
+        path="/tools/linkedin/search_people",
+        short_description="Search for people on LinkedIn",
+        description="Search for people on LinkedIn using keywords and optional query parameters.",
         parameters=[
             ToolParameter(
                 name="keywords",
@@ -350,7 +349,7 @@ class LinkedIn:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="search")],
     )
     def search_people(
         self,

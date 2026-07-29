@@ -151,10 +151,37 @@ async def _jira_fetch_all_groups(datasource: JiraDataSource) -> list[dict[str, A
     return groups
 
 
+async def count_jira_group_synced_members(
+    datasource: JiraDataSource, group_name: str
+) -> tuple[Optional[str], int]:
+    """Return ``(groupId, synced-member count)`` for ``group_name``.
+
+    Mirrors the connector's ``User→Group`` edge creation in ``_sync_user_groups``: one edge per
+    group member who is in the synced user pool (active + visible email). Returns ``(None, 0)``
+    if the group is not found.
+    """
+    all_groups = await _jira_fetch_all_groups(datasource)
+    group = next(
+        (g for g in all_groups if g.get("name") == group_name and g.get("groupId")), None,
+    )
+    if not group:
+        return None, 0
+    synced_emails, _ = await collect_jira_synced_users_for_connector_edges(datasource)
+    member_emails = await _jira_fetch_group_member_emails_with_visible_address(datasource, group_name)
+    synced = {e.lower() for e in member_emails if e.lower() in synced_emails}
+    return str(group.get("groupId")), len(synced)
+
+
 async def count_jira_site_groups_bulk(datasource: JiraDataSource) -> int:
-    """Count groups from ``/rest/api/3/group/bulk`` — same set ``JiraCloudConnector._fetch_groups`` syncs."""
+    """Count the groups the connector actually syncs into ``Group`` nodes.
+
+    ``_sync_user_groups`` skips any bulk group missing ``groupId`` or ``name``
+    (connector.py: ``if not group_id or not group_name: continue``), so mirror that filter —
+    otherwise a site group with incomplete metadata (e.g. some team-managed access groups)
+    makes the graph count trail the raw bulk count by one.
+    """
     groups = await _jira_fetch_all_groups(datasource)
-    return len(groups)
+    return sum(1 for g in groups if g.get("groupId") and g.get("name"))
 
 
 async def _jira_fetch_group_member_emails_with_visible_address(
@@ -314,6 +341,74 @@ async def preview_jira_user_group_and_role_permission_edge_totals(
         ur_total += 1
 
     return ug_total, ur_total
+
+
+async def preview_jira_role_member_counts(
+    datasource: JiraDataSource,
+    *,
+    project_key: str,
+    lead_account_id: str,
+) -> dict[str, int]:
+    """Per-role distinct synced ``User→Role`` member counts, keyed by ``source_role_id``.
+
+    Mirrors ``_sync_project_roles`` actor expansion, including **group actors**
+    (``atlassian-group-role-actor``): a group actor contributes all of its synced members
+    as ``User→Role`` edges (connector.py: ``member_users.extend(group_members)``). Counts are
+    de-duplicated per role (by email, falling back to accountId) to match the graph, where the
+    per-(user, role) edge is upserted once even if a user is both a direct and a group actor.
+
+    Also includes the synthetic ``{project_key}_projectLead`` role (1 if the lead is synced).
+    """
+    synced_emails, synced_accounts = await collect_jira_synced_users_for_connector_edges(datasource)
+    _all_groups, groups_members_map = await build_jira_groups_members_map_for_synced_users(
+        datasource, synced_emails,
+    )
+
+    roles_resp = await datasource.get_project_roles(projectIdOrKey=project_key)
+    if roles_resp.status in (401, 403):
+        _raise_on_auth_error(roles_resp.status, "preview_jira_role_member_counts")
+    if roles_resp.status != 200:
+        raise RuntimeError(f"get_project_roles({project_key!r}) failed: HTTP {roles_resp.status}")
+
+    counts: dict[str, int] = {}
+    for role_name, role_url in (roles_resp.json() or {}).items():
+        if role_name == "atlassian-addons-project-access":
+            continue
+        try:
+            role_id = int(str(role_url).rstrip("/").split("/")[-1])
+        except (TypeError, ValueError):
+            continue
+        source_role_id = f"{project_key}_{role_id}"
+        rresp = await datasource.get_project_role(
+            projectIdOrKey=project_key, id=role_id, excludeInactiveUsers=True,
+        )
+        if rresp.status != 200:
+            counts[source_role_id] = 0
+            continue
+        members: set[str] = set()
+        for actor in (rresp.json() or {}).get("actors") or []:
+            atype = actor.get("type", "")
+            if atype == "atlassian-user-role-actor":
+                au = actor.get("actorUser") or {}
+                acc = au.get("accountId")
+                em = (au.get("emailAddress") or "").strip().lower()
+                if em and em in synced_emails:
+                    members.add(em)
+                elif acc and acc in synced_accounts:
+                    members.add(f"acct:{acc}")
+            elif atype == "atlassian-group-role-actor":
+                gname = actor.get("name") or actor.get("displayName")
+                gid = actor.get("groupId")
+                group_members: list[str] = []
+                if gid and str(gid) in groups_members_map:
+                    group_members = groups_members_map[str(gid)]
+                elif gname and str(gname) in groups_members_map:
+                    group_members = groups_members_map[str(gname)]
+                members.update(group_members)  # synced, lowercased emails
+        counts[source_role_id] = len(members)
+
+    counts[f"{project_key}_projectLead"] = 1 if (lead_account_id and lead_account_id in synced_accounts) else 0
+    return counts
 
 
 async def jira_fetch_application_roles_to_groups_mapping(
@@ -503,7 +598,7 @@ async def assert_jira_issues_match_graph_records(
 ) -> None:
     """Assert JQL issue count for the project equals graph TICKET-record count for the connector."""
     api_count = await count_jira_project_issues_via_jql(datasource, project_key)
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET")
+    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET", scoped=True)
     if api_count != graph_ticket_count:
         raise AssertionError(
             f"{phase}: Jira JQL issue count ({api_count}) != "
@@ -565,22 +660,6 @@ def parse_jira_timestamp(timestamp_str: str | None) -> int:
             except ValueError:
                 continue
     return 0
-
-
-async def get_jira_issue_parent_key(
-    datasource: JiraDataSource, issue_key: str
-) -> Optional[str]:
-    """Return the ``fields.parent.key`` for the given issue (None if no parent)."""
-    resp = await datasource.get_issue(issueIdOrKey=issue_key, fields="parent")
-    if resp.status != 200:
-        _raise_on_auth_error(resp.status, "get_jira_issue_parent_key")
-        raise AssertionError(
-            f"get_jira_issue_parent_key failed for issue_key={issue_key!r}: HTTP {resp.status}"
-        )
-    parent = ((resp.json() or {}).get("fields") or {}).get("parent")
-    if not isinstance(parent, dict):
-        return None
-    return parent.get("key")
 
 
 # =============================================================================
@@ -657,19 +736,6 @@ async def check_issue_exists_bool(
     if resp.status in (401, 403):
         _raise_on_auth_error(resp.status, "check_issue_exists_bool")
     return resp.status == 200
-
-
-async def check_issue_parent_bool(
-    datasource: JiraDataSource, issue_key: str, expected_parent_key: str
-) -> bool:
-    """True when the issue's ``fields.parent.key`` equals ``expected_parent_key``."""
-    try:
-        actual = await get_jira_issue_parent_key(datasource, issue_key)
-    except JiraAuthError:
-        raise
-    except Exception:
-        return False
-    return actual == expected_parent_key
 
 
 # Terminal indexing statuses (pipeline will not advance past these).
@@ -755,4 +821,197 @@ async def wait_until_record_indexing_completed(
         f"Timed out waiting for {description} on externalRecordId={external_record_id!r} "
         f"after {timeout}s (last indexingStatus={last_status!r}, attempts={attempt})"
     )
+
+
+# =============================================================================
+# Idempotency-aware Jira write/read retry (mirrors Linear _api_call_with_retry,
+# but HTTP-status based and split by write idempotency)
+# =============================================================================
+
+_JIRA_TRANSIENT_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
+async def jira_api_call_with_retry(
+    fn: Callable[..., Awaitable[Any]],
+    *args: Any,
+    context: str,
+    retry_server_errors: bool = True,
+    max_retries: int = 3,
+    base_delay: float = 2.0,
+    **kwargs: Any,
+) -> Any:
+    """Call a ``JiraDataSource`` method with idempotency-aware retry.
+
+    - HTTP 429 is always retried (rate-limited → request rejected before execution, safe).
+    - ``retry_server_errors=True`` (reads / ``edit`` / ``delete`` / restore — idempotent):
+      also retry 5xx responses and transport/timeout exceptions, then return the last
+      response (caller asserts the status).
+    - ``retry_server_errors=False`` (``create_issue`` — non-idempotent): retry 429 only;
+      a 5xx response is returned as-is so the caller's status assertion fails, and a
+      transport/timeout exception is re-raised immediately — never silently recreates a
+      possibly-created ticket (a lost 201 must not become a duplicate).
+
+    Auth-class 401/403 propagate immediately as ``JiraAuthError``.
+    """
+    last_resp: Any = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await fn(*args, **kwargs)
+        except Exception as e:
+            if retry_server_errors and attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "%s: transport error (attempt %d/%d), retrying in %.1fs: %s",
+                    context, attempt + 1, max_retries + 1, delay, e,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
+        status = getattr(resp, "status", None)
+        if status in (401, 403):
+            _raise_on_auth_error(status, context)
+        if status is None or status < 400:
+            return resp
+        retryable = status == 429 or (retry_server_errors and status in _JIRA_TRANSIENT_STATUS)
+        if not retryable or attempt == max_retries:
+            return resp
+        last_resp = resp
+        delay = base_delay * (2 ** attempt)
+        logger.warning(
+            "%s: HTTP %s (attempt %d/%d), retrying in %.1fs",
+            context, status, attempt + 1, max_retries + 1, delay,
+        )
+        await asyncio.sleep(delay)
+    return last_resp
+
+
+# =============================================================================
+# Read-only discovery helpers (pre-provisioned project shapes)
+# =============================================================================
+
+
+async def search_issues_jql(
+    datasource: JiraDataSource,
+    jql: str,
+    fields: list[str],
+    *,
+    page_size: int = 100,
+    max_pages: int = 100,
+) -> list[dict[str, Any]]:
+    """Page issues matching ``jql`` (enhanced ``/search/jql`` endpoint), returning full issue dicts."""
+    out: list[dict[str, Any]] = []
+    next_token: Optional[str] = None
+    for _ in range(max_pages):
+        resp = await datasource.search_and_reconsile_issues_using_jql_post(
+            jql=jql, maxResults=page_size, fields=fields, nextPageToken=next_token,
+        )
+        if resp.status != 200:
+            _raise_on_auth_error(resp.status, "search_issues_jql")
+            raise RuntimeError(f"JQL search failed ({jql!r}): HTTP {resp.status}")
+        data = resp.json() or {}
+        issues = data.get("issues") or []
+        out.extend(issues)
+        next_token = data.get("nextPageToken")
+        if data.get("isLast") or not next_token or not issues:
+            break
+    return out
+
+
+async def issue_exists_in_project(
+    datasource: JiraDataSource, issue_key: str, project_key: str
+) -> bool:
+    """True if ``issue_key`` exists and belongs to ``project_key``."""
+    resp = await datasource.get_issue(issueIdOrKey=issue_key, fields="project")
+    if resp.status in (401, 403):
+        _raise_on_auth_error(resp.status, "issue_exists_in_project")
+    if resp.status != 200:
+        return False
+    proj = ((resp.json() or {}).get("fields") or {}).get("project") or {}
+    return str(proj.get("key")) == str(project_key)
+
+
+async def discover_epic_and_child(
+    datasource: JiraDataSource, project_key: str
+) -> Optional[tuple[str, str, str, str]]:
+    """Find an Epic (hierarchyLevel 1) with a level-0 child under it.
+
+    Returns ``(epic_key, epic_id, child_key, child_id)`` or None.
+    """
+    issues = await search_issues_jql(
+        datasource, f'project = "{project_key}"', ["issuetype", "parent"],
+    )
+    epic_id_to_key: dict[str, str] = {}
+    for it in issues:
+        f = it.get("fields") or {}
+        if (f.get("issuetype") or {}).get("hierarchyLevel") == 1:
+            epic_id_to_key[str(it.get("id"))] = it.get("key")
+    if not epic_id_to_key:
+        return None
+    for it in issues:
+        f = it.get("fields") or {}
+        parent = f.get("parent") or {}
+        pid = str(parent.get("id")) if parent.get("id") else None
+        if pid and pid in epic_id_to_key and (f.get("issuetype") or {}).get("hierarchyLevel") == 0:
+            return (epic_id_to_key[pid], pid, it.get("key"), str(it.get("id")))
+    return None
+
+
+async def discover_task_and_subtask(
+    datasource: JiraDataSource, project_key: str
+) -> Optional[tuple[str, str, str, str]]:
+    """Find a sub-task (hierarchyLevel -1) and its parent task.
+
+    Returns ``(parent_key, parent_id, subtask_key, subtask_id)`` or None.
+    """
+    issues = await search_issues_jql(
+        datasource, f'project = "{project_key}"', ["issuetype", "parent"],
+    )
+    for it in issues:
+        f = it.get("fields") or {}
+        if (f.get("issuetype") or {}).get("hierarchyLevel") == -1:
+            parent = f.get("parent") or {}
+            if parent.get("id"):
+                return (parent.get("key"), str(parent.get("id")), it.get("key"), str(it.get("id")))
+    return None
+
+
+async def discover_attachment(
+    datasource: JiraDataSource, project_key: str
+) -> Optional[tuple[str, str, dict[str, Any]]]:
+    """Find the first issue with an attachment. Returns ``(issue_key, issue_id, attachment)`` or None."""
+    issues = await search_issues_jql(
+        datasource, f'project = "{project_key}"', ["attachment"],
+    )
+    for it in issues:
+        atts = (it.get("fields") or {}).get("attachment") or []
+        if atts:
+            return (it.get("key"), str(it.get("id")), atts[0])
+    return None
+
+
+async def derive_jira_scope_counts(
+    datasource: JiraDataSource, project_key: str
+) -> dict[str, int]:
+    """Single enumeration of a project's issues → independent expected counts (live Jira, not graph).
+
+    Mirrors the connector's sync-path record creation:
+      - ``ticket``: one TICKET record per issue.
+      - ``file``: one FILE record per attachment. ``_fetch_issue_attachments`` creates a
+        FileRecord for **every** ``fields.attachment`` entry — no inline-image filtering on the
+        sync path (that only affects the streamed blocks) — so this is the exact FILE count.
+      - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
+        epic child; attachments use ATTACHMENT, not PARENT_CHILD).
+    """
+    issues = await search_issues_jql(
+        datasource, f'project = "{project_key}"', ["parent", "attachment"],
+    )
+    ticket = len(issues)
+    files = 0
+    parent_child = 0
+    for it in issues:
+        f = it.get("fields") or {}
+        if f.get("parent"):
+            parent_child += 1
+        files += len(f.get("attachment") or [])
+    return {"ticket": ticket, "file": files, "parent_child": parent_child}
 

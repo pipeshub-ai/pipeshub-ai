@@ -8,14 +8,16 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain_core.language_models.chat_models import BaseChatModel
-from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from app.agents.agent_loop.protocol import resolve_protocol
+from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
+from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
+from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
@@ -24,30 +26,46 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
+from app.modules.agents.qna.chat_state import _extract_kb_app_ids
+from app.modules.agents.qna.router import (
+    RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
+)
+from app.modules.agents.qna.router import (
+    build_capability_context as _build_agent_capability_context,  # noqa: F401
+)
+from app.modules.agents.qna.router import (
+    build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
+)
+from app.modules.transformers.blob_storage import (
+    BlobStorage,  # noqa: F401 - re-exported, see above
+)
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
-from app.utils.execute_query import has_sql_connector_configured
-from app.utils.fetch_slack_thread import has_slack_connector_configured
-from app.modules.agents.deep.graph import deep_agent_graph
-from app.modules.agents.deep.state import build_deep_agent_state
-from app.modules.agents.qna.cache_manager import get_cache_manager
-from app.modules.agents.qna.chat_state import (
-    _extract_kb_app_ids,
-    build_initial_state,
+from app.utils.attachment_utils import (
+    resolve_attachments,  # noqa: F401 - re-exported, see above
 )
-from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
-from app.modules.agents.qna.memory_optimizer import (
-    auto_optimize_state,
-    check_memory_health,
-)
-from app.modules.reranker.reranker import RerankerService
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.attachment_utils import resolve_attachments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
+# `BlobStorage`/`resolve_attachments` moved to `app.modules.agents.qna.router`
+# (Phase 7 of the agent-loop migration, so the new agent-loop auto-router
+# shares one classification implementation with this route). Re-exported
+# here, unused, purely so existing `from app.api.routes.agent import ...`
+# call sites and test patches keep working — see Phase 9's test-migration
+# plan for retiring these once the affected tests are updated to import
+# from the new module directly.
+
 router = APIRouter()
+
+
+def _resolve_protocol(chat_query: "ChatQuery", request: Request) -> str:
+    """Negotiate the SSE wire protocol for `chat_stream` — see
+    `app.agents.agent_loop.protocol.resolve_protocol` (shared with
+    `chatbot.py::askAIStream` so both `/chat/stream`-shaped routes
+    negotiate identically)."""
+    return resolve_protocol(chat_query.protocol, request)
+
 
 # Opik tracer initialization
 _opik_tracer = None
@@ -62,6 +80,21 @@ if _opik_api_key and _opik_workspace:
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
 NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
+
+
+def _parse_agent_capabilities(raw: dict[str, Any] | None) -> AgentCapabilities:
+    """Parse the raw ``agentCapabilities`` dict into a typed dataclass.
+
+    Unknown keys are silently ignored; missing booleans default to ``True``
+    (capability enabled) so the absence of a field never disables tools.
+    """
+    if not raw or not isinstance(raw, dict):
+        return AgentCapabilities()
+    return AgentCapabilities(
+        internal_search=bool(raw.get("internalSearch", True)),
+        web_search=bool(raw.get("webSearch", True)),
+        deep_search=bool(raw.get("deepSearch", False)),
+    )
 
 # ============================================================================
 # Request Models
@@ -88,19 +121,16 @@ class ChatQuery(BaseModel):
     callerDisplayName: str | None = None
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
+    # AG-UI protocol negotiation (see the migration plan) — Node.js sets
+    # AG-UI is the only supported SSE wire protocol. This field is
+    # accepted but ignored — `resolve_protocol` always returns "agui".
+    protocol: str | None = None
+    # Per-request capability toggles — allow the user to narrow what the
+    # agent uses for a single session. Capabilities only narrow, never
+    # expand: an agent without web search configured stays without it even
+    # if agentCapabilities.webSearch=True.
+    agentCapabilities: dict[str, Any] | None = None
 
-
-class RouteDecision(BaseModel):
-    """
-    Routing decision with structured chain-of-thought reasoning.
-
-    reasoning: structured analysis — sub-tasks identified, dependency chain,
-               parameter availability, and justification for the chosen tier.
-               Written BEFORE committing to a route (CoT reduces misroutes).
-    route: the tier — type-safe, cannot produce an invalid value.
-    """
-    reasoning: str
-    route: Literal["quick", "react", "deep"]
 
 # ============================================================================
 # Custom Exceptions
@@ -286,428 +316,6 @@ async def _resolve_service_account_caller_identity(
     return enriched_user_info
 
 
-async def _select_agent_graph_for_query(
-    query_info: dict[str, Any],
-    logger: Logger,
-    llm: BaseChatModel,
-    config_service: Any = None,
-    graph_provider: Any = None,
-    is_multimodal_llm: bool = False,
-    org_id: str = "",
-) -> CompiledStateGraph:
-    """
-    Graph selection based on chatMode from the chat input:
-    - quick: legacy agent graph (fast, no tool loops)
-    - verification: modern ReAct agent graph (tool calling with reflection)
-    - deep: deep agent graph (orchestrator + sub-agents)
-    - auto: LLM router decides based on query complexity (default: quick)
-    """
-    chat_mode = (query_info.get("chatMode") or "auto").lower().strip()
-
-    if chat_mode == "deep":
-        logger.info("Agent graph route: deep | chatMode=deep")
-        return deep_agent_graph
-
-    if chat_mode == "verification":
-        logger.info("Agent graph route: react | chatMode=verification")
-        return modern_agent_graph
-
-    if chat_mode == "auto":
-        # Auto-detect: use LLM to pick the right graph
-        return await _auto_select_graph(
-            query_info, logger, llm,
-            config_service=config_service,
-            graph_provider=graph_provider,
-            is_multimodal_llm=is_multimodal_llm,
-            org_id=org_id,
-        )
-
-    # Default: "auto" → LLM router decides
-    logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
-    return agent_graph
-
-
-async def _auto_select_graph(
-    query_info: dict[str, Any],
-    logger: Logger,
-    llm: BaseChatModel,
-    config_service: Any = None,
-    graph_provider: Any = None,
-    is_multimodal_llm: bool = False,
-    org_id: str = "",
-) -> CompiledStateGraph:
-    """
-    Auto-select graph using an LLM call to classify the query into one of
-    three agent types: quick, react, or deep.
-    Falls back to 'react' if parsing fails.
-    """
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    user_query = query_info.get("query", "").strip()
-    if not user_query:
-        return modern_agent_graph
-
-    capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data = (
-        _build_agent_capability_context(query_info)
-    )
-    toolsets = query_info.get("toolsets") or []
-    has_sql_toolset = any(
-        isinstance(ts, dict)
-        and any(name in ts.get("name", "").lower() for name in ("mariadb", "redshift"))
-        for ts in toolsets
-    )
-    sql_verify_override = ""
-    if has_sql_toolset:
-        sql_verify_override = (
-            "## SQL override (highest priority)\n"
-            "This agent has SQL database tools (MariaDB and/or Redshift) "
-            "configured. SQL queries require schema introspection before "
-            "execution and verification of intermediate results, so any "
-            "request that may touch these tools MUST be routed to **react**. "
-            "This rule overrides the tier definitions below — do NOT choose "
-            "`quick` or `deep` when SQL tools are involved.\n\n"
-        )
-
-    # Create blob_store once; reused for both history attachments and current ones.
-    blob_store = None
-    if config_service and graph_provider:
-        try:
-            blob_store = BlobStorage(
-                logger=logger,
-                config_service=config_service,
-                graph_provider=graph_provider,
-            )
-        except Exception as _bs_exc:
-            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
-
-    prior_messages = await _build_prior_routing_messages(
-        query_info,
-        blob_store=blob_store,
-        org_id=org_id,
-        is_multimodal_llm=is_multimodal_llm,
-    )
-
-    structured_llm = llm.with_structured_output(RouteDecision)
-
-    system_prompt = (
-        "You are a routing agent. Classify the user request into exactly one "
-        "execution tier: quick, react, or deep.\n\n"
-
-        + capability_block
-        + sql_verify_override
-        + "## quick\n"
-        "Every action and every parameter can be fully determined right now "
-        "from the query and context, before anything runs. The request itself "
-        "is the final action — retrieving, searching, displaying, or acting on "
-        "something where the goal is the retrieval or action itself, not "
-        "further processing of what comes back.\n\n"
-
-        "CRITICAL: For a request to be 'quick', ALL of the following must be true:\n"
-        "1. ALL required parameters for the final action are directly available "
-        "from the query text, conversation context, or system constants — NO "
-        "tool calls needed to obtain any parameter (IDs, keys, identifiers).\n"
-        "2. The query contains exactly ONE distinct action or question. If the "
-        "query asks about two or more separate topics, tasks, or actions "
-        "(e.g., 'How do I do X and also Y?'), it is NOT quick.\n\n"
-
-        "## react\n"
-        "A fixed, predictable sequence of dependent steps where the chain "
-        "length is deterministic before execution starts, but at least one "
-        "step's parameters only become known from a prior step's result. The "
-        "intent implies: get something first, then do something with it — "
-        "where 'it' is one specific thing.\n\n"
-        "Key indicator: If the final action requires a parameter (ID, key, "
-        "identifier, or any structured value) that must be fetched/resolved "
-        "through a tool call, this is react. The dependency chain is: "
-        "resolve parameter → execute final action.\n\n"
-        "Also use react when the query has multiple related sub-tasks that "
-        "build on shared context.\n\n"
-        "**react is the safe default when routing is unclear.**\n\n"
-
-        "## deep\n"
-        "Reserved for tasks react cannot handle. Only two cases qualify:\n"
-        "(a) The intent requires getting a collection and then doing something "
-        "to EVERY item in it — the number of items is unknown before the "
-        "collection is retrieved. Wanting to SEE a collection is not this.\n"
-        "(b) The intent requires gathering information from ≥2 fully "
-        "independent sources and combining it into one unified answer.\n"
-        f"Configuration check: {n_knowledge} source(s) configured — deep "
-        f"is {'viable' if n_knowledge >= 2 else 'NOT viable (need ≥2)'}.\n\n"
-
-        "## What counts as a known vs unknown parameter\n"
-        "Known (does NOT require a prior tool call):\n"
-        "  • Any search term, keyword, or topic that appears in the query text "
-        "itself — the user's words ARE the search input.\n"
-        "  • Any ID, name, key, or value explicitly stated in the query or "
-        "conversation history.\n"
-        "  • Which tool or knowledge source to use — this is an internal agent "
-        "routing decision, NOT a parameter the query must supply.\n\n"
-        "Unknown (DOES require a prior tool call):\n"
-        "  • An ID, key, or identifier that is not present anywhere in the "
-        "query or conversation and must be obtained from a tool's response "
-        "before the final action can execute.\n\n"
-
-        "## Decision\n"
-        "Answer these in order. Stop at the first match.\n\n"
-
-        "Q1: Is this a single question or action, AND are ALL required "
-        "parameters known (per the definitions above) — with NO tool calls "
-        "needed to obtain them? → **quick**\n\n"
-
-        "Q2: Does the request require a fixed sequence where at least one "
-        "parameter for the final action must come from a prior tool's result? "
-        "→ **react**\n\n"
-
-        "Q3: Does the request imply acting on every item in a collection "
-        "whose size is only known at runtime, or combining ≥2 fully "
-        f"independent sources ({n_knowledge} configured)? → **deep**\n\n"
-
-        "Q4: Does the query contain multiple distinct sub-questions, topics, "
-        "or actions? → NOT quick; use react (if topics are related or "
-        "sequential) or deep (if fully independent and targeting different "
-        "sources).\n\n"
-
-        "Default → **react**\n\n"
-
-        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
-        "'proceed') — infer the full intent from the conversation history "
-        "above, then apply the decision tree to that inferred intent."
-    )
-
-    route_map = {
-        "quick": agent_graph,
-        "react": modern_agent_graph,
-        "deep": deep_agent_graph,
-    }
-
-    # Build the routing HumanMessage: the user query goes here so multimodal
-    # models receive both text and image blocks in the same turn.
-    # Prior-turn attachments are already carried by prior_messages in order.
-    routing_human_content: Any = f"user query : {user_query}"
-    attachments = query_info.get("attachments") or []
-    if blob_store:
-        try:
-            attachment_blocks: list[dict] = []
-            if attachments and is_multimodal_llm:
-                attachment_blocks = await resolve_attachments(
-                    attachments=attachments,
-                    blob_store=blob_store,
-                    org_id=org_id,
-                    is_multimodal_llm=True,
-                    logger=logger,
-                )
-            if attachment_blocks:
-                routing_human_content = [
-                    {"type": "text", "text": f"user query : {user_query}\n\nAttached files from the user:\n"},
-                    *attachment_blocks,
-                ]
-        except Exception as exc:
-            logger.warning("Router: failed to resolve attachments for routing context: %s", exc)
-
-    try:
-        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
-
-        decision: RouteDecision = await structured_llm.ainvoke(
-            [
-                SystemMessage(content=system_prompt),
-                *prior_messages,
-                HumanMessage(content=routing_human_content),
-            ],
-            config=invoke_config,
-        )
-
-        route = decision.route
-        logger.info(
-            "Agent graph route: %s | (query=%s, reasoning=%s)",
-            route,
-            user_query[:80],
-            decision.reasoning[:120],
-        )
-        return route_map[route]
-
-    except Exception as e:
-        logger.warning(
-            "Agent graph route: react (fallback) | router failed: %s", e
-        )
-        return modern_agent_graph
-
-async def _build_prior_routing_messages(
-    query_info: dict[str, Any],
-    blob_store: Any = None,
-    org_id: str = "",
-    is_multimodal_llm: bool = False,
-) -> list:
-    """
-    Build prior conversation turns as LangChain HumanMessage/AIMessage objects
-    for the routing LLM call.
-
-    Each user turn's content list is assembled in document order:
-    - Turn text comes first.
-    - PDF attachments: text blocks and embedded image blocks are interleaved
-      exactly as they appear in the document (images only when multimodal).
-    - Standalone image attachments: appended after the turn text (multimodal only).
-
-    Bot turns are truncated to their first line to keep the context compact.
-    Attachment fetching errors are silently swallowed so routing is never blocked.
-    """
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.utils.chat_helpers import is_base64_image
-    from app.utils.attachment_utils import resolve_attachment_blocks_simple
-
-    previous = query_info.get("previous_conversations", [])
-    if not previous:
-        return []
-
-    recent = previous[-6:]
-    messages = []
-
-    for conv in recent:
-        role = conv.get("role", "")
-        content = str(conv.get("content", "")).strip()
-
-        if role == "user_query":
-            parts: list[dict] = [{"type": "text", "text": content[:200]}]
-            attachments = conv.get("attachments") or []
-            if attachments and blob_store and org_id:
-                for att in attachments:
-                    if not isinstance(att, dict):
-                        continue
-                    mime = (att.get("mimeType") or "").lower()
-                    vrid = att.get("virtualRecordId") or ""
-                    if not vrid:
-                        continue
-                    try:
-                        record = await blob_store.get_record_from_storage(vrid, org_id)
-                        if not record:
-                            continue
-                        if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:
-                            parts.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
-                        elif mime.startswith("image/") and is_multimodal_llm:
-                            blocks = (
-                                (record.get("block_containers") or {}).get("blocks") or []
-                            )
-                            for block in blocks:
-                                if not isinstance(block, dict) or block.get("type") != "image":
-                                    continue
-                                data = block.get("data")
-                                uri = (
-                                    data.get("uri", "") if isinstance(data, dict)
-                                    else (data if isinstance(data, str) else "")
-                                )
-                                if uri and is_base64_image(uri):
-                                    parts.append(
-                                        {"type": "image_url", "image_url": {"url": uri}}
-                                    )
-                    except Exception:
-                        pass  # Never let attachment fetching block routing
-            # Avoid wrapping in a list when there are no visual blocks
-            msg_content: Any = content[:200] if len(parts) == 1 else parts
-            messages.append(HumanMessage(content=msg_content))
-
-        elif role == "bot_response":
-            first_line = content.split("\n")[0][:150]
-            messages.append(AIMessage(content=first_line))
-
-    return messages
-
-
-def _build_agent_capability_context(
-    query_info: dict[str, Any],
-) -> tuple[str, int, list[dict], list[dict], list[dict]]:
-    """
-    Build a rich capability summary for the routing prompt.
-
-    Prefers fully-labeled data when available (chat_stream path supplies
-    query_info["knowledge"] and query_info["toolsets"]).  Falls back
-    gracefully to filter counts + bare tool-name strings when only the
-    lighter query_info structure is present (non-streaming chat / askAI).
-
-    Returns:
-        (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
-        where tools_data is a list of {"full_name": str, "desc": str} dicts.
-    """
-    from app.modules.agents.capability_summary import (
-        classify_knowledge_sources,
-        format_connector_filter_lines,
-    )
-
-    lines: list[str] = ["## Agent capabilities\n"]
-    indexed_connectors: list[dict] = []
-    kb_sources: list[dict] = []
-
-    # ── Knowledge sources ─────────────────────────────────────────────────────
-    agent_knowledge: list[dict] = query_info.get("knowledge") or []
-    connector_cfgs = query_info.get("connector_configs") or {}
-
-    if agent_knowledge:
-        kb_sources, indexed_connectors = classify_knowledge_sources(
-            agent_knowledge,
-            connector_configs=connector_cfgs if isinstance(connector_cfgs, dict) else None,
-        )
-        n_knowledge = len(kb_sources) + len(indexed_connectors)
-        lines.append(f"Knowledge sources ({n_knowledge} total):")
-        for c in indexed_connectors:
-            line = f"  • {c['label']} — app connector (type: {c['type_key']})"
-            fls = format_connector_filter_lines(c.get("filters"))
-            if fls:
-                line += "; " + "; ".join(fls)
-            lines.append(line)
-        for k in kb_sources:
-            cids = k.get("collection_ids", [])
-            scope = f", {len(cids)} scoped collection(s)" if cids else ""
-            lines.append(f"  • {k['label']} — knowledge base{scope}")
-    else:
-        # Fallback: derive counts from filters (NO_KB_SELECTED sentinel excluded)
-        filters = query_info.get("filters") or {}
-        n_connectors = len(filters.get("apps") or [])
-        n_kb = len([
-            x for x in (filters.get("kb") or [])
-            if x and x != "NO_KB_SELECTED"
-        ])
-        n_knowledge = n_connectors + n_kb
-        if n_knowledge:
-            lines.append(
-                f"Knowledge sources ({n_knowledge} total): "
-                f"{n_connectors} connector(s), {n_kb} KB collection(s)"
-            )
-        else:
-            lines.append("Knowledge sources: none configured")
-
-    lines.append("")
-
-    # ── Action tools ──────────────────────────────────────────────────────────
-    # Prefer toolsets (rich: fullName + description per tool).
-    # Fall back to the flat "tools" string list when toolsets are absent.
-    tools_data: list[dict] = []  # {"full_name": str, "desc": str}
-
-    toolsets: list[dict] = query_info.get("toolsets") or []
-    if toolsets:
-        for ts in toolsets:
-            for tool in ts.get("tools", []):
-                full_name = tool.get("fullName") or tool.get("name", "")
-                if not full_name:
-                    continue
-                desc = (tool.get("description") or "").strip()
-                tools_data.append({"full_name": full_name, "desc": desc})
-    else:
-        raw_tools: list = query_info.get("tools") or []
-        for t in raw_tools:
-            if isinstance(t, str) and t:
-                tools_data.append({"full_name": t, "desc": ""})
-
-    if tools_data:
-        lines.append(f"Action tools ({len(tools_data)} total):")
-        for td in tools_data:
-            entry = f"  • {td['full_name']}"
-            if td["desc"]:
-                entry += f" — {td['desc'][:100]}"
-            lines.append(entry)
-    else:
-        lines.append("Action tools: none configured")
-
-    return "\n".join(lines) + "\n\n", n_knowledge, indexed_connectors, kb_sources, tools_data
-
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
@@ -741,7 +349,8 @@ async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvi
 
         return {
             "orgId": user_info["orgId"],
-            "accountType": raw_account_type
+            "accountType": raw_account_type,
+            "name": org_doc.get("name") or "",
         }
     except HTTPException:
         raise
@@ -939,17 +548,19 @@ async def _resolve_default_web_search_config(
         if isinstance(web_search_config, dict)
         else []
     )
-    if not isinstance(providers, list) or not providers:
-        return None
+    if not isinstance(providers, list):
+        providers = []
 
     default_provider = next(
         (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
         None,
     )
 
-    # When providers exist but none carries isDefault=true, the Node.js layer has
-    # set DuckDuckGo as the active default (it clears all isDefault flags rather
-    # than inserting a DuckDuckGo entry into the array).
+    # Whenever no provider carries isDefault=true -- whether the org has never
+    # configured any provider (empty/absent `providers`) or has configured one
+    # without marking it default -- the Node.js layer treats DuckDuckGo as the
+    # active default (it clears all isDefault flags rather than inserting a
+    # DuckDuckGo entry into the array; see `cm_controller.ts::getWebSearchProviders`).
     if not default_provider:
         logger.debug("No explicit default web search provider; falling back to duckduckgo")
         return {"provider": "duckduckgo", "configuration": {}}
@@ -1103,19 +714,42 @@ def _filter_knowledge_by_enabled_sources(
     filters: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """
-    Filter agent_knowledge to only include entries whose connectorId is in
-    filters["apps"]. KB apps are now UUID-identified app connectors, so they
-    are handled by the same branch as all other connectors.
-    """
-    enabled_apps = set(filters.get("apps", []))
+    Filter agent_knowledge to only include entries enabled via filters.
 
-    if not enabled_apps:
+    KB collections and app connectors are both UUID-identified connectors
+    now, but the two enabled-sets are still tracked in separate filter
+    buckets upstream — a KB entry's connectorId is only ever placed in
+    filters["kb"], NEVER filters["apps"] (see the `!= "KB"` exclusion a
+    few lines above each call site). So each entry must be checked
+    against the bucket matching ITS OWN type, not filters["apps"] alone —
+    checking only "apps" silently dropped every KB entry whenever at
+    least one app connector was also configured.
+
+    When the caller explicitly supplies filter keys (even as empty lists),
+    empty means "nothing enabled" — return []. Pass-through (return the
+    full list unfiltered) only happens when NEITHER key is present at all.
+    """
+    apps_present = "apps" in filters
+    kb_present = "kb" in filters
+
+    if not apps_present and not kb_present:
         return agent_knowledge
 
-    return [
-        k for k in agent_knowledge
-        if isinstance(k, dict) and k.get("connectorId", "") in enabled_apps
-    ]
+    enabled_apps = set(filters.get("apps") or [])
+    enabled_kb = {
+        cid for cid in (filters.get("kb") or [])
+        if cid and cid != NO_KB_SELECTED_FILTER
+    }
+
+    result: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+        is_kb = (k.get("type") or "").strip().upper() == "KB"
+        enabled_set = enabled_kb if is_kb else enabled_apps
+        if k.get("connectorId", "") in enabled_set:
+            result.append(k)
+    return result
 
 
 async def _create_toolset_edges(
@@ -1355,6 +989,85 @@ async def _create_knowledge_edges(
     return created_knowledge
 
 
+def _parse_skills(raw_skills: list[Any]) -> list[str]:
+    """Parse the agent payload's `skills: [{name}] | [name, ...]` field into
+    a de-duplicated, order-preserving list of skill names.
+
+    Unlike `_parse_toolsets`/`_parse_knowledge_sources`, this never creates
+    anything: skill NODES already exist in `agentSkills` (owned by the
+    Skills management API — `api/routes/skills.py`), so agent create/update
+    only ever links to a skill that's already there. `_create_skill_edges`
+    below re-validates existence/ownership at write time regardless of
+    what the client claims here.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    if not raw_skills or not isinstance(raw_skills, list):
+        return names
+    for entry in raw_skills:
+        name = entry.get("name") if isinstance(entry, dict) else entry if isinstance(entry, str) else None
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+async def _create_skill_edges(
+    agent_key: str,
+    skill_names: list[str],
+    org_id: str,
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    transaction: str | None = None,
+) -> list[str]:
+    """Create `agentHasSkill` edges from an agent to each assigned skill —
+    mirrors `_create_toolset_edges`/`_create_knowledge_edges` in shape, but
+    never creates a skill node: skills are owned by the Skills management
+    API, this only links to ones that already exist.
+
+    Defense in depth (mirrors `GraphSkillStore._is_visible`): a name is
+    only linked when it resolves to an existing skill in this org AND
+    (the acting user created it OR it's a `builtin`-sourced skill) — a
+    user can only assign their own skills (or org-wide builtins) to an
+    agent, never a co-worker's. Any name that doesn't resolve is logged
+    and skipped rather than failing the whole create/update — a stale
+    skill reference in the payload should never block agent creation.
+    """
+    if not skill_names:
+        return []
+
+    skills_collection = CollectionNames.AGENT_SKILLS.value
+    time = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = []
+    linked_names: list[str] = []
+
+    for name in skill_names:
+        skill_key = f"{org_id}_{name}"
+        skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
+        if not skill_doc or skill_doc.get("orgId") != org_id:
+            logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
+            continue
+        if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
+            logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            continue
+        edges.append({
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{skills_collection}/{skill_key}",
+            "skillName": name,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        })
+        linked_names.append(name)
+
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction)
+    return linked_names
+
+
 async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd"""
     model_entries = agent.get("models", [])
@@ -1438,328 +1151,11 @@ def _mark_deprecated_tools(agent: dict[str, Any], logger: Logger) -> None:
     fullName is no longer present in the in-memory tool registry
     (i.e. its @tool was removed from code since the agent was created/edited).
     Mutates `agent` in place.
+
+    NOTE: The old global tools registry has been removed. This function is
+    currently a no-op until a replacement registry is wired in.
     """
-    from app.agents.tools.registry import _global_tools_registry
-
-    known = {name.lower() for name in _global_tools_registry.list_tools()}
-    if not known:
-        # Registry empty -> startup discovery likely failed; do NOT mark
-        # every tool as deprecated and mislead the UI.
-        logger.warning("Skipping deprecated-tool annotation: tool registry is empty")
-        return
-
-    deprecated_count = 0
-    for toolset in agent.get("toolsets") or []:
-        if not toolset:
-            continue
-        for tool in toolset.get("tools") or []:
-            if not tool:
-                continue
-            full_name = (tool.get("fullName") or "").lower()
-            is_deprecated = bool(full_name) and full_name not in known
-            tool["deprecated"] = is_deprecated
-            if is_deprecated:
-                deprecated_count += 1
-
-    if deprecated_count:
-        logger.info(
-            f"Agent {agent.get('_key')}: marked {deprecated_count} tool(s) as deprecated"
-        )
-
-
-# ============================================================================
-# Chat Endpoints
-# ============================================================================
-
-@router.post("/agent-chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
-async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
-    """Process chat query using LangGraph agent with optimizations"""
-    try:
-        import time
-        start_time = time.time()
-
-        services = await get_services(request)
-        logger = services["logger"]
-        graph_provider = services["graph_provider"]
-        reranker_service = services["reranker_service"]
-        retrieval_service = services["retrieval_service"]
-        config_service = services["config_service"]
-        user_context = _get_user_context(request)
-
-        record_event("agent_run", {
-            "orgId": user_context.get("orgId"),
-            "userId": user_context.get("userId"),
-            "email": user_context.get("email"),
-            "domain": user_context.get("domain"),
-            "has_tools": bool(query_info.tools),
-        })
-
-        # Check cache first
-        cache = get_cache_manager()
-        cache_context = {
-            "has_internal_data": query_info.filters is not None,
-            "tools": query_info.tools
-        }
-        cached_response = cache.get_llm_response(query_info.query, cache_context)
-        if cached_response:
-            logger.info(f"⚡ Cache hit! Query resolved in {(time.time() - start_time) * 1000:.0f}ms")
-            return JSONResponse(content=cached_response)
-
-        # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
-
-        # Build and execute graph
-        selected_graph = await _select_agent_graph_for_query(
-            query_info.model_dump(), logger, services["llm"],
-            config_service=config_service,
-            graph_provider=graph_provider,
-            org_id=enriched_user_info.get("orgId", ""),
-        )
-
-        has_sql_connector = await has_sql_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
-        has_slack_connector = await has_slack_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
-        if selected_graph == deep_agent_graph:
-            initial_state = build_deep_agent_state(
-                query_info.model_dump(),
-                enriched_user_info,
-                services["llm"],
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                org_info,
-                query_info.modelName,
-                query_info.modelKey,
-                has_sql_connector=has_sql_connector,
-                has_slack_connector=has_slack_connector,
-            )
-        else:
-            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
-            initial_state = build_initial_state(
-                query_info.model_dump(),
-                enriched_user_info,
-                services["llm"],
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                query_info.modelName,
-                query_info.modelKey,
-                org_info,
-                graph_type,
-                has_sql_connector=has_sql_connector,
-                has_slack_connector=has_slack_connector,
-            )
-
-        graph_to_use = selected_graph
-        config = {"recursion_limit": 30}
-        final_state = await graph_to_use.ainvoke(initial_state, config=config)
-        final_state = auto_optimize_state(final_state, logger)
-
-        # Check memory health
-        memory_health = check_memory_health(final_state, logger)
-        if memory_health["status"] != "healthy":
-            logger.warning(f"⚠️ Memory: {memory_health['memory_info']['total_mb']:.2f} MB")
-
-        # Handle errors
-        if final_state.get("error"):
-            error = final_state["error"]
-            return JSONResponse(
-                status_code=error.get("status_code", 500),
-                content={
-                    "status": error.get("status", "error"),
-                    "message": error.get("message", "An error occurred"),
-                    "searchResults": [],
-                    "records": [],
-                }
-            )
-
-        # Get response and cache it
-        response_data = final_state.get("completion_data", final_state.get("response"))
-
-        if isinstance(response_data, JSONResponse):
-            response_content = response_data.body.decode() if hasattr(response_data, 'body') else None
-            if response_content:
-                try:
-                    response_dict = json.loads(response_content)
-                    cache.set_llm_response(query_info.query, response_dict, cache_context)
-                except Exception:
-                    pass
-        elif isinstance(response_data, dict):
-            cache.set_llm_response(query_info.query, response_data, cache_context)
-
-        total_time = (time.time() - start_time) * 1000
-        logger.info(f"✅ Query completed in {total_time:.0f}ms")
-
-        # Add performance metadata if available
-        if "_performance_tracker" in final_state and isinstance(response_data, dict):
-            response_data["_performance"] = final_state.get("performance_summary", {})
-
-        return response_data
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in askAI: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-async def stream_response(
-    query_info: dict[str, Any],
-    user_info: dict[str, Any],
-    llm: BaseChatModel,
-    logger: Logger,
-    retrieval_service: RetrievalService,
-    graph_provider: IGraphDBProvider,
-    reranker_service: RerankerService,
-    config_service: ConfigurationService,
-    org_info: dict[str, Any] = None,
-    modelName: str = None,
-    modelKey: str = None,
-    is_multimodal_llm: bool = False,
-    client_name: str | None = None,
-) -> AsyncGenerator[str, None]:
-    """Stream agent response"""
-    try:
-        selected_graph = await _select_agent_graph_for_query(
-            query_info, logger, llm,
-            config_service=config_service,
-            graph_provider=graph_provider,
-            is_multimodal_llm=is_multimodal_llm,
-            org_id=user_info.get("orgId", ""),
-        )
-
-        has_sql_connector = await has_sql_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
-        has_slack_connector = await has_slack_connector_configured(
-            graph_provider, user_info["userId"], user_info["orgId"]
-        )
-        if selected_graph == deep_agent_graph:
-            graph_type = "deep"
-            initial_state = build_deep_agent_state(
-                query_info,
-                user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                org_info,
-                modelName,
-                modelKey,
-                has_sql_connector=has_sql_connector,
-                is_multimodal_llm=is_multimodal_llm,
-                has_slack_connector=has_slack_connector,
-            )
-        else:
-            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
-            initial_state = build_initial_state(
-                query_info,
-                user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                modelName,
-                modelKey,
-                org_info,
-                graph_type,
-                has_sql_connector=has_sql_connector,
-                is_multimodal_llm=is_multimodal_llm,
-                has_slack_connector=has_slack_connector,
-                client_name=client_name,
-            )
-
-        config = {
-            "recursion_limit": 50,
-            "configurable": {
-                "client_name": client_name,
-            },
-        }
-        chunk_count = 0
-
-        graph_to_use = selected_graph
-        async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
-            chunk_count += 1
-            if isinstance(chunk, dict) and "event" in chunk:
-                event_type = chunk.get('event', 'unknown')
-                data = chunk.get('data', {})
-                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            else:
-                logger.warning(f"Unexpected chunk format: {type(chunk)}")
-
-        logger.info(f"Streaming completed. Total chunks: {chunk_count}")
-    except Exception as e:
-        logger.error(f"Error in stream_response: {e}", exc_info=True)
-        yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
-
-
-@router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
-async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingResponse:
-    """Process chat query with streaming"""
-    try:
-        services = await get_services(request)
-        logger = services["logger"]
-        graph_provider = services["graph_provider"]
-        reranker_service = services["reranker_service"]
-        retrieval_service = services["retrieval_service"]
-        config_service = services["config_service"]
-        llm = services["llm"]
-        user_context = _get_user_context(request)
-
-        record_event("agent_run", {
-            "orgId": user_context.get("orgId"),
-            "userId": user_context.get("userId"),
-            "email": user_context.get("email"),
-            "domain": user_context.get("domain"),
-            "has_tools": bool(query_info.tools),
-            "streaming": True,
-        })
-
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["graph_provider"], services["logger"])
-
-        client_name = request.headers.get("Client-Name")
-        return StreamingResponse(
-            stream_response(
-                query_info.model_dump(),
-                enriched_user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                org_info,
-                query_info.modelName,
-                query_info.modelKey,
-                client_name=client_name,
-            ),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        services["logger"].error(f"Error in askAIStream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    return
 
 
 # ============================================================================
@@ -2025,9 +1421,10 @@ async def create_agent(request: Request) -> JSONResponse:
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
 
-        # Parse toolsets and knowledge BEFORE starting transaction
+        # Parse toolsets, knowledge, and skills BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
@@ -2043,7 +1440,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "name": body["name"].strip(),
             "description": body.get("description", "").strip() or "AI agent for task automation",
             "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
-            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a helpful assistant.",
+            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a workplace productivity assistant. Help users with their connected work tools.",
             "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
@@ -2061,12 +1458,13 @@ async def create_agent(request: Request) -> JSONResponse:
         created_toolsets = []
         failed_toolsets = []
         created_knowledge = []
+        linked_skills: list[str] = []
 
         try:
             # Start transaction for ALL agent creation operations
             graph_provider = services["graph_provider"]
             transaction_id = await graph_provider.begin_transaction(
-                read=[],
+                read=[CollectionNames.AGENT_SKILLS.value],
                 write=[
                     CollectionNames.AGENT_INSTANCES.value,
                     CollectionNames.PERMISSION.value,
@@ -2076,6 +1474,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     CollectionNames.TOOLSET_HAS_TOOL.value,
                     CollectionNames.AGENT_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    CollectionNames.AGENT_HAS_SKILL.value,
                 ]
             )
             logger.debug(f"Started transaction for agent creation: {agent_key}")
@@ -2294,6 +1693,16 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
+            # Step 5: Link assigned skills (within same transaction) — mirrors
+            # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
+            # skill node, only edges to skills that already exist.
+            if skill_names:
+                linked_skills = await _create_skill_edges(
+                    agent_key, skill_names, org_key, user_key, graph_provider, logger,
+                    transaction=transaction_id,
+                )
+                logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
+
             # Commit transaction - ALL or NOTHING
             await graph_provider.commit_transaction(transaction_id)
             transaction_id = None
@@ -2319,6 +1728,7 @@ async def create_agent(request: Request) -> JSONResponse:
             **agent,
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
+            "skills": [{"name": n} for n in linked_skills],
         }
         response_agent["webSearch"] = _format_web_search_for_response(
             response_agent.get("webSearch"),
@@ -2981,6 +2391,46 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
 
+        # Update skill assignments if provided in request (even if empty array - means unassign all).
+        # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
+        # AGENT_HAS_SKILL edges — since skills are owned by the Skills
+        # management API, not by whichever agent happens to reference them.
+        if "skills" in body:
+            skill_names = _parse_skills(body.get("skills", []))
+            graph_provider = services["graph_provider"]
+            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+            transaction_id = None
+            try:
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[CollectionNames.AGENT_SKILLS.value],
+                    write=[CollectionNames.AGENT_HAS_SKILL.value],
+                )
+                deleted_skill_edges = await graph_provider.delete_all_edges_for_node(
+                    agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
+                )
+                logger.debug(f"Removed {deleted_skill_edges} existing agent->skill edge(s) for agent {agent_id}")
+
+                linked_skills = (
+                    await _create_skill_edges(
+                        agent_id, skill_names, org_key, user_key, graph_provider, logger,
+                        transaction=transaction_id,
+                    )
+                    if skill_names else []
+                )
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
+                logger.info(f"Linked {len(linked_skills)} skill(s) for agent {agent_id}")
+            except Exception as e:
+                if transaction_id:
+                    try:
+                        await graph_provider.rollback_transaction(transaction_id)
+                    except Exception as abort_error:
+                        logger.error(f"Failed to abort transaction: {abort_error}")
+                logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to update skill assignments: {str(e)}",
+                ) from e
+
         return JSONResponse(
             status_code=200,
             content={"status": "success", "message": "Agent updated successfully"}
@@ -3255,193 +2705,93 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
 # Agent Chat Endpoints
 # ============================================================================
 
+def _parse_sse_events(chunk: str) -> list[tuple[str, Any]]:
+    """Parses one or more `event: X\\ndata: Y\\n\\n` frames out of a raw SSE
+    text chunk. Tolerant of a chunk containing multiple frames or a partial
+    trailing one (returns only whole frames found) -- `chat()` drains the
+    WHOLE stream before deciding anything, so a frame boundary split across
+    two `body_iterator` chunks is completed by the next chunk's data before
+    any frame is parsed here, not lost."""
+    events: list[tuple[str, Any]] = []
+    for block in chunk.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        event_name = None
+        data_line = None
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event_name = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_line = line[len("data:"):].strip()
+        if event_name is None or data_line is None:
+            continue
+        try:
+            events.append((event_name, json.loads(data_line)))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
 @router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
-async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONResponse:
-    """Chat with an agent"""
-    try:
-        services = await get_services(request)
-        logger = services["logger"]
-        graph_provider = services["graph_provider"]
-        retrieval_service = services["retrieval_service"]
-        llm = services["llm"]
-        reranker_service = services["reranker_service"]
-        config_service = services["config_service"]
-        user_context = _get_user_context(request)
-        org_key = user_context["orgId"]
+async def chat(request: Request, agent_id: str) -> JSONResponse:
+    """Chat with an agent (non-streaming).
 
-        record_event("agent_run", {
-            "orgId": user_context.get("orgId"),
-            "userId": user_context.get("userId"),
-            "email": user_context.get("email"),
-            "domain": user_context.get("domain"),
-            "has_tools": bool(getattr(chat_query, "tools", None)),
-            "streaming": False,
-        })
+    Runs the exact same agent-loop pipeline `chat_stream()` does -- same
+    setup (toolset config loading, permission checks, LLM resolution, all
+    ~250 lines of it), same `run_agent_loop_stream()` call -- by invoking
+    that route function directly and draining its `StreamingResponse.
+    body_iterator` instead of streaming it to the client. This is
+    deliberately NOT a second copy of that setup logic: LangGraph's own
+    separate non-streaming code path (`_select_agent_graph_for_query()` +
+    `graph.ainvoke()`) was removed with the rest of LangGraph, and
+    `chat_stream()`'s setup is too security-sensitive (credential lookup
+    scoping — see its own comments) to risk drifting via duplication.
 
-        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
+    Node.js's `createAgentConversation` (`POST /api/v1/agents/:agentKey/
+    conversations` -> `POST /api/v1/agent/{agent_id}/chat`) is this
+    endpoint's one live caller (see Phase 0 audit) — it reads whichever of
+    `completion_data`'s fields are present (`answer` required, everything
+    else optional; see `buildAIResponseMessage` in
+    `enterprise_search/utils/utils.ts`), so returning agent-loop's
+    `completion_data` shape as-is (no `reason`/`answerMatchType` on the
+    success path -- see `respond.py`) does not break it.
+    """
+    streaming_response = await chat_stream(request, agent_id)
+    if not isinstance(streaming_response, StreamingResponse):
+        return streaming_response  # pragma: no cover - chat_stream() only returns StreamingResponse today
 
-        agent = await services["graph_provider"].get_agent(agent_id, org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
-        is_service_account = agent.get("isServiceAccount", False)
+    completion_data: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    async for raw_chunk in streaming_response.body_iterator:
+        text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else raw_chunk
+        for event_name, data in _parse_sse_events(text):
+            if event_name == "complete" and isinstance(data, dict):
+                completion_data = data
+            elif event_name == "error" and isinstance(data, dict):
+                error_payload = data
 
-        if is_service_account:
-            enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-                agent, graph_provider, logger
-            )
-            enriched_user_info = await _resolve_service_account_caller_identity(
-                enriched_user_info, chat_query, user_context, graph_provider, logger,
-            )
-            perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-        else:
-            # Standard user path: look up the user document and verify permissions.
-            user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-            enriched_user_info = await _enrich_user_info(user_context, user_doc)
-            perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-            if not perm:
-                raise AgentNotFoundError(agent_id)
-
-        agent.update(perm)
-
-        agent_knowledge = agent.get("knowledge", [])
-
-        # Build filters from knowledge array (new format)
-        filters = chat_query.filters.copy() if chat_query.filters else {}
-
-        if not chat_query.filters:
-            # Extract knowledge sources from agent's knowledge array
-            knowledge_connector_ids = [
-                k.get("connectorId") for k in agent_knowledge
-                if isinstance(k, dict) and k.get("connectorId")
-            ]
-            kb_ids = _extract_kb_app_ids(agent_knowledge)
-
-            filters = {
-                "apps": knowledge_connector_ids,
-                "kb": kb_ids,
-                "vectorDBs": agent.get("vectorDBs", []),
-                "connectors": agent.get("connectors", [])
-            }
-
-        # Override with chat query filters if provided
-        if chat_query.filters:
-            for key in ["apps", "kb", "vectorDBs"]:
-                if chat_query.filters.get(key) is not None:
-                    filters[key] = chat_query.filters[key]
-
-        if agent.get("connectors"):
-            filters["connectors"] = agent.get("connectors", [])
-
-        _chat_conn_ids = [
-            k["connectorId"] for k in agent_knowledge
-            if isinstance(k, dict) and k.get("connectorId")
-        ]
-        connector_configs = await fetch_connector_configs(config_service, _chat_conn_ids)
-        web_search_provider = _parse_web_search(agent.get("webSearch"))
-        web_search_tool_config = await _resolve_web_search_tool_config(
-            web_search_provider,
-            config_service,
-            logger,
+    if error_payload is not None:
+        return JSONResponse(
+            status_code=error_payload.get("status_code", 400),
+            content={
+                "status": error_payload.get("status", "error"),
+                "message": error_payload.get("message") or error_payload.get("error") or "An error occurred",
+                "searchResults": [],
+                "records": [],
+            },
         )
-        if not _is_web_search_enabled(chat_query.tools):
-            web_search_provider = None
-            web_search_tool_config = None
-
-        # Build query info
-        query_info = {
-            "query": chat_query.query,
-            "limit": chat_query.limit,
-            "messages": [],
-            "previous_conversations": chat_query.previousConversations,
-            "quickMode": chat_query.quickMode,
-            "chatMode": chat_query.chatMode,
-            "retrievalMode": chat_query.retrievalMode,
-            "filters": filters,
-            "tools": chat_query.tools if chat_query.tools is not None else agent.get("tools"),
-            "knowledge": agent_knowledge,
-            "connector_configs": connector_configs,
-            "systemPrompt": agent.get("systemPrompt"),
-            "instructions": agent.get("instructions"),
-            "timezone": chat_query.timezone,
-            "currentTime": chat_query.currentTime,
-            "conversationId": chat_query.conversationId,
-            "is_service_account": is_service_account,
-            "webSearch": web_search_provider,
-            "webSearchConfig": web_search_tool_config,
-            "attachments": chat_query.attachments,
-        }
-        selected_graph = await _select_agent_graph_for_query(
-            query_info, logger, llm,
-            config_service=services["config_service"],
-            graph_provider=graph_provider,
-            org_id=enriched_user_info.get("orgId", ""),
+    if completion_data is None:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "The agent did not produce a response.",
+                "searchResults": [],
+                "records": [],
+            },
         )
-
-        has_sql_connector = await has_sql_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
-        has_slack_connector = await has_slack_connector_configured(
-            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
-        )
-        if selected_graph == deep_agent_graph:
-            initial_state = build_deep_agent_state(
-                query_info,
-                enriched_user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                org_info,
-                chat_query.modelName,
-                chat_query.modelKey,
-                has_sql_connector=has_sql_connector,
-                has_slack_connector=has_slack_connector,
-            )
-        else:
-            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
-            initial_state = build_initial_state(
-                query_info,
-                enriched_user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                chat_query.modelName,
-                chat_query.modelKey,
-                org_info,
-                graph_type,
-                has_sql_connector=has_sql_connector,
-                has_slack_connector=has_slack_connector,
-            )
-
-        graph_to_use = selected_graph
-        config = {"recursion_limit": 50}
-        final_state = await graph_to_use.ainvoke(initial_state, config=config)
-
-        # Handle errors
-        if final_state.get("error"):
-            error = final_state["error"]
-            return JSONResponse(
-                status_code=error.get("status_code", 500),
-                content={
-                    "status": error.get("status", "error"),
-                    "message": error.get("message", "An error occurred"),
-                    "searchResults": [],
-                    "records": [],
-                }
-            )
-
-        return final_state.get("completion_data", final_state["response"])
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in chat: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    return JSONResponse(content=completion_data)
 
 
 @router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -3463,6 +2813,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
+        protocol = _resolve_protocol(chat_query, request)
+        logger.info("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
+                     protocol, chat_query.protocol, request.query_params.get("protocol"))
 
         record_event("agent_run", {
             "orgId": user_context.get("orgId"),
@@ -3473,7 +2826,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "streaming": True,
         })
 
-        _MAX_TOOLS = 128
+        # `chat_query.tools` is a FILTER over the agent's configured toolsets
+        # (see the `None` "use every configured toolset" branch further
+        # below), not a per-turn LLM-context budget — lazy tool disclosure
+        # (`lazy_tools_wiring.py`, default ON) means the number of schemas
+        # actually bound to the model no longer scales with this list's
+        # size. This is now purely a request-size sanity bound, raised well
+        # above any real explicit selection so it stops rejecting legitimate
+        # "everything selected" requests exploded client-side into one
+        # fullName per action (previously 128, which a handful of
+        # multi-action toolsets already exceeded — see chat-input.tsx).
+        _MAX_TOOLS = 1024
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
             raise HTTPException(
                 status_code=400,
@@ -3547,6 +2910,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         llm = llm_result[0]
         llm_config = llm_result[1]
+        ai_models_config = llm_result[2] if len(llm_result) > 2 else {}
         is_multimodal_llm = llm_config.get("isMultimodal", False)
         if not llm_config.get("isReasoning", False):
             raise ReasoningModelRequiredError()
@@ -3682,7 +3046,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
 
                 async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
-                    yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+                    if protocol == "agui":
+                        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+
+                        evt = frame(AGUIEventType.RUN_ERROR, message=error_message, code="toolset_config_missing")
+                        yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+                    else:
+                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
 
                 return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
 
@@ -3725,9 +3095,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = _extract_kb_app_ids(agent_knowledge)
             logger.info(f"Filters: {filters}")
 
-        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
-        # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
-        # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
+        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
+        # explicitly [] (user deselected all KB sources at runtime), the sentinel
+        # ensures filters["kb"] is non-empty so downstream code can distinguish
+        # "nothing selected" from "key absent" without needing this function's
+        # "keys present but empty → return []" semantics to propagate further.
         if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 
@@ -3757,6 +3129,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             web_search_provider = None
             web_search_tool_config = None
 
+        # Apply user-requested capability overrides (capabilities can only narrow,
+        # never expand beyond what the agent is configured with).
+        caps = _parse_agent_capabilities(chat_query.agentCapabilities)
+        if not caps.web_search:
+            web_search_provider = None
+            web_search_tool_config = None
+        if not caps.internal_search:
+            filters = {"apps": [], "kb": [NO_KB_SELECTED_FILTER]}
+            agent_knowledge = []
+
+        # Universal Agent Mode (agentIdPlaceholder) is still Chat Assistant —
+        # Node routes chatMode=agent here, not through /chat/stream. Inject the
+        # org-level Agent custom instructions; real Agent Builder IDs skip this.
+        is_placeholder = agent_id == "agentIdPlaceholder"
+        custom_instructions = (
+            resolve_custom_instructions(ai_models_config or {}, resolve_agent_policy(caps))
+            if is_placeholder
+            else None
+        )
+
         # Build query info
         query_info = {
             "query": chat_query.query,
@@ -3769,15 +3161,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "filters": filters,
             "systemPrompt": agent.get("systemPrompt"),
             "instructions": agent.get("instructions"),
+            "custom_instructions": custom_instructions,
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
+            "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
             "connector_configs": connector_configs,
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
             "is_service_account": is_service_account,
-            "isPlaceholderAgent": agent_id == "agentIdPlaceholder",
+            "isPlaceholderAgent": is_placeholder,
             "modelName": model_name,
             "modelKey": model_key,
             "webSearch": web_search_provider,
@@ -3787,22 +3181,28 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         client_name = request.headers.get("client-name")
 
+        generator = run_agent_loop_stream(
+            query_info,
+            enriched_user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+            model_name=model_name,
+            model_key=model_key,
+            is_multimodal_llm=is_multimodal_llm,
+            client_name=client_name,
+            protocol=protocol,
+            llm_provider=llm_config.get("provider", ""),
+            context_length=llm_config.get("contextLength"),
+            is_reasoning_model=bool(llm_config.get("isReasoning", False)),
+        )
+
         return StreamingResponse(
-            stream_response(
-                query_info,
-                enriched_user_info,
-                llm,
-                logger,
-                retrieval_service,
-                graph_provider,
-                reranker_service,
-                config_service,
-                org_info,
-                modelName=model_name,
-                modelKey=model_key,
-                is_multimodal_llm=is_multimodal_llm,
-                client_name=client_name,
-            ),
+            generator,
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

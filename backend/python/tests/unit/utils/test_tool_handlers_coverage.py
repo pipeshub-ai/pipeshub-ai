@@ -4,7 +4,7 @@ Additional coverage tests for app.utils.tool_handlers
 Targets:
 - normalize_web_search_image_settings (all branches)
 - ToolResultType enum
-- ContentHandler.build_tool_instructions
+- ContentHandler
 - RecordsHandler
 - WebSearchHandler
 - _block_attr / _block_citation_url helpers
@@ -143,31 +143,6 @@ class TestContentHandler:
         result = _run(handler.format_message(tool_result, {}))
         # Falls back to str(tool_result)
         assert isinstance(result, str)
-
-    def test_build_tool_instructions_without_sql(self):
-        instructions = ContentHandler.build_tool_instructions(has_sql_connector=False)
-        assert "fetch_full_record" in instructions
-        assert "execute_sql_query" not in instructions
-
-    def test_build_tool_instructions_with_sql(self):
-        instructions = ContentHandler.build_tool_instructions(has_sql_connector=True)
-        assert "fetch_full_record" in instructions
-        assert "execute_sql_query" in instructions
-
-    def test_build_tool_instructions_includes_jira_rule_when_flag_true(self):
-        instructions = ContentHandler.build_tool_instructions(
-            has_sql_connector=False,
-            has_jira_tickets_in_context=True,
-        )
-        assert "Jira tickets" in instructions
-        assert "story points" in instructions
-
-    def test_build_tool_instructions_omits_jira_rule_when_flag_false(self):
-        instructions = ContentHandler.build_tool_instructions(
-            has_sql_connector=False,
-            has_jira_tickets_in_context=False,
-        )
-        assert "Jira tickets" not in instructions
 
     def test_extract_records_returns_empty(self):
         handler = ContentHandler()

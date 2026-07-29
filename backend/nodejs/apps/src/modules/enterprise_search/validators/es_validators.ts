@@ -96,7 +96,7 @@ const modelFieldsSchema = {
     .optional(),
 };
 
-/** Execution-context fields: timezone, currentTime, tools. */
+/** Execution-context fields shared by every stream/regenerate body schema. */
 const contextFieldsSchema = {
   timezone: z
     .string()
@@ -110,6 +110,25 @@ const contextFieldsSchema = {
     })
     .optional(),
   tools: z.array(z.string().min(1)).optional(),
+  // AG-UI is the only supported wire protocol (see
+  // utils/agui.ts::resolveProtocol, which always resolves to `agui`
+  // regardless of this field). Kept accepted-but-inert for callers still
+  // sending it; any value other than `agui` is rejected rather than
+  // silently downgrading a caller to a protocol that no longer exists.
+  // Must be declared here or Zod's default unknown-key stripping removes it
+  // from req.body before the controller can read it — the validation
+  // middleware replaces req.body with the parsed result.
+  protocol: z.enum(['agui']).optional(),
+  // Per-request agent capability toggles. Subject to the same declare-or-be-
+  // stripped constraint as `protocol` above. Python treats a missing flag as
+  // enabled, so partial objects are valid.
+  agentCapabilities: z
+    .object({
+      internalSearch: z.boolean().optional(),
+      webSearch: z.boolean().optional(),
+      deepSearch: z.boolean().optional(),
+    })
+    .optional(),
 };
 
 /** Title body shared by conversation/agent rename endpoints. */
@@ -275,8 +294,14 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
-/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
-export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+/**
+ * Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest).
+ * `verification` is kept as a legacy alias for `planExecute` (see Python's
+ * `agents/agent_loop/modes.py::MODE_CATALOG`, which resolves both wire values
+ * to the same `PlanExecuteLoop` mode) so old clients/persisted state that
+ * still send `chatMode=verification` keep working unchanged.
+ */
+export const AGENT_CHAT_MODES = ['auto', 'quick', 'planExecute', 'verification', 'deep'] as const;
 
 const agentChatModeSchema = z
   .enum(AGENT_CHAT_MODES, {

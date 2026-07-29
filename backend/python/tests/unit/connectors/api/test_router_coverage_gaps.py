@@ -91,6 +91,15 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
 
 _ROUTER = "app.connectors.api.router"
+_TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
+
+
+def _make_stream_connector():
+    from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+    conn = object.__new__(GoogleDriveTeamConnector)
+    conn.logger = MagicMock()
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -882,8 +891,11 @@ class TestGetConnectorStatsGaps:
     @pytest.mark.asyncio
     async def test_success_returns_data(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
         assert result["success"] is True
@@ -891,8 +903,11 @@ class TestGetConnectorStatsGaps:
     @pytest.mark.asyncio
     async def test_not_found_raises_404(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
             await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
@@ -900,15 +915,17 @@ class TestGetConnectorStatsGaps:
 
     @pytest.mark.asyncio
     async def test_generic_exception_propagates(self):
-        """When get_connector_stats raises before logger is set, UnboundLocalError propagates."""
+        """When get_connector_stats raises, returns 500."""
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        # The router has a latent bug: logger is set AFTER graph_provider.get_connector_stats,
-        # so if that call raises, the except block hits UnboundLocalError.
-        with pytest.raises((HTTPException, UnboundLocalError)):
+        with pytest.raises(HTTPException) as exc_info:
             await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================
@@ -1717,8 +1734,7 @@ class TestStreamGoogleApiRequestGaps:
     @pytest.mark.asyncio
     async def test_empty_chunk_is_skipped(self):
         """When MediaIoBaseDownload returns an empty chunk, it should not be yielded."""
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
 
         call_count = [0]
@@ -1730,13 +1746,13 @@ class TestStreamGoogleApiRequestGaps:
                 return (None, False)
             return (None, True)
 
-        with patch(f"{_ROUTER}.MediaIoBaseDownload") as mock_downloader_cls:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as mock_downloader_cls:
             mock_dl = MagicMock()
             mock_dl.next_chunk = MagicMock(side_effect=lambda: mock_next_chunk(mock_dl))
             mock_downloader_cls.return_value = mock_dl
 
             chunks = []
-            async for chunk in _stream_google_api_request(mock_request, "download"):
+            async for chunk in conn._stream_google_api_request(mock_request, "download"):
                 chunks.append(chunk)
 
             # Since the mock buffer won't have real data, just verify no errors
@@ -1953,13 +1969,14 @@ class TestGetRecordsGaps:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self):
+    async def test_exception_raises_500(self):
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(graph_provider=gp)
 
-        result = await get_records(req, graph_provider=gp)
-        assert "error" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await get_records(req, graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================

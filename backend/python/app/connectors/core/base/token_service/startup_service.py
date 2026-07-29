@@ -16,6 +16,7 @@ from app.connectors.core.base.token_service.toolset_token_refresh_service import
     ToolsetTokenRefreshService,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.interface.producer import IMessagingProducer
 
 
 class StartupService:
@@ -29,7 +30,16 @@ class StartupService:
         self._initialized = False
 
 
-    async def initialize(self, configuration_service: ConfigurationService, graph_provider: IGraphDBProvider) -> None:
+    def set_messaging_producer(self, producer: IMessagingProducer) -> None:
+        """Attach the messaging producer once it starts (after initialize)."""
+        if self._token_refresh_service:
+            self._token_refresh_service.set_messaging_producer(producer)
+
+    async def initialize(
+        self,
+        configuration_service: ConfigurationService,
+        graph_provider: IGraphDBProvider,
+    ) -> None:
         """Initialize startup services"""
         async with self._initialize_lock:
             if self._initialized:

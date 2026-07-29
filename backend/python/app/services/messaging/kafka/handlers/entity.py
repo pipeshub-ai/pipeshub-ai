@@ -10,7 +10,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -469,12 +469,25 @@ class EntityEventService(BaseEventService):
                 app_updates, CollectionNames.APPS.value
             )
 
-            # Cancel any running sync task so it stops promptly
+            # Cancel any running sync/reindex task so they stop promptly
             try:
                 await sync_task_manager.cancel_sync(connector_id)
-                self.logger.info(f"✅ Cancelled running sync for connector {connector_id}")
+                await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
+                self.logger.info(f"✅ Cancelled running sync/reindex for connector {connector_id}")
             except Exception as cancel_err:
                 self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
+
+            if (
+                hasattr(self.app_container, "connectors_map")
+                and connector_id in self.app_container.connectors_map
+            ):
+                existing_connector = self.app_container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    self.logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
@@ -651,6 +664,7 @@ class EntityEventService(BaseEventService):
                     connector_id=kb_key,
                     scope=ConnectorScopes.PERSONAL.value,
                     created_by=userId,
+                    org_id=orgId,
                     notification_service=self.app_container.connector_notification_service(),
                 )
                 if connector:

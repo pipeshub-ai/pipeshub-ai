@@ -22,6 +22,9 @@ interface KBHeaderProps {
   // Common actions (always shown)
   onFind: () => void;
   onRefresh: () => void;
+  /** Shown when browsing inside a KB collection */
+  showIndexingStatus?: boolean;
+  onIndexingStatusClick?: () => void;
 
   // Collections mode only actions (hidden in all-records mode)
   onCreateFolder?: () => void;
@@ -171,6 +174,8 @@ export function Header({
   onInfoClick,
   onFind,
   onRefresh,
+  showIndexingStatus,
+  onIndexingStatusClick,
   onCreateFolder,
   onUpload,
   onShare,
@@ -356,6 +361,31 @@ export function Header({
               <MaterialIcon name="refresh" size={16} color="var(--slate-11)" />
               {t('action.refresh')}
             </Button>
+          )}
+          {showIndexingStatus && onIndexingStatusClick && (
+            isMobile ? (
+              <IconButton
+                variant="ghost"
+                size="2"
+                color="gray"
+                onClick={onIndexingStatusClick}
+                style={{ cursor: 'pointer' }}
+                aria-label={t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
+              >
+                <MaterialIcon name="analytics" size={18} color="var(--slate-11)" />
+              </IconButton>
+            ) : (
+              <Button
+                variant="ghost"
+                size="1"
+                color="gray"
+                onClick={onIndexingStatusClick}
+                style={{ cursor: 'pointer', fontSize: '14px' }}
+              >
+                <MaterialIcon name="analytics" size={16} color="var(--slate-11)" />
+                {t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
+              </Button>
+            )
           )}
         </Flex>
 

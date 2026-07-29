@@ -1707,3 +1707,5 @@ class TestProcessorCoverageBranchesTo95:
             await proc._enhance_tables_with_llm(bc)
 
         assert row_block.data.get("row_natural_language_text") == "desc"
+
+

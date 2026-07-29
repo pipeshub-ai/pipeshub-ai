@@ -50,45 +50,70 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
         assert result[0]["connectorId"] == "app1"
 
-    def test_kb_filter_with_matching_record_groups(self):
-        """KB apps filtered by UUID"""
+    def test_kb_filter_with_matching_id(self):
+        """KB entries are matched against filters["kb"], not filters["apps"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440050"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
-    def test_kb_filter_no_matching_record_groups(self):
-        """KB apps filtered out when not in apps list"""
+    def test_kb_filter_no_matching_id(self):
+        """KB entries filtered out when their id isn't in filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440051"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
-    def test_kb_filter_with_json_string_filters(self):
-        """KB apps filtered by UUID"""
+    def test_kb_entry_never_matched_against_apps_filter(self):
+        """Regression: a KB entry's id living in filters["apps"] must NOT
+        match it — KB entries are only ever enabled via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440052"
-        knowledge = [
-            {"connectorId": kb_uuid, "type": "KB"},
-        ]
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
-        assert len(result) == 1
+        assert len(result) == 0
 
-    def test_kb_filter_invalid_json_filters(self):
-        """KB apps filtered by UUID, not by invalid filters"""
+    def test_mixed_kb_and_app_both_kept(self):
+        """Regression for the bug where configuring an app connector
+        (non-empty filters["apps"]) silently dropped every KB entry
+        because only filters["apps"] was checked, never filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        kb_uuid = "550e8400-e29b-41d4-a716-446655440053"
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440054"
+        app_id = "00a974a6-71b6-4dd3-98f6-f5d544ef44d6"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
+            {"connectorId": app_id, "type": "confluence"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
-        assert len(result) == 0
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": [app_id], "kb": [kb_uuid]},
+        )
+        connector_ids = {k["connectorId"] for k in result}
+        assert connector_ids == {kb_uuid, app_id}
+
+    def test_no_kb_selected_sentinel_excludes_all_kb_entries(self):
+        """The NO_KB_SELECTED sentinel means 'user selected zero KBs' —
+        it must not accidentally match a real connectorId."""
+        from app.api.routes.agent import (
+            NO_KB_SELECTED_FILTER,
+            _filter_knowledge_by_enabled_sources,
+        )
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440055"
+        app_id = "00a974a6-71b6-4dd3-98f6-f5d544ef44d7"
+        knowledge = [
+            {"connectorId": kb_uuid, "type": "KB"},
+            {"connectorId": app_id, "type": "confluence"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": [app_id], "kb": [NO_KB_SELECTED_FILTER]},
+        )
+        assert len(result) == 1
+        assert result[0]["connectorId"] == app_id
 
     def test_non_dict_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -411,12 +436,15 @@ class TestResolveDefaultWebSearchConfig:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_no_providers_returns_none(self):
+    async def test_no_providers_falls_back_to_duckduckgo(self):
+        """A brand-new org with an empty `providers` list must still default
+        to DuckDuckGo, matching the Node.js layer's implicit-default
+        behavior -- not silently disable web_search."""
         from app.api.routes.agent import _resolve_default_web_search_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"providers": []})
         result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result is None
+        assert result == {"provider": "duckduckgo", "configuration": {}}
 
     @pytest.mark.asyncio
     async def test_no_default_falls_back_duckduckgo(self):
@@ -696,10 +724,10 @@ class TestBuildAgentCapabilityContext:
             ],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [{"label": "Jira", "type_key": "jira", "filters": None}])), \
+                   return_value=[{"label": "Jira", "type_key": "jira", "connector_id": "c1", "source_type": "app"}]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, ic, kb, tools = _build_agent_capability_context(query_info)
+            block, n_k, sources, tools = _build_agent_capability_context(query_info)
         assert n_k == 1
         assert len(tools) == 2
         assert "jira.search" in block
@@ -711,20 +739,20 @@ class TestBuildAgentCapabilityContext:
             "filters": {"apps": ["app1"], "kb": ["rg1"]},
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, _, _, _ = _build_agent_capability_context(query_info)
+            block, n_k, _, _ = _build_agent_capability_context(query_info)
         assert n_k == 2
         assert "2 total" in block
 
     def test_no_knowledge_no_tools(self):
         from app.api.routes.agent import _build_agent_capability_context
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, _, _, tools = _build_agent_capability_context({})
+            block, n_k, _, tools = _build_agent_capability_context({})
         assert n_k == 0
         assert "none configured" in block
         assert tools == []
@@ -734,10 +762,10 @@ class TestBuildAgentCapabilityContext:
         from app.api.routes.agent import _build_agent_capability_context
         query_info = {"tools": ["web_search", "calculator"]}
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, _, _, _, tools = _build_agent_capability_context(query_info)
+            block, _, _, tools = _build_agent_capability_context(query_info)
         assert len(tools) == 2
         assert tools[0]["full_name"] == "web_search"
 
@@ -748,10 +776,10 @@ class TestBuildAgentCapabilityContext:
             "toolsets": [{"tools": [{"fullName": "jira.search", "description": "Search all issues"}]}],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, _, _, _, _ = _build_agent_capability_context(query_info)
+            block, _, _, _ = _build_agent_capability_context(query_info)
         assert "Search all issues" in block
 
     def test_tool_without_fullname_skipped(self):
@@ -761,10 +789,10 @@ class TestBuildAgentCapabilityContext:
             "toolsets": [{"tools": [{"fullName": "", "description": "bad"}, {"fullName": "ok.tool"}]}],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            _, _, _, _, tools = _build_agent_capability_context(query_info)
+            _, _, _, tools = _build_agent_capability_context(query_info)
         assert len(tools) == 1
 
 
@@ -1203,86 +1231,6 @@ class TestBuildPriorRoutingMessages:
 
 
 # ============================================================================
-# _auto_select_graph — lines 355, 485, 493
-# ============================================================================
-
-
-class TestAutoSelectGraph:
-    @pytest.mark.asyncio
-    async def test_empty_query_returns_modern(self):
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        result = await _auto_select_graph({"query": ""}, MagicMock(), MagicMock())
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_attachment_blocks_in_routing(self):
-        """Lines 485-493 — attachment blocks inject multimodal content."""
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        mock_llm = MagicMock()
-        structured = AsyncMock()
-        mock_llm.with_structured_output = MagicMock(return_value=structured)
-        mock_decision = MagicMock()
-        mock_decision.chatMode = "react"
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        blob_store = AsyncMock()
-
-        with patch("app.api.routes.agent._build_agent_capability_context",
-                   return_value=("cap_block", 0, [], [], [])), \
-             patch("app.api.routes.agent._build_prior_routing_messages",
-                   new_callable=AsyncMock, return_value=[]), \
-             patch("app.api.routes.agent.resolve_attachments",
-                   new_callable=AsyncMock, return_value=[{"type": "image_url", "image_url": {"url": "base64..."}}]):
-            result = await _auto_select_graph(
-                {"query": "analyze this", "attachments": [{"id": "a1"}]},
-                MagicMock(), mock_llm,
-                is_multimodal_llm=True,
-                org_id="o1",
-            )
-        assert result is modern_agent_graph
-
-
-# ============================================================================
-# _select_agent_graph_for_query — multiple modes
-# ============================================================================
-
-
-class TestSelectAgentGraphForQuery:
-    @pytest.mark.asyncio
-    async def test_deep_mode(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, deep_agent_graph
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "deep"}, MagicMock(), MagicMock()
-        )
-        assert result is deep_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_verification_mode(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, modern_agent_graph
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "verification"}, MagicMock(), MagicMock()
-        )
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_quick_mode(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "quick"}, MagicMock(), MagicMock()
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_auto_mode_delegates(self):
-        from app.api.routes.agent import _select_agent_graph_for_query, modern_agent_graph
-        with patch("app.api.routes.agent._auto_select_graph",
-                   new_callable=AsyncMock, return_value=modern_agent_graph):
-            result = await _select_agent_graph_for_query(
-                {"chatMode": "auto"}, MagicMock(), MagicMock()
-            )
-        assert result is modern_agent_graph
-
-
-# ============================================================================
 # share_agent/unshare_agent — lines 3133, 3140, 3148-3150, 3169, 3172, 3176, 3182-3186
 # ============================================================================
 
@@ -1474,43 +1422,34 @@ class TestUpdateAgentPermissionEdgeCases:
 
 
 class TestMarkDeprecatedToolsEdgeCases:
-    def _mock_registry(self, tool_names):
-        mock_reg = MagicMock()
-        mock_reg.list_tools = MagicMock(return_value=list(tool_names))
-        return MagicMock(_global_tools_registry=mock_reg)
+    """The old global tools registry was removed; _mark_deprecated_tools is a
+    confirmed no-op pending a replacement registry. Verify it does not raise
+    on edge-case agent shapes.
+    """
 
-    def test_empty_toolset_skipped(self):
-        """Line 1477 — falsy toolset skipped."""
+    def test_noop_on_normal_agent(self):
+        """No-op must not mutate the agent or raise."""
         from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [None, {"tools": [{"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-
-    def test_empty_tool_skipped(self):
-        """Line 1480 — falsy tool skipped."""
-        from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [{"tools": [None, {"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-
-    def test_empty_registry_skips(self):
-        """Line 1471 — empty registry skips annotation."""
-        from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [{"tools": [{"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry(set())}):
-            _mark_deprecated_tools(agent, MagicMock())
-        assert "deprecated" not in agent["toolsets"][0]["tools"][0]
-
-    def test_deprecated_tool_marked(self):
-        from app.api.routes.agent import _mark_deprecated_tools
+        import copy
         agent = {"toolsets": [{"tools": [
             {"fullName": "jira.search"},
             {"fullName": "old.tool"},
         ]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-        assert agent["toolsets"][0]["tools"][1]["deprecated"] is True
+        original = copy.deepcopy(agent)
+        _mark_deprecated_tools(agent, MagicMock())
+        assert agent == original
+
+    def test_noop_on_none_toolset_entry(self):
+        """Falsy toolset entries must not cause AttributeError."""
+        from app.api.routes.agent import _mark_deprecated_tools
+        agent = {"toolsets": [None, {"tools": [{"fullName": "jira.search"}]}]}
+        _mark_deprecated_tools(agent, MagicMock())
+
+    def test_noop_on_none_tool_entry(self):
+        """Falsy tool entries must not cause AttributeError."""
+        from app.api.routes.agent import _mark_deprecated_tools
+        agent = {"toolsets": [{"tools": [None, {"fullName": "jira.search"}]}]}
+        _mark_deprecated_tools(agent, MagicMock())
 
 
 # ============================================================================
@@ -1585,48 +1524,3 @@ class TestCreateAgentInstanceFields:
                 break
         if toolset_nodes:
             assert any(n.get("instanceId") == "inst1" for n in toolset_nodes)
-
-
-class TestStreamResponse:
-    @pytest.mark.asyncio
-    async def test_stream_yields_events(self):
-        from app.api.routes.agent import stream_response
-
-        mock_llm = MagicMock()
-        log = logging.getLogger("test")
-        gp = AsyncMock()
-        rr = MagicMock()
-        rs = MagicMock()
-        cs = MagicMock()
-
-        async def mock_astream(*args, **kwargs):
-            yield {"event": "token", "data": {"text": "hello"}}
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select:
-            mock_graph = MagicMock()
-            mock_graph.astream = mock_astream
-            mock_select.return_value = mock_graph
-            with patch("app.api.routes.agent.build_initial_state", return_value={}):
-                chunks = []
-                async for chunk in stream_response(
-                    {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log, rs, gp, rr, cs
-                ):
-                    chunks.append(chunk)
-                assert len(chunks) >= 1
-                assert "event: token" in chunks[0]
-
-    @pytest.mark.asyncio
-    async def test_stream_error(self):
-        from app.api.routes.agent import stream_response
-
-        mock_llm = MagicMock()
-        log = logging.getLogger("test")
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=Exception("fail")):
-            chunks = []
-            async for chunk in stream_response(
-                {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log,
-                MagicMock(), AsyncMock(), MagicMock(), MagicMock()
-            ):
-                chunks.append(chunk)
-            assert any("error" in c for c in chunks)

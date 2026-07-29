@@ -5,8 +5,10 @@ stays encapsulated inside the registry rather than being spread across callers.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
+import random
 from typing import Any
 
 import pdfplumber
@@ -67,8 +69,10 @@ def _detect_needs_ocr(content: bytes) -> bool:
             total = len(pdf.pages)
             if total == 0:
                 return False
-            ocr_pages = sum(1 for p in pdf.pages if _page_needs_ocr(p))
-            return (ocr_pages / total) >= _OCR_PAGE_THRESHOLD
+            sample_size = min(5, total)
+            sample_pages = random.sample(pdf.pages, sample_size)
+            ocr_pages = sum(1 for p in sample_pages if _page_needs_ocr(p))
+            return (ocr_pages / sample_size) >= _OCR_PAGE_THRESHOLD
     except Exception:  # noqa: BLE001
         return False
 
@@ -97,7 +101,9 @@ class SmartPDFParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        needs_ocr = _detect_needs_ocr(content)
+        # Full-document pdfplumber scan is synchronous CPU work; keep it off
+        # the event loop so one large PDF can't stall every other request.
+        needs_ocr = await asyncio.to_thread(_detect_needs_ocr, content)
         if needs_ocr:
             logger.info(
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",

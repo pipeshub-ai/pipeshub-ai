@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import {
@@ -19,6 +19,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore } from '@/chat/store';
 import { CollectionRow } from './connectors-collections/collection-row';
+import { AgentCapabilitiesBar } from './agent-capabilities-bar';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -40,10 +41,12 @@ function AgentFilterTablist({
   value,
   onValueChange,
   labels,
+  disabledTabs = [],
 }: {
   value: TabValue;
   onValueChange: (next: TabValue) => void;
   labels: Record<TabValue, string>;
+  disabledTabs?: TabValue[];
 }) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
@@ -81,10 +84,12 @@ function AgentFilterTablist({
     const i = TAB_VALUES.indexOf(value);
     if (e.key === 'ArrowRight') {
       e.preventDefault();
-      onValueChange(TAB_VALUES[(i + 1) % TAB_VALUES.length]!);
+      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
+      if (!disabledTabs.includes(next)) onValueChange(next);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      onValueChange(TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!);
+      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
+      if (!disabledTabs.includes(next)) onValueChange(next);
     }
   };
 
@@ -97,13 +102,16 @@ function AgentFilterTablist({
     >
       {TAB_VALUES.map((tabValue) => {
         const selected = value === tabValue;
+        const isDisabled = disabledTabs.includes(tabValue);
         return (
           <button
             key={tabValue}
             type="button"
             role="tab"
             aria-selected={selected}
-            onClick={() => onValueChange(tabValue)}
+            aria-disabled={isDisabled}
+            disabled={isDisabled}
+            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
             style={{
               boxSizing: 'border-box',
               flex: '1 1 0',
@@ -118,13 +126,14 @@ function AgentFilterTablist({
               borderRadius: FIGMA_TABLIST_RADIUS,
               border: selected ? selectedBorder : '1px solid transparent',
               background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: inactiveColor,
+              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
               fontSize: 12,
               lineHeight: '16px',
               letterSpacing: '0.04px',
               fontWeight: selected ? 500 : 400,
               fontFamily: 'inherit',
-              cursor: 'pointer',
+              cursor: isDisabled ? 'not-allowed' : 'pointer',
+              opacity: isDisabled ? 0.5 : 1,
               isolation: 'isolate',
             }}
           >
@@ -160,6 +169,9 @@ function humanizeUnderscores(value: string): string {
 function connectorIconHint(row: { connectorKind?: string; label: string }): string {
   return `${row.connectorKind ?? ''} ${row.label}`.trim();
 }
+
+/** Stable fallback so the Zustand selector always returns the same reference when no scoped caps exist. */
+const DEFAULT_AGENT_CAPS = { internalSearch: true, webSearch: true } as const;
 
 interface AgentScopedResourcesPanelProps {
   onToggleView?: () => void;
@@ -239,6 +251,19 @@ export function AgentScopedResourcesPanel({
   const selectedTools = useChatStore((s) => s.agentStreamTools);
   const setScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const setTools = useChatStore((s) => s.setAgentStreamTools);
+
+  const agentId = useChatStore((s) => s.agentSidebarAgentId);
+  const agentHasWebSearch = useChatStore((s) => s.agentHasWebSearch);
+  const kbIds = useChatStore((s) => s.agentChatKbIds);
+  const agentHasInternalSearch = connectors.length > 0 || kbIds.length > 0;
+
+  const scopedCaps = useChatStore((s) =>
+    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
+  );
+  const setScopedCaps = useChatStore((s) => s.setScopedAgentCapabilities);
+
+  const internalSearchEnabled = agentHasInternalSearch ? scopedCaps.internalSearch : false;
+  const webSearchEnabled = agentHasWebSearch ? scopedCaps.webSearch : false;
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
@@ -383,6 +408,15 @@ export function AgentScopedResourcesPanel({
     setTools(null);
   }, [setScope, setTools]);
 
+  const disabledTabs = useMemo<TabValue[]>(
+    () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
+    [internalSearchEnabled]
+  );
+
+  useEffect(() => {
+    if (disabledTabs.includes(tab)) setTab('actions');
+  }, [disabledTabs, tab]);
+
   const filteredConnectors = useMemo(() => {
     if (!search.trim()) return connectors;
     const q = search.toLowerCase();
@@ -441,6 +475,20 @@ export function AgentScopedResourcesPanel({
       gap="3"
       style={{ flex: 1, minHeight: 0, height: '100%', overflow: 'hidden' }}
     >
+      {/* Capabilities toggles */}
+      <AgentCapabilitiesBar
+        internalSearch={internalSearchEnabled}
+        webSearch={webSearchEnabled}
+        onToggleInternalSearch={(enabled) => {
+          if (agentId) setScopedCaps(agentId, { internalSearch: enabled });
+        }}
+        onToggleWebSearch={(enabled) => {
+          if (agentId) setScopedCaps(agentId, { webSearch: enabled });
+        }}
+        agentHasInternalSearch={agentHasInternalSearch ? undefined : false}
+        agentHasWebSearch={agentHasWebSearch ? undefined : false}
+      />
+
       <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>
         <AgentFilterTablist
           value={tab}
@@ -449,6 +497,7 @@ export function AgentScopedResourcesPanel({
             setSearch('');
           }}
           labels={tabLabels}
+          disabledTabs={disabledTabs}
         />
         <IconButton
           variant="ghost"

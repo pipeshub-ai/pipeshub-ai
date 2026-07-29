@@ -80,6 +80,8 @@ import {
 } from './libs/services/message-broker.factory';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { SkillsContainer } from './modules/skills/container/skills.container';
+import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { SamlController } from './modules/auth/controller/saml.controller';
 
@@ -105,6 +107,7 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private skillsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -189,6 +192,10 @@ export class Application {
 
 
       this.toolsetsContainer = await ToolsetsContainer.initialize(
+        configurationManagerConfig,
+      );
+
+      this.skillsContainer = await SkillsContainer.initialize(
         configurationManagerConfig,
       );
 
@@ -467,6 +474,12 @@ export class Application {
     this.app.use(
       '/api/v1/toolsets',
       createToolsetsRouter(this.toolsetsContainer)
+    );
+
+    // skills routes (Personal Settings > Skills -> Python query service)
+    this.app.use(
+      '/api/v1/skills',
+      createSkillsRouter(this.skillsContainer)
     );
 
     this.app.use(

@@ -7,6 +7,8 @@ export const TokenScopes = Object.freeze({
   STORAGE_TOKEN: 'storage:token',
   CONVERSATION_CREATE: 'conversation:create',
   VALIDATE_EMAIL: 'email:validate',
+  ORG_EMAIL_VERIFY: 'org:email:verify',
+  EMAIL_VERIFIED: 'email:verified',
 } as const);
 
 // Create a type for the TokenScopes keys

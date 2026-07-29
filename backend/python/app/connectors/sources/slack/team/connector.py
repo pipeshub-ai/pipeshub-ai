@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -139,6 +140,8 @@ SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
 }
 # Leave ~10% headroom so transient bursts don't trip Slack's 429.
 RATE_LIMIT_HEADROOM = 0.9
+
+ALL_CHANNEL_API_TYPES = {"public_channel", "private_channel"}
 
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
 
@@ -518,6 +521,23 @@ class SlackConnector(BaseConnector):
                 self.workspace_domain = team.get("domain")
                 self.team_id = team.get("id")
                 self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
+
+            # Fallback: extract workspace_domain from auth.test if team.info failed
+            if not self.workspace_domain:
+                try:
+                    auth_resp = await ds.auth_test()
+                    if auth_resp and auth_resp.success:
+                        auth_url = auth_resp.data.get("url", "")
+                        if auth_url:
+                            host = urlparse(auth_url).hostname or ""
+                            if host.endswith(".slack.com"):
+                                self.workspace_domain = host.replace(".slack.com", "")
+                                self.logger.info(
+                                    f"Resolved workspace_domain from auth.test: "
+                                    f"{self.workspace_domain}"
+                                )
+                except Exception as exc:
+                    self.logger.warning(f"auth.test fallback failed: {exc}")
 
             self.logger.info("✅ Slack connector initialised")
             return True
@@ -929,13 +949,21 @@ class SlackConnector(BaseConnector):
             elif op == FilterOperator.NOT_IN:
                 exclude_ids = set(ch_filter.get_value() or [])
 
-        # Apply channel_types filter (DMs not supported — only public, private channels)
+        # Apply channel_types filter (DMs not supported — only public, private channels).
+        # NOT_IN is inverted to IN against the fixed 2-type universe.
+        # Empty value = no explicit selection → default to all types.
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[set[str]] = None
+        allowed_types: set[str] | None = None
         if ch_types_filter is not None:
-            allowed_types = set(ch_types_filter.get_value() or [])
-        if allowed_types:
-            allowed_types = allowed_types - {"im", "mpim"}
+            raw = set(ch_types_filter.get_value() or []) - {"im", "mpim"}
+            if raw:
+                if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
+                    allowed_types = ALL_CHANNEL_API_TYPES - raw
+                else:
+                    allowed_types = raw
+                if not allowed_types:
+                    self.logger.info("channel_types filter excludes all types — nothing to sync")
+                    return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel"
 
         # Clear channel caches so stale entries from a previous sync (with different

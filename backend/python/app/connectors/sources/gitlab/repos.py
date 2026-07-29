@@ -700,7 +700,7 @@ class ReposSync:
                 self.logger.debug("Folder %r still has %d child(ren) in project %s; keeping", dir_prefix, len(children), project_id)
                 continue
             self.logger.info("Deleting emptied folder record %r (id=%s) for project %s", dir_prefix, folder.id, project_id)
-            await c.data_entities_processor.on_folder_deleted(folder.id)
+            await c.data_entities_processor.on_record_deleted(folder.id)
             deleted_count += 1
         if deleted_count:
             self.logger.info("Folder cleanup removed %d emptied folder record(s) for project %s", deleted_count, project_id)

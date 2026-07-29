@@ -12,6 +12,7 @@ class config_node_constants(Enum):
     REDIS_VECTOR = "/services/redis-vector"
     OPENSEARCH = "/services/opensearch"
     AI_MODELS = "/services/aiModels"
+    AI_MODELS_EMBEDDING = "/services/aiModels/embedding"
     WEB_SEARCH = "/services/webSearch"
     KAFKA = "/services/kafka"
     REDIS_STREAMS = "/services/redis-streams"
@@ -21,6 +22,8 @@ class config_node_constants(Enum):
     STORAGE = "/services/storage"
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
+    INHERITANCE = "/services/inheritance"
+
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"
@@ -34,6 +37,10 @@ class TokenScopes(Enum):
     USER_LOOKUP = "user:lookup"
     TOKEN_REFRESH = "token:refresh"
     STORAGE_TOKEN = "storage:token"
+    # Grants the connectors service's ACL-enforcing content endpoint.
+    # Deliberately separate from STORAGE_TOKEN so a leaked storage token
+    # cannot also grant connector record reads.
+    RECORD_CONTENT = "record:content"
 
 
 class OAuthScopes(str, Enum):
@@ -53,6 +60,10 @@ class OAuthScopes(str, Enum):
     AGENT_READ = "agent:read"
     AGENT_WRITE = "agent:write"
     AGENT_EXECUTE = "agent:execute"
+
+    # Agent Skills
+    SKILL_READ = "skill:read"
+    SKILL_WRITE = "skill:write"
 
     # Knowledge Base
     KB_READ = "kb:read"
@@ -102,6 +113,7 @@ class Routes(Enum):
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
     STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
+    STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
 
 
 class WebhookConfig(Enum):

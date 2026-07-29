@@ -38,7 +38,7 @@ export interface NodeTemplate {
   defaultConfig: Record<string, unknown>;
   inputs?: string[];
   outputs?: string[];
-  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors';
+  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors' | 'skills';
 }
 
 export interface ToolRef {
@@ -63,6 +63,11 @@ export interface KnowledgeReference {
   filters?: Record<string, unknown>;
 }
 
+/** A skill assigned to this agent (`AGENT_HAS_SKILL` edge) — see `_parse_skills` in `api/routes/agent.py`. */
+export interface SkillReference {
+  name: string;
+}
+
 export interface AgentFormPayload {
   name: string;
   description: string;
@@ -75,6 +80,7 @@ export interface AgentFormPayload {
   isServiceAccount?: boolean;
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
+  skills?: SkillReference[];
   webSearch?: AgentWebSearchAttachment | null;
 }
 
