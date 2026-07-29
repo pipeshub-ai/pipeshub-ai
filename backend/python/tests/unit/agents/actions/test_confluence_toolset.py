@@ -2051,6 +2051,46 @@ class TestSearchUsers:
         assert ok is False
         conf.client.search_users.assert_not_awaited()
 
+    # ---- accountId exact lookup ------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_account_id_uses_get_user_by_key(self):
+        account_id = "712020:17167aa8-8ec1-49cc-ab55-6ab1bcb019fb"
+        conf = _build_confluence()
+        conf.client.get_user_by_key = AsyncMock(return_value=_mock_response(200, {
+            "accountId": account_id,
+            "displayName": "On Call Engineer",
+            "email": "oncall@x.com",
+        }))
+        conf.client.search_users = AsyncMock()
+        ok, payload = await conf.search_users(account_id)
+        body = json.loads(payload)
+        assert ok is True
+        assert body["total"] == 1
+        assert body["results"][0]["accountId"] == account_id
+        assert body["results"][0]["displayName"] == "On Call Engineer"
+        conf.client.get_user_by_key.assert_awaited_once_with(
+            user_key=account_id, lookup_as="accountId",
+        )
+        conf.client.search_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_account_id_not_found(self):
+        account_id = "712020:17167aa8-8ec1-49cc-ab55-6ab1bcb019fb"
+        conf = _build_confluence()
+        conf.client.get_user_by_key = AsyncMock(return_value=_mock_response(404, "missing"))
+        ok, payload = await conf.search_users(account_id)
+        body = json.loads(payload)
+        assert ok is False
+        assert "accountId" in body["error"]
+
+    def test_looks_like_account_id(self):
+        assert Confluence._looks_like_account_id(
+            "712020:17167aa8-8ec1-49cc-ab55-6ab1bcb019fb"
+        )
+        assert not Confluence._looks_like_account_id("John Doe")
+        assert not Confluence._looks_like_account_id("john@x.com")
+
 
 # ===========================================================================
 # _extract_space_info — shared helper used by search_pages (filter mode)
