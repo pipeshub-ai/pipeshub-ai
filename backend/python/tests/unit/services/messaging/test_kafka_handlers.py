@@ -313,7 +313,9 @@ class TestEntityEventService:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_user_added_immediate_sync(self):
+    async def test_user_added_immediate_sync_does_not_trigger_sync(self):
+        # Immediate per-app sync on userAdded is currently disabled in
+        # EntityEventService.__handle_user_added (commented out).
         svc = self._make_service()
         svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
         svc.graph_provider.get_document = AsyncMock(return_value={"accountType": "ENTERPRISE"})
@@ -325,6 +327,7 @@ class TestEntityEventService:
 
         svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
         svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
+        svc._EntityEventService__get_or_create_all_team_and_add_user = AsyncMock(return_value=None)
         svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
 
         payload = {
@@ -336,7 +339,7 @@ class TestEntityEventService:
 
         result = await svc.process_event("userAdded", payload)
         assert result is True
-        svc._EntityEventService__handle_sync_event.assert_awaited()
+        svc._EntityEventService__handle_sync_event.assert_not_awaited()
 
     # -- userUpdated --
 
