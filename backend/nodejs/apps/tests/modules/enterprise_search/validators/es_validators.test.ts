@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import {
   enterpriseSearchCreateSchema,
+  enterpriseSearchStreamCreateSchema,
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
@@ -13,7 +14,10 @@ import {
   deleteAgentConversationParamsSchema,
   agentConversationTitleParamsSchema,
   addMessageParamsSchema,
+  addMessageStreamParamsSchema,
   regenerateAnswersParamsSchema,
+  regenerateAgentAnswersParamsSchema,
+  UNIVERSAL_STREAM_CHAT_MODES,
   AGENT_CHAT_MODES,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
@@ -144,6 +148,40 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { params: { conversationId: 'invalid' } }
       const result = conversationIdParamsSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+  })
+
+  describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
+    for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
+      it(`should accept required universal stream chatMode ${chatMode}`, () => {
+        const result = enterpriseSearchStreamCreateSchema.safeParse({
+          body: { query: 'hello', chatMode },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    for (const chatMode of ['quick', 'auto', 'deep', 'agent:auto']) {
+      it(`should reject unsupported universal stream chatMode ${chatMode}`, () => {
+        const result = enterpriseSearchStreamCreateSchema.safeParse({
+          body: { query: 'hello', chatMode },
+        })
+        expect(result.success).to.be.false
+      })
+    }
+
+    it('should reject an omitted universal stream chatMode', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should leave the non-stream create schema backward compatible', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({
+        body: { query: 'hello' },
+      })
+      expect(result.success).to.be.true
     })
   })
 
@@ -453,6 +491,36 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('addMessageStreamParamsSchema — chatMode', () => {
+    const params = { conversationId: '507f1f77bcf86cd799439011' }
+
+    for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
+      it(`should accept required universal follow-up chatMode ${chatMode}`, () => {
+        const result = addMessageStreamParamsSchema.safeParse({
+          params,
+          body: { query: 'follow up', chatMode },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    it('should reject an omitted universal follow-up chatMode', () => {
+      const result = addMessageStreamParamsSchema.safeParse({
+        params,
+        body: { query: 'follow up' },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should leave the non-stream add-message schema backward compatible', () => {
+      const result = addMessageParamsSchema.safeParse({
+        params,
+        body: { query: 'follow up' },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
   describe('regenerateAnswersParamsSchema', () => {
     it('should accept optional chatMode on regenerate body', () => {
       const data = {
@@ -473,7 +541,7 @@ describe('enterprise_search/validators/es_validators', () => {
     const caps = { internalSearch: false, webSearch: false, deepSearch: false }
 
     it('is preserved on the new-conversation stream body', () => {
-      const result = enterpriseSearchCreateSchema.safeParse({
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
         body: { query: 'hi', chatMode: 'agent', agentCapabilities: caps },
       })
       expect(result.success).to.be.true
@@ -483,7 +551,7 @@ describe('enterprise_search/validators/es_validators', () => {
     })
 
     it('is preserved on the continue-conversation stream body', () => {
-      const result = addMessageParamsSchema.safeParse({
+      const result = addMessageStreamParamsSchema.safeParse({
         params: { conversationId: '507f1f77bcf86cd799439011' },
         body: { query: 'hi', chatMode: 'agent', agentCapabilities: caps },
       })
@@ -510,7 +578,7 @@ describe('enterprise_search/validators/es_validators', () => {
     it('is preserved on the scoped-agent stream bodies', () => {
       const created = agentStreamCreateSchema.safeParse({
         params: { agentKey: 'slack-bot-agent' },
-        body: { query: 'hi', agentCapabilities: caps },
+        body: { query: 'hi', chatMode: 'quick', agentCapabilities: caps },
       })
       expect(created.success).to.be.true
       if (created.success) {
@@ -522,7 +590,7 @@ describe('enterprise_search/validators/es_validators', () => {
           agentKey: 'slack-bot-agent',
           conversationId: '507f1f77bcf86cd799439011',
         },
-        body: { query: 'hi', agentCapabilities: caps },
+        body: { query: 'hi', chatMode: 'quick', agentCapabilities: caps },
       })
       expect(followUp.success).to.be.true
       if (followUp.success) {
@@ -566,6 +634,7 @@ describe('enterprise_search/validators/es_validators', () => {
         params: { agentKey: 'slack-bot-agent' },
         body: {
           query: 'hello',
+          chatMode: 'quick',
           attachments: [{ recordId: 'bbbbbbbbbbbbbbbbbbbbbbbb' }],
         },
       }
@@ -581,6 +650,7 @@ describe('enterprise_search/validators/es_validators', () => {
         },
         body: {
           query: 'more',
+          chatMode: 'quick',
           attachments: [{ recordId: 'cccccccccccccccccccccccc' }],
         },
       }
@@ -592,23 +662,30 @@ describe('enterprise_search/validators/es_validators', () => {
   describe('agentStreamCreateSchema — chatMode', () => {
     const validParams = { agentKey: 'slack-bot-agent' }
 
-    for (const chatMode of AGENT_CHAT_MODES) {
-      it(`should accept chatMode ${chatMode}`, () => {
-        const data = {
+    it('should expose quick as the only supported agent chat mode', () => {
+      expect(AGENT_CHAT_MODES).to.deep.equal(['quick'])
+      const result = agentStreamCreateSchema.safeParse({
+        params: validParams,
+        body: { query: 'hello', chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    for (const chatMode of ['auto', 'deep', 'planExecute', 'verification', 'internal_search']) {
+      it(`should reject unsupported agent chatMode ${chatMode}`, () => {
+        const result = agentStreamCreateSchema.safeParse({
           params: validParams,
           body: { query: 'hello', chatMode },
-        }
-        const result = agentStreamCreateSchema.safeParse(data)
-        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+        })
+        expect(result.success).to.be.false
       })
     }
 
-    it('should reject assistant-style chatMode internal_search', () => {
-      const data = {
+    it('should reject an omitted agent chatMode', () => {
+      const result = agentStreamCreateSchema.safeParse({
         params: validParams,
-        body: { query: 'hello', chatMode: 'internal_search' },
-      }
-      const result = agentStreamCreateSchema.safeParse(data)
+        body: { query: 'hello' },
+      })
       expect(result.success).to.be.false
     })
 
@@ -617,6 +694,7 @@ describe('enterprise_search/validators/es_validators', () => {
         params: validParams,
         body: {
           query: 'hello',
+          chatMode: 'quick',
           quickMode: true,
           callerDisplayName: 'Slack User',
           callerEmail: 'slack-user@example.com',
@@ -638,41 +716,63 @@ describe('enterprise_search/validators/es_validators', () => {
       conversationId: '507f1f77bcf86cd799439011',
     }
 
-    for (const chatMode of AGENT_CHAT_MODES) {
-      it(`should accept chatMode ${chatMode}`, () => {
-        const data = {
+    it('should accept quick', () => {
+      const result = agentAddMessageParamsSchema.safeParse({
+        params: validParams,
+        body: { query: 'follow up', chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    for (const chatMode of ['', 'auto', 'deep', 'planExecute', 'verification', 'agent:auto', 'internal_search']) {
+      it(`should reject unsupported agent follow-up chatMode ${chatMode || '(empty)'}`, () => {
+        const result = agentAddMessageParamsSchema.safeParse({
           params: validParams,
           body: { query: 'follow up', chatMode },
-        }
-        const result = agentAddMessageParamsSchema.safeParse(data)
-        expect(result.success, `chatMode ${chatMode} should be accepted`).to.be.true
+        })
+        expect(result.success).to.be.false
       })
     }
 
-    it('should reject assistant-style chatMode internal_search', () => {
-      const data = {
+    it('should reject an omitted agent follow-up chatMode', () => {
+      const result = agentAddMessageParamsSchema.safeParse({
         params: validParams,
-        body: { query: 'follow up', chatMode: 'internal_search' },
-      }
-      const result = agentAddMessageParamsSchema.safeParse(data)
+        body: { query: 'follow up' },
+      })
       expect(result.success).to.be.false
     })
+  })
 
-    it('should reject agent-prefixed chatMode agent:auto', () => {
-      const data = {
-        params: validParams,
-        body: { query: 'follow up', chatMode: 'agent:auto' },
-      }
-      const result = agentAddMessageParamsSchema.safeParse(data)
-      expect(result.success).to.be.false
+  describe('regenerateAgentAnswersParamsSchema — chatMode', () => {
+    const params = {
+      agentKey: 'slack-bot-agent',
+      conversationId: '507f1f77bcf86cd799439011',
+      messageId: '507f1f77bcf86cd799439012',
+    }
+
+    it('should accept quick', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params,
+        body: { chatMode: 'quick' },
+      })
+      expect(result.success).to.be.true
     })
 
-    it('should reject empty chatMode', () => {
-      const data = {
-        params: validParams,
-        body: { query: 'follow up', chatMode: '' },
-      }
-      const result = agentAddMessageParamsSchema.safeParse(data)
+    for (const chatMode of ['auto', 'deep', 'planExecute', 'verification']) {
+      it(`should reject unsupported agent regenerate chatMode ${chatMode}`, () => {
+        const result = regenerateAgentAnswersParamsSchema.safeParse({
+          params,
+          body: { chatMode },
+        })
+        expect(result.success).to.be.false
+      })
+    }
+
+    it('should reject an omitted agent regenerate chatMode', () => {
+      const result = regenerateAgentAnswersParamsSchema.safeParse({
+        params,
+        body: {},
+      })
       expect(result.success).to.be.false
     })
   })
@@ -1459,6 +1559,39 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should preserve canonical skill assignments', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Skilled Agent',
+          models: [validModel],
+          skills: [{ name: 'pdf-extractor' }, { name: 'incident-response' }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.skills).to.deep.equal([
+          { name: 'pdf-extractor' },
+          { name: 'incident-response' },
+        ])
+      }
+    })
+
+    for (const skills of [
+      ['pdf-extractor'],
+      [{ name: '' }],
+      [{ name: ' pdf-extractor ' }],
+      [{ name: 'Uppercase-Name' }],
+      [{ name: 'double--hyphen' }],
+      [{ name: 'valid-name', description: 'not accepted on assignments' }],
+    ]) {
+      it(`should reject malformed skill assignments ${JSON.stringify(skills)}`, () => {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], skills },
+        })
+        expect(result.success).to.be.false
+      })
+    }
+
     it('should strip unknown fields from create-agent payload objects', () => {
       const result = createAgentSchema.safeParse({
         body: {
@@ -1701,6 +1834,26 @@ describe('enterprise_search/validators/es_validators', () => {
         },
       })
       expect(result.success).to.be.true
+    })
+
+    it('should preserve skill assignments and an empty clearing array', () => {
+      const assigned = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { skills: [{ name: 'pdf-extractor' }] },
+      })
+      expect(assigned.success).to.be.true
+      if (assigned.success) {
+        expect(assigned.data.body.skills).to.deep.equal([{ name: 'pdf-extractor' }])
+      }
+
+      const cleared = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { skills: [] },
+      })
+      expect(cleared.success).to.be.true
+      if (cleared.success) {
+        expect(cleared.data.body.skills).to.deep.equal([])
+      }
     })
 
     it('should reject missing agentKey param', () => {

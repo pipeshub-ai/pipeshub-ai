@@ -2356,6 +2356,31 @@ describe('Enterprise Search Controller', () => {
       }
     })
 
+    it('should forward validated skill assignments unchanged', async () => {
+      const handler = createAgent(createMockAppConfig())
+      const skills = [{ name: 'pdf-extractor' }, { name: 'incident-response' }]
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        expect(JSON.parse(this.body).skills).to.deep.equal(skills)
+        return Promise.resolve({
+          statusCode: 200,
+          data: { agent: { name: 'Skilled Agent', skills } },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        body: { name: 'Skilled Agent', skills },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+    })
+
     it('should call next when orgId is missing', async () => {
       const handler = createAgent(createMockAppConfig())
       const req = createMockRequest({ user: { userId: VALID_OID } })
@@ -2585,6 +2610,31 @@ describe('Enterprise Search Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
+    })
+
+    it('should forward an empty skills array for assignment clearing', async () => {
+      const handler = updateAgent(createMockAppConfig())
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        expect(JSON.parse(this.body).skills).to.deep.equal([])
+        return Promise.resolve({
+          statusCode: 200,
+          data: { agentKey: 'agent-1', skills: [] },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { skills: [] },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
 
     it('should call next on error', async () => {
@@ -8481,7 +8531,7 @@ describe('Enterprise Search Controller', () => {
           modelKey: 'gpt-4',
           modelName: 'GPT-4',
           modelProvider: 'openai',
-          chatMode: 'deep',
+          chatMode: 'internal_search',
         },
         user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
       })
@@ -8936,7 +8986,7 @@ describe('Enterprise Search Controller', () => {
           modelKey: 'gpt-4',
           modelName: 'GPT-4',
           modelFriendlyName: 'GPT-4 Turbo',
-          chatMode: 'deep',
+          chatMode: 'internal_search',
         },
         user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
       })
@@ -8976,7 +9026,7 @@ describe('Enterprise Search Controller', () => {
           tools: ['search', 'calculator'],
           timezone: 'America/New_York',
           currentTime: '2026-03-23T10:00:00Z',
-          chatMode: 'deep',
+          chatMode: 'quick',
           modelKey: 'claude-3',
           modelName: 'Claude 3',
           modelFriendlyName: 'Claude 3 Opus',
@@ -9771,7 +9821,7 @@ describe('Enterprise Search Controller', () => {
           modelKey: 'gpt-4',
           modelName: 'GPT-4',
           modelFriendlyName: 'GPT 4',
-          chatMode: 'deep',
+          chatMode: 'internal_search',
         },
         user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
       })

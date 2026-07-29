@@ -198,6 +198,23 @@ export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
 
+/** Public `/conversations/stream` modes. The route always requires an explicit mode. */
+export const UNIVERSAL_STREAM_CHAT_MODES = [
+  'agent',
+  'internal_search',
+  'web_search',
+] as const;
+
+const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
+
+export const enterpriseSearchStreamCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Conversation params / title / share
 // ---------------------------------------------------------------------------
@@ -294,27 +311,26 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
-/**
- * Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest).
- * `verification` is kept as a legacy alias for `planExecute` (see Python's
- * `agents/agent_loop/modes.py::MODE_CATALOG`, which resolves both wire values
- * to the same `PlanExecuteLoop` mode) so old clients/persisted state that
- * still send `chatMode=verification` keep working unchanged.
- */
-export const AGENT_CHAT_MODES = ['auto', 'quick', 'planExecute', 'verification', 'deep'] as const;
+export const addMessageStreamParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
+});
 
-const agentChatModeSchema = z
-  .enum(AGENT_CHAT_MODES, {
-    errorMap: () => ({ message: 'Invalid chat mode' }),
-  })
-  .optional();
+/** Public `/agents/{agentKey}/conversations/...` streams support quick mode only. */
+export const AGENT_CHAT_MODES = ['quick'] as const;
+
+const agentChatModeSchema = z.literal('quick', {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
-  chatMode: agentChatModeSchema 
+  chatMode: agentChatModeSchema,
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
-  chatMode: agentChatModeSchema, // TODO: remove this
+  chatMode: agentChatModeSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -394,6 +410,18 @@ const agentKnowledgeSchema = z
     filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
   });
 
+const agentSkillSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1, { message: 'Skill name is required' })
+      .max(64, { message: 'Skill name must be 64 characters or fewer' })
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+        message: 'Skill name must be lowercase alphanumeric with single hyphens',
+      }),
+  })
+  .strict();
+
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
   z
@@ -463,6 +491,7 @@ const createAgentBodySchema = z
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
   });
 
@@ -492,6 +521,7 @@ const updateAgentBodySchema = z
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
   });
 
@@ -593,7 +623,9 @@ export const regenerateAgentAnswersParamsSchema = z.object({
     ...conversationIdParam,
     ...messageIdParam,
   }),
-  body: regenerateBodySchema,
+  body: regenerateBodySchema.extend({
+    chatMode: agentChatModeSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
