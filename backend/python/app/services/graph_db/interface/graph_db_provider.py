@@ -3066,6 +3066,8 @@ class IGraphDBProvider(ABC):
         ATTACHMENT edges — deleting an entire containment subtree (folders, nested
         files, etc.).  When False, only ATTACHMENT edges are traversed so child
         records linked via PARENT_CHILD survive (e.g. stories under a deleted epic).
+        Survivors whose ``externalParentId`` points at a deleted root have that
+        field cleared to null only if they already ``BELONGS_TO`` a RecordGroup.
 
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
