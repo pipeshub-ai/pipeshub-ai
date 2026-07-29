@@ -28,7 +28,6 @@ from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
 )
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationType
 
 
 def _make_logger() -> logging.Logger:
@@ -379,40 +378,19 @@ class TestPersonalRunSyncOrchestration:
 
 
 class TestPersonalRunSyncEdgeCases:
-    async def test_run_sync_raises_when_init_fails(self) -> None:
-        conn = _make_connector()
-        conn.data_source = None
-        conn.init = AsyncMock(return_value=False)
-        conn.notify = AsyncMock()
-
-        with pytest.raises(RuntimeError, match="init failed") as exc_info:
-            await conn.run_sync()
-
-        # Background sync notifies AUTH_ERROR once; except must not send a second alert.
-        assert getattr(exc_info.value, "_notification_sent", False) is True
-        conn.notify.assert_awaited_once()
-        assert conn.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
-
-    async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
+    async def test_run_sync_raises_when_not_initialized(self) -> None:
+        """Mirrors Confluence: run_sync must not call init(); fail if data_source is missing."""
         conn = _make_connector()
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
-        conn.creator_email = "owner@example.com"
-        conn._fetch_projects = AsyncMock(return_value=([], []))
-        conn._sync_all_project_issues = AsyncMock(
-            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
-        )
-        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn.notify = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.atlassian.jira_cloud_personal.connector.load_connector_filters",
-            new_callable=AsyncMock,
-            return_value=(None, None),
-        ):
+        with pytest.raises(RuntimeError, match="not initialized") as exc_info:
             await conn.run_sync()
 
-        conn.init.assert_awaited_once()
+        conn.init.assert_not_awaited()
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        conn.notify.assert_not_awaited()
 
     async def test_run_sync_creator_lookup_exception_is_logged(self) -> None:
         conn = _make_connector(created_by="creator-id")

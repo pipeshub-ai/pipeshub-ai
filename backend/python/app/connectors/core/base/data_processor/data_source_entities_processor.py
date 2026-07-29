@@ -1358,18 +1358,13 @@ class DataSourceEntitiesProcessor:
         self,
         record_ids: list[str],
         connector_id: str,
-        cascade_children: bool = True,
     ) -> dict:
-        """Delete records, sweep their edges, and publish deleteRecord events.
+        """Delete records and their full PARENT_CHILD + ATTACHMENT subtree.
 
-        When *cascade_children* is True (default), the full PARENT_CHILD +
-        ATTACHMENT subtree is deleted — correct for KB folders and connectors
-        whose children should be removed together with the parent.
-
-        When False, only ATTACHMENT edges are traversed so child records linked
-        via PARENT_CHILD survive.  Use this for ticket-system deletions where
-        a parent ticket (e.g. Epic) can be deleted while its child stories remain
-        live at source.
+        Correct for KB folders and connectors whose children should be removed
+        together with the parent. For ticket systems that must keep live child
+        tickets (stories under a deleted epic), use
+        :meth:`on_records_deleted_with_attachments` instead.
         """
         if not record_ids:
             return {
@@ -1382,7 +1377,36 @@ class DataSourceEntitiesProcessor:
             }
         async with self.data_store_provider.transaction() as tx_store:
             result = await tx_store.delete_records_recursive(
-                record_ids, connector_id, cascade_children=cascade_children,
+                record_ids, connector_id, cascade_children=True,
+            )
+        await self._publish_delete_events((result or {}).get("eventData"))
+        return result
+
+    @retry_on_deadlock()
+    async def on_records_deleted_with_attachments(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+    ) -> dict:
+        """Delete records and their ATTACHMENT descendants only.
+
+        PARENT_CHILD children (e.g. stories under a deleted epic) are left
+        intact; their parent link edges are swept with the deleted records.
+        Use this for Jira/ticket issue deletes and for hard-deleting FILE
+        attachment records.
+        """
+        if not record_ids:
+            return {
+                "success": True,
+                "deleted_records": [],
+                "failed_records": [],
+                "total_requested": 0,
+                "successfully_deleted": 0,
+                "failed_count": 0,
+            }
+        async with self.data_store_provider.transaction() as tx_store:
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=False,
             )
         await self._publish_delete_events((result or {}).get("eventData"))
         return result
