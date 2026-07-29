@@ -2127,12 +2127,13 @@ class Confluence:
 
     @tool(
         path="/tools/confluence/search_users",
-        short_description="Search Confluence users by name or email",
+        short_description="Search Confluence users by name, email, or accountId",
         description=(
-            "Search Confluence users by display name OR email — handles whichever the user gives, "
-            "you don't need to detect the format. Returns each match's accountId, which is what you "
-            "wrap in double quotes (`'\"<accountId>\"'`) and pass as search_content's `contributor`, "
-            "`creator`, `mention`, or `last_modifier` slot when filtering another user's activity.\n"
+            "Search Confluence users by display name, email, or accountId — handles whichever "
+            "the user gives, you don't need to detect the format. Returns each match's accountId, "
+            "which is what you wrap in double quotes (`'\"<accountId>\"'`) and pass as "
+            "search_content's `contributor`, `creator`, `mention`, or `last_modifier` slot when "
+            "filtering another user's activity.\n"
             "\n"
             "DO NOT call this for self-queries — pass the literal `currentUser()` to search_content "
             "directly; no lookup needed.\n"
@@ -2147,7 +2148,7 @@ class Confluence:
             "returns the same accountId that Confluence uses."
         ),
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="User's display name (full or partial) OR an email address. Both lookups run for every input.", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Display name, email, or accountId.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False, default=10),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],

@@ -718,7 +718,7 @@ class ConfluenceDataCenter:
     @tool(
         path="/tools/confluence_data_center/get_page_content",
         short_description="Get a Confluence Data Center page's content by id",
-        description="Get a Confluence Data Center page's content (storage format) by id.",
+        description="Get a Confluence Data Center page's content (export_view) by id.",
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
         ],
@@ -1203,10 +1203,10 @@ class ConfluenceDataCenter:
 
     @tool(
         path="/tools/confluence_data_center/search_users",
-        short_description="Search Confluence Data Center users by display name",
-        description="Search Confluence Data Center users by display name (name fragment).",
+        short_description="Search Confluence Data Center users by name, username, or userKey",
+        description="Search Confluence Data Center users by display name, username, or userKey.",
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="Display name or name fragment to match (matches the user's full name)", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Display name, username, or userKey.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
