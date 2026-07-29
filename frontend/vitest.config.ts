@@ -27,14 +27,24 @@ export default defineConfig({
       'app/(main)/chat/__tests__/agui-event-handler.test.ts',
       'app/(main)/chat/__tests__/agent-capabilities.test.ts',
       'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',
+      'app/(main)/chat/components/message-area/__tests__/user-message.test.tsx',
+      'app/(main)/chat/components/message-area/__tests__/assistant-message.test.tsx',
+      'app/(main)/chat/components/message-area/__tests__/sources-accordion.test.tsx',
       'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
       'app/(main)/chat/utils/__tests__/build-chat-artifact.test.ts',
       'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
+      'lib/api/__tests__/streaming.test.ts',
     ],
     passWithNoTests: false,
   },
   resolve: {
     alias: {
+      // Mirrors tsconfig.json's `paths` — Vitest doesn't read tsconfig path
+      // mapping on its own, so aliases used by component source files under
+      // test (e.g. `@/chat/*`, `@/knowledge-base/*`) must be declared here too.
+      '@/chat': path.resolve(__dirname, './app/(main)/chat'),
+      '@/knowledge-base': path.resolve(__dirname, './app/(main)/knowledge-base'),
+      '@/workspace': path.resolve(__dirname, './app/(main)/workspace'),
       '@': path.resolve(__dirname, '.'),
     },
   },

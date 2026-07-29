@@ -3,9 +3,11 @@ Toolset Registry
 Similar to ConnectorRegistry but for toolsets (agent-focused tools)
 """
 
+import asyncio
 import importlib
 import inspect
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -127,7 +129,57 @@ class ToolsetRegistry:
 
         self._toolsets: dict[str, dict[str, Any]] = {}
         self._initialized = True
+        # Off by default so every existing caller (connectors_main.py,
+        # the unit test suite's `_fresh_registry()`) keeps today's behavior:
+        # an empty registry until `auto_discover_toolsets()`/`discover_toolsets()`
+        # is called explicitly. Only query_main.py opts in, via
+        # `enable_lazy_discovery()`, to defer the ~20-module SDK import
+        # (google-api-python-client, msgraph/kiota/azure-identity, slack_sdk,
+        # PyGithub, ...) from unconditional startup work to first real use.
+        self._auto_discover_on_read = False
+        self._discovered = False
+        self._discovery_lock = threading.Lock()
         logger.info("ToolsetRegistry initialized")
+
+    def enable_lazy_discovery(self) -> None:
+        """Opt in to discovering toolsets (and importing their SDKs) on
+        first read instead of requiring an explicit, unconditional
+        `auto_discover_toolsets()` call at process startup.
+        """
+        self._auto_discover_on_read = True
+
+    def _ensure_discovered(self) -> None:
+        """Trigger `auto_discover_toolsets()` once, the first time a read
+        method is called, if lazy discovery is enabled. No-op otherwise
+        (including every existing caller that never opts in), and a no-op
+        on every call after the first regardless.
+
+        Synchronous — safe to call from a worker thread (e.g. via
+        `ensure_discovered_async`) but will block the caller (including the
+        event loop, if called directly from async code) for the full
+        import cost on that first call. Prefer `ensure_discovered_async()`
+        from `async def` request-handling code.
+        """
+        if self._discovered or not self._auto_discover_on_read:
+            return
+        with self._discovery_lock:
+            if self._discovered:
+                return
+            logger.info("ToolsetRegistry: lazily discovering toolsets on first access")
+            self.auto_discover_toolsets()
+
+    async def ensure_discovered_async(self) -> None:
+        """Async-safe equivalent of `_ensure_discovered()`.
+
+        Offloads the (first-call-only) import-heavy discovery to a worker
+        thread via `asyncio.to_thread`, so it never blocks the event loop
+        the way calling the sync path directly from request-handling code
+        would. Safe to call unconditionally on every request — after the
+        first call it's a cheap boolean check with no thread hop.
+        """
+        if self._discovered or not self._auto_discover_on_read:
+            return
+        await asyncio.to_thread(self._ensure_discovered)
 
     def register_toolset(self, toolset_class: type) -> bool:
         """
@@ -414,6 +466,7 @@ class ToolsetRegistry:
             'app.agents.actions.salesforce.salesforce',
         ]
         self.discover_toolsets(standard_paths)
+        self._discovered = True
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
 
     def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> dict[str, Any] | None:
@@ -427,6 +480,7 @@ class ToolsetRegistry:
         Returns:
             Toolset metadata dict. If serialize=False, OAuth configs remain as dataclass instances.
         """
+        self._ensure_discovered()
         normalized = self._normalize_toolset_name(toolset_name)
         metadata = self._toolsets.get(normalized)
         if not metadata:
@@ -559,10 +613,12 @@ class ToolsetRegistry:
 
     def list_toolsets(self) -> list[str]:
         """List all registered toolset names"""
+        self._ensure_discovered()
         return list(self._toolsets.keys())
 
     def get_all_toolsets(self) -> dict[str, dict[str, Any]]:
         """Get all registered toolsets"""
+        self._ensure_discovered()
         return self._toolsets.copy()
 
     async def get_all_registered_toolsets(
@@ -577,6 +633,7 @@ class ToolsetRegistry:
         Includes tools for frontend drag-and-drop selection.
         Returns serialized data (OAuth configs as dicts).
         """
+        self._ensure_discovered()
 
         all_toolsets = []
 

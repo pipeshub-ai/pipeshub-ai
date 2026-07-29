@@ -303,6 +303,10 @@ class _FakeToolsetRegistry:
     def get_all_toolsets(self) -> dict[str, dict[str, Any]]:
         return self._toolsets
 
+    async def ensure_discovered_async(self) -> None:
+        """No-op: real ToolsetRegistry only imports SDKs when lazy
+        discovery is enabled, which this fake never opts into."""
+
 
 def _toolset_meta(*, tools: list[dict[str, str]], is_internal: bool = False) -> dict[str, Any]:
     return {"isInternal": is_internal, "class": None, "tools": tools}

@@ -9,17 +9,16 @@ export {
   CollectionRow,
 } from './chat-panel';
 
-// Message area (response display, tabs, citations)
+// Message area (response display, sources/citations)
 export {
-  ChatResponse,
+  UserMessage,
+  AssistantMessage,
+  ResponseTabs,
   MessageList,
-  MessageBubble,
-  MessageSources,
   MessageActions,
   StatusMessageComponent,
   ConfidenceIndicator,
   AnswerContent,
-  ResponseTabs,
   AskMore,
 } from './message-area';
 export * from './message-area/response-tabs/citations';

@@ -7,8 +7,11 @@ import type { ThreadMessageLike } from '@assistant-ui/react';
 // Confidence level for bot responses
 export type ConfidenceLevel = 'Very High' | 'High' | 'Medium' | 'Low';
 
-// Tab types for response view
+// Tab selector for the Response / Sources / Citations tab bar
 export type ResponseTab = 'answer' | 'sources' | 'citation';
+
+// Internal view toggle for `ReferenceCard`
+export type SourcesViewMode = 'sources' | 'citation';
 
 // Inline citation for display within answer text
 export interface InlineCitation {

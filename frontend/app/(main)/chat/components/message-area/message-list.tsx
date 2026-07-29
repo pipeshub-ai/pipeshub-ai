@@ -4,7 +4,8 @@ import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse } from './chat-response';
+import { UserMessage } from './user-message';
+import { AssistantMessage } from './assistant-message';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
@@ -109,8 +110,8 @@ export function MessageList() {
   const isLoadingConversation = useChatStore((s) =>
     s.activeSlotId ? !s.slots[s.activeSlotId]?.isInitialized : false
   );
-  // streamingContent + currentStatusMessage are now passed as props to ChatResponse
-  // (only the streaming instance gets non-empty values). Previously ChatResponse
+  // streamingContent + currentStatusMessage are now passed as props to AssistantMessage
+  // (only the streaming instance gets non-empty values). Previously AssistantMessage
   // subscribed to these directly, causing ALL instances to re-render on every rAF flush.
   const streamingContent = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingContent || EMPTY_STRING : EMPTY_STRING
@@ -1128,7 +1129,17 @@ export function MessageList() {
                 key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
-                <ChatResponse
+                <UserMessage
+                  question={pair.question}
+                  createdAt={pair.createdAt}
+                  attachments={pair.attachments}
+                  collections={pair.collections}
+                  appliedFilters={pair.appliedFilters}
+                  messageId={pair.messageId}
+                  isStreaming={pair.isStreaming}
+                />
+
+                <AssistantMessage
                   question={pair.question}
                   answer={pair.answer}
                   citationMaps={pair.citationMaps}
@@ -1136,13 +1147,10 @@ export function MessageList() {
                   confidence={pair.confidence}
                   isStreaming={pair.isStreaming}
                   modelInfo={pair.modelInfo}
-                  collections={pair.collections}
                   appliedFilters={pair.appliedFilters}
-                  attachments={pair.attachments}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
                   citationMessageRowKey={pair.key}
-                  createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}

@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 import base64
+import gc
 import json
 import logging
 from pathlib import Path
@@ -16,7 +17,7 @@ import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
-from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
+from app.modules.parsers.pdf.pdf_rasterizer import iter_pages_as_pil_from_bytes
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
@@ -45,7 +46,29 @@ DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
 
+# Historical turns beyond this are dropped before they ever reach the agent
+# context/ContextManager, since auto-compact hooks only fire at 85% of the
+# context budget and would otherwise let unbounded history accumulate first.
+MAX_PREVIOUS_CONVERSATIONS = 20
+
 router = APIRouter()
+
+
+def truncate_previous_conversations(
+    previous_conversations: list[dict] | None,
+    max_turns: int = MAX_PREVIOUS_CONVERSATIONS,
+) -> list[dict]:
+    """Keep only the most recent `max_turns` conversation turns.
+
+    Applied at the route layer, before history reaches the agent factory /
+    ContextManager, so oversized histories never get seeded in the first
+    place (rather than being truncated after the fact).
+    """
+    if not previous_conversations:
+        return []
+    if len(previous_conversations) <= max_turns:
+        return previous_conversations
+    return previous_conversations[-max_turns:]
 
 # Pydantic models
 class ChatQuery(BaseModel):
@@ -93,10 +116,14 @@ def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
     return ocr_count / total >= 0.5
 
 
-def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
+def _build_pdf_image_blocks(file_content: bytes, page_count: int) -> BlocksContainer:
+    """Rasterize and encode one page at a time (`iter_pages_as_pil_from_bytes`)
+    rather than rendering every page up front — for a 30-page scanned PDF at
+    144 DPI, holding all pages' PIL images + PNG-encoded base64 strings
+    simultaneously peaks at ~150-300 MB; this caps it at roughly one page's
+    worth."""
     blocks: list[Block] = []
-    images = render_all_pages_as_pil_from_bytes_sync(file_content, resolution=144)
-    for idx, image in enumerate(images):
+    for idx, image in enumerate(iter_pages_as_pil_from_bytes(file_content, page_count, resolution=144)):
         buf = BytesIO()
         image.save(buf, format="PNG")
         png_bytes = buf.getvalue()
@@ -110,6 +137,7 @@ def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
                 citation_metadata=CitationMetadata(page_number=idx + 1),
             )
         )
+        del image, buf, png_bytes, data_uri
     return BlocksContainer(blocks=blocks, block_groups=[])
 
 
@@ -372,19 +400,16 @@ async def upload_chat_attachments(
         if not user_key:
             raise HTTPException(status_code=500, detail="Resolved user is missing key/id")
 
-    now = get_epoch_timestamp_in_ms()
-    uploaded_refs: list[dict[str, Any]] = []
-    record_docs: list[dict[str, Any]] = []
-    file_docs: list[dict[str, Any]] = []
-    parsed_blocks_by_record: dict[str, BlocksContainer] = {}
-    ocr_image_pages_used = 0
-
-    container: QueryAppContainer = request.app.container
-    service_logger = container.logger()
-    graphdb = GraphDBTransformer(graph_provider=graph_provider, logger=service_logger)
-    blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
-    pdf_processor = PDFPlumberOpenCVProcessor(logger=logger, config=config_service)
-
+    # Validate every attachment BEFORE persisting anything for any of them.
+    # Attachments are now parsed/persisted/sunk one at a time (see the loop
+    # below) instead of only committing graph writes after the whole batch
+    # parses successfully, which means a failure partway through a
+    # multi-attachment upload would otherwise leave earlier attachments'
+    # records already written to the graph/blob store — orphaned, since the
+    # request as a whole still returns an error and the client never learns
+    # their recordIds. Catching the two cheapest, most common failure modes
+    # (unsupported mime type, non-positive size) upfront, before any I/O,
+    # keeps that all-or-nothing guarantee for this class of error.
     for item in payload.attachments:
         if not _is_supported_attachment_mime(item.mimeType):
             raise HTTPException(
@@ -394,6 +419,28 @@ async def upload_chat_attachments(
         if item.size <= 0:
             raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
 
+    now = get_epoch_timestamp_in_ms()
+    uploaded_refs: list[dict[str, Any]] = []
+    ocr_image_pages_used = 0
+
+    container: QueryAppContainer = request.app.container
+    service_logger = container.logger()
+    graphdb = GraphDBTransformer(graph_provider=graph_provider, logger=service_logger)
+    blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
+    pdf_processor = PDFPlumberOpenCVProcessor(logger=logger, config=config_service)
+    sink_orchestrator = SinkOrchestrator(
+        graphdb=graphdb,
+        blob_storage=blob_storage,
+        vector_store=_AttachmentSinkNoopVectorStore(),
+        graph_provider=graph_provider,
+        logger=service_logger,
+    )
+
+    # Each attachment is fully parsed, persisted, and sunk before the next one
+    # starts (rather than parsing/holding blocks for ALL attachments and only
+    # sinking at the end) so a multi-attachment upload never holds more than
+    # one attachment's decoded bytes + rendered blocks in memory at a time.
+    for item in payload.attachments:
         record_id = str(uuid4())
         virtual_record_id = str(uuid4())
         extension = _attachment_extension(item.fileName, item.mimeType)
@@ -404,6 +451,11 @@ async def upload_chat_attachments(
             file_binary = base64.b64decode(item.contentBase64, validate=True)
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid base64 content for attachment: {item.fileName}")
+        finally:
+            # The base64 string is 1.33x the decoded size and is never needed
+            # again once decoded; drop the reference immediately instead of
+            # letting it live on the Pydantic model for the rest of the request.
+            item.contentBase64 = ""
 
         storage_doc_id, _ = await blob_storage.save_binary_to_storage(
             org_id=org_id,
@@ -440,16 +492,15 @@ async def upload_chat_attachments(
         }
 
         needs_ocr = False
+        block_containers: BlocksContainer | None = None
         if is_image:
             try:
                 block_containers = _build_image_blocks(file_binary, item.mimeType)
-                parsed_blocks_by_record[record_id] = block_containers
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
-                parsed_blocks_by_record[record_id] = block_containers
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
         else:
@@ -466,17 +517,21 @@ async def upload_chat_attachments(
                             ),
                         )
                     block_containers = await asyncio.to_thread(
-                        _build_pdf_image_blocks, file_binary
+                        _build_pdf_image_blocks, file_binary, page_count
                     )
                     ocr_image_pages_used += page_count
                 else:
                     parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
                     block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
-                parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+
+        # The decoded binary has been fully parsed into blocks; drop it before
+        # persisting/sinking so it isn't held alongside the rendered blocks.
+        del file_binary
+
         record_doc["isVLMOcrProcessed"] = needs_ocr
         file_doc = {
             "_key": record_id,
@@ -488,8 +543,60 @@ async def upload_chat_attachments(
             "mimeType": item.mimeType,
             "sizeInBytes": item.size,
         }
-        record_docs.append(record_doc)
-        file_docs.append(file_doc)
+
+        ts = get_epoch_timestamp_in_ms()
+        await graph_provider.batch_upsert_nodes([record_doc], CollectionNames.RECORDS.value)
+        await graph_provider.batch_upsert_nodes([file_doc], CollectionNames.FILES.value)
+        await graph_provider.batch_create_edges(
+            [
+                {
+                    "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
+                    "_to": f"{CollectionNames.FILES.value}/{record_id}",
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }
+            ],
+            CollectionNames.IS_OF_TYPE.value,
+        )
+        if is_service_account:
+            # Service accounts have no user graph node, so no USER -> RECORD edge
+            # can be created. Grant an org-scoped permission edge instead so the
+            # uploaded file is readable org-wide through the standard ACL path
+            # (orgAccessPermissionEdge in check_record_access_with_details).
+            permission_edge = {
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+                "type": "ORGANIZATION",
+                "role": "READER",
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+        else:
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+                "type": "USER",
+                "role": "OWNER",
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+        await graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
+
+        if block_containers is not None:
+            record = convert_record_dict_to_record(record_doc)
+            record.block_containers = block_containers
+            record.virtual_record_id = record_doc.get("virtualRecordId")
+            ctx = TransformContext(
+                record=record,
+                settings={"sink_only": True, "skip_vector_store": True},
+            )
+            await sink_orchestrator.index(ctx)
+            del block_containers, record, ctx
+
         uploaded_refs.append(
             {
                 "recordId": record_id,
@@ -501,77 +608,10 @@ async def upload_chat_attachments(
             }
         )
 
-    await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
-    await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
-
-    ts = get_epoch_timestamp_in_ms()
-    is_of_type_edges = [
-        {
-            "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
-            "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
-            "createdAtTimestamp": ts,
-            "updatedAtTimestamp": ts,
-        }
-        for rd in record_docs
-    ]
-    await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    if is_service_account:
-        # Service accounts have no user graph node, so no USER -> RECORD edge
-        # can be created. Grant an org-scoped permission edge instead so the
-        # uploaded file is readable org-wide through the standard ACL path
-        # (orgAccessPermissionEdge in check_record_access_with_details).
-        permission_edges = [
-            {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "ORGANIZATION",
-                "role": "READER",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-    else:
-        permission_edges = [
-            {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": rd["_key"],
-                "to_collection": CollectionNames.RECORDS.value,
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-
-    sink_orchestrator = SinkOrchestrator(
-        graphdb=graphdb,
-        blob_storage=blob_storage,
-        vector_store=_AttachmentSinkNoopVectorStore(),
-        graph_provider=graph_provider,
-        logger=service_logger,
-    )
-
-    for record_doc in record_docs:
-        record_id = record_doc.get("_key") or record_doc.get("id")
-        block_containers = parsed_blocks_by_record.get(record_id)
-        if block_containers is None:
-            continue
-
-        record = convert_record_dict_to_record(record_doc)
-        record.block_containers = block_containers
-        record.virtual_record_id = record_doc.get("virtualRecordId")
-        ctx = TransformContext(
-            record=record,
-            settings={"sink_only": True, "skip_vector_store": True},
-        )
-        await sink_orchestrator.index(ctx)
+        # Rendered PDF/image blocks for a single large attachment can reach
+        # tens of MB; force collection now rather than waiting for the next
+        # attachment's allocations to trigger it (mirrors docling_processor.py).
+        gc.collect()
 
     return {
         "conversationId": payload.conversationId,
@@ -796,7 +836,7 @@ async def _generate_chat_stream_via_agent_loop(
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
-        "previous_conversations": query_info.previousConversations,
+        "previous_conversations": truncate_previous_conversations(query_info.previousConversations),
         "filters": query_info.filters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,

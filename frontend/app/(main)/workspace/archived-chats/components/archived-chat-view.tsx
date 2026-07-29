@@ -3,7 +3,7 @@
 import React, { useMemo } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse, emptyCitationMaps } from '@/chat/components';
+import { UserMessage, AssistantMessage, emptyCitationMaps } from '@/chat/components';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
 import type { ConversationMessage } from '../types';
 
@@ -143,14 +143,16 @@ export function ArchivedChatView({
           <Flex direction="column" gap="6" style={{ padding: '0 var(--space-6)' }}>
             {/* Message pairs */}
             {messagePairs.map((pair) => (
-              <ChatResponse
-                key={pair.key}
-                question={pair.question}
-                answer={pair.answer}
-                citationMaps={EMPTY_CITATION_MAPS}
-                isStreaming={false}
-                isLastMessage={false}
-              />
+              <div key={pair.key}>
+                <UserMessage question={pair.question} />
+                <AssistantMessage
+                  question={pair.question}
+                  answer={pair.answer}
+                  citationMaps={EMPTY_CITATION_MAPS}
+                  isStreaming={false}
+                  isLastMessage={false}
+                />
+              </div>
             ))}
           </Flex>
         )}

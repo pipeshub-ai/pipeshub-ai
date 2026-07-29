@@ -55,6 +55,7 @@ async def emit_pre_run_clarification(
     questions: list["AskUserQuestionItemInput"],
     *,
     event_sink: "EventSink",
+    severity: str | None = "fatal",
 ) -> dict[str, Any]:
     """Emits the same `ask_user_question` SSE event the main agent's
     `internaltools.ask_user_question` tool produces mid-run
@@ -64,12 +65,30 @@ async def emit_pre_run_clarification(
     ordinary completed turn, just one that asked a question instead of
     answering.
 
+    `severity` is `intent.py`'s `IntentRouteDecision.clarification_severity`
+    ("moderate" or "fatal"), threaded through by `stream_bridge.py` via
+    `context.tool_state["clarification_severity"]` (see `router.py`).
+    Defaults to `"fatal"` so direct/legacy callers that never pass it — this
+    function predates the two-tier split — keep their original behavior.
+    This function calls `InternalTools.ask_user_question()` directly rather
+    than through `ToolExecutor.call_tool()` (no `Agent`/`ToolRegistry` exists
+    yet at this point in the request), so the normal POST_TOOL_USE hooks
+    (including the Phase 5 `ask_user_quality` observability hook) never fire
+    for this path — logging happens inline below instead.
+
     Returns the `completion_data` dict, matching `RespondPipeline.run()`'s
     return contract so `stream_bridge.py` can treat both paths uniformly.
     """
     from app.agents.actions.internal_tools.intrim_tools import InternalTools
+    from app.agents.agent_loop.hooks.ask_user_quality import log_ask_user_question_quality
 
     tool_data = json.loads(await InternalTools().ask_user_question(user_intent=user_intent, questions=questions))
+    log_ask_user_question_quality(
+        context,
+        ambiguity_type=f"pre_run_{severity or 'fatal'}",
+        user_intent=user_intent,
+        question_count=len(questions),
+    )
 
     if context.has_ui_client:
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):

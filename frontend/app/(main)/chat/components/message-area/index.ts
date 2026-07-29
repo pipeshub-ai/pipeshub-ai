@@ -1,11 +1,10 @@
-export { ChatResponse } from './chat-response';
+export { UserMessage } from './user-message';
+export { AssistantMessage } from './assistant-message';
+export { ResponseTabs } from './response-tabs';
 export { MessageList } from './message-list';
-export { MessageBubble } from './message-bubble';
-export { MessageSources } from './message-sources';
 export { MessageActions } from './message-actions';
 export { StatusMessageComponent } from './status-message';
 export { ConfidenceIndicator } from './confidence-indicator';
 export { AnswerContent } from './answer-content';
-export { ResponseTabs } from './response-tabs';
 export * from './response-tabs/citations';
 export { AskMore } from './ask-more';

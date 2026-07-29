@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.agents.actions.util.tool_summaries import as_text, bullet_list, parse_json_maybe
+from app.agents.agent_loop.bounded_state import cap_dict, cap_list
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
@@ -46,6 +47,16 @@ _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
 # Safe for concurrent requests: UUIDs are globally unique so the same ID
 # always maps to the same label regardless of which request writes it.
 _SOURCE_LABELS: dict[str, str] = {}
+
+# Bounds how many blocks/records `final_results`/`tool_records` accumulate
+# across repeat/parallel search calls within one request. Results arrive
+# pre-ranked by relevance (`cap_list` keeps the head), so this only trims
+# the long tail on runs that call retrieval many times.
+_MAX_ACCUMULATED_FINAL_RESULTS = 100
+_MAX_ACCUMULATED_TOOL_RECORDS = 100
+# vrmap (`virtual_record_id_to_result`) holds full resolved document content
+# per reference — the single largest per-entry payload of the three.
+_MAX_VIRTUAL_RECORD_MAP_ENTRIES = 200
 
 
 def _block_accumulation_key(entry: dict[str, Any]) -> str | None:
@@ -541,14 +552,18 @@ class Retrieval:
             # ================================================================
 
             existing_final_results = self.state.get("final_results", [])
-            self.state["final_results"] = _dedupe_append_final_results(
-                existing_final_results, final_results,
+            self.state["final_results"] = cap_list(
+                _dedupe_append_final_results(existing_final_results, final_results),
+                _MAX_ACCUMULATED_FINAL_RESULTS,
             )
 
             existing_virtual_map = self.state.get("virtual_record_id_to_result", {})
             if not isinstance(existing_virtual_map, dict):
                 existing_virtual_map = {}
-            self.state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
+            self.state["virtual_record_id_to_result"] = cap_dict(
+                {**existing_virtual_map, **virtual_record_id_to_result},
+                _MAX_VIRTUAL_RECORD_MAP_ENTRIES,
+            )
 
             existing_tool_records = self.state.get("tool_records", [])
             if not isinstance(existing_tool_records, list):
@@ -556,7 +571,9 @@ class Retrieval:
             new_tool_records = list(virtual_record_id_to_result.values())
             existing_record_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict) and "_id" in r}
             unique_new = [r for r in new_tool_records if not (isinstance(r, dict) and r.get("_id") in existing_record_ids)]
-            self.state["tool_records"] = existing_tool_records + unique_new
+            self.state["tool_records"] = cap_list(
+                existing_tool_records + unique_new, _MAX_ACCUMULATED_TOOL_RECORDS,
+            )
 
             # --- Candidate list (record escalation) ---
             # Must run BEFORE the display sort so candidate order follows the

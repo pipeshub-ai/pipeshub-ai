@@ -23,6 +23,12 @@ import type {
 
 const SOMETHING_ELSE_ID = '__something_else__';
 const NO_PREFERENCE_ID = '__no_preference__';
+// Ask User Tool Improvement Plan, Phase 6: distinct from NO_PREFERENCE_ID —
+// that answers ONE question with "no preference" and advances the step;
+// this ends the WHOLE card immediately and tells the agent to stop asking
+// and use its own judgment for every remaining (and already-answered)
+// question in this payload.
+const PROCEED_ID = '__proceed_best_judgment__';
 
 const SOMETHING_ELSE_OPTION: AskUserQuestionOption = {
   id: SOMETHING_ELSE_ID,
@@ -57,6 +63,102 @@ export function buildAnswerMessage(
     return `${i + 1}. "${q.question}" → ${parts}`;
   });
   return `User selections:\n${lines.join('\n')}`;
+}
+
+/** Follow-up message sent when the user clicks "Don't ask, just proceed" —
+ * reuses the exact same `onSubmit` plumbing as a normal answer (see
+ * `AskUserQuestionCardProps.onSubmit`), so no new prop/store wiring is
+ * needed in `assistant-message.tsx`. */
+export function buildProceedMessage(payload: AskUserQuestionPayload): string {
+  const questionList = payload.questions.map((q, i) => `${i + 1}. ${q.question}`).join('\n');
+  const plural = payload.questions.length > 1 ? 'questions' : 'question';
+  return (
+    `The user chose not to answer and wants you to proceed using your own best ` +
+    `judgment instead of the following clarifying ${plural}:\n${questionList}`
+  );
+}
+
+/** Best-effort parse of the Phase 4 `user_intent` template — "Understood:
+ * <x>. Ambiguous: <y>. This helps me <z>." — into its three parts for a
+ * richer "Why I'm asking" display. Returns `null` for free-form text that
+ * doesn't follow the template (older tool calls, pre-run clarification's
+ * looser `user_intent`), so callers can fall back to showing it verbatim. */
+interface ParsedUserIntent {
+  understood: string;
+  ambiguous: string;
+  helps?: string;
+}
+
+function parseUserIntent(userIntent: string | undefined): ParsedUserIntent | null {
+  if (!userIntent) return null;
+  // `[\s\S]` (not `.` + the `s`/dotAll flag) so this compiles under the
+  // project's `es5` TS target, which rejects dotAll regex literals outright.
+  const match = userIntent.match(
+    /^\s*Understood:\s*([\s\S]+?)\s*Ambiguous:\s*([\s\S]+?)(?:\s*This helps me\s*([\s\S]+?)\s*)?$/i
+  );
+  if (!match) return null;
+  const [, understood, ambiguous, helps] = match;
+  if (!understood?.trim() || !ambiguous?.trim()) return null;
+  return {
+    understood: understood.trim().replace(/\.$/, ''),
+    ambiguous: ambiguous.trim().replace(/\.$/, ''),
+    helps: helps?.trim().replace(/\.$/, '') || undefined,
+  };
+}
+
+/** Displays `payload.userIntent`. `compact` (collapsed submitted/persisted
+ * states) keeps the original single gray line; the active card renders the
+ * structured "Why I'm asking" breakdown when the text matches the Phase 4
+ * template, falling back to the same plain line otherwise. */
+function UserIntentBanner({
+  userIntent,
+  compact,
+}: {
+  userIntent: string | undefined;
+  compact: boolean;
+}) {
+  const { t } = useTranslation();
+  if (!userIntent) return null;
+
+  const parsed = compact ? null : parseUserIntent(userIntent);
+  if (!parsed) {
+    return (
+      <Text size="2" color="gray" style={{ marginTop: compact ? 0 : 'var(--space-1)' }}>
+        {userIntent}
+      </Text>
+    );
+  }
+
+  return (
+    <Flex
+      direction="column"
+      gap="1"
+      p="3"
+      style={{
+        background: 'var(--accent-a2)',
+        border: '1px solid var(--accent-a5)',
+        borderRadius: 'var(--radius-3)',
+      }}
+    >
+      <Flex align="center" gap="2">
+        <MaterialIcon name="help_outline" size={14} />
+        <Text size="1" weight="medium" color="gray">
+          {t('askUserQuestion.whyImAsking')}
+        </Text>
+      </Flex>
+      <Text size="2">
+        <Text weight="medium">{t('askUserQuestion.understood')}: </Text>
+        {parsed.understood}.{' '}
+        <Text weight="medium">{t('askUserQuestion.ambiguous')}: </Text>
+        {parsed.ambiguous}.
+      </Text>
+      {parsed.helps ? (
+        <Text size="1" color="gray">
+          {t('askUserQuestion.helpsMe', { reason: parsed.helps })}
+        </Text>
+      ) : null}
+    </Flex>
+  );
 }
 
 function validateQuestion(
@@ -232,16 +334,26 @@ export function AskUserQuestionCard({
     }
   }, [currentQ, status, answers, syncAnswers, isLast, payload, onSubmit, total]);
 
+  const handleProceedWithBestJudgment = useCallback(() => {
+    if (status !== 'pending') return;
+    const next: Record<string, AskUserQuestionAnswer> = { ...answers };
+    for (const q of questions) {
+      next[q.uuid] = {
+        questionUuid: q.uuid,
+        selectedOptionIds: [PROCEED_ID],
+        userInputs: {},
+      };
+    }
+    syncAnswers(next);
+    onSubmit?.(buildProceedMessage(payload), next);
+  }, [status, answers, questions, syncAnswers, payload, onSubmit]);
+
   if (status === 'submitted') {
     return (
       <Card size="2">
         <Flex direction="column" gap="3" p="4">
           <Flex direction="column" gap="1">
-            {payload.userIntent ? (
-              <Text size="2" color="gray">
-                {payload.userIntent}
-              </Text>
-            ) : null}
+            <UserIntentBanner userIntent={payload.userIntent} compact />
             <Flex align="center" justify="between" gap="3" wrap="wrap">
               <Heading size="4" style={{ margin: 0 }}>
                 {questions.length === 1
@@ -284,6 +396,7 @@ export function AskUserQuestionCard({
                 const a = answers[q.uuid];
                 const labels = (a?.selectedOptionIds ?? []).map((id) => {
                   if (id === NO_PREFERENCE_ID) return t('askUserQuestion.noPreference');
+                  if (id === PROCEED_ID) return t('askUserQuestion.usedBestJudgment');
                   if (id === SOMETHING_ELSE_ID) {
                     return a?.userInputs?.[id]?.trim() || t('askUserQuestion.somethingElse');
                   }
@@ -319,11 +432,7 @@ export function AskUserQuestionCard({
       <Card size="2">
         <Flex direction="column" gap="3" p="4">
           <Flex direction="column" gap="1">
-            {payload.userIntent ? (
-              <Text size="2" color="gray">
-                {payload.userIntent}
-              </Text>
-            ) : null}
+            <UserIntentBanner userIntent={payload.userIntent} compact />
             <Flex align="center" justify="between" gap="3" wrap="wrap">
               <Heading size="4" style={{ margin: 0 }}>
                 {payload.questions.length === 1
@@ -411,23 +520,29 @@ export function AskUserQuestionCard({
       }}
     >
       <Flex direction="column" gap="4" p="4">
-        <Flex direction="column" gap="1">
+        <Flex direction="column" gap="2">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {payload.userIntent ? (
-              <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {payload.userIntent}
-              </Text>
-            ) : null}
             <Heading size="4" style={{ margin: 0 }}>
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
                 : t('askUserQuestion.quickQuestionPlural')}
             </Heading>
-            <Badge size="1" variant="outline" color="gray">
-              {t('askUserQuestion.stepOf', { step: step + 1, total })}
-            </Badge>
+            <Flex align="center" gap="2">
+              <Badge size="1" variant="outline" color="gray">
+                {t('askUserQuestion.stepOf', { step: step + 1, total })}
+              </Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="1"
+                color="gray"
+                onClick={handleProceedWithBestJudgment}
+              >
+                {t('askUserQuestion.proceedBestJudgment')}
+              </Button>
+            </Flex>
           </Flex>
-
+          <UserIntentBanner userIntent={payload.userIntent} compact={false} />
         </Flex>
 
         <Flex direction="column" gap="1">

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
@@ -34,6 +35,8 @@ _FETCHABLE_NODE_TYPES = frozenset({NodeType.RECORD.value, NodeType.FOLDER.value}
 
 MIN_QUERY_LENGTH = 2
 MAX_QUERY_LENGTH = 500
+
+_GLOB_REGEX_CHARS = re.compile(r"[*?.\[\]{}^$+\\|]")
 
 _NODE_TYPE_LABELS = {
     NodeType.APP.value: "App",
@@ -149,8 +152,18 @@ async def execute_list_files(
         agent_connector_ids = list(scope.app_ids)
         kb_ids = set(scope.kb_ids)
 
-        # Input normalization
-        query = query.strip() if query else None
+        # Input normalization — strip glob/regex chars (tool is substring-match only)
+        raw_query = query.strip() if query else None
+        query = raw_query
+        if query:
+            query = _GLOB_REGEX_CHARS.sub("", query).strip() or None
+        if raw_query and not query:
+            return True, (
+                "This tool only supports plain substring matching — wildcards (*, ?) "
+                "and regex are not supported.\n"
+                "To list ALL items in a source, use knowledgegraph__navigate(node_id=<source_id>) instead.\n"
+                "To search by name, pass a plain text substring (e.g. 'report' instead of '*.pdf')."
+            )
         if query and len(query) < MIN_QUERY_LENGTH:
             query = None
         elif query and len(query) > MAX_QUERY_LENGTH:
@@ -211,7 +224,7 @@ async def execute_list_files(
             node_types=node_types,
             record_types=record_types,
             connector_ids=use_connector_ids,
-            flattened=False,
+            flattened=None,
             record_group_ids=use_record_group_ids,
         )
 

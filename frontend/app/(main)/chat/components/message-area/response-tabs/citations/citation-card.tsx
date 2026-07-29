@@ -10,7 +10,7 @@ import { getConnectorConfig, formatSyncLabel } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ResponseTab } from '@/chat/types';
+import type { SourcesViewMode } from '@/chat/types';
 import type { CitationData, CitationCallbacks } from './types';
 
 // ---------------------------------------------------------------------------
@@ -33,8 +33,8 @@ import type { CitationData, CitationCallbacks } from './types';
 interface ReferenceCardProps {
   citation: CitationData;
   callbacks?: CitationCallbacks;
-  /** Which tab this card is being rendered in */
-  currentTab: ResponseTab;
+  /** Which view this card is being rendered in */
+  currentTab: SourcesViewMode;
   /** Number of citations referencing this source (Sources tab footer) */
   citationCount?: number;
   /** AI-generated reason for this citation (Citations tab body) */

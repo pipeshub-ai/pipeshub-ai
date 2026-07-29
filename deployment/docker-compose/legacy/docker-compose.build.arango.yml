@@ -45,7 +45,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          memory: ${APP_MEMORY_LIMIT:-12G}
     shm_size: 2gb
     init: true
     logging:

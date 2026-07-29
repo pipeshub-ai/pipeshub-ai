@@ -63,7 +63,7 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
             style={{
               color: 'var(--accent-11)',
               backgroundColor: 'var(--accent-3)',
-              padding: '0 var(--space-1)', /* was: 0 6px, delta: -2px side */
+              padding: '0 var(--space-1)',
               borderRadius: 'var(--radius-2)',
               fontWeight: 500,
             }}
@@ -73,7 +73,6 @@ function TabItem({ label, count, isActive, isDisabled, onClick }: TabItemProps) 
         )}
       </Flex>
 
-      {/* Active indicator */}
       {isActive && (
         <Box
           style={{

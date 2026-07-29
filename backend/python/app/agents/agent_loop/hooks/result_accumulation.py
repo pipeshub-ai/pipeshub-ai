@@ -18,6 +18,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.agents.agent_loop.bounded_state import bounded_append
 from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 
 if TYPE_CHECKING:
@@ -27,6 +28,12 @@ if TYPE_CHECKING:
     )
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
+
+# A multi-turn run (up to `_MAX_TURNS` turns, several tool calls each) can
+# otherwise accumulate hundreds of entries here, none of which are ever
+# freed before the request completes. `RespondPipeline`/`ask_user_quality`
+# only ever look at recent activity, so a rolling window is safe.
+_ALL_TOOL_RESULTS_MAX = 50
 
 
 async def stash_tool_call_metadata(ctx: ToolCallContext, next_fn: "Next") -> None:
@@ -55,7 +62,7 @@ def result_accumulation(context: AgentContext) -> "Middleware[ToolResultContext]
             "args": ctx.metadata.get("_result_accum_args", {}),
             "duration_ms": duration_ms,
         }
-        context.tool_state.setdefault("all_tool_results", []).append(entry)
+        bounded_append(context.tool_state, "all_tool_results", entry, maxlen=_ALL_TOOL_RESULTS_MAX)
 
     return _middleware
 

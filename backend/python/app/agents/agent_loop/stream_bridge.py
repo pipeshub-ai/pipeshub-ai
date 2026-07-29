@@ -310,6 +310,7 @@ async def run_agent_loop_stream(
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions,
                     event_sink=context.event_sink,
+                    severity=context.tool_state.get("clarification_severity"),
                 )
             else:
                 collector = CitationCollector(context)
@@ -341,16 +342,20 @@ async def run_agent_loop_stream(
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
-            # Flush any pending coalesced events and signal the SSE
-            # consumer loop FIRST, so the HTTP response closes promptly
-            # after the last real event.  Cleanup (orphan cancellation,
-            # sandbox teardown) runs AFTER — it can take seconds when
-            # Docker working directories contain large node_modules trees,
-            # and blocking _DONE behind that would keep the SSE connection
-            # (and the user-facing spinner) open unnecessarily.
+            # Unified 4-step cleanup order (see chat_modes/bridge.py's
+            # `_produce()` for the matching sequence): (1) flush + `_DONE`
+            # FIRST, so the HTTP response/user-facing spinner closes
+            # promptly instead of waiting on cleanup; (2) clear `context`'s
+            # large mutable state (tool_state, client cache) so it isn't
+            # kept alive for however long steps 3-4 take; (3) cancel orphan
+            # tasks; (4) destroy sandboxes — can take seconds when Docker
+            # working directories contain large node_modules trees, which
+            # is also why none of this is awaited by the consumer loop
+            # below on the normal-exit path.
             await event_sink.flush()
             await queue.put(_DONE)
             log.info("agent-loop stream: _DONE enqueued, starting cleanup")
+            await context.cleanup()
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:

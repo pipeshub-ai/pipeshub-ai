@@ -2776,6 +2776,12 @@
     "back": "वापस",
     "skip": "छोड़ें",
     "next": "अगला",
-    "submit": "जमा करें"
+    "submit": "जमा करें",
+    "whyImAsking": "मैं क्यों पूछ रहा हूँ",
+    "understood": "समझा",
+    "ambiguous": "अस्पष्ट",
+    "helpsMe": "इससे मुझे {{reason}} में मदद मिलती है।",
+    "proceedBestJudgment": "मत पूछें, आगे बढ़ें",
+    "usedBestJudgment": "[सर्वश्रेष्ठ निर्णय का उपयोग किया गया]"
   }
 }

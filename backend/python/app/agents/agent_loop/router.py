@@ -287,6 +287,10 @@ async def select_loop_and_goal(
             constraints=_base_constraints(query, attachments),
         )
         clarifying_questions: list["AskUserQuestionItemInput"] = []
+        # No intent call was made, so there is no clarify-block severity to
+        # propagate — see the `agent:quick` note in the Ask User Tool plan
+        # (weakness 4b): pre-run clarification never fires for this mode.
+        context.tool_state["clarification_severity"] = None
         # No intent call — use the conservative regex fallback so pinpoint
         # queries (the majority) still cost zero tokens.
         from app.modules.agents.record_escalation.policy import needs_whole_document
@@ -310,6 +314,14 @@ async def select_loop_and_goal(
         )
         goal = _build_goal(query, decision, attachments=attachments)
         clarifying_questions = list(decision.clarifying_questions)
+        # Stashed on `context` (rather than added as a 5th tuple element)
+        # so every existing `select_loop_and_goal()` call site — production
+        # and tests — keeps unpacking the same 4-tuple; `stream_bridge.py`
+        # reads it back off `context.tool_state` to pass into
+        # `emit_pre_run_clarification()`. Mirrors `needs_whole_document`
+        # just below, which threads a second intent-derived signal the
+        # same way.
+        context.tool_state["clarification_severity"] = decision.clarification_severity
 
         # Propagate the whole-document bit from the intent result.
         # When the model emitted the WHOLE_DOCUMENT marker, use it directly;

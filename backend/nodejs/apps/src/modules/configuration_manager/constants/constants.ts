@@ -90,7 +90,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     key: 'ENABLE_CODE_EXECUTION',
     label: 'Enable Code Execution',
     description:
-      'Let agents run Python/TypeScript and SQL queries in a sandboxed environment. Disable to hide coding_sandbox and database_sandbox tools from all agents.',
+      'Let agents run Python/TypeScript code in a sandboxed environment. Disable to hide coding_sandbox tools from all agents.',
     defaultEnabled: true,
   },
 ];

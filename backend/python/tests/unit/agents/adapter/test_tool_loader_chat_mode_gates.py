@@ -49,6 +49,7 @@ class _FakeRetrievalToolset:
 
 def _patch_retrieval_toolset_registry():
     fake_registry = MagicMock()
+    fake_registry.ensure_discovered_async = AsyncMock(return_value=None)
     fake_registry.get_all_toolsets.return_value = {
         "retrieval": {
             "class": _FakeRetrievalToolset,

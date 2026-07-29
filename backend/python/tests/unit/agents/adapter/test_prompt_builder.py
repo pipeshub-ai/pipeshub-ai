@@ -68,7 +68,7 @@ def _runtime_for(tools: list[Tool]) -> AgentRuntime:
     return AgentRuntime(tool_registry=registry)
 
 
-def _build(
+def _build_blocks(
     context,
     *,
     goal: Goal | None = None,
@@ -76,7 +76,11 @@ def _build(
     tool_names: list[str] | None = None,
     sandbox_has_network: bool = False,
     runtime: AgentRuntime | None = None,
-) -> str:
+) -> tuple[str, str]:
+    """`(stable_block, volatile_block)` pair — used directly by tests that
+    care WHICH cache band a section lands in (e.g. `ask_vs_act` must stay
+    in the stable band). `_build()` below is the plain joined-string
+    convenience wrapper every other test in this file uses."""
     spec = AgentSpec(
         name="pipeshub-agent",
         system_prompt=base_system_prompt,
@@ -99,7 +103,27 @@ def _build(
         "app.modules.agents.context.tool_surface.sandbox_network_enabled",
         MagicMock(return_value=sandbox_has_network),
     ):
-        return builder.build(spec, runtime, goal or Goal(description="hello"), [], {})
+        return builder.build_blocks(spec, runtime, goal or Goal(description="hello"), [], {})
+
+
+def _build(
+    context,
+    *,
+    goal: Goal | None = None,
+    base_system_prompt: str = "BASE_REACT_PROMPT",
+    tool_names: list[str] | None = None,
+    sandbox_has_network: bool = False,
+    runtime: AgentRuntime | None = None,
+) -> str:
+    stable, volatile = _build_blocks(
+        context,
+        goal=goal,
+        base_system_prompt=base_system_prompt,
+        tool_names=tool_names,
+        sandbox_has_network=sandbox_has_network,
+        runtime=runtime,
+    )
+    return "\n\n".join(p for p in (stable, volatile) if p)
 
 
 class TestLayering:
@@ -596,3 +620,60 @@ class TestFullRecordEscalation:
         assert "knowledgegraph__fetch_record" in section
         assert "ranked fragments" in section
         assert "ONE call" in section
+
+
+class TestAskVsActRubric:
+    """Ask User Tool Improvement Plan, Phase 2: the "When to Ask the User"
+    decision rubric — additive to `_OPERATING_RULES`, gated solely on
+    `surfaces.can_ask_user` (i.e. whether `internaltools__ask_user_question`
+    is in `spec.tool_names` this turn), never on mode/context."""
+
+    def test_present_when_ask_user_question_tool_is_granted(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["internaltools__ask_user_question"])
+        assert "## When to Ask the User" in result
+
+    def test_absent_when_tool_is_not_granted(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["web_search"])
+        assert "## When to Ask the User" not in result
+
+    def test_absent_when_no_tools_granted_at_all(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=[])
+        assert "## When to Ask the User" not in result
+
+    def test_states_the_three_ask_criteria(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["internaltools__ask_user_question"])
+        section = result.split("## When to Ask the User", 1)[1].split("\n## ", 1)[0]
+        assert "incompatible" in section
+        assert "waste the user's time" in section
+        assert "conversation history" in section
+
+    def test_states_when_not_to_ask(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["internaltools__ask_user_question"])
+        section = result.split("## When to Ask the User", 1)[1].split("\n## ", 1)[0]
+        assert "searchable keyword" in section
+        assert "reasonable default" in section
+
+    def test_lands_in_the_stable_static_band_not_the_volatile_one(self) -> None:
+        """A cache-band regression (this section drifting into Band C)
+        would silently bust the prompt cache on every ask-capable turn —
+        assert it directly rather than relying on substring presence in
+        the joined `build()` output alone."""
+        context = make_context()
+        stable, volatile = _build_blocks(context, tool_names=["internaltools__ask_user_question"])
+        assert "## When to Ask the User" in stable
+        assert "## When to Ask the User" not in volatile
+
+    def test_does_not_reference_directional_words_or_emphasis_budget_tokens(self) -> None:
+        """Mirrors `test_prompt_invariants.py`'s cross-section checks —
+        pinned locally too so a regression here fails fast in this file's
+        own targeted suite instead of only in the broader invariant sweep."""
+        context = make_context()
+        result = _build(context, tool_names=["internaltools__ask_user_question"])
+        section = result.split("## When to Ask the User", 1)[1].split("\n## ", 1)[0]
+        for banned in ("MANDATORY", "NEVER", "ALWAYS", "FIRST", "IN PARALLEL", "IMPORTANT", "above", "below"):
+            assert banned not in section

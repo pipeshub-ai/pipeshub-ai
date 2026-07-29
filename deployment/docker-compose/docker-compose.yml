@@ -45,7 +45,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          memory: ${APP_MEMORY_LIMIT:-12G}
     shm_size: 2gb
     init: true
     logging:
@@ -167,6 +167,38 @@ services:
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
+
+      # Query service memory tuning — all five microservices (query,
+      # indexing, connectors, docling, embedding) share this one container's
+      # memory limit (see APP_MEMORY_LIMIT above), so a leak or a memory
+      # spike in the query service can starve/OOM-kill the others too.
+      # Defaults are safe for most deployments; override if the query
+      # service is restarting or its /health RSS reading stays high.
+      #
+      # - PDF_RASTER_WORKERS: process-pool size for PDF page rasterization
+      #   during chat attachment uploads. Default is min(2, cpu_count).
+      #   Set to 1 on memory-constrained hosts — each worker can hold a
+      #   full rendered page (tens of MB) at a time.
+      - PDF_RASTER_WORKERS=${PDF_RASTER_WORKERS:-}
+      # - PIPESHUB_SSE_QUEUE_MAXSIZE: max buffered SSE events per in-flight
+      #   chat/agent stream (default 1000). Lower (e.g. 500) bounds
+      #   per-request memory if a slow client backpressures many
+      #   concurrent streams at once.
+      - PIPESHUB_SSE_QUEUE_MAXSIZE=${PIPESHUB_SSE_QUEUE_MAXSIZE:-1000}
+      # - QUERY_MEMORY_WARN_MB: RSS threshold (MB) above which the query
+      #   service's /health endpoint reports "unhealthy" (503), so an
+      #   external liveness probe can recycle the pod before the kernel
+      #   OOM-killer does. Default 3072 MB.
+      - QUERY_MEMORY_WARN_MB=${QUERY_MEMORY_WARN_MB:-3072}
+      # - QUERY_MEMORY_MONITOR_INTERVAL_S: how often (seconds) the query
+      #   service logs/publishes its RSS/VMS sample. Default 60.
+      - QUERY_MEMORY_MONITOR_INTERVAL_S=${QUERY_MEMORY_MONITOR_INTERVAL_S:-60}
+      # - PYTHONMALLOC=malloc: use the standard C allocator instead of
+      #   Python's pymalloc arenas, which makes `tracemalloc`/external
+      #   memory profilers (e.g. valgrind) report accurate per-allocation
+      #   tracebacks when diagnosing an OOM. Slightly slower; leave unset
+      #   unless actively profiling.
+      - PYTHONMALLOC=${PYTHONMALLOC:-}
 
       # Slack bot (optional)
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}

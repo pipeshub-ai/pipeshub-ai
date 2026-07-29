@@ -14,6 +14,11 @@ requests.
 
 from app.agents.agent_loop.hooks.artifact_context import artifact_context_reminder
 from app.agents.agent_loop.hooks.ask_user_question import ask_user_question_sse
+from app.agents.agent_loop.hooks.ask_user_quality import (
+    ask_outcome_tracking,
+    ask_user_question_quality,
+    log_ask_user_question_quality,
+)
 from app.agents.agent_loop.hooks.attachment_resolver import (
     attachment_rehydration,
     resolve_attachments_for_goal,
@@ -45,8 +50,11 @@ __all__ = [
     "CitationCollector",
     "ToolErrorTracker",
     "artifact_context_reminder",
+    "ask_outcome_tracking",
+    "ask_user_question_quality",
     "ask_user_question_sse",
     "attachment_rehydration",
+    "log_ask_user_question_quality",
     "citation_tracking",
     "ensure_fetch_full_record_available",
     "completion_gate",

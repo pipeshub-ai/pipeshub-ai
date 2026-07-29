@@ -17,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
@@ -28,6 +28,12 @@ _pool_lock = threading.Lock()
 
 
 def _get_pdf_raster_worker_count() -> int:
+    """Number of PDF rasterization worker processes.
+
+    Defaults to min(cpu_count, 2). In memory-constrained deployments (e.g.
+    the shared all-in-one container), set `PDF_RASTER_WORKERS=1` to limit
+    peak memory to a single worker's rasterization footprint at a time.
+    """
     raw_value = os.getenv("PDF_RASTER_WORKERS")
     if raw_value:
         try:
@@ -41,12 +47,19 @@ def _get_pdf_raster_worker_count() -> int:
 
 PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
+# A worker that rasterizes a huge/scanned PDF retains its peak pdfium/PIL heap
+# (CPython doesn't return arena memory to the OS) until it exits. Recycling
+# workers after N tasks bounds how long that peak can be held, at the cost of
+# an occasional spawn. Requires the `spawn` start method used below.
+PDF_RASTER_MAX_TASKS_PER_CHILD = 50
+
 
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
         max_workers=PDF_RASTER_WORKERS,
         mp_context=multiprocessing.get_context("spawn"),
+        max_tasks_per_child=PDF_RASTER_MAX_TASKS_PER_CHILD,
     )
 
 
@@ -236,6 +249,29 @@ def render_all_pages_as_pil_from_bytes_sync(
 ) -> List[Image.Image]:
     pages = render_all_pages_from_bytes_sync(pdf_bytes, resolution)
     return [Image.fromarray(pages[i][0]) for i in sorted(pages)]
+
+
+def iter_pages_as_pil_from_bytes(
+    pdf_bytes: bytes,
+    page_count: int,
+    resolution: float = 72,
+) -> Iterator[Image.Image]:
+    """Yield one rasterized page at a time instead of rendering (and
+    holding) every page simultaneously, as
+    `render_all_pages_as_pil_from_bytes_sync` does.
+
+    Each page is rendered via its own process-pool task
+    (`render_page_from_bytes_sync`), so a caller that encodes-and-discards
+    each `Image` before requesting the next never holds more than one
+    page's rasterized bitmap + encoded bytes in memory — at the cost of
+    the worker re-opening/re-parsing the source PDF once per page rather
+    than once total. Callers that already know `page_count` (from a prior
+    lightweight page-count check) should pass it in to avoid computing it
+    twice.
+    """
+    for page_number in range(1, page_count + 1):
+        array, _scale = render_page_from_bytes_sync(pdf_bytes, page_number, resolution)
+        yield Image.fromarray(array)
 
 
 async def render_all_pages_from_path(

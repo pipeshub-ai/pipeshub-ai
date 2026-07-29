@@ -16776,8 +16776,10 @@ FOR rid IN @record_ids
         filter_conditions.append("(node.isPlaceholder != true)")
 
         # Search query filter - lowercased for case-insensitive LIKE (see LOWER(@search_query) in AQL)
+        # Escape LIKE wildcards (% and _) so they match literally — parity with Neo4j CONTAINS.
         if search_query:
-            filter_params["search_query"] = search_query.lower()
+            escaped = search_query.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            filter_params["search_query"] = escaped
 
         # Node type filter
         if node_types:

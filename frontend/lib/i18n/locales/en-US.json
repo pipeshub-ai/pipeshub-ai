@@ -2942,6 +2942,12 @@
     "back": "Back",
     "skip": "Skip",
     "next": "Next",
-    "submit": "Submit"
+    "submit": "Submit",
+    "whyImAsking": "Why I'm asking",
+    "understood": "Understood",
+    "ambiguous": "Ambiguous",
+    "helpsMe": "This helps me {{reason}}.",
+    "proceedBestJudgment": "Don't ask, just proceed",
+    "usedBestJudgment": "[Used best judgment]"
   }
 }

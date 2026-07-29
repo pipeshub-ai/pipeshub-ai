@@ -20,9 +20,12 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+_MISSING = object()
 
 
 class AgentContext(BaseModel):
@@ -34,6 +37,13 @@ class AgentContext(BaseModel):
     # and re-renders a few KB of routing text; prompt_builder + domain_agents
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
+
+    # Cache for the `artifact_registry` property. `graph_provider`/
+    # `blob_store` are constructor-only fields never reassigned after
+    # request setup, so a `_MISSING` sentinel (vs `None`, a valid resolved
+    # value when either dependency is absent) is enough to memoize without
+    # ever serving a stale instance.
+    _artifact_registry_cache: Any = PrivateAttr(default=_MISSING)
 
     # Identity
     org_id: str
@@ -282,17 +292,24 @@ class AgentContext(BaseModel):
     def artifact_registry(self) -> Any:
         """`ArtifactRegistryService` for this request — `None` when either
         `graph_provider` or `blob_store` isn't wired (background/test runs
-        with no DB/storage access). Constructed on each access rather than
-        cached: no I/O happens in its `__init__`, and this way it always
-        reflects the current `graph_provider`/`blob_store` if either is
-        ever swapped mid-request. Imported lazily to avoid a hard
-        import-time dependency from this narrow adapter-context module onto
-        the artifact registry package."""
+        with no DB/storage access). Cached after the first access: both
+        dependencies are set once at construction and never reassigned, so
+        rebuilding the service instance on every access (this property is
+        read on every tool call, potentially dozens of times per request)
+        was pure waste. Imported lazily to avoid a hard import-time
+        dependency from this narrow adapter-context module onto the
+        artifact registry package."""
+        if self._artifact_registry_cache is not _MISSING:
+            return self._artifact_registry_cache
+
         if self.graph_provider is None or self.blob_store is None:
+            self._artifact_registry_cache = None
             return None
+
         from app.services.artifact_registry import ArtifactRegistryService
 
-        return ArtifactRegistryService(self.graph_provider, self.blob_store)
+        self._artifact_registry_cache = ArtifactRegistryService(self.graph_provider, self.blob_store)
+        return self._artifact_registry_cache
 
     @classmethod
     def from_chat_state(
@@ -356,6 +373,34 @@ class AgentContext(BaseModel):
     def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
         for key, value in self._seed_tool_state().items():
             self.tool_state.setdefault(key, value)
+
+    async def cleanup(self) -> None:
+        """Best-effort teardown of every large/long-lived resource this
+        request accumulated — called exactly once, at request end, from
+        `stream_bridge.py`/`chat_modes/bridge.py`'s unified `_produce()`
+        `finally` block (see those modules' cleanup-ordering comments for
+        why this runs AFTER `_DONE` is flushed but BEFORE orphan-task
+        cancellation/sandbox teardown).
+
+        Closes `_client_cache`/`_toolset_instances` (open HTTP connection
+        pools, background event-loop threads — see
+        `instance_creator.close_cached_clients`) THEN clears `tool_state`,
+        `previous_conversations`, and `attachment_image_blocks` so none of
+        it is kept alive for however long the rest of cleanup takes.
+        Never raises — a broken client/state dict must not fail the
+        request.
+        """
+        from app.agents.agent_loop.instance_creator import close_cached_clients
+
+        log = self.logger or logging.getLogger(__name__)
+        try:
+            await close_cached_clients(self.tool_state, log)
+        except Exception:
+            log.warning("AgentContext.cleanup: client cache teardown failed", exc_info=True)
+
+        self.previous_conversations = []
+        self.attachment_image_blocks = []
+        self.tool_state.clear()
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""

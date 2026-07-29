@@ -997,3 +997,206 @@ test.describe('Ask User Question — agent endpoint routing', () => {
     expect(mainStreamCalled).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ask User Tool Improvement Plan, Testing Plan item 6: card rendering for a
+// moderate-tier payload delivered on an internal_search-mode stream (main,
+// non-agent chat). The Playwright suite mocks the SSE body outright, so this
+// can only verify RENDERING given a payload — not whether the backend
+// decided to ask for this query. That decision belongs to the eval harness
+// (backend/python/app/agents/agent_loop/evals/ask_act_harness.py).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('Ask User Question — internal_search mode (main chat, moderate severity)', () => {
+  const CONV_ID = 'conv-internal-search-ask-001';
+  const MODERATE_Q = {
+    uuid: 'q-moderate-001',
+    question: 'Which ticket did you mean?',
+    options: [
+      { id: 'opt-101', label: 'TICKET-101', isUserInput: false },
+      { id: 'opt-102', label: 'TICKET-102', isUserInput: false },
+      { id: 'opt-103', label: 'TICKET-103', isUserInput: false },
+    ],
+    multiSelect: false,
+  };
+  const STRUCTURED_INTENT =
+    'Understood: you want to update a ticket with a new deadline. ' +
+    'Ambiguous: which of several open tickets you mean. ' +
+    'This helps me avoid updating the wrong ticket.';
+
+  const MODEL_INFO_INTERNAL_SEARCH = {
+    modelKey: 'gpt-4o-mini',
+    modelName: 'GPT-4o mini',
+    chatMode: 'internal_search',
+    modelFriendlyName: 'GPT-4o mini',
+  };
+
+  async function setup(page: import('@playwright/test').Page) {
+    await mockBaselineApis(page);
+    await page.route('**/api/v1/conversations/stream', (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+        body: buildAguiAskUserQuestionSseBody(
+          CONV_ID,
+          { name: 'ask_user_question', userIntent: STRUCTURED_INTENT, questions: [MODERATE_Q] },
+          'Internal Search Ask Test',
+        ),
+      });
+    });
+
+    await page.goto('/chat/');
+    await page.waitForSelector('textarea', { timeout: 15_000 });
+    await sendMessage(page, 'Update the ticket with the new deadline');
+    await page.locator('text=Which ticket did you mean?').waitFor({ timeout: 20_000 });
+  }
+
+  test('card renders with the structured "Why I\'m asking" breakdown', async ({ page }) => {
+    await setup(page);
+
+    await expect(page.locator('text=/Why I.m asking/i').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText(/Understood/i).first()).toBeVisible();
+    await expect(page.getByText(/Ambiguous/i).first()).toBeVisible();
+    await expect(page.locator('text=TICKET-101').first()).toBeVisible();
+    await expect(page.locator('text=TICKET-102').first()).toBeVisible();
+    await expect(page.locator('text=TICKET-103').first()).toBeVisible();
+  });
+
+  test('submitting an answer continues the conversation via the messages/stream endpoint', async ({
+    page,
+  }) => {
+    await setup(page);
+
+    let followUpFired = false;
+    await page.route(`**/api/v1/conversations/${CONV_ID}/messages/stream`, (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      followUpFired = true;
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: buildAguiSseBody({
+          conversationId: CONV_ID,
+          userMessageId: 'msg-user-internal-001',
+          botMessageId: 'msg-bot-internal-001',
+          question: 'User selections:\n1. "Which ticket did you mean?" → TICKET-102',
+          answer: 'Updating TICKET-102 with the new deadline now.',
+          modelInfo: MODEL_INFO_INTERNAL_SEARCH,
+          requestId: 'req-internal-search-ask-e2e',
+        }),
+      });
+    });
+
+    await page.locator('[role="radio"]').nth(1).click(); // TICKET-102
+    await page.locator('button').filter({ hasText: /^Submit$/ }).first().click();
+
+    await expect(
+      page.locator('text=Updating TICKET-102 with the new deadline').first(),
+    ).toBeVisible({ timeout: 20_000 });
+    expect(followUpFired).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "Don't ask, just proceed" button (Ask User Tool Improvement Plan, Phase 6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test.describe('Ask User Question — "Don\'t ask, just proceed" button', () => {
+  const SINGLE_Q = {
+    uuid: 'q-proceed-001',
+    question: 'Which department are you in?',
+    options: [
+      { id: 'opt-eng', label: 'Engineering', isUserInput: false },
+      { id: 'opt-mkt', label: 'Marketing', isUserInput: false },
+      { id: 'opt-sales', label: 'Sales', isUserInput: false },
+    ],
+    multiSelect: false,
+  };
+
+  async function setup(page: import('@playwright/test').Page) {
+    await mockBaselineApis(page);
+    await mockAgentApis(page);
+    await page.route(`**/api/v1/agents/${AGENT_ID}/conversations/stream`, (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      return route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: buildAskQuestionSse([SINGLE_Q]),
+      });
+    });
+    await gotoAgentChat(page);
+    await sendMessage(page, 'Help me write a report');
+    await page.locator('text=Which department are you in?').waitFor({ timeout: 20_000 });
+  }
+
+  test('"Don\'t ask, just proceed" button is visible on the active card', async ({ page }) => {
+    await setup(page);
+    await expect(
+      page.locator('button').filter({ hasText: /Don.t ask, just proceed/i }).first(),
+    ).toBeVisible({ timeout: 5_000 });
+  });
+
+  test('clicking it fires a follow-up stream carrying a proceed-with-best-judgment signal', async ({
+    page,
+  }) => {
+    await setup(page);
+
+    let capturedBody = '';
+    await page.route(
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        capturedBody = route.request().postData() ?? '';
+        return route.fulfill({
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+          body: buildAnswerSse('Understood — proceeding with my best judgment.'),
+        });
+      },
+    );
+
+    await page
+      .locator('button')
+      .filter({ hasText: /Don.t ask, just proceed/i })
+      .first()
+      .click();
+
+    await expect(
+      page.locator('text=Understood — proceeding with my best judgment').first(),
+    ).toBeVisible({ timeout: 20_000 });
+
+    expect(capturedBody).toMatch(/proceed.*best judgment/i);
+  });
+
+  test('clicking it ends the card without requiring an option to be selected first', async ({
+    page,
+  }) => {
+    await setup(page);
+
+    // No radio selected — Submit stays disabled, but "Don't ask" must still work.
+    const submitBtn = page.locator('button').filter({ hasText: /^Submit$/ }).first();
+    await expect(submitBtn).toBeDisabled({ timeout: 5_000 });
+
+    await page.route(
+      `**/api/v1/agents/${AGENT_ID}/conversations/${AGENT_CONV_ID}/messages/stream`,
+      (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        return route.fulfill({
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+          body: buildAnswerSse('Proceeding without a selection.'),
+        });
+      },
+    );
+
+    await page
+      .locator('button')
+      .filter({ hasText: /Don.t ask, just proceed/i })
+      .first()
+      .click();
+
+    await expect(
+      page.locator('text=Proceeding without a selection').first(),
+    ).toBeVisible({ timeout: 20_000 });
+  });
+});

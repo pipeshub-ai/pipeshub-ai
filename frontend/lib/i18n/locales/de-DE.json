@@ -2779,6 +2779,12 @@
     "back": "Zurück",
     "skip": "Überspringen",
     "next": "Weiter",
-    "submit": "Absenden"
+    "submit": "Absenden",
+    "whyImAsking": "Warum ich frage",
+    "understood": "Verstanden",
+    "ambiguous": "Unklar",
+    "helpsMe": "Das hilft mir dabei, {{reason}}.",
+    "proceedBestJudgment": "Nicht fragen, einfach fortfahren",
+    "usedBestJudgment": "[Bestes Urteilsvermögen verwendet]"
   }
 }

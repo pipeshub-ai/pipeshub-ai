@@ -88,6 +88,8 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ToolErrorTracker,
     artifact_context_reminder,
+    ask_outcome_tracking,
+    ask_user_question_quality,
     ask_user_question_sse,
     attachment_rehydration,
     citation_tracking,
@@ -257,15 +259,16 @@ class PipesHubAgentFactory:
         # `skip_apps={"coding_sandbox"}` drops the legacy
         # execute_python/execute_typescript tools once agent_loop_lib's own
         # run_code is registered below, so the model never sees two
-        # competing code-execution tools. database_sandbox tools are always
-        # kept — agent_loop_lib has no equivalent ephemeral SQL sandbox.
+        # competing code-execution tools. database_sandbox is also dropped —
+        # its functionality is subsumed by the coding sandbox's SQL
+        # capabilities.
         #
         # When knowledge is active, `knowledgegraph` covers both search and
         # file listing — skip the legacy `retrieval` and `knowledgehub` apps so
         # the model sees a single set of knowledge tools, not two competing
         # duplicates.  Old conversation history that mentions the retired names
         # still resolves through _tool_naming.py's INTERNAL_SEARCH_TOOL_NAMES.
-        skip_apps: set[str] = {"coding_sandbox"} if code_exec_enabled else set()
+        skip_apps: set[str] = {"coding_sandbox", "database_sandbox"} if code_exec_enabled else {"database_sandbox"}
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         tool_registry = await PipesHubToolLoader().load(
@@ -791,6 +794,10 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
+        # Separate from ask_user_question_sse above: quality logging must
+        # run regardless of has_ui_client (see ask_user_quality.py's
+        # docstring for why the two can't share one hook).
+        hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_quality(context))
 
         # Track which record IDs were actually fetched, so the gate can exclude
         # them from its candidate re-computation.
@@ -800,6 +807,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
+        hooks.on(HookEvent.PRE_TURN).use(ask_outcome_tracking(context))
 
         # Refuses a text-only, no-tool-call turn as "done" when the request
         # needed a generated file and no artifact has been produced yet —

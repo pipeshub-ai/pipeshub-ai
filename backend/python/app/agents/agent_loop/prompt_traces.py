@@ -14,6 +14,11 @@ Patterns covered:
    try again before giving up.
 4. Write request gated by ask_user_question — always confirm before
    any mutating action the user's message did not explicitly request.
+5. Ambiguous target needs disambiguation before acting — the
+   ask_vs_act rubric's "2+ incompatible targets" case, distinct from
+   #4: nothing here is a write-without-confirmation risk, the ambiguity
+   is WHICH target, not WHETHER to act at all (Ask User Tool
+   Improvement Plan, Phase 2).
 """
 from __future__ import annotations
 
@@ -93,12 +98,12 @@ Assistant (final answer): Our pricing tiers are: Starter ($29/mo), Growth ($99/m
 
 User: Can you close the Jira ticket?
 
-Assistant (think): The user wants me to close a ticket but hasn't confirmed which one or whether to proceed. I must ask before writing.
+Assistant (think): The user wants me to close a ticket but hasn't said which one or confirmed the action. I must ask before writing.
 
-TOOL internaltools__ask_user_question | question="Which Jira ticket should I close, and shall I proceed?", options=["Yes, close it","No, cancel"]
+TOOL internaltools__ask_user_question | user_intent="You asked me to close 'the' Jira ticket, but I don't know which one — closing the wrong ticket can't be undone silently.", questions=[{"question": "Which ticket should I close?", "options": ["PROJ-42", "PROJ-58", "PROJ-61"], "multiSelect": false}]
 
 Tool result:
-> User replied: Yes, close PROJ-42. [loop: step 1/5, stale_rounds=0]
+> User replied: PROJ-42. [loop: step 1/5, stale_rounds=0]
 
 TOOL jira_transition_issue | issue_key="PROJ-42", transition="Done"
 
@@ -106,6 +111,25 @@ Tool result:
 > PROJ-42 transitioned to Done. [loop: step 2/5, stale_rounds=0]
 
 Assistant (final answer): Done — [PROJ-42](https://jira.example.com/browse/PROJ-42) has been closed.
+
+---
+### Example 5 — Ambiguous target needs disambiguation before acting
+
+User: Send the weekly summary to the team.
+
+Assistant (think): "The team" could mean more than one channel here, and I have no signal in this conversation for which one. Sending to the wrong channel notifies the wrong audience — this is exactly the ask-vs-act bar: 2+ incompatible targets, nothing to narrow it down.
+
+TOOL internaltools__ask_user_question | user_intent="You asked me to send the weekly summary to 'the team' — there are a few channels that could match, and sending to the wrong one would notify the wrong people.", questions=[{"question": "Which channel should get the weekly summary?", "options": ["#eng-team", "#eng-announcements", "#general"], "multiSelect": false}]
+
+Tool result:
+> User replied: #eng-team. [loop: step 1/5, stale_rounds=0]
+
+TOOL slack_post_message | channel="#eng-team", text="Weekly summary: ..."
+
+Tool result:
+> Message posted to #eng-team. [loop: step 2/5, stale_rounds=0]
+
+Assistant (final answer): Sent the weekly summary to **#eng-team**.
 """.strip()
 
 

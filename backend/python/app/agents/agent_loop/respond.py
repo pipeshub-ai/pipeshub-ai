@@ -384,7 +384,19 @@ class AnswerFinalizer:
         net for when Phase 5's eager `ask_user_question_sse` POST_TOOL_USE
         hook didn't fire (e.g. `has_ui_client` was false during tool
         orchestration but the flag wasn't re-checked here); gated on the
-        same `ask_user_question_emitted` flag so it never double-emits."""
+        same `ask_user_question_emitted` flag so it never double-emits.
+
+        Ask User Tool Improvement Plan, Phase 3 audit: `row.get("result")`
+        here is the tool's OUTPUT payload (`all_tool_results` entries
+        populated by `hooks/result_accumulation.py`), the exact same JSON
+        `ask_user_question_sse` emits from — so this stays in parity with
+        that hook automatically, with no changes needed, as long as
+        `intrim_tools.py::ask_user_question()`'s RETURN value shape doesn't
+        change. Phase 4's `reasoning` field is deliberately kept OUT of
+        that return value (it's an audit-only field, logged by
+        `hooks/ask_user_quality.py` instead) specifically so this fallback
+        — and the Node.js persistence path, which also reads this same
+        `result` field — never need to change in step with it."""
         if state.get("ask_user_question_emitted") or not self._context.has_ui_client:
             return
         for row in _tool_names_and_results_from_state(state).get("tool_results") or []:

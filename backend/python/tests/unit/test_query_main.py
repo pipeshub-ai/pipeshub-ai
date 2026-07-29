@@ -356,6 +356,56 @@ class TestStopKafkaConsumers:
         result = await stop_kafka_consumers(container)
         assert result is None
 
+    async def test_stops_every_consumer_not_just_the_first(self):
+        """Regression test: a prior implementation returned from inside the
+        loop after stopping the FIRST consumer, leaving every consumer after
+        it (and its open connections/threads) running on shutdown. All
+        consumers must be stopped regardless of list order/length."""
+        from app.query_main import stop_kafka_consumers
+
+        consumer_a = AsyncMock()
+        consumer_b = AsyncMock()
+        consumer_c = AsyncMock()
+        container = _make_container()
+        container.kafka_consumers = [
+            ("aiconfig", consumer_a),
+            ("connectors", consumer_b),
+            ("indexing", consumer_c),
+        ]
+
+        result = await stop_kafka_consumers(container)
+
+        assert result is True
+        consumer_a.stop.assert_awaited_once()
+        consumer_b.stop.assert_awaited_once()
+        consumer_c.stop.assert_awaited_once()
+        assert container.kafka_consumers == []
+
+    async def test_one_consumer_failure_does_not_stop_remaining_consumers(self):
+        """A failure stopping one consumer must not short-circuit the loop —
+        every remaining consumer still gets its `stop()` called, and the
+        overall result reflects the partial failure."""
+        from app.query_main import stop_kafka_consumers
+
+        consumer_a = AsyncMock()
+        consumer_b = AsyncMock()
+        consumer_b.stop = AsyncMock(side_effect=Exception("stop fail"))
+        consumer_c = AsyncMock()
+        container = _make_container()
+        container.kafka_consumers = [
+            ("aiconfig", consumer_a),
+            ("connectors", consumer_b),
+            ("indexing", consumer_c),
+        ]
+
+        result = await stop_kafka_consumers(container)
+
+        assert result is False
+        consumer_a.stop.assert_awaited_once()
+        consumer_b.stop.assert_awaited_once()
+        consumer_c.stop.assert_awaited_once()
+        assert container.kafka_consumers == []
+
 
 # ===========================================================================
 # lifespan
@@ -541,6 +591,93 @@ class TestLifespan:
             async with lifespan(mock_app):
                 pass
 
+    async def test_shutdown_disconnects_graph_and_vector_db(self):
+        """Lifespan shutdown must disconnect both the graph DB and vector DB
+        providers — previously neither was closed, leaking their
+        connection pools across graceful restarts."""
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        gp = _make_graph_provider(orgs=[])
+        mock_container._graph_provider = gp
+
+        mock_vector_db = AsyncMock()
+        mock_vector_db.disconnect = AsyncMock()
+        mock_container.vector_db_service = AsyncMock(return_value=mock_vector_db)
+
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+        mock_tools_registry = MagicMock()
+        mock_tools_registry.list_tools.return_value = []
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch.dict("sys.modules", {
+                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
+                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
+            }),
+        ):
+            mock_container.config_service.return_value = mock_config_service
+
+            async with lifespan(mock_app):
+                pass
+
+            gp.disconnect.assert_awaited_once()
+            mock_vector_db.disconnect.assert_awaited_once()
+
+    async def test_shutdown_disconnect_errors_are_logged_not_raised(self):
+        """A failure disconnecting either DB provider must not prevent the
+        rest of shutdown from running or propagate out of lifespan."""
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        gp = _make_graph_provider(orgs=[])
+        gp.disconnect = AsyncMock(side_effect=Exception("graph disconnect fail"))
+        mock_container._graph_provider = gp
+
+        mock_vector_db = AsyncMock()
+        mock_vector_db.disconnect = AsyncMock(side_effect=Exception("vector disconnect fail"))
+        mock_container.vector_db_service = AsyncMock(return_value=mock_vector_db)
+
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+        mock_tools_registry = MagicMock()
+        mock_tools_registry.list_tools.return_value = []
+
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch.dict("sys.modules", {
+                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
+                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
+            }),
+        ):
+            mock_container.config_service.return_value = mock_config_service
+
+            # Should NOT raise even though both disconnects fail
+            async with lifespan(mock_app):
+                pass
+
+            # config_service.close still runs despite disconnect failures
+            mock_config_service.close.assert_awaited_once()
+
     async def test_shutdown_config_close_error_logged(self):
         """If config_service.close raises during shutdown, error is logged but no re-raise."""
         from app.query_main import lifespan
@@ -659,12 +796,20 @@ class TestAuthenticateRequests:
 class TestHealthCheck:
     """Tests for the /health endpoint handler."""
 
+    @staticmethod
+    def _make_request(memory_monitor=None) -> MagicMock:
+        """Bare request stub exposing only `app.state.memory_monitor`,
+        which is all `health_check` reads off it."""
+        request = MagicMock()
+        request.app.state.memory_monitor = memory_monitor
+        return request
+
     async def test_health_check_success(self):
         """Health check returns healthy status."""
         from app.query_main import health_check
 
         with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
-            result = await health_check()
+            result = await health_check(self._make_request())
 
         assert result.status_code == 200
         assert result.body is not None
@@ -675,7 +820,7 @@ class TestHealthCheck:
         from app.query_main import health_check
 
         with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
-            result = await health_check()
+            result = await health_check(self._make_request())
 
         body = json.loads(result.body)
         assert body["status"] == "healthy"
@@ -687,9 +832,38 @@ class TestHealthCheck:
 
         mock_ts = MagicMock(side_effect=[RuntimeError("timestamp error"), 9999999])
         with patch("app.query_main.get_epoch_timestamp_in_ms", mock_ts):
-            result = await health_check()
+            result = await health_check(self._make_request())
 
         assert result.status_code == 500
+
+    async def test_health_check_unhealthy_when_rss_over_threshold(self):
+        """Health check flips to 503/unhealthy once RSS crosses the warn threshold."""
+        from app.query_main import QUERY_MEMORY_WARN_MB, health_check
+
+        monitor = MagicMock()
+        monitor.sample_once.return_value = (QUERY_MEMORY_WARN_MB + 100.0, QUERY_MEMORY_WARN_MB + 200.0)
+
+        with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(self._make_request(memory_monitor=monitor))
+
+        assert result.status_code == 503
+
+    async def test_health_check_reports_memory_when_monitor_present(self):
+        """Health check includes rss/vms readings when a monitor is wired up."""
+        import json
+
+        from app.query_main import health_check
+
+        monitor = MagicMock()
+        monitor.sample_once.return_value = (512.0, 768.0)
+
+        with patch("app.query_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(self._make_request(memory_monitor=monitor))
+
+        body = json.loads(result.body)
+        assert result.status_code == 200
+        assert body["memory"]["rssMb"] == 512.0
+        assert body["memory"]["vmsMb"] == 768.0
 
 
 # ===========================================================================

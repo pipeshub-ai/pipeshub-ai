@@ -65,6 +65,11 @@ def is_web_payload(payload: object) -> bool:
     return "web_results" in payload or "blocks" in payload
 
 
+# Web page content can be substantial per-record; cap total accumulation
+# across repeat web_search/fetch_url calls within one request.
+_MAX_WEB_RECORDS = 50
+
+
 def accumulate_web_records(tool_state: dict[str, Any], records: list[dict[str, Any]]) -> None:
     """Append `records` onto `tool_state["web_records"]`, deduped by `url`.
 
@@ -79,6 +84,8 @@ def accumulate_web_records(tool_state: dict[str, Any], records: list[dict[str, A
     existing: list[dict[str, Any]] = tool_state.setdefault("web_records", [])
     seen_urls = {rec.get("url") for rec in existing if rec.get("url")}
     for rec in records:
+        if len(existing) >= _MAX_WEB_RECORDS:
+            break
         url = rec.get("url")
         if not url or url in seen_urls or not rec.get("content"):
             continue

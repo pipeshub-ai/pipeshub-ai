@@ -55,8 +55,12 @@ function CitationPopoverContentInner({
 
   return (
     <Flex direction="column" gap="4">
-      {/* ── Header: source + action buttons ── */}
-      <Flex align="center" justify="between">
+      {/* ── Header: source + action buttons ──
+          `wrap="wrap"` on both rows: the popover is capped at 90vw
+          (CITATION_POPOVER_MAX_WIDTH) on narrow screens, and the connector
+          label + two action buttons can exceed that width — without wrap the
+          "Preview" button gets clipped by the popover's own overflow. */}
+      <Flex align="center" justify="between" gap="2" wrap="wrap">
         <Flex align="center" gap="2">
           <ConnectorIcon type={citation.connector} size={20} />
           <Text
@@ -70,7 +74,7 @@ function CitationPopoverContentInner({
           </Text>
         </Flex>
 
-        <Flex align="center" gap="2">
+        <Flex align="center" gap="2" wrap="wrap">
           {canOpenSource && !isLocalFsSource && !isCollectionSource && citation.webUrl && !citation.hideWeburl && (
             <Button asChild size="1" variant="outline" color="gray" tabIndex={-1}>
               <Link

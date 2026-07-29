@@ -391,6 +391,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
     async def _produce() -> None:
         agent: Any = None
+        prefetch_task: asyncio.Task | None = None
         try:
             factory = PipesHubAgentFactory()
             prefetch_task = (
@@ -520,32 +521,66 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # If the producer was cancelled (client disconnect) or `factory.
+            # create()` raised before `prefetch_task` was ever awaited above,
+            # the retrieval it kicked off (embedding + vector search + blob
+            # reads) would otherwise keep running to build a result set
+            # nothing will ever read.
+            if prefetch_task is not None and not prefetch_task.done():
+                prefetch_task.cancel()
+                try:
+                    await prefetch_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            # Unified 4-step cleanup order (see stream_bridge.py's
+            # `_produce()` for the matching sequence and full rationale):
+            # (1) flush + `_DONE` FIRST for a prompt HTTP close; (2) clear
+            # `context`'s large mutable state; (3) cancel orphan tasks;
+            # (4) destroy sandboxes.
+            await event_sink.flush()
+            await queue.put(_DONE)
+            await context.cleanup()
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
                 except Exception:
                     log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
-            await event_sink.flush()
-            await queue.put(_DONE)
 
     producer = asyncio.create_task(_produce())
     heartbeat = asyncio.create_task(_heartbeat(queue)) if protocol == "agui" else None
+    normal_exit = False
     try:
         while True:
             item = await queue.get()
             if item is _DONE:
+                normal_exit = True
                 break
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
     finally:
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
-        if not producer.done():
+        if not normal_exit and not producer.done():
+            # Abnormal exit (client disconnect) — cancel the producer so
+            # the agent doesn't keep running against nothing, then wait
+            # for it to finish its finally-block cleanup.
             producer.cancel()
-        tasks = [producer]
-        if heartbeat:
-            tasks.append(heartbeat)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if not normal_exit:
+            # Abnormal: must await the producer so cleanup runs to
+            # completion even after cancellation.
+            tasks = [producer]
+            if heartbeat:
+                tasks.append(heartbeat)
+            await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            # Normal exit: _DONE was received, but the producer's cleanup
+            # tail (orphan cancellation, sandbox teardown) is still
+            # running. Don't await it — the HTTP response should close
+            # promptly. The cleanup task stays alive in the event loop and
+            # finishes on its own; each request has its own
+            # sandbox_manager, so there's no cross-request interference.
+            if heartbeat:
+                await asyncio.gather(heartbeat, return_exceptions=True)
 
 
 __all__ = ["run_chat_stream"]

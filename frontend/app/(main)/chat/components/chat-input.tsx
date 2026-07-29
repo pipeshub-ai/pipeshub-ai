@@ -465,7 +465,7 @@ export function ChatInput({
 
   // ── Message action command handlers ──────────────────────────────
   // Both handlers are registered on the global command bus (useCommandStore) so
-  // ChatResponse / MessageActions can trigger them without prop drilling.
+  // UserMessage / MessageActions can trigger them without prop drilling.
 
   // Regenerate: closes all panels, sets activeMessageAction, and pre-fills the
   // textarea with the original question text (dispatched from message-actions.tsx

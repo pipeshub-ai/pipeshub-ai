@@ -46,6 +46,12 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("custom_instructions",        Volatility.STATIC),
     ("goal_brief",                 Volatility.STATIC),
     ("operating_rules",            Volatility.STATIC),
+    # Ask User Tool Improvement Plan, Phase 2: additive decision rubric,
+    # only rendered when `surfaces.can_ask_user` is True. STATIC because its
+    # content never varies per turn — it either renders in full or not at
+    # all, so it belongs in the cached stable block alongside the rest of
+    # Band A.
+    ("ask_vs_act",                 Volatility.STATIC),
     ("response_format",            Volatility.STATIC),
     ("base_system_prompt",         Volatility.STATIC),
     ("citation_rules",             Volatility.STATIC),

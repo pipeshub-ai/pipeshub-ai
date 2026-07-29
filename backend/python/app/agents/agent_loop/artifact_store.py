@@ -92,11 +92,22 @@ class RegistryBackedStore:
             )
 
         aid = metadata.artifact_id
+        # Must key L1 by the registry-assigned `aid` (not a fresh id
+        # `InMemoryArtifactStore.store()` would generate) so a later
+        # `get(aid)` call — which only knows the registry id — can hit this
+        # cache entry. That rules out calling `store()` directly, so the
+        # write goes straight at `_data`/`_schemas`/`_tool_names` — but the
+        # eviction calls bracketing it are the same private methods
+        # `store()` itself calls, so `maxsize`/TTL are still honored instead
+        # of letting L1 grow unbounded for the life of the request (see
+        # `get()` below for the matching fix on the read/cache-fill path).
+        self._l1._evict_expired()
         self._l1._data[aid] = (self._l1._now(), content)
         if result_schema is not None:
             self._l1._schemas[aid] = result_schema
         if tool_name:
             self._l1._tool_names[aid] = tool_name
+        self._l1._evict_oldest()
         return aid
 
     async def get(self, artifact_id: str) -> str | None:
@@ -112,7 +123,9 @@ class RegistryBackedStore:
         if raw is None:
             return None
         content = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        self._l1._evict_expired()
         self._l1._data[artifact_id] = (self._l1._now(), content)
+        self._l1._evict_oldest()
         return content
 
     def get_schema(self, artifact_id: str) -> dict[str, Any] | None:

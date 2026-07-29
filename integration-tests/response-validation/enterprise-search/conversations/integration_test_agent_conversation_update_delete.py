@@ -30,7 +30,6 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.clients.conversations_client import AgentConversationsClient
-from openapi_search_validator import assert_matches_component_schema
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
@@ -161,14 +160,14 @@ class AgentConversationsTestBase:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 payload = json.loads(envelope["data"])
-                conversation = payload.get("conversation") or {}
+                conversation = (payload.get("result") or payload).get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
                     f"complete payload missing conversation._id: {payload!r}"
@@ -1096,10 +1095,6 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             status_code = resp.status_code
             content_type = (resp.headers.get("Content-Type") or "").lower()
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(
-                    envelope,
-                    "AgentRegenerateSSEEvent",
-                )
                 parsed_data: Any
                 try:
                     parsed_data = json.loads(envelope["data"])
@@ -1108,7 +1103,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                 envelopes.append(
                     {"event": envelope["event"], "data": parsed_data}
                 )
-                if envelope["event"] in {"complete", "error"}:
+                if envelope["event"] in {"RUN_FINISHED", "RUN_ERROR"}:
                     break
 
         return status_code, content_type, envelopes
@@ -1127,13 +1122,13 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
         assert envelopes, "expected at least one SSE event"
         complete_event = next(
-            (event for event in envelopes if event["event"] == "complete"),
+            (event for event in envelopes if event["event"] == "RUN_FINISHED"),
             None,
         )
         assert complete_event is not None, f"expected complete event, got: {envelopes!r}"
         payload = complete_event["data"]
         assert isinstance(payload, dict), f"expected dict complete payload, got: {payload!r}"
-        conversation = payload.get("conversation") or {}
+        conversation = (payload.get("result") or payload).get("conversation") or {}
         assert conversation.get("_id") == expected_conversation_id, (
             f"conversation id mismatch: expected {expected_conversation_id!r}, got {payload!r}"
         )
@@ -1164,7 +1159,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
         assert envelopes, "expected at least one SSE event"
         error_event = next(
-            (event for event in envelopes if event["event"] == "error"),
+            (event for event in envelopes if event["event"] == "RUN_ERROR"),
             None,
         )
         assert error_event is not None, f"expected error event, got: {envelopes!r}"

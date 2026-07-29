@@ -296,10 +296,18 @@ class TestRunChatStream:
         before `PipesHubAgentFactory.create()` builds the prompt builder,
         so `PipesHubPromptBuilder` can render it in the same turn."""
         captured_context: Any = None
+        # `context.tool_state` is cleared by `AgentContext.cleanup()` in
+        # `run_chat_stream`'s `finally` block once the stream completes (see
+        # `context.py`/`chat_modes/bridge.py`), so the value of interest must
+        # be snapshotted here -- while `factory.create()` runs, before that
+        # cleanup -- rather than read from `tool_state` after the `async for`
+        # below has fully drained the generator.
+        captured_custom_instructions: Any = None
 
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
-            nonlocal captured_context
+            nonlocal captured_context, captured_custom_instructions
             captured_context = context
+            captured_custom_instructions = context.tool_state.get("custom_instructions")
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
@@ -325,7 +333,7 @@ class TestRunChatStream:
 
         assert events[-1].startswith("event: complete\n")
         assert captured_context.custom_instructions == "Prefer internal knowledge first."
-        assert captured_context.tool_state["custom_instructions"] == "Prefer internal knowledge first."
+        assert captured_custom_instructions == "Prefer internal knowledge first."
 
     async def test_no_custom_instructions_configured_leaves_field_none(self) -> None:
         """A brand-new org that never touched the "Custom Instructions" page
@@ -381,6 +389,13 @@ class TestRunChatStream:
             return agent, MagicMock(), goal, []
 
         async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
+            # `bridge.py` merges the prefetch result into `context.tool_state`
+            # right after `factory.create()` returns, then clears
+            # `tool_state` via `AgentContext.cleanup()` once the stream
+            # completes (after this finalizer runs) -- snapshot the merged
+            # value here rather than reading it from `tool_state` after the
+            # `async for` below has fully drained the generator.
+            captured["final_results"] = list(captured["context"].tool_state.get("final_results", []))
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
@@ -405,7 +420,7 @@ class TestRunChatStream:
             ]
 
         assert events[-1].startswith("event: complete\n")
-        assert captured["context"].tool_state["final_results"] == prefetch_result.final_results
+        assert captured["final_results"] == prefetch_result.final_results
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )

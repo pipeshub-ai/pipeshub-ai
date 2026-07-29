@@ -192,14 +192,14 @@ class AgentConversationsTestBase:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 payload = json.loads(envelope["data"])
-                conversation = payload.get("conversation") or {}
+                conversation = (payload.get("result") or payload).get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
                     f"complete payload missing conversation._id: {payload!r}"

@@ -169,14 +169,14 @@ class TestAgentConversationListing:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                conv = (payload.get("result") or payload).get("conversation") or {}
                 conversation_id = conv.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
                     f"complete payload missing conversation._id: {payload!r}"
@@ -202,12 +202,12 @@ class TestAgentConversationListing:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(
                         f"message stream emitted error event: {payload!r}"
                     )
-                if envelope["event"] == "complete":
+                if envelope["event"] == "RUN_FINISHED":
                     return
 
         raise AssertionError("agent add-message stream ended without a complete event")

@@ -66,17 +66,24 @@ class IntentRouteDecision(BaseModel):
                and success criteria baked in. Becomes `Goal.description`.
     route: quick/react/deep — only populated when `include_routing=True`
                was passed; `None` otherwise.
-    clarifying_questions: empty unless the model judged the request FATALLY
-               ambiguous (see `_CLARIFY_INSTRUCTIONS`) and emitted a
-               ```clarify fenced JSON block instead of its normal briefing
-               — `_decision_from_text` is the only place that ever
-               populates this. Non-empty here means `select_loop_and_goal()`
-               /`stream_bridge.py` end the turn via
+    clarifying_questions: empty unless the model judged the request
+               MODERATELY or FATALLY ambiguous (see `_CLARIFY_INSTRUCTIONS`)
+               and emitted a ```clarify fenced JSON block instead of its
+               normal briefing — `_decision_from_text` is the only place
+               that ever populates this. Non-empty here means
+               `select_loop_and_goal()`/`stream_bridge.py` end the turn via
                `emit_pre_run_clarification()` without ever constructing an
                `Agent` — see that function's docstring. This is the
                upfront, cheaper counterpart to the main agent's OWN
                mid-run `ask_user_question` tool (still available for
                ambiguity that only surfaces once the agent starts working).
+    clarification_severity: which tier of `_CLARIFY_INSTRUCTIONS` the model
+               invoked — "moderate" (clear topic, 2+ incompatible targets,
+               one focused question) or "fatal" (no topic/action at all,
+               1-3 questions). `None` when `clarifying_questions` is empty.
+               Defaults to "fatal" when the model emits a ```clarify block
+               without a `severity` field (older prompt behavior). Consumed
+               by the Phase 5 observability hook to label `ambiguity_type`.
     """
 
     reasoning: str = ""
@@ -85,6 +92,7 @@ class IntentRouteDecision(BaseModel):
     success_criteria: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     clarifying_questions: list[AskUserQuestionItemInput] = Field(default_factory=list, max_length=5)
+    clarification_severity: Literal["moderate", "fatal"] | None = None
     route: Literal["quick", "react", "deep"] | None = None
     # True when the intent call signalled that the query needs whole-document
     # content (comparisons, full reports, contracts) rather than retrieved
@@ -114,33 +122,49 @@ _INTENT_INSTRUCTIONS = (
     "Bullet points for what a correct/complete answer looks like.\n"
 )
 
-# Mirrors the fatal-ambiguity criteria `InternalTools.ask_user_question`
-# already uses for its OWN mid-run judgment call (see that tool's
-# description, `intrim_tools.py`) — deliberately the SAME bar, so a
-# request this pre-run gate lets through is never one the main agent
-# would have immediately turned around and asked about anyway, and vice
-# versa. Kept narrow on purpose: a vague-but-searchable topic ("tell me
-# about the new pricing") must NOT trigger this — that goes to normal
-# retrieval, not a question.
+# Mirrors the ask-vs-act criteria `InternalTools.ask_user_question` already
+# uses for its OWN mid-run judgment call (see that tool's description,
+# `intrim_tools.py`, and the prompt builder's `ask_vs_act` section) —
+# deliberately the SAME bar, so a request this pre-run gate lets through is
+# never one the main agent would have immediately turned around and asked
+# about anyway, and vice versa. Two tiers, not one: `fatal` (the original,
+# narrow escape hatch) and `moderate` (new — a clear topic that still maps
+# to 2+ incompatible targets). Both stay deliberately conservative: a
+# vague-but-searchable topic ("tell me about the new pricing") must NOT
+# trigger either tier — that goes to normal retrieval, not a question.
 _CLARIFY_INSTRUCTIONS = (
-    "\n\nEXCEPTION — fatal ambiguity: if the request is too incomplete to "
-    "act on AT ALL (no topic, no action, a bare fragment with no "
-    "antecedent in the conversation history — NOT merely a vague-but-"
-    "searchable topic, which should get the normal briefing above instead), "
-    "then SKIP the entire briefing above and instead write ONLY a single "
-    "fenced code block tagged `clarify` containing one JSON object, "
-    "nothing else before or after it:\n"
+    "\n\nEXCEPTION — ask before acting: if you cannot safely write the "
+    "briefing above without silently picking an answer to something only "
+    "the user can decide, SKIP the entire briefing and instead write ONLY "
+    "a single fenced code block tagged `clarify` containing one JSON "
+    "object, nothing else before or after it. Use exactly one of two "
+    "severities:\n\n"
+    "- `moderate`: the request has a clear topic AND action, but maps to "
+    "2+ incompatible targets or scopes, and picking the wrong one would "
+    "waste the user's time or act on the wrong thing (e.g. \"update the "
+    "ticket\" when several tickets are live in this conversation and "
+    "nothing narrows down which one; \"send it to the team\" when two "
+    "channels could both be \"the team\"). Emit exactly ONE focused "
+    "question.\n"
+    "- `fatal`: the request is too incomplete to act on AT ALL — no "
+    "topic, no action, a bare fragment with no antecedent in the "
+    "conversation history (NOT merely a vague-but-searchable topic, which "
+    "should get the normal briefing above instead). Emit 1-3 questions.\n\n"
     "```clarify\n"
     '{"user_intent": "<your understanding of what they might mean>", '
+    '"severity": "moderate", '
     '"questions": [{"question": "<question text>", "multiSelect": false, '
     '"options": [{"label": "<option 1>"}, {"label": "<option 2>"}, '
     '{"label": "<option 3>"}]}]}\n'
     "```\n"
-    "1-3 questions max, each with 3-7 concrete tappable options — expand "
-    "the example's 3 options up to 7 if more concrete choices apply; never "
-    "an 'Other'/'Something else' catch-all (the UI adds one automatically). "
-    "Use this exception RARELY — only when there is truly nothing to work "
-    "with."
+    "Every question needs 3-7 concrete tappable options, expanding past "
+    "the example's 3 when more concrete choices apply — even a two-way "
+    "choice needs a third concrete option (the next most likely target, "
+    "or a broader scope that also fits), never an 'Other'/'Something "
+    "else' catch-all (the UI adds one automatically). Use `fatal` RARELY "
+    "and `moderate` SPARINGLY — only when the ambiguity is genuinely "
+    "between incompatible targets, never for a merely broad-but-answerable "
+    "topic."
 )
 
 # A ```clarify fenced block containing the escape-hatch JSON described in
@@ -150,12 +174,18 @@ _CLARIFY_INSTRUCTIONS = (
 _CLARIFY_BLOCK_RE = re.compile(r"```clarify\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
-def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
+def _parse_clarify_block(
+    text: str,
+) -> tuple[list["AskUserQuestionItemInput"], Literal["moderate", "fatal"]] | None:
     """Extracts and validates the ```clarify block, if the model emitted
     one. Returns `None` (never raises) on absence OR on any malformed/
     invalid JSON — a model that gets the escape hatch's format wrong
     should fall back to being treated as a normal briefing, not blow up
-    the whole intent call."""
+    the whole intent call.
+
+    Returns `(questions, severity)`. `severity` defaults to `"fatal"` when
+    the block omits the field or sends an unrecognized value — the strict,
+    narrow tier is the safe default, never the wider `"moderate"` one."""
     match = _CLARIFY_BLOCK_RE.search(text)
     if not match:
         return None
@@ -166,7 +196,11 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         questions = payload.get("questions") if isinstance(payload, dict) else None
         if not questions:
             return None
-        return [AskUserQuestionItemInput.model_validate(q) for q in questions]
+        severity = payload.get("severity") if isinstance(payload, dict) else None
+        resolved_severity: Literal["moderate", "fatal"] = (
+            "moderate" if severity == "moderate" else "fatal"
+        )
+        return [AskUserQuestionItemInput.model_validate(q) for q in questions], resolved_severity
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
         logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
         return None
@@ -261,8 +295,9 @@ def _decision_from_text(text: str, *, include_routing: bool) -> IntentRouteDecis
     the raw model text) — `_build_goal()`/`select_loop_and_goal()` still
     need SOME `Goal.description`, even though the caller short-circuits
     before that `Goal` ever reaches an `Agent`."""
-    clarifying_questions = _parse_clarify_block(text)
-    if clarifying_questions:
+    parsed_clarify = _parse_clarify_block(text)
+    if parsed_clarify:
+        clarifying_questions, severity = parsed_clarify
         match = _CLARIFY_BLOCK_RE.search(text)
         user_intent = ""
         if match:
@@ -275,6 +310,7 @@ def _decision_from_text(text: str, *, include_routing: bool) -> IntentRouteDecis
         return IntentRouteDecision(
             rewritten_query=user_intent,
             clarifying_questions=clarifying_questions,
+            clarification_severity=severity,
             route=None,
         )
     if not include_routing:

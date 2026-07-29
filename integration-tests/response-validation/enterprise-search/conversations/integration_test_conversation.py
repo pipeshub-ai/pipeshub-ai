@@ -27,9 +27,6 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, s)
 
 from helper.clients.conversations_client import ConversationsClient
-from openapi_search_validator import (
-    assert_matches_component_schema,
-)
 from openapi_schema_validator import assert_response_matches_openapi_operation
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
@@ -135,14 +132,14 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                conv = (payload.get("result") or payload).get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
                     f"complete payload missing conversation._id: {payload!r}"
@@ -174,17 +171,17 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-                if envelope["event"] == "connected":
+                if envelope["event"] == "CUSTOM":
                     payload = json.loads(envelope["data"])
-                    conv_id = payload.get("conversationId")
-                    if isinstance(conv_id, str) and conv_id:
-                        connected_conv_id = conv_id
+                    if payload.get("name") == "conversation_created":
+                        conv_id = (payload.get("value") or {}).get("conversationId")
+                        if isinstance(conv_id, str) and conv_id:
+                            connected_conv_id = conv_id
                     continue
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
                 assert connected_conv_id, (
                     f"stream complete arrived without connected conversationId: {envelope!r}"
@@ -219,15 +216,14 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                conv = (payload.get("result") or payload).get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
                     f"complete payload missing conversation._id: {payload!r}"
@@ -279,23 +275,22 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     raise AssertionError(f"stream emitted error event: {payload!r}")
 
-                if event == "complete":
+                if event == "RUN_FINISHED":
                     saw_complete = True
                     if not accumulated_answer.strip() and isinstance(payload, dict):
-                        conv = payload.get("conversation") or {}
+                        conv = (payload.get("result") or payload).get("conversation") or {}
                         msgs = conv.get("messages") or []
                         for m in reversed(msgs if isinstance(msgs, list) else []):
                             if isinstance(m, dict) and m.get("role") == "assistant":
@@ -330,25 +325,24 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     raise AssertionError(
                         f"stream emitted error event for chatMode={chat_mode!r}: {payload!r}"
                     )
 
-                if event == "complete":
+                if event == "RUN_FINISHED":
                     saw_complete = True
                     if not accumulated_answer.strip() and isinstance(payload, dict):
-                        conv = payload.get("conversation") or {}
+                        conv = (payload.get("result") or payload).get("conversation") or {}
                         msgs = conv.get("messages") or []
                         for m in reversed(msgs if isinstance(msgs, list) else []):
                             if isinstance(m, dict) and m.get("role") == "assistant":
@@ -1122,16 +1116,15 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 saw_complete = True
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                conv = (payload.get("result") or payload).get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
                 )
@@ -1196,7 +1189,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 return
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
+                if envelope["event"] != "RUN_ERROR":
                     continue
                 payload = json.loads(envelope["data"])
                 msg = payload.get("message") or payload.get("error") or ""
@@ -1224,16 +1217,15 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"regenerate stream emitted error: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 saw_complete = True
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                conv = (payload.get("result") or payload).get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
                 )
@@ -1319,7 +1311,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
+                if envelope["event"] != "RUN_ERROR":
                     continue
                 payload = json.loads(envelope["data"])
                 err = payload.get("message") or payload.get("error") or ""

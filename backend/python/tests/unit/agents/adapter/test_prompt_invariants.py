@@ -105,7 +105,15 @@ _DIRECTIONAL_RE = re.compile(
 # SMALL/MID tiers (the default test context is MID via UNKNOWN_PROFILE).
 # Measured size after Phase 9 is ~9,462 chars — see
 # test_prompt_size_regression.py for the full per-tier table.
-_KB_PLUS_3_APPS_CHAR_CEILING = 11_050
+# Raised again for the Ask User Tool Improvement Plan (Phase 2): Example 5
+# in `prompt_traces.py` (ambiguous-target disambiguation) added a new
+# worked trace, and Example 4 grew from a 2-option to a schema-correct
+# 3-option question. Measured after that change is ~12,029 chars — this
+# fixture does not grant `internaltools__ask_user_question`, so the
+# `ask_vs_act` section itself contributes nothing here; the growth is
+# entirely the trace text, which every MID-tier prompt carries regardless
+# of ask-user capability.
+_KB_PLUS_3_APPS_CHAR_CEILING = 12_600
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +254,18 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         "available_connectors": [],
         "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), "knowledgegraph__fetch_record"],
     },
+    # Ask User Tool Improvement Plan (Phase 2): the one fixture that grants
+    # `internaltools__ask_user_question`, so `surfaces.can_ask_user` is True
+    # and the `ask_vs_act` section actually renders under test — no other
+    # fixture above exercises it, so without this one the section's prose
+    # would be invisible to the directional-language/emphasis-budget/
+    # tool-grounding invariants below.
+    "ask_user_capable": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), "internaltools__ask_user_question"],
+    },
 }
 
 
@@ -359,6 +379,7 @@ _FIXTURES_WITH_XREFS = ["kb_plus_service_tools"]
 _FIXTURES_WITH_TOOL_REFS = [
     "kb_only", "kb_plus_3_apps", "duplicate_apps", "kb_plus_service_tools", "web_search_mode",
     "run_code_no_web", "service_only", "lazy_with_pinned", "kb_with_full_record",
+    "ask_user_capable",
 ]
 _ALL_FIXTURES = list(_FIXTURES.keys())
 

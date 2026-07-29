@@ -228,6 +228,10 @@ class PipesHubToolLoader:
         # ── Connector toolsets ────────────────────────────────────────────
         from app.agents.registry.toolset_registry import get_toolset_registry
         toolset_reg = get_toolset_registry()
+        # No-op after the first call; on the very first request served by
+        # this process it imports the toolset SDKs off the event loop (see
+        # ToolsetRegistry.enable_lazy_discovery in query_main.py).
+        await toolset_reg.ensure_discovered_async()
 
         instance_creator = ToolInstanceCreator(context)
         loaded_apps: set[str] = set()
@@ -269,6 +273,15 @@ class PipesHubToolLoader:
 
             try:
                 instance = await instance_creator.create_instance_async(ts_class, ts_name)
+                # Some connector actions (Airtable, Box, Dropbox, GitLab,
+                # LinkedIn, ...) spin up a background asyncio event loop
+                # thread in `__init__` to bridge sync tool calls onto async
+                # SDK clients, exposing a `shutdown()` to stop it. Track
+                # every such instance here so request-end cleanup
+                # (`close_cached_clients`) can shut them down — otherwise
+                # each request leaks one thread+loop per connector toolset
+                # used, since nothing else holds a reference to `instance`.
+                state.setdefault("_toolset_instances", []).append(instance)
 
                 ts_description = ts_meta.get("description", "")
 

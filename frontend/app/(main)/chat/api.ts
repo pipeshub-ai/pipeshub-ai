@@ -75,6 +75,16 @@ export interface StreamMessageCallbacks {
  * Runs one chat SSE stream and dispatches every AG-UI frame to `callbacks`.
  * `endpoint`/`payload` stay protocol-agnostic; this is the only function
  * that adds `protocol: 'agui'` to the request.
+ *
+ * Ask User Tool Improvement Plan, Phase 6 (verified, no code change
+ * needed): EVERY streaming call site — `sendMessage` (new conversation,
+ * `internal_search`/normal chat included), `sendAgentMessage`, and
+ * `regenerateMessage` — funnels through this ONE function, which always
+ * wires `onEvent: createAGUIEventHandler(callbacks, tracking)`
+ * (`agui-event-handler.ts`). That handler's `CUSTOM` case dispatches
+ * `ask_user_question` unconditionally, with no `chatMode`/mode-name check
+ * anywhere in the dispatch path — so `internal_search` receives the exact
+ * same `onAskUserQuestion` callback as agent mode.
  */
 async function runChatStream(
   endpoint: string,

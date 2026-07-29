@@ -121,6 +121,34 @@ _OPERATING_RULES = """
 {capability_question_rule}- **Keeping the user informed**: before your first tool call, state in one short sentence what you're about to do. Send a brief update only when you start a new phase of work or discover something that changes your approach — state the concrete outcome, not a log of what you just did. Do NOT narrate routine individual tool calls; the UI already shows those as they happen.
 """
 
+# Phase 2 of the Ask User Tool Improvement Plan: a dedicated decision rubric
+# for ask-vs-act, additive to (never replacing) the write-confirmation rule
+# in `_OPERATING_RULES` above and the tool's own description
+# (`intrim_tools.py`). Only rendered when `surfaces.can_ask_user` is True
+# (see `_build_blocks`) — an agent that was never granted the tool has
+# nothing to apply this rubric to. Kept free of the emphasis-budget tokens
+# (`MANDATORY`/`NEVER`/`ALWAYS`/`FIRST`/`IN PARALLEL`/`ONE call`/`IMPORTANT`)
+# and directional references ("above"/"below") that
+# `test_prompt_invariants.py` enforces across every section.
+_ASK_VS_ACT_RUBRIC = """
+## When to Ask the User
+
+You have `internaltools__ask_user_question` — use it when ALL of these hold:
+1. The query maps to 2+ incompatible actions or scopes, not just a broad topic.
+2. Picking the wrong one would waste the user's time or act on the wrong thing.
+3. Nothing in conversation history, attachments, or the query itself resolves it.
+
+Do NOT ask when:
+- The query has a searchable keyword — retrieve first; partial results beat a question.
+- A reasonable default assumption exists — make it and state it in your answer.
+- The user already said "just do it," "go ahead," or similar.
+
+When you do ask:
+- Give 3-7 concrete, specific options derived from what you already know — tool schemas, retrieved data, conversation history — never invented placeholders.
+- Set multiSelect=true when more than one answer could apply.
+- State in `user_intent` what you understood, what is ambiguous, and how the answer changes your next step.
+"""
+
 _RESPONSE_FORMAT = """
 ## Response Format
 - State findings directly. Render dates/times as "Mon, Jul 27, 3:45 PM PDT" using the user's time zone.
@@ -307,6 +335,23 @@ def _build_finding_information(
             "repeating it or giving up."
         )
 
+    if surface_count >= 1:
+        parts.append(
+            "Exhaustive search: when initial results are thin, ambiguous, or "
+            "only partially answer the question, broaden before concluding — "
+            "try alternate phrasings, different filters, or follow graph "
+            "links between records to navigate to related content."
+            + (
+                " When multiple sources are available, check ones you haven't "
+                "queried yet or combine tools (e.g. knowledge search for "
+                "background + live API for current state)."
+                if surface_count >= 2
+                else ""
+            )
+            + " Deliver a partial answer only after exhausting the "
+            "approaches available to you."
+        )
+
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
         parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
@@ -489,6 +534,9 @@ class PipesHubPromptBuilder:
         tpl.set("operating_rules", _OPERATING_RULES.format(
             capability_question_rule=capability_rule,
         ).strip())
+        # Additive to the write-confirmation rule inside _OPERATING_RULES
+        # above — only rendered when the tool is actually granted this turn.
+        tpl.set("ask_vs_act", _ASK_VS_ACT_RUBRIC.strip() if surfaces.can_ask_user else None)
         # Response format and citation rules move into the final_answer tool's
         # parameter description when that tool is enabled, so the always-on
         # prompt doesn't carry them twice.

@@ -1147,6 +1147,103 @@ class TestAutoDiscoverToolsets:
 
 
 # ---------------------------------------------------------------------------
+# Lazy discovery (enable_lazy_discovery / _ensure_discovered / ensure_discovered_async)
+# ---------------------------------------------------------------------------
+
+class TestLazyDiscovery:
+    def setup_method(self):
+        self.registry = _fresh_registry()
+
+    def test_lazy_discovery_off_by_default(self):
+        """Every existing caller (connectors_main.py, this test suite) must
+        keep today's behavior: no discovery happens unless explicitly
+        requested, whether via enable_lazy_discovery() or a direct
+        auto_discover_toolsets()/discover_toolsets() call."""
+        assert self.registry._auto_discover_on_read is False
+        assert self.registry._discovered is False
+
+    def test_read_methods_are_no_ops_when_lazy_discovery_disabled(self):
+        """`_ensure_discovered()` must not trigger discovery for callers
+        that never opt in — auto_discover_toolsets() should not be called
+        just because a read method (e.g. list_toolsets()) was used."""
+        with patch.object(self.registry, "auto_discover_toolsets") as mock_discover:
+            self.registry.list_toolsets()
+            self.registry.get_all_toolsets()
+            self.registry.get_toolset_metadata("nonexistent")
+            mock_discover.assert_not_called()
+
+    def test_enable_lazy_discovery_sets_flag(self):
+        self.registry.enable_lazy_discovery()
+        assert self.registry._auto_discover_on_read is True
+        assert self.registry._discovered is False
+
+    def test_ensure_discovered_triggers_auto_discover_once(self):
+        """First read after enabling lazy discovery triggers exactly one
+        auto_discover_toolsets() call; discovery must not happen again on
+        subsequent calls."""
+        self.registry.enable_lazy_discovery()
+        with patch.object(
+            self.registry, "auto_discover_toolsets",
+            side_effect=lambda: setattr(self.registry, "_discovered", True),
+        ) as mock_discover:
+            self.registry.list_toolsets()
+            self.registry.list_toolsets()
+            self.registry.get_all_toolsets()
+            mock_discover.assert_called_once()
+
+    def test_ensure_discovered_is_a_no_op_once_already_discovered(self):
+        self.registry.enable_lazy_discovery()
+        self.registry._discovered = True
+        with patch.object(self.registry, "auto_discover_toolsets") as mock_discover:
+            self.registry._ensure_discovered()
+            mock_discover.assert_not_called()
+
+    async def test_ensure_discovered_async_offloads_to_a_thread(self):
+        """`ensure_discovered_async` must not block the event loop directly
+        — it hands the (first-call-only) import-heavy work to
+        `asyncio.to_thread`."""
+        import app.agents.registry.toolset_registry as toolset_registry_module
+
+        self.registry.enable_lazy_discovery()
+        calls = []
+
+        async def _spy_to_thread(fn, *args, **kwargs):
+            calls.append(fn)
+            fn(*args, **kwargs)
+
+        with (
+            patch.object(toolset_registry_module.asyncio, "to_thread", _spy_to_thread),
+            patch.object(
+                self.registry, "auto_discover_toolsets",
+                side_effect=lambda: setattr(self.registry, "_discovered", True),
+            ) as mock_discover,
+        ):
+            await self.registry.ensure_discovered_async()
+
+        assert calls == [self.registry._ensure_discovered]
+        mock_discover.assert_called_once()
+
+    async def test_ensure_discovered_async_is_cheap_no_op_after_first_call(self):
+        """After discovery has happened once, subsequent calls must not
+        hop through `asyncio.to_thread` at all — a per-request call site
+        (`tool_loader.py`, `lazy_tools_wiring.py`) calls this unconditionally
+        on every request."""
+        import app.agents.registry.toolset_registry as toolset_registry_module
+
+        self.registry.enable_lazy_discovery()
+        self.registry._discovered = True
+
+        with patch.object(toolset_registry_module.asyncio, "to_thread") as mock_to_thread:
+            await self.registry.ensure_discovered_async()
+            mock_to_thread.assert_not_called()
+
+    async def test_ensure_discovered_async_no_op_when_lazy_discovery_disabled(self):
+        with patch.object(self.registry, "auto_discover_toolsets") as mock_discover:
+            await self.registry.ensure_discovered_async()
+            mock_discover.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _sanitize_config - _oauth_configs with non-dict value (covers line 495)
 # ---------------------------------------------------------------------------
 

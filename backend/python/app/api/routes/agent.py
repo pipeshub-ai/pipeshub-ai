@@ -20,7 +20,7 @@ from app.agents.chat_modes.custom_instructions import resolve_custom_instruction
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
-from app.api.routes.chatbot import get_llm_for_chat
+from app.api.routes.chatbot import get_llm_for_chat, truncate_previous_conversations
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
@@ -3154,7 +3154,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "query": chat_query.query,
             "limit": chat_query.limit,
             "messages": [],
-            "previous_conversations": chat_query.previousConversations,
+            "previous_conversations": truncate_previous_conversations(chat_query.previousConversations),
             "quickMode": chat_query.quickMode,
             "chatMode": chat_query.chatMode,
             "retrievalMode": chat_query.retrievalMode,

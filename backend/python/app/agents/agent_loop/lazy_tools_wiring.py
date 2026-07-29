@@ -223,11 +223,14 @@ class PipesHubGlobalCatalogFallback:
         from app.agents.agent_loop.tool_loader import _has_tool_decorated_methods, _infer_path_prefix
         from app.agents.registry.toolset_registry import get_toolset_registry
 
+        toolset_registry = get_toolset_registry()
+        await toolset_registry.ensure_discovered_async()
+
         query_terms = [t for t in query.lower().split() if t]
         failures = self._context.toolset_load_failures if self._context is not None else {}
 
         hits: list[GlobalToolHit] = []
-        for ts_name, ts_meta in get_toolset_registry().get_all_toolsets().items():
+        for ts_name, ts_meta in toolset_registry.get_all_toolsets().items():
             if ts_meta.get("isInternal", False):
                 # Never a user-facing "go attach/authenticate this" suggestion —
                 # there's nothing for the user to configure.

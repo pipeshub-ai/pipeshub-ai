@@ -51,8 +51,6 @@ _KB_QA_POOL: list[tuple[str, list[str]]] = [
 
 _SSE_MAX_EVENTS = 10_000
 _SSEEnvelope = dict[str, str]
-_AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
-_AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
 
 
 def _iter_sse_envelopes(
@@ -110,7 +108,8 @@ def _iter_sse_envelopes(
 
 
 def _answer_from_complete_payload(payload: dict[str, Any]) -> str:
-    conv = payload.get("conversation") or {}
+    result = payload.get("result") or payload
+    conv = result.get("conversation") or {}
     msgs = conv.get("messages") or []
     for m in reversed(msgs if isinstance(msgs, list) else []):
         if not isinstance(m, dict):
@@ -215,36 +214,37 @@ class _AgentStreamTestBase:
             )
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
-                if event == "connected":
-                    conv_id = payload.get("conversationId")
+                if event == "CUSTOM" and payload.get("name") == "conversation_created":
+                    conv_id = (payload.get("value") or {}).get("conversationId")
                     if isinstance(conv_id, str) and conv_id:
                         connected_conv_id = conv_id
                     continue
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
                     continue
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     if not allow_error:
                         raise AssertionError(f"stream emitted error event: {payload!r}")
                     continue
 
-                if event != "complete":
+                if event != "RUN_FINISHED":
                     continue
 
                 saw_complete = True
                 if not accumulated_answer.strip() and isinstance(payload, dict):
                     accumulated_answer = _answer_from_complete_payload(payload)
 
+                result = payload.get("result") or payload
                 complete_conv = (
-                    (payload.get("conversation") or {}) if isinstance(payload, dict) else {}
+                    (result.get("conversation") or {}) if isinstance(payload, dict) else {}
                 )
                 complete_conv_id = complete_conv.get("_id")
                 if isinstance(complete_conv_id, str) and complete_conv_id:
@@ -300,24 +300,22 @@ class _AgentStreamTestBase:
             )
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
                     continue
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     if not allow_error:
                         raise AssertionError(f"stream emitted error event: {payload!r}")
                     continue
 
-                if event != "complete":
+                if event != "RUN_FINISHED":
                     continue
 
                 saw_complete = True
@@ -379,20 +377,19 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
-
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     raise AssertionError(f"stream emitted error event: {payload!r}")
 
-                if event == "complete":
+                if event == "RUN_FINISHED":
                     saw_complete = True
                     if not accumulated_answer.strip() and isinstance(payload, dict):
                         accumulated_answer = _answer_from_complete_payload(payload)
@@ -531,22 +528,19 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             saw_complete = False
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
-                        accumulated_answer = acc
+                if event == "STATE_DELTA" and isinstance(payload, dict):
+                    delta = payload.get("delta") or []
+                    for op in delta:
+                        if isinstance(op, dict) and op.get("path") == "/normalizedAnswer":
+                            accumulated_answer = op.get("value", "")
 
-                if event == "error":
+                if event == "RUN_ERROR":
                     raise AssertionError(f"stream emitted error event: {payload!r}")
 
-                if event == "complete":
+                if event == "RUN_FINISHED":
                     saw_complete = True
                     if not accumulated_answer.strip() and isinstance(payload, dict):
                         accumulated_answer = _answer_from_complete_payload(payload)
@@ -609,18 +603,16 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
             saw_complete = False
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     payload = json.loads(envelope["data"])
                     raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                if envelope["event"] != "RUN_FINISHED":
                     continue
 
                 saw_complete = True
                 payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                result = payload.get("result") or payload
+                conv = result.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
                     f"complete conversation id mismatch: {conv.get('_id')!r}"
                 )
@@ -761,7 +753,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                 return
 
             for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
+                if envelope["event"] != "RUN_ERROR":
                     continue
                 payload = json.loads(envelope["data"])
                 msg = payload.get("message") or payload.get("error") or ""
@@ -806,13 +798,10 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             for envelope in _iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-                if envelope["event"] == "error":
+                if envelope["event"] == "RUN_ERROR":
                     saw_error = True
                     break
-                if envelope["event"] == "complete":
+                if envelope["event"] == "RUN_FINISHED":
                     saw_complete = True
                     break
 

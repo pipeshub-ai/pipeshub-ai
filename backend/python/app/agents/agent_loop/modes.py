@@ -82,7 +82,19 @@ class ModeDefinition:
     consulted for `chat_mode == "auto"`, since that path always needs one
     intent call to pick the tier in the first place) — a mode that wants
     the absolute minimum per-request LLM calls, at the cost of no query
-    rewriting/follow-up resolution/requirements extraction."""
+    rewriting/follow-up resolution/requirements extraction.
+
+    Ask User Tool Improvement Plan (weakness 4b, accepted trade-off): this
+    also means PRE-RUN clarification (`clarification.py::
+    emit_pre_run_clarification`) never fires for `quick` — there is no
+    intent call left to emit a ```clarify block from. Mid-run
+    `internaltools__ask_user_question` is unaffected (that's a normal tool
+    call inside the agent loop, independent of this flag). Deliberately not
+    "fixed" with a cheap non-LLM ambiguity heuristic — `quick` exists
+    specifically to minimize per-request LLM calls, and pre-run
+    clarification is reachable from every OTHER mode (including
+    `chatMode=internal_search`, which is not in this catalog at all — see
+    `router.select_loop_and_goal`'s docstring)."""
 
 
 MODE_CATALOG: tuple[ModeDefinition, ...] = (

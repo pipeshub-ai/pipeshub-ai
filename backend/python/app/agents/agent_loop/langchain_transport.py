@@ -399,10 +399,18 @@ class LangChainTransport(LLMTransport):
         lc_messages = convert_messages_to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
 
-        chunks: list[AIMessage] = []
+        # Merged incrementally as chunks arrive rather than accumulated into
+        # a `list[AIMessage]` and merged in one pass afterward — the old
+        # approach held every individual delta chunk AND the growing merged
+        # message at once (~2x the final response size for long turns,
+        # 16K-64K tokens), plus repeated `+` concatenation over the full
+        # list was quadratic. `a + b + c` is left-associative, so merging
+        # one chunk at a time as it streams produces a byte-identical
+        # `final_ai_message` while only ever holding one message object.
+        final_ai_message: AIMessage | None = None
         try:
             async for chunk in lc_llm.astream(lc_messages, config=self._langchain_config()):
-                chunks.append(chunk)
+                final_ai_message = chunk if final_ai_message is None else final_ai_message + chunk
                 text = getattr(chunk, "content", None)
                 if isinstance(text, str) and text:
                     yield TextDeltaEvent(delta=text)
@@ -447,12 +455,8 @@ class LangChainTransport(LLMTransport):
         except Exception as exc:
             raise self._wrap_error(exc, "stream") from exc
 
-        if not chunks:
+        if final_ai_message is None:
             final_ai_message = AIMessage(content="")
-        else:
-            final_ai_message = chunks[0]
-            for chunk in chunks[1:]:
-                final_ai_message = final_ai_message + chunk
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)

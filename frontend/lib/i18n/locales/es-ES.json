@@ -2775,6 +2775,12 @@
     "back": "Atrás",
     "skip": "Omitir",
     "next": "Siguiente",
-    "submit": "Enviar"
+    "submit": "Enviar",
+    "whyImAsking": "Por qué pregunto",
+    "understood": "Entendido",
+    "ambiguous": "Ambiguo",
+    "helpsMe": "Esto me ayuda a {{reason}}.",
+    "proceedBestJudgment": "No preguntes, continúa",
+    "usedBestJudgment": "[Se usó el mejor criterio]"
   }
 }

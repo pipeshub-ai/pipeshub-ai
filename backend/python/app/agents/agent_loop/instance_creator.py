@@ -21,9 +21,64 @@ from app.agents.tools.factories.registry import ClientFactoryRegistry
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
 
-__all__ = ["ToolInstanceCreator"]
+__all__ = ["ToolInstanceCreator", "close_cached_clients"]
 
 logger = logging.getLogger(__name__)
+
+# Preference order for duck-typed teardown: `aclose` (httpx.AsyncClient and
+# most async SDK clients) before the sync `close`/`shutdown` names some
+# connector wrappers use. Only the first present method is called — calling
+# multiple would double-close some clients.
+_CLOSE_METHOD_NAMES = ("aclose", "close", "shutdown")
+
+
+async def _close_one(obj: Any, log: logging.Logger, label: str) -> None:
+    for method_name in _CLOSE_METHOD_NAMES:
+        method = getattr(obj, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            if inspect.iscoroutinefunction(method):
+                await method()
+            else:
+                # Sync `shutdown()` implementations (e.g. the connector
+                # action wrappers' background-loop teardown) call
+                # `Thread.join()`, which blocks — run off the event loop so
+                # one slow-to-stop client can't stall the whole cleanup.
+                await asyncio.to_thread(method)
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown, never fail the request on it
+            log.debug("close_cached_clients: %s.%s() failed for %s: %s", type(obj).__name__, method_name, label, exc)
+        return
+
+
+async def close_cached_clients(tool_state: dict[str, Any], log: logging.Logger | None = None) -> None:
+    """Best-effort teardown of every client/toolset instance created for
+    this request.
+
+    Two categories of resources accumulate on `tool_state` over the life of
+    a request and are never closed by anything else:
+
+    - `_client_cache` (populated by `ToolInstanceCreator`): OAuth/HTTP API
+      clients (httpx, MSAL, Google SDK, ...) holding open connection pools.
+    - `_toolset_instances` (populated by `tool_loader.py`): connector action
+      wrapper instances, several of which (Airtable, Box, Dropbox, GitLab,
+      LinkedIn, ...) own a background `asyncio` event loop + daemon thread.
+
+    Called once, at request-end, from both `stream_bridge.py` and
+    `chat_modes/bridge.py`'s `_produce()` `finally` blocks. Swallows all
+    errors — a broken client's close() must never break the response.
+    """
+    close_log = log or logger
+
+    client_cache = tool_state.get("_client_cache") or {}
+    for cache_key, client in list(client_cache.items()):
+        await _close_one(client, close_log, label=f"client_cache{cache_key!r}")
+    client_cache.clear()
+
+    toolset_instances = tool_state.get("_toolset_instances") or []
+    for instance in toolset_instances:
+        await _close_one(instance, close_log, label=type(instance).__name__)
+    toolset_instances.clear()
 
 _TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,

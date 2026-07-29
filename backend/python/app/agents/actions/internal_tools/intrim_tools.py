@@ -111,9 +111,9 @@ class AskUserQuestionItemInput(BaseModel):
 class AskUserQuestionInput(BaseModel):
     user_intent: str = Field(
         description=(
-            "Brief summary of your understanding of the user's query, your evaluation, "
-            "and reasoning for why these specific questions are being asked. "
-            "This is displayed to the user as context above the questions."
+            "Display text shown to the user above the questions, in the form "
+            "'Understood: <what you understood>. Ambiguous: <what's unclear>. "
+            "This helps me <how the answer changes your next action>.'"
         ),
     )
     questions: list[AskUserQuestionItemInput] = Field(
@@ -126,6 +126,22 @@ class AskUserQuestionInput(BaseModel):
         ),
         min_length=1,
         max_length=5,
+    )
+    # Ask User Tool Improvement Plan, Phase 4: audit-only, mirrors the
+    # `reasoning` ToolParameter below so the coercion/validation tests here
+    # stay representative of what the LLM can actually send — but this
+    # model is NOT what the LLM sees (see `to_schema()` in
+    # `agent_loop_lib/tools/base.py`); the `ToolParameter` list on the
+    # `@tool` decorator is the real, LLM-facing contract. Optional and
+    # excluded from `ask_user_question()`'s returned JSON payload —
+    # logged by `hooks/ask_user_quality.py` instead of shown to the user.
+    reasoning: str = Field(
+        default="",
+        max_length=200,
+        description=(
+            "Why you are asking instead of acting: what is ambiguous and how "
+            "the answer changes your next action. Not shown to the user."
+        ),
     )
 
     @model_validator(mode='before')
@@ -170,33 +186,31 @@ class InternalTools:
     @tool(
         path="/tools/internaltools/ask_user_question",
         short_description="Ask the user a structured question with tappable options",
+        # Ask User Tool Improvement Plan, Phase 4: shortened to a crisp
+        # purpose statement — the full ask-vs-act decision rubric (when to
+        # ask vs. act, how to ground options in live data) now lives in the
+        # system prompt's dedicated "When to Ask the User" section
+        # (`prompt_builder.py`'s `_ASK_VS_ACT_RUBRIC`, rendered whenever
+        # this tool is granted), so it no longer needs to be duplicated
+        # here.
         description=(
-            "MANDATORY: This is the ONLY way to ask the user ANY question. "
-            "NEVER write a question in your response text — always call this tool instead. "
-            "Use when: (a) required parameters for a write action are missing and only the user can provide them, "
-            "(b) the user's INTENT is ambiguous between incompatible goals (not just a vague topic — vague topics go to retrieval), "
-            "(c) the query is too incomplete to act on (no topic, no action, bare fragments with no antecedent). "
-            "Do NOT use for clear information requests with a searchable keyword — use retrieval for those. "
-            "Keep each question focused with tappable options. "
-            "Do not include any 'Other' option or 'Something else' option. "
-            "For EVERY question you MUST explicitly set multiSelect: "
-            "use true when the user can logically pick more than one answer "
-            "(topics, features, attendees, days, formats, categories, items to include — default to true if unsure); "
-            "use false only for genuinely mutually-exclusive single choices "
-            "(one priority, one date, one template, one format). "
-            "A single call SHOULD and CAN mix multiSelect=true and multiSelect=false questions. "
-            "Provide user_intent summarizing your understanding of the query and why you are asking. "
-            "Before generating options, analyze the query and decide dynamically: "
-            "(1) Enumerable live data (channels, users, projects, boards, spaces) — check if a READ tool exists that can list them. If yes, call that tool FIRST; use its actual response as options. "
-            "(2) Fixed capability values (issue types, priorities, formats) — derive only from the tool schema; never offer a value the tool does not accept. "
-            "(3) No tool can enumerate the resource — add one isUserInput:true option so the user can type it. "
-            "Every option presented MUST be something the available tools can actually execute."
+            "The only way to ask the user a question — never write a question in your response "
+            "text. Use when required parameters for a write action are missing, or the request "
+            "maps to 2+ incompatible targets/scopes with nothing in context to resolve it; never "
+            "for a broad-but-searchable topic, which goes to retrieval instead. Options must be "
+            "concrete and grounded in tool schemas, retrieved data, or conversation history — "
+            "never invented placeholders or an 'Other'/'Something else' catch-all — and every "
+            "question must explicitly set multiSelect."
         ),
         parameters=[
             ToolParameter(
                 name="user_intent",
                 type=ParameterType.STRING,
-                description="Brief summary of your understanding of the user's query and reasoning for why these questions are being asked",
+                description=(
+                    "Display text shown to the user above the questions, in the form "
+                    "'Understood: <what you understood>. Ambiguous: <what's unclear>. "
+                    "This helps me <how the answer changes your next action>.'"
+                ),
                 required=True,
             ),
             ToolParameter(
@@ -206,6 +220,15 @@ class InternalTools:
                 required=True,
                 items={"type": "object"},
             ),
+            ToolParameter(
+                name="reasoning",
+                type=ParameterType.STRING,
+                required=False,
+                description=(
+                    "Why you are asking instead of acting: what is ambiguous and how "
+                    "the answer changes your next action. Not shown to the user."
+                ),
+            ),
         ],
         tags=[
             Tag(key="category", value="utility"),
@@ -214,8 +237,19 @@ class InternalTools:
             TAG_LIFECYCLE_TERMINAL,
         ],
     )
-    async def ask_user_question(self, user_intent: str, questions: list[AskUserQuestionItemInput]) -> str:
-        """Return structured interactive questions with a wrapper message."""
+    async def ask_user_question(
+        self,
+        user_intent: str,
+        questions: list[AskUserQuestionItemInput],
+        reasoning: str = "",
+    ) -> str:
+        """Return structured interactive questions with a wrapper message.
+
+        `reasoning` (optional, Phase 4) is an audit-only field — logged by
+        `hooks/ask_user_quality.py`, deliberately left OUT of the returned
+        JSON payload below so the UI and the Node.js persistence path never
+        need to change in step with it (see `respond.py`'s fallback-emitter
+        audit note)."""
         normalized_questions: list[dict[str, Any]] = []
         for item in questions:
             if isinstance(item, AskUserQuestionItemInput):

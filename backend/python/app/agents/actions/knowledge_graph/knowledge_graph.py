@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NOT_FOUND_MSG = "Not found or no access."
+_GLOB_REGEX_CHARS = re.compile(r"[*?.\[\]{}^$+\\|]")
 
 
 # ---------------------------------------------------------------------------
@@ -54,23 +55,41 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
     node_id = args.get("node_id")
     name_filter = args.get("name_filter")
     page = args.get("page", 1)
-    if node_id:
-        base = f"Navigated to node {node_id}"
-    else:
-        base = "Navigated to root"
+    base = "Navigated to a node" if node_id else "Navigated to root"
     if name_filter:
-        base += f" (filter: {name_filter!r})"
+        base += f' (filter: "{name_filter}")'
     if page and page > 1:
         base += f" — page {page}"
     return base
 
 
 def _navigate_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    import re
     content = result.content or ""
     if "No children" in content or "no items" in content.lower():
         return "No children found"
-    first_line = content.split("\n", 1)[0] if content else ""
-    return first_line or "Navigation result"
+    # Extract the node name from the Path line (strip IDs)
+    path_match = re.match(r"Path:\s*(.+)", content)
+    if path_match:
+        raw_path = path_match.group(1).strip()
+        # Remove "(type, id=xxx)" parentheticals, keep only names
+        names = re.sub(r"\s*\([^)]*\)", "", raw_path)
+        if names and names != "(root)":
+            # Count children from "Children X-Y of Z:" line
+            children_match = re.search(r"Children \d+-\d+ of (\d+)", content)
+            if children_match:
+                return f"Browsed: {names} — {children_match.group(1)} children"
+            children_match = re.search(r"Children \d+-(\d+):", content)
+            if children_match:
+                return f"Browsed: {names} — {children_match.group(1)} children"
+            if "(no children)" in content:
+                return f"Browsed: {names} — no children"
+            return f"Browsed: {names}"
+    # Fallback: just report children count
+    children_match = re.search(r"Children \d+-\d+ of (\d+)", content)
+    if children_match:
+        return f"Found {children_match.group(1)} children"
+    return "Navigation result"
 
 
 def _lookup_args_summary(args: dict[str, Any]) -> str | None:
@@ -251,6 +270,8 @@ class KnowledgeGraph:
         # Normalize
         node_id = node_id.strip() if node_id else None
         name_filter = (name_filter.strip() if name_filter else None) or None
+        if name_filter:
+            name_filter = _GLOB_REGEX_CHARS.sub("", name_filter).strip() or None
         if name_filter and len(name_filter) < 2:
             name_filter = None
         page = max(1, page)
@@ -521,13 +542,15 @@ class KnowledgeGraph:
         path="/tools/knowledgegraph/list_files",
         short_description="Search or browse indexed items by name (returns metadata, not content)",
         description=(
-            "Find records by name across all connected sources, or browse to see what exists "
-            "under a specific source.\n\n"
-            "Returns record metadata only (Record IDs, types, names). No content — pass a "
-            "Record ID to fetch_record to read it, or to navigate() to see its children.\n\n"
+            "Find records by name across all connected sources.\n\n"
+            "IMPORTANT: Substring matching only — do NOT use wildcards (*, ?) or regex. "
+            "Just type the plain text to match against names.\n\n"
+            "Returns record metadata (Record IDs, types, names). No content — pass a "
+            "Record ID to fetch_record to read it, or to navigate() to see children.\n\n"
             "When to use versus other tools:\n"
             "  - You know part of a name → use this.\n"
-            "  - You want to explore structure (what is under an epic, a space) → use navigate().\n"
+            "  - You want ALL items in a source → use navigate(node_id=source_id).\n"
+            "  - You want structure (under an epic, a space) → use navigate().\n"
             "  - You want content → use search() first, then fetch_record() if needed.\n\n"
             "Scope with source_ids to restrict to one KB or connector."
         ),
@@ -535,7 +558,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Name search query (2–500 chars). Required — to browse, use navigate().",
+                description=(
+                    "Name search (2–500 chars, substring match only). "
+                    "No wildcards/regex — just the text to find. "
+                    "To list all items, use navigate() instead."
+                ),
                 required=True,
             ),
             ToolParameter(
@@ -681,12 +708,28 @@ def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | 
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    import re
+    from app.agents.actions.util.tool_summaries import bullet_list
     content = result.content or ""
     if not content:
         return None
-    first_line = str(content).split("\n", 1)[0] if content else ""
-    if "Error:" in str(content):
+    content_str = str(content)
+    if "Error:" in content_str:
+        first_line = content_str.split("\n", 1)[0]
         return f"Listing failed: {first_line}"
-    if "No items found" in str(content):
+    if "No items found" in content_str:
         return "No items found"
+    if "only supports plain substring matching" in content_str:
+        return "Query contained wildcards — use navigate() to list all items"
+    # Extract item count from header (e.g. "Found 5 items matching...")
+    header_match = re.match(r"Found (\d+) items?", content_str)
+    if header_match:
+        count = header_match.group(1)
+        # Extract just names (lines with [Type/SubType] Name | record_id=...)
+        names = re.findall(r"\[[\w/]+\]\s+(.+?)\s+\|", content_str)
+        header = f"Found {count} item{'s' if count != '1' else ''}"
+        if names:
+            return header + "\n" + bullet_list(names, total=int(count))
+        return header
+    first_line = content_str.split("\n", 1)[0]
     return first_line or "Listing result"

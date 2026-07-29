@@ -1,15 +1,13 @@
 'use client';
 
-import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Button, Heading, IconButton } from '@radix-ui/themes';
-import { Box, Flex, Text } from '@radix-ui/themes';
-import { SelectedCollections } from '../selected-collections';
-import { AppliedFilters } from '../applied-filters';
-import { ResponseTabs } from './response-tabs';
+import React, { useState, useMemo, useRef, useCallback } from 'react';
+import { Box } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { AnswerContent } from './answer-content';
 import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
+import { ResponseTabs } from './response-tabs';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
@@ -17,15 +15,9 @@ import { AskUserQuestionCard } from './ask-user-question-card';
 import { AgentActivityTimeline } from './agent-activity';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
-import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
-import { FileIcon } from '@/app/components/ui/file-icon';
-import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
+import type { AskUserQuestionPayload, ConfidenceLevel, ModelInfo, StatusMessage, ChatArtifact, MessagePart, ResponseTab } from '../../types';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
@@ -34,35 +26,14 @@ import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-do
 import { DownloadTasks } from './download-tasks';
 import {
   isPresentationFile,
-  isDocxFile,
   isLegacyWordDocFile,
+  isDocxFile,
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
-import { KnowledgeBaseApi } from '@/knowledge-base/api';
-import { useTranslation } from 'react-i18next';
 import { CitationMessageRowKeyContext } from './response-tabs/citations/citation-popover-control';
-import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
-
-function formatMessageTime(isoString: string): string {
-  const date = new Date(isoString);
-  if (isNaN(date.getTime())) return '';
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const timeStr = date.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  if (isToday) return timeStr;
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
 
 function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
   const parts: string[] = [];
@@ -74,21 +45,15 @@ function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string
   return parts.join('. ');
 }
 
-interface FeedbackInfo {
-  value?: 'like' | 'dislike';
-}
-
-interface ChatResponseProps {
-  question: string;
+interface AssistantMessageProps {
   answer: string;
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
   confidence?: ConfidenceLevel;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
-  /** Collections attached to this message (e.g. KB filters the user selected) */
-  collections?: Array<{ id: string; name: string }>;
-  appliedFilters?: AppliedFiltersData;
+  /** The user's question that produced this answer — only used for regenerate + read-aloud fallback. */
+  question: string;
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
   /** Whether this is the last bot message in the conversation */
@@ -112,27 +77,22 @@ interface ChatResponseProps {
    * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
    */
   citationMessageRowKey?: string;
-  /** ISO timestamp of when the user sent this query */
-  createdAt?: string;
-  /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
-  attachments?: AttachmentRef[];
+  /** Applied filters at send-time — forwarded to the regenerate command bar. */
+  appliedFilters?: import('../../types').AppliedFilters;
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
 }
 
-export const ChatResponse = React.memo(function ChatResponse({
-  question,
+export const AssistantMessage = React.memo(function AssistantMessage({
   answer,
   citationMaps = EMPTY_CITATION_MAPS,
   citationCallbacks,
   confidence,
   isStreaming = false,
   modelInfo,
-  collections,
-  appliedFilters,
-  attachments,
+  question,
   messageId,
   isLastMessage = false,
   streamingContent = '',
@@ -143,13 +103,13 @@ export const ChatResponse = React.memo(function ChatResponse({
   streamingParts,
   persistedParts,
   citationMessageRowKey,
-  createdAt,
+  appliedFilters,
   persistedAskUserQuestion,
   feedbackInfo,
-}: ChatResponseProps) {
-  debugLog.tick('[chat] [ChatResponse]');
+}: AssistantMessageProps) {
+  debugLog.tick('[chat] [AssistantMessage]');
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
+  const [activeTab, setActiveTab] = useState<ResponseTab>('answer');
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -163,93 +123,25 @@ export const ChatResponse = React.memo(function ChatResponse({
   );
 
   // ── Render-reason tracking ─────────────────────────────────────────
-  const prevCRRef = useRef<Record<string, unknown>>({});
-  const currentCRVals: Record<string, unknown> = {
-    question, answer, citationMaps, citationCallbacks, confidence,
-    isStreaming, modelInfo, collections, appliedFilters, messageId,
+  const prevAMRef = useRef<Record<string, unknown>>({});
+  const currentAMVals: Record<string, unknown> = {
+    answer, citationMaps, citationCallbacks, confidence,
+    isStreaming, modelInfo, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
+    streamingCitationMaps, streamingParts, persistedParts, persistedAskUserQuestion,
   };
-  const crReasons: string[] = [];
-  for (const [k, v] of Object.entries(currentCRVals)) {
+  const amReasons: string[] = [];
+  for (const [k, v] of Object.entries(currentAMVals)) {
     // eslint-disable-next-line react-hooks/refs -- intentional: debug render-reason tracking
-    if (!Object.is(v, prevCRRef.current[k])) crReasons.push(k);
+    if (!Object.is(v, prevAMRef.current[k])) amReasons.push(k);
   }
-  if (crReasons.length > 0) {
-    debugLog.reason('[chat] [ChatResponse]', crReasons);
+  if (amReasons.length > 0) {
+    debugLog.reason('[chat] [AssistantMessage]', amReasons);
   }
   // eslint-disable-next-line react-hooks/refs -- intentional: update previous-props snapshot for next render diff
-  prevCRRef.current = currentCRVals;
+  prevAMRef.current = currentAMVals;
 
-  // ── Local tab state with mutual exclusivity ────────────────────────
-  // Each ChatResponse manages its own tab locally. 'answer' is the default.
-  // To enforce that only one message can show sources/citations at a time,
-  // we track the active expanded message ID in the slot store.
-  const [localTab, setLocalTab] = useState<ResponseTab>('answer');
-
-  // Read the slot-level activeExpandedMessageId so we can reset to 'answer'
-  // when a different message becomes the expanded one.
-  const activeExpandedMessageId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.activeExpandedMessageId ?? null : null
-  );
-  const updateSlot = useChatStore((s) => s.updateSlot);
-  const activeSlotId = useChatStore((s) => s.activeSlotId);
   const setPreviewFile = useChatStore((s) => s.setPreviewFile);
-  const setPreviewMode = useChatStore((s) => s.setPreviewMode);
-
-  const handleAttachmentPreview = useCallback(
-    async (att: AttachmentRef) => {
-      setPreviewFile({
-        id: att.recordId,
-        name: att.recordName,
-        url: '',
-        type: att.mimeType,
-        isLoading: true,
-        hideFileDetails: true,
-        showDownload: true,
-      });
-      setPreviewMode('sidebar');
-
-      try {
-        const streamAsPdf =
-          isPresentationFile(att.mimeType, att.recordName) ||
-          isLegacyWordDocFile(att.mimeType, att.recordName);
-        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(att.recordId, streamOptions);
-        const resolvedType = resolvePreviewMimeAfterStream(
-          att.mimeType,
-          att.recordName,
-          blob,
-          !!streamOptions,
-        );
-        const isDocx = isDocxFile(att.mimeType, att.recordName, att.recordName, att.extension, att.extension);
-        const url = isDocx ? '' : URL.createObjectURL(blob);
-        setPreviewFile({
-          id: att.recordId,
-          name: att.recordName,
-          url,
-          blob: isDocx ? blob : undefined,
-          type: resolvedType,
-          isLoading: false,
-          previewRenderable: true,
-          hideFileDetails: true,
-          showDownload: true,
-        });
-      } catch (error) {
-        setPreviewFile({
-          id: att.recordId,
-          name: att.recordName,
-          url: '',
-          type: att.mimeType,
-          error: error instanceof Error ? error.message : 'Failed to load file',
-          isLoading: false,
-          hideFileDetails: true,
-          showDownload: true,
-        });
-      }
-    },
-    [setPreviewFile, setPreviewMode],
-  );
 
   /**
    * Streams `artifact.recordId` at `overrideVersion` (defaulting to
@@ -365,46 +257,6 @@ export const ChatResponse = React.memo(function ChatResponse({
       pendingAskUserQuestion.assistantMessageId === citationMessageRowKey
     );
 
-  // If another message was expanded (or expansion was cleared), reset to 'answer'.
-  // We only react when our localTab is non-answer — avoids unnecessary effects.
-  const prevExpandedRef = useRef(activeExpandedMessageId);
-  useEffect(() => {
-    if (
-      localTab !== 'answer' &&
-      activeExpandedMessageId !== messageId &&
-      activeExpandedMessageId !== prevExpandedRef.current
-    ) {
-      setLocalTab('answer');
-    }
-    prevExpandedRef.current = activeExpandedMessageId;
-  }, [activeExpandedMessageId, localTab, messageId]);
-
-  // Also ensure we reset if the slot switches to a different conversation
-  // (activeExpandedMessageId becomes null on slot evict/init).
-  const activeTab = (activeExpandedMessageId === messageId || !messageId)
-    ? localTab
-    : 'answer';
-
-  const setActiveTab = useCallback((tab: ResponseTab) => {
-    setLocalTab(tab);
-    if (!activeSlotId) return;
-    if (tab === 'answer') {
-      // Clear expansion only if we own it
-      updateSlot(activeSlotId, { activeExpandedMessageId: null });
-    } else {
-      updateSlot(activeSlotId, { activeExpandedMessageId: messageId ?? null });
-    }
-  }, [activeSlotId, messageId, updateSlot]);
-
-  const setInlineCitationKey = useInlineCitationPopoverStore((s) => s.setActiveKey);
-  const prevLocalTabForCite = useRef<ResponseTab>('answer');
-  useEffect(() => {
-    if (prevLocalTabForCite.current === 'answer' && localTab !== 'answer') {
-      setInlineCitationKey(null);
-    }
-    prevLocalTabForCite.current = localTab;
-  }, [localTab, setInlineCitationKey]);
-
   // Merge streaming citations when streaming, fall back to metadata citations
   const effectiveCitationMaps = isStreaming && streamingCitationMaps
     ? streamingCitationMaps
@@ -462,7 +314,16 @@ export const ChatResponse = React.memo(function ChatResponse({
     };
   }, [citationCallbacks, effectiveCitationMaps]);
 
-  // Derive counts from citation maps
+  // Suppress answer/sources/artifacts when an ask_user_question card (streaming
+  // or persisted) owns this row — the question card takes over the whole message.
+  const suppressAnswerBody = askQuestionMatchesRow || !!persistedAskUserQuestion;
+
+  // When the active question card owns this row, read aloud the question text
+  // and its options instead of the hidden bot response.
+  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
+    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
+    : displayContent;
+
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
@@ -471,20 +332,13 @@ export const ChatResponse = React.memo(function ChatResponse({
       case 'answer':
         return (
           <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
 
-            {/* Agent activity timeline — thinking / tool calls / sub-agents,
-                streamed live or rendered from the persisted transcript. */}
-            {effectiveParts && effectiveParts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {effectiveParts && effectiveParts.length > 0 && !suppressAnswerBody && (
               <AgentActivityTimeline parts={effectiveParts} isStreaming={isStreaming} citationMaps={effectiveCitationMaps} citationCallbacks={wrappedCallbacks} />
             )}
 
-            {/* Show content - either streaming or final.
-                Suppressed when an ask_user_question card (streaming or persisted)
-                owns this row so partial/final answer chunks are not shown
-                above the question card. */}
-            {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {displayContent && !suppressAnswerBody && (
               <AnswerContent
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
@@ -492,29 +346,20 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* "Currently doing X…" status — rendered LAST, after the timeline
-                and any answer text already streamed, so it tracks the bottom
-                of the growing message (where the chat scroller keeps the view
-                pinned) instead of sitting stuck above newer content. */}
             {isStreaming && streamingStatusToShow && (
               <StatusMessageComponent status={streamingStatusToShow} />
             )}
 
-            {/* Legacy download buttons */}
-            {downloadTasks.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {downloadTasks.length > 0 && !suppressAnswerBody && (
               <DownloadTasks tasks={downloadTasks} />
             )}
 
-            {/* Artifacts generated by sandbox tools */}
-            {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {effectiveArtifacts.length > 0 && !suppressAnswerBody && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 latestArtifactVersions={latestArtifactVersions}
                 onPreview={loadArtifactPreview}
                 onViewSource={async (codeArtifactId) => {
-                  // The code artifact is registered through the same pipeline as any
-                  // other record, so it streams/previews via the standard KB record
-                  // APIs exactly like the `recordId` path above — no separate endpoint.
                   try {
                     const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
                     const [details, blob] = await Promise.all([
@@ -532,14 +377,12 @@ export const ChatResponse = React.memo(function ChatResponse({
                       showDownload: true,
                     });
                   } catch {
-                    // Source artifact may have been deleted/permission-revoked since —
-                    // fail silently, there is nothing actionable for the user here.
+                    /* fail silently */
                   }
                 }}
               />
             )}
 
-            {/* Persisted ask_user_question from historical tool_call — read-only display */}
             {persistedAskUserQuestion && !askQuestionMatchesRow ? (
               <AskUserQuestionCard
                 payload={persistedAskUserQuestion}
@@ -548,7 +391,6 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
-            {/* Active (streaming/pending) ask_user_question card */}
             {askQuestionMatchesRow && pendingAskUserQuestion ? (
               <AskUserQuestionCard
                 payload={pendingAskUserQuestion.payload}
@@ -595,198 +437,16 @@ export const ChatResponse = React.memo(function ChatResponse({
     }
   };
 
-  const [isQuestionHovered, setIsQuestionHovered] = useState(false);
-  const [isQuestionExpanded, setIsQuestionExpanded] = useState(false);
-
-  const QUESTION_CHAR_LIMIT = 250;
-  const isQuestionLong = question.length > QUESTION_CHAR_LIMIT;
-  const displayedQuestion = isQuestionExpanded || !isQuestionLong
-    ? question
-    : question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…';
-
-  const handleEditQuery = useCallback(() => {
-    if (!messageId || isStreaming) return;
-    useCommandStore.getState().dispatch('showEditQuery', {
-      messageId,
-      text: question,
-    });
-  }, [messageId, question, isStreaming]);
-
-  // When the active question card owns this row, read aloud the question text
-  // and its options instead of the hidden bot response.
-  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
-    ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
-    : displayContent;
-
   const shell = (
     <Box style={{ width: '100%' }}>
-      {/* Question Header with hover edit icon */}
-      <Box
-        onMouseEnter={() => setIsQuestionHovered(true)}
-        onMouseLeave={() => setIsQuestionHovered(false)}
-        style={{
-          marginBottom: (collections && collections.length > 0) || (appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0)) ? 'var(--space-3)' : 'var(--space-4)',
-        }}
-      >
-        <Flex align="start" gap="2">
-          <Heading
-            size={isMobile ? '5' : isQuestionExpanded ? '3' : '5'}
-            weight="medium"
-            style={{
-              color: 'var(--slate-12)',
-              lineHeight: 1.3,
-              paddingTop: 'var(--space-3)',
-              flex: 1,
-            }}
-          >
-            {displayedQuestion}
-            {/* Edit pencil icon — appears on hover, only when not streaming */}
-            {!isStreaming && messageId && (
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size="1"
-                onClick={handleEditQuery}
-                style={{
-                  margin: '0 0 0 var(--space-2)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  opacity: isQuestionHovered ? 1 : 0,
-                  transition: 'opacity 0.15s ease',
-                  pointerEvents: isQuestionHovered ? 'auto' : 'none',
-                  verticalAlign: 'middle',
-                }}
-              >
-                <MaterialIcon
-                  name="edit"
-                  size={ICON_SIZES.PRIMARY}
-                  color="var(--slate-11)"
-                />
-              </IconButton>
-            )}
-          </Heading>
-        </Flex>
-
-        {isQuestionLong && (
-          <Button
-            color="gray"
-            size="2"
-            onClick={() => setIsQuestionExpanded((prev) => !prev)}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '2px',
-              marginTop: 'var(--space-2)',
-              cursor: 'pointer',
-              color: 'var(--slate-11)',
-              background: 'none',
-              padding: 0,
-              fontFamily: 'inherit',
-              height: 'auto',
-            }}
-          >
-            {isQuestionExpanded ? 'Show less' : 'Show more'}
-            <MaterialIcon
-              name={isQuestionExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
-              size={ICON_SIZES.PRIMARY}
-            />
-          </Button>
-        )}
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
-      {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
-      {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
-        <Box style={{ marginBottom: 'var(--space-3)' }}>
-          <AppliedFilters appliedFilters={appliedFilters} />
-        </Box>
-      )}
-
-      {/* Attachment chips — uploaded files sent with this message */}
-      {attachments && attachments.length > 0 && (
-        <Flex
-          align="center"
-          gap="2"
-          style={{
-            marginBottom: 'var(--space-3)',
-            overflowX: 'auto',
-            overflowY: 'hidden',
-          }}
-          className="no-scrollbar"
-        >
-          {attachments.map((att) => (
-            <Flex
-              key={att.virtualRecordId || att.recordId}
-              align="center"
-              gap="1"
-              role="button"
-              title={att.recordName}
-              onClick={() => handleAttachmentPreview(att)}
-              style={{
-                flexShrink: 0,
-                padding: 'var(--space-1) var(--space-2)',
-                backgroundColor: 'var(--olive-a2)',
-                border: '1px solid var(--olive-3)',
-                borderRadius: 'var(--radius-1)',
-                maxWidth: '200px',
-                cursor: 'pointer',
-                transition: 'background-color 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a4)';
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a2)';
-              }}
-            >
-              <FileIcon
-                extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
-                filename={att.recordName}
-                size={14}
-                fallbackIcon="insert_drive_file"
-              />
-              <Text
-                size="1"
-                style={{
-                  color: 'var(--slate-11)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {att.recordName}
-              </Text>
-            </Flex>
-          ))}
-        </Flex>
-      )}
-
-      {/* Tabs */}
-      {/* Tabs — hide Sources/Citations counts when the ask_user_question card
-          (streaming or persisted) owns this row; those tabs reflect answer
-          chunks that are suppressed. */}
       <ResponseTabs
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
-        citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
+        sourcesCount={sourcesCount}
+        citationCount={citationCount}
       />
-
-      {/* Tab Content */}
       {renderTabContent()}
 
-      {/* Message Actions (feedback, copy, regenerate, model info) */}
       {activeTab === 'answer' && (
         <MessageActions
           content={speakContent}

@@ -2,6 +2,7 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 
 import asyncio
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -31,7 +32,13 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
+from app.utils.memory_monitor import MemoryMonitor
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Health check reports `unhealthy` once RSS exceeds this (see /health and
+# MemoryMonitor). Default sized for the shared all-in-one container profile
+# documented in deployment/docker-compose; override per deployment.
+QUERY_MEMORY_WARN_MB = float(os.getenv("QUERY_MEMORY_WARN_MB", "3072"))
 
 container = QueryAppContainer.init("query_service")
 
@@ -118,22 +125,31 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
         raise
 
 async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
-    """Stop all Kafka consumers"""
+    """Stop all Kafka consumers.
+
+    Iterates every started consumer and stops it, rather than returning
+    after the first one — a single early `return` here previously left
+    every consumer after the first one running (and its connections/
+    threads leaked) on shutdown.
+    """
     logger = container.logger()
     consumers = getattr(container, 'kafka_consumers', [])
+    if not consumers:
+        return None
+
+    all_stopped = True
     for name, consumer in consumers:
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} message consumer stopped")
-            return True
         except Exception as e:
+            all_stopped = False
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
-            return False
-        finally:
-            # Clear the consumers list
-            if hasattr(container, 'kafka_consumers'):
-                container.kafka_consumers = []
-    return None
+
+    # Clear the consumers list
+    if hasattr(container, 'kafka_consumers'):
+        container.kafka_consumers = []
+    return all_stopped
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -151,6 +167,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+
+    memory_monitor = MemoryMonitor(
+        logger,
+        service_name="query_service",
+        interval_s=int(os.getenv("QUERY_MEMORY_MONITOR_INTERVAL_S", "60")),
+        warn_threshold_mb=QUERY_MEMORY_WARN_MB,
+    )
+    memory_monitor.start()
+    app.state.memory_monitor = memory_monitor
 
     # Get the already-resolved graph_provider from container (set during initialization)
     # This avoids coroutine reuse error
@@ -226,17 +251,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
-    # Initialize toolset registry for agent tool execution.
-    # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
-    # Slack, …) synchronously. Offload to a worker thread so the event loop
-    # stays responsive and the lifespan completes faster.
-    logger.info("🔄 Initializing in-memory toolset registry for agents...")
+    # Initialize toolset registry for agent tool execution. Discovery is
+    # deferred (`enable_lazy_discovery`) rather than run here: eagerly
+    # importing ~20 toolset action modules pulls in their SDKs
+    # (google-api-python-client, msgraph/kiota/azure-identity, slack_sdk,
+    # PyGithub, ...), adding well over 100 MB of resident memory to every
+    # query-service pod regardless of whether it ever serves a request that
+    # uses one. The first real read (`PipesHubToolLoader.load()`, on the
+    # first chat/agent request) triggers the actual import, off the event
+    # loop via `ensure_discovered_async()`.
+    logger.info("🔄 Registering in-memory toolset registry for agents (lazy SDK loading)...")
     from app.agents.registry.toolset_registry import get_toolset_registry
 
     toolset_registry = get_toolset_registry()
-    await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
+    toolset_registry.enable_lazy_discovery()
     app.state.toolset_registry = toolset_registry
-    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
+    logger.info("✅ Toolset registry ready; SDK modules load lazily on first toolset access")
 
     yield
     # Shutdown
@@ -244,6 +274,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+
+    memory_monitor = getattr(app.state, "memory_monitor", None)
+    if memory_monitor is not None:
+        memory_monitor.stop()
 
     # Cancel background warmup tasks if still running.
     for _warmup_attr in ("embedding_warmup_task", "knn_warmup_task"):
@@ -268,6 +302,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
+
+    # Disconnect graph DB and vector DB providers — both are long-lived
+    # Resource singletons whose underlying HTTP/client connection pools
+    # otherwise persist until process exit, leaking sockets across
+    # graceful restarts (e.g. rolling deploys, container reloads).
+    try:
+        if graph_provider is not None:
+            await graph_provider.disconnect()
+            logger.info("✅ Graph database provider disconnected")
+    except Exception as e:
+        logger.error(f"❌ Error disconnecting graph database provider: {e}")
+
+    try:
+        vector_db_service = await app_container.vector_db_service()
+        if vector_db_service is not None and hasattr(vector_db_service, "disconnect"):
+            await vector_db_service.disconnect()
+            logger.info("✅ Vector database service disconnected")
+    except Exception as e:
+        logger.error(f"❌ Error disconnecting vector database service: {e}")
 
     try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
@@ -328,14 +381,34 @@ telemetry = setup_telemetry(app, service_name="query_service")
 
 
 @app.get("/health")
-async def health_check() -> JSONResponse:
-    """Health check endpoint for the query service itself"""
+async def health_check(request: Request) -> JSONResponse:
+    """Health check endpoint for the query service itself.
+
+    Reports current RSS/VMS and flips to `unhealthy` once RSS crosses
+    `QUERY_MEMORY_WARN_MB`, so a liveness probe can restart a pod that's
+    trending toward OOM instead of waiting for the kernel OOM-killer.
+    """
     try:
+        memory: dict[str, float] = {}
+        memory_healthy = True
+        monitor: MemoryMonitor | None = getattr(request.app.state, "memory_monitor", None)
+        if monitor is not None:
+            sample = monitor.sample_once()
+            if sample is not None:
+                rss_mb, vms_mb = sample
+                memory = {
+                    "rssMb": round(rss_mb, 1),
+                    "vmsMb": round(vms_mb, 1),
+                    "warnThresholdMb": QUERY_MEMORY_WARN_MB,
+                }
+                memory_healthy = rss_mb < QUERY_MEMORY_WARN_MB
+
         return JSONResponse(
-            status_code=200,
+            status_code=200 if memory_healthy else 503,
             content={
-                "status": "healthy",
+                "status": "healthy" if memory_healthy else "unhealthy",
                 "timestamp": get_epoch_timestamp_in_ms(),
+                "memory": memory,
             },
         )
     except Exception:

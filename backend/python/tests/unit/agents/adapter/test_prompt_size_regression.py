@@ -86,66 +86,82 @@ def _build_frontier_prompt(fixture_name: str) -> str:
 # MID-tier ceilings (default UNKNOWN_PROFILE → MID, includes worked traces)
 #
 # Measured after Phase 9 added the worked_traces section for SMALL/MID tiers.
+# Re-measured for the Ask User Tool Improvement Plan (Phase 2 added the
+# `ask_vs_act` section, gated on `can_ask_user` — only the new
+# `ask_user_capable` fixture renders it; Phase 2 also added a new worked
+# trace (Example 5) and widened Example 4 to a schema-correct 3-option
+# question in `prompt_traces.py`, which grows EVERY MID-tier fixture since
+# traces aren't ask-user-gated).
 # Baseline sizes / ceilings with ~10% headroom:
-#   no_sources:            6,148 →  6,800
-#   kb_only:               9,253 → 10,200
-#   kb_plus_3_apps:        9,462 → 10,450  (also checked in test_prompt_invariants.py)
-#   duplicate_apps:        9,499 → 10,450
-#   web_search_mode:       7,665 →  8,450
-#   kb_plus_service_tools: 9,908 → 10,900
-#   run_code_no_web:       7,167 →  7,900
-#   composed_agents:      10,664 → 11,750
-#   service_only:          6,933 →  7,650
-#   lazy_with_pinned:     11,068 → 12,200
-#   kb_with_full_record:  10,453 → 11,500
+#   no_sources:             8,392 →  9,200
+#   kb_only:               11,820 → 13,000
+#   kb_plus_3_apps:        12,029 → 13,200  (also checked in test_prompt_invariants.py)
+#   duplicate_apps:        12,066 → 13,250
+#   web_search_mode:       10,232 → 11,250
+#   kb_plus_service_tools: 12,633 → 13,900
+#   run_code_no_web:        9,592 → 10,550
+#   composed_agents:       13,570 → 14,900
+#   service_only:           9,500 → 10,450
+#   lazy_with_pinned:      13,635 → 15,000
+#   kb_with_full_record:   13,020 → 14,300
+#   ask_user_capable:      12,758 → 14,000  (grants the tool, so this is
+#                                            the one fixture where ask_vs_act
+#                                            itself also contributes)
 # ---------------------------------------------------------------------------
 _MID_CHAR_CEILINGS: dict[str, int] = {
-    "no_sources":            7_400,
-    "kb_only":              10_850,
-    "kb_plus_3_apps":       11_050,
-    "duplicate_apps":       11_100,
-    "web_search_mode":       9_100,
-    "kb_plus_service_tools": 11_550,
-    "run_code_no_web":       8_550,
-    "composed_agents":      12_400,
-    "service_only":          8_300,
-    "lazy_with_pinned":     12_850,
-    "kb_with_full_record":  12_150,
+    "no_sources":            9_200,
+    "kb_only":              13_000,
+    "kb_plus_3_apps":       13_200,
+    "duplicate_apps":       13_250,
+    "web_search_mode":      11_250,
+    "kb_plus_service_tools": 13_900,
+    "run_code_no_web":      10_550,
+    "composed_agents":      14_900,
+    "service_only":         10_450,
+    "lazy_with_pinned":     15_000,
+    "kb_with_full_record":  14_300,
+    "ask_user_capable":     14_000,
 }
 
 # ---------------------------------------------------------------------------
 # FRONTIER-tier ceilings (anthropic/200k → FRONTIER, no worked traces)
 #
-# Re-measured after disabling final_answer by default — Response Format and
-# Citation Rules sections are now back in the system prompt (they were
-# previously omitted when final_answer was enabled and carried them in its
-# tool parameter description instead).
+# Re-measured for the Ask User Tool Improvement Plan. `ask_vs_act` is
+# confirmed NOT to render in any fixture here except `ask_user_capable`
+# (`grep "When to Ask" — only that fixture matches), so its contribution
+# does not explain the growth in the others; most of it tracks unrelated
+# tool-description/catalog text in the shared "Finding Information" /
+# "Available Tools" sections that both tiers render. `no_sources` and
+# `run_code_no_web` are untouched, consistent with that: neither section
+# has anything to print for them.
 #
 # Baseline sizes / ceilings with ~10% headroom:
 #   no_sources:            4,568 →  5,050
-#   kb_only:               7,191 →  7,950
-#   kb_plus_3_apps:        7,400 →  8,150
-#   duplicate_apps:        7,437 →  8_200
-#   web_search_mode:       5,603 →  6,200
-#   kb_plus_service_tools: 7,846 →  8,650
+#   kb_only:               7,996 →  8,800
+#   kb_plus_3_apps:        8,205 →  9,050
+#   duplicate_apps:        8,242 →  9,100
+#   web_search_mode:       6,408 →  7,050
+#   kb_plus_service_tools: 8,809 →  9,700
 #   run_code_no_web:       5,768 →  6,350
-#   composed_agents:       8,602 →  9,500
-#   service_only:          4,871 →  5,400
-#   lazy_with_pinned:      9,006 →  9,950
-#   kb_with_full_record:   8,391 →  9,250
+#   composed_agents:       9,746 → 10,700
+#   service_only:          5,676 →  6,250
+#   lazy_with_pinned:      9,811 → 10,800
+#   kb_with_full_record:   9,196 → 10,100
+#   ask_user_capable:      8,934 →  9,850
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            5_050,
-    "kb_only":               7_950,
-    "kb_plus_3_apps":        8_150,
-    "duplicate_apps":        8_200,
-    "web_search_mode":       6_200,
-    "kb_plus_service_tools": 8_650,
+    "kb_only":               8_800,
+    "kb_plus_3_apps":        9_050,
+    "duplicate_apps":        9_100,
+    "web_search_mode":       7_050,
+    "kb_plus_service_tools": 9_700,
     "run_code_no_web":       6_350,
-    "composed_agents":       9_500,
-    "service_only":          5_400,
-    "lazy_with_pinned":      9_950,
-    "kb_with_full_record":   9_250,
+    "composed_agents":      10_700,
+    "service_only":          6_250,
+    "lazy_with_pinned":     10_800,
+    "kb_with_full_record":  10_100,
+    "ask_user_capable":      9_850,
 }
 
 

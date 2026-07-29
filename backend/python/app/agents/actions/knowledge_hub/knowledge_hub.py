@@ -9,6 +9,7 @@ metadata/structure, while retrieval searches file contents.
 
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
@@ -46,6 +47,8 @@ _NODE_TYPES_DESC = ", ".join(f"'{nt.value}'" for nt in NodeType)
 # Query validation constants
 MIN_QUERY_LENGTH = 2
 MAX_QUERY_LENGTH = 500
+
+_GLOB_REGEX_CHARS = re.compile(r"[*?.\[\]{}^$+\\|]")
 
 
 
@@ -150,17 +153,21 @@ class KnowledgeHub:
         description=(
             "Search for items indexed in the Knowledge Hub by name across all sources. "
             "Use this to find records when you know part of the name.\n\n"
+            "IMPORTANT: This is substring matching only. Do NOT use wildcards (*, ?), "
+            "regex, or glob patterns — just type the plain text substring to search for.\n\n"
             "Results are records, not content: each item's id is a Record ID — pass it to "
             "knowledgegraph.navigate(node_id=...) to see what is under it, or to "
             "knowledgegraph__fetch_record to read it.\n\n"
             "For BROWSING the hierarchy (App → RecordGroup → Record → children), use "
             "knowledgegraph__navigate instead — it takes a single node_id "
             "and handles all node types without requiring parent_type.\n\n"
+            "For LISTING ALL items in a source (no filter), use knowledgegraph__navigate "
+            "with the source node_id.\n\n"
             "For searching WITHIN document content, use knowledgegraph__search.\n\n"
             "FILTERING: Use node_types and record_types to narrow results by type."
         ),
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="Search query to find files by name (2-500 chars). Required.", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query to find files by name (2-500 chars, plain substring match). Do NOT use wildcards (*, ?) or regex. Required.", required=True),
             ToolParameter(name="node_types", type=ParameterType.ARRAY, description=f"Filter results by node type. All valid values: {_NODE_TYPES_DESC}. Example: ['record'] for files only.", required=False, items={"type": "string"}),
             ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter results to specific connectors by their IDs. Get the connector ID from the capability summary.", required=False, items={"type": "string"}),
             ToolParameter(name="record_group_ids", type=ParameterType.ARRAY, description="Filter search results to specific KB collections by their record group IDs. Only applies to Collection/KB sources.", required=False, items={"type": "string"}),
@@ -188,7 +195,7 @@ class KnowledgeHub:
         limit: int = 20,
         sort_by: str = "updatedAt",
         sort_order: str = "desc",
-        flattened: bool = False,
+        flattened: bool | None = None,
     ) -> tuple[bool, str]:
         """Browse and search files in the Knowledge Hub."""
         if not self.state:
@@ -229,6 +236,21 @@ class KnowledgeHub:
                     "status": "error",
                     "message": "parent_type is required when parent_id is provided. "
                                "Valid types: 'kb', 'app', 'folder', 'recordGroup'.",
+                })
+
+            # Strip glob/regex chars — tool only supports substring matching
+            raw_query = query
+            if query:
+                query = _GLOB_REGEX_CHARS.sub("", query).strip() or None
+            if raw_query and not query:
+                return False, json.dumps({
+                    "status": "error",
+                    "message": (
+                        "This tool only supports plain substring matching — wildcards (*, ?) "
+                        "and regex are not supported. "
+                        "To list ALL items, use knowledgegraph__navigate with the source node_id. "
+                        "To search by name, pass a plain text substring (e.g. 'report' instead of '*.pdf')."
+                    ),
                 })
 
             # Query must be 2-500 chars or None

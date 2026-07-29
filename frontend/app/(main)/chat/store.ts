@@ -117,7 +117,7 @@ export interface ChatPreviewFile {
   latestVersion?: number;
   /**
    * Re-fetches this artifact at `version` and replaces `url`/`blob`/`version`
-   * in place via `setPreviewFile`. Bound by the caller (`chat-response.tsx`)
+   * in place via `setPreviewFile`. Bound by the caller (`assistant-message.tsx`)
    * to whatever record/stream logic produced this preview in the first
    * place — the preview shell itself has no knowledge of artifacts.
    */
@@ -596,7 +596,7 @@ const initialState = {
 
   settings: {
     mode: 'chat' as ChatMode,
-    queryMode: 'chat' as QueryMode,
+    queryMode: 'agent' as QueryMode,
     agentStrategy: 'quick' as AgentStrategy,
     filters: {
       apps: [] as string[],
