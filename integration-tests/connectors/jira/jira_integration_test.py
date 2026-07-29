@@ -155,14 +155,17 @@ class TestJiraConnector:
             f"graph TICKET {ticket_count} != Jira JQL {jira_connector['expected_ticket_count']}"
         )
         assert file_count == jira_connector["expected_file_count"], (
-            f"graph FILE {file_count} != Jira attachments {jira_connector['expected_file_count']}"
+            f"graph FILE {file_count} != synced Jira attachments "
+            f"(excl. new inline images) {jira_connector['expected_file_count']}"
         )
         assert total == jira_connector["expected_total_records"], (
-            f"graph records {total} != Jira tickets+attachments {jira_connector['expected_total_records']}"
+            f"graph records {total} != Jira tickets+synced attachments "
+            f"{jira_connector['expected_total_records']}"
         )
         attach = await graph_provider.count_record_relation_edges(connector_id, "ATTACHMENT")
         assert attach == jira_connector["expected_attachment_edges"], (
-            f"ATTACHMENT edges {attach} != Jira attachments {jira_connector['expected_attachment_edges']}"
+            f"ATTACHMENT edges {attach} != synced Jira attachments "
+            f"{jira_connector['expected_attachment_edges']}"
         )
         pc = await graph_provider.count_parent_child_edges(connector_id)
         assert pc == jira_connector["expected_parent_child_edges"], (
@@ -706,11 +709,14 @@ class TestJiraAttachments:
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-ATTACH-001: discovered attachment synced as FILE with parent TICKET + edges."""
+        """TC-JIRA-ATTACH-001: discovered non-inline attachment synced as FILE with parent TICKET + edges."""
         attachment_id = jira_connector.get("attachment_id")
         issue_key = jira_connector.get("attachment_issue_key")
         if not (attachment_id and issue_key):
-            pytest.skip("No attachment discovered on primary — skipping")
+            pytest.skip(
+                "No non-inline attachment discovered on primary "
+                "(inline images are not synced as FILE) — skipping"
+            )
         connector_id = jira_connector["connector_id"]
         project_id = jira_connector["primary_project_id"]
         issue_id = jira_connector["attachment_issue_id"]

@@ -9720,7 +9720,9 @@ class Neo4jProvider(IGraphDBProvider):
         When *cascade_children* is True (default), traverses both PARENT_CHILD and
         ATTACHMENT edges — deleting an entire containment subtree.  When False, only
         ATTACHMENT edges are traversed so child records linked via PARENT_CHILD
-        survive (e.g. stories under a deleted epic).
+        survive (e.g. stories under a deleted epic). Survivors that still point at a
+        deleted root via ``externalParentId`` have that field cleared to null, but
+        only when they already ``BELONGS_TO`` a RecordGroup (required browse guard).
 
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
@@ -9785,6 +9787,37 @@ class Neo4jProvider(IGraphDBProvider):
                     {"record_id": rid, "reason": "Validation failed"}
                     for rid in record_ids if rid not in valid_root_keys
                 ]
+
+                if not cascade_children and valid_root_keys:
+                    valid_root_key_set = set(valid_root_keys)
+                    parent_external_ids: list[str] = []
+                    seen_parent_ids: set[str] = set()
+                    for rt in records_with_type:
+                        rec = rt.get("record") or {}
+                        if rec.get("id") not in valid_root_key_set:
+                            continue
+                        peid = rec.get("externalRecordId")
+                        if not peid or peid in seen_parent_ids:
+                            continue
+                        seen_parent_ids.add(peid)
+                        parent_external_ids.append(peid)
+                    if parent_external_ids:
+                        await self.client.execute_query(
+                            """
+                            UNWIND $parent_external_ids AS peid
+                            MATCH (survivor:Record)-[:BELONGS_TO]->(:RecordGroup)
+                            WHERE survivor.connectorId = $connector_id
+                              AND survivor.externalParentId = peid
+                              AND NOT survivor.id IN $deleted_ids
+                            SET survivor.externalParentId = null
+                            """,
+                            parameters={
+                                "parent_external_ids": parent_external_ids,
+                                "connector_id": connector_id,
+                                "deleted_ids": record_keys,
+                            },
+                            txn_id=txn_id,
+                        )
 
                 if record_keys:
                     # Delete the isOfType type docs (any label) via the record, then the

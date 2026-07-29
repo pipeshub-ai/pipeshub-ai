@@ -263,16 +263,18 @@ class TestInitCoverage:
             assert connector.site_url == "https://company.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_init_returns_false_on_build_error(self):
+    async def test_init_raises_connector_init_error_on_build_error(self):
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+
         connector = _make_connector()
         connector.notify = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             MockJiraClient.build_from_services = AsyncMock(side_effect=Exception("network fail"))
 
-            result = await connector.init()
-            assert result is False
-            # Setup path: FE gets the error; init must not also inbox-notify.
+            with pytest.raises(ConnectorInitError, match="network fail"):
+                await connector.init()
+            # Setup path: FE gets the error via ConnectorInitError; no inbox notify.
             connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -243,7 +243,7 @@
         "table_summary": ""
       },
       "file_metadata": null,
-      "format": null,
+      "format": "json",
       "index": 6,
       "link_metadata": null,
       "list_metadata": null,
@@ -354,7 +354,7 @@
         "table_summary": ""
       },
       "file_metadata": null,
-      "format": null,
+      "format": "json",
       "index": 9,
       "link_metadata": null,
       "list_metadata": null,

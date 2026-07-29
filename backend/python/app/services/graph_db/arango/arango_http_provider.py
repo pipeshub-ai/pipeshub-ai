@@ -11949,7 +11949,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         When *cascade_children* is True (default), traverses both PARENT_CHILD and
         ATTACHMENT edges — deleting an entire containment subtree.  When False, only
         ATTACHMENT edges are traversed so child records linked via PARENT_CHILD
-        survive (e.g. stories under a deleted epic).
+        survive (e.g. stories under a deleted epic). Survivors that still point at a
+        deleted root via ``externalParentId`` have that field cleared to null, but
+        only when they already ``BELONGS_TO`` a RecordGroup (required browse guard).
 
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
@@ -12021,6 +12023,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     {"record_id": rid, "reason": "Validation failed"}
                     for rid in record_ids if rid not in valid_root_keys
                 ]
+
+                if not cascade_children and valid_root_keys:
+                    valid_root_key_set = set(valid_root_keys)
+                    parent_external_ids: list[str] = []
+                    seen_parent_ids: set[str] = set()
+                    for rt in records_with_type:
+                        rec = rt.get("record") or {}
+                        if rec.get("_key") not in valid_root_key_set:
+                            continue
+                        peid = rec.get("externalRecordId")
+                        if not peid or peid in seen_parent_ids:
+                            continue
+                        seen_parent_ids.add(peid)
+                        parent_external_ids.append(peid)
+                    if parent_external_ids:
+                        clear_orphan_parent_query = f"""
+                        FOR rec IN @@records
+                            FILTER rec.connectorId == @connector_id
+                            FILTER rec.externalParentId != null
+                            FILTER rec.externalParentId IN @parent_external_ids
+                            FILTER rec._key NOT IN @deleted_keys
+                            FILTER LENGTH(
+                                FOR rg IN 1..1 OUTBOUND rec._id @@belongs_to
+                                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg)
+                                    LIMIT 1
+                                    RETURN 1
+                            ) > 0
+                            UPDATE rec WITH {{ externalParentId: null }} IN @@records
+                        """
+                        await self.execute_query(
+                            clear_orphan_parent_query,
+                            bind_vars={
+                                "connector_id": connector_id,
+                                "parent_external_ids": parent_external_ids,
+                                "deleted_keys": record_keys,
+                                "@records": CollectionNames.RECORDS.value,
+                                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                            },
+                            transaction=txn_id,
+                        )
 
                 node_ids = [f"records/{k}" for k in record_keys]
                 if node_ids:

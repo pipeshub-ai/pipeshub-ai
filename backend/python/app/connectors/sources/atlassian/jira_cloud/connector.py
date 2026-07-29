@@ -410,10 +410,10 @@ class JiraConnector(BaseConnector):
             await self._notify_multi_site_ambiguity(e)
             raise ConnectorInitError(str(e)) from e
         except Exception as e:
-            # Setup/HTTP callers surface this via return False → FE error. No inbox
-            # notify here (avoids duplicate alerts on connect).
+            # Raise so the router can forward the real failure reason to the FE
+            # (return False only yields a generic "check credentials" message).
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
-            return False
+            raise ConnectorInitError(str(e)) from e
 
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
         """Notify admin: account-level app reaches multiple sites — needs a new
