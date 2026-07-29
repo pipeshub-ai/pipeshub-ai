@@ -215,17 +215,11 @@ def _build_finding_information(
     *,
     has_attachments: bool,
 ) -> str:
-    """The single source-precedence section: where to look, in what order,
-    when more than one place needs checking at once, and when it's fine to
-    skip searching altogether — replacing six sections that each stated a
-    different, disagreeing version of this (web search rules,
-    internal-knowledge-first, hybrid strategy, service-only strategy,
-    tool-selection strategy, retrieval routing).
+    """Single source-precedence section built from the granted `ToolSurfaces`.
 
-    Built from `surfaces` alone, never concatenated from per-mode
-    fragments — concatenation is what produced the contradictory
-    skip-lists and dangling tool references this replaces. A tool name can
-    only ever appear here if `surfaces` says it is actually granted.
+    States three things: what sources exist this turn, the search philosophy
+    (iterative deepening via cross-tool composition), and when to skip.
+    Every tool name is resolved from `surfaces` so only granted names appear.
     """
     surface_count = sum([
         surfaces.retrieval is not None,
@@ -235,13 +229,16 @@ def _build_finding_information(
     if surface_count == 0 and not surfaces.can_fetch_full_record:
         return ""
 
-    precedence: list[str] = []
+    parts: list[str] = []
+
+    # ── Source list ────────────────────────────────────────────────────────
+    source_lines: list[str] = []
     if has_attachments:
-        precedence.append(
+        source_lines.append(
             "Attachments the user uploaded this turn — see the Attachments section."
         )
     if surfaces.retrieval is not None:
-        precedence.append(
+        source_lines.append(
             f"Internal knowledge (`{surfaces.retrieval}`) — this organization's "
             "own documents, tickets, and data."
         )
@@ -249,23 +246,15 @@ def _build_finding_information(
         apps_label = ", ".join(
             a.replace("_", " ").title() for a in surfaces.live_api_apps
         ) or "connected services"
-        precedence.append(
-            f"Live service tools ({apps_label}) — current state, not a "
-            "historical snapshot."
-        )
+        source_lines.append(f"Live service APIs ({apps_label}) — real-time state.")
     if surfaces.web_names:
-        precedence.append(f"{surfaces.web_md()} — public information.")
+        source_lines.append(f"{surfaces.web_md()} — public information.")
     elif surfaces.has_web_search:
-        # config-only: web is available but no callable tool name is granted yet
-        precedence.append("Web search — public information.")
+        source_lines.append("Web search — public information.")
 
-    parts: list[str] = []
-    if precedence:
-        numbered = "\n".join(f"{i + 1}. {p}" for i, p in enumerate(precedence))
-        parts.append(
-            "**Sources you can check this turn (use only what's actually granted):**\n"
-            + numbered
-        )
+    if source_lines:
+        numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(source_lines))
+        parts.append("**Sources available this turn:**\n" + numbered)
 
     if surfaces.retrieval is not None and surfaces.has_service_tools:
         live_only = catalog.live_only_apps(frozenset(surfaces.live_api_apps))
@@ -273,40 +262,47 @@ def _build_finding_information(
             live_names = ", ".join(a.replace("_", " ").title() for a in live_only)
             parts.append(
                 f"{live_names} have live-API tools but no indexed knowledge base "
-                "entry — query them via their own tools alone, not the "
-                "internal-knowledge tool."
+                "entry — query them via their service tools directly."
             )
 
+    # ── Search philosophy ─────────────────────────────────────────────────
     if surface_count >= 1:
-        parts.append(
-            "Call proactively on your first turn — do not ask the user which "
-            "app or source to check; match the query to each tool's own "
-            "description instead."
+        approach = (
+            "Match the query to each source's description and search proactively "
+            "— do not ask the user which source to check. Naming a source in the "
+            "query narrows WHERE you look; it never means you may answer without "
+            "looking."
         )
-    if surface_count >= 2:
+        if surface_count >= 2:
+            approach += (
+                " When multiple sources could hold the answer, query them "
+                "IN PARALLEL in the same turn. When sources disagree, present "
+                "both findings and attribute each to its source."
+            )
+        parts.append(approach)
+
         parts.append(
-            "When more than one of these sources could hold the answer, call "
-            "them IN PARALLEL in the same turn, not sequentially. Naming a "
-            "source in the query narrows WHERE you look; it never means "
-            "you may answer without looking. When sources disagree, present "
-            "both findings and attribute each to its source rather than "
-            "silently picking one."
-        )
-    if surface_count >= 1:
-        parts.append(
-            "Skip searching only for: pure greetings/thanks, simple "
-            "arithmetic or date math, questions about the user's own "
-            "identity/profile, reformatting or summarizing content already "
-            "in this conversation, and write actions where every required "
-            "parameter is already known."
-        )
-        parts.append(
-            "Search depth: one call is enough for a single fact; a "
-            "comparative or multi-part question needs several. If a call "
-            "returns nothing useful, reformulate the query rather than "
-            "repeating it or giving up."
+            "**Iterative deepening:** A single search call rarely answers a "
+            "substantive question. Use signals from early results — entity names, "
+            "record IDs, relationships, terminology — as inputs to follow-up "
+            "queries across the same or different tools. Vector search finds "
+            "content by meaning; graph navigation reveals structure and relationships; "
+            "live APIs return current state and narrow results with filters; "
+            "web search covers public context. "
+            "Compose them: a name from search can feed a graph lookup, a graph "
+            "link can inform a live-API query. If a call returns nothing useful, "
+            "reformulate with different phrasing or filters rather than repeating "
+            "or giving up."
+            + (
+                " When several sources are available, check ones you haven't "
+                "queried yet before concluding."
+                if surface_count >= 2
+                else ""
+            )
+            + " Deliver a partial answer only after exhausting available approaches."
         )
 
+    # ── Record escalation ─────────────────────────────────────────────────
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
         parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
