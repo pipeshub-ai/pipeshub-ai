@@ -21,6 +21,8 @@ on:
             - confluence
             - jira
             - linear
+            - google_drive_workspace
+            - google_drive_individual
             - gcs
             - azure_blob
             - azure_files
@@ -131,6 +133,16 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
+      # Google Drive Workspace (service account + domain-wide delegation)
+      GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL }}
+      GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL }}
+      # Google Drive personal (OAuth). Refresh token is normally in
+      # .env.refresh_tokens locally; CI injects it as an env secret.
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      GOOGLE_DRIVE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_TEST_USER_EMAIL }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
       # Playwright runs once: on the neo4j/both leg, or the arango leg only when
       # arango is the sole backend (arango dispatch input, or it-arango alone).
       RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
