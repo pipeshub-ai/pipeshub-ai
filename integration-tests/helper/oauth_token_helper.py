@@ -265,14 +265,14 @@ def exchange_refresh_token(
     )
     if not resp.ok:
         raise RuntimeError(
-            f"Token refresh failed: HTTP {resp.status_code} — {resp.text[:400]}"
+            f"Token refresh failed: HTTP {resp.status_code}"
         )
 
     token_data = resp.json()
     access_token: Optional[str] = token_data.get("access_token")
     if not access_token:
         raise RuntimeError(
-            f"Token refresh response did not include access_token: {token_data!r}"
+            f"Token refresh response did not include access_token"
         )
 
     # Atlassian and some other providers rotate refresh tokens.
@@ -343,7 +343,7 @@ def authenticate_connector_with_refresh_token(
     secret_key = os.getenv("SECRET_KEY")
     if not secret_key:
         raise ValueError(
-            "SECRET_KEY is not set.  Add it to .env.local matching the backend's SECRET_KEY."
+            "SECRET_KEY is not set."
         )
 
     logger.info(
