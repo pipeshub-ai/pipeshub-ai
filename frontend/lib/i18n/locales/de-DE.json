@@ -2196,7 +2196,7 @@
       "lastChecked": "Zuletzt geprüft: {{time}}",
       "loading": "Dienststatus wird geladen…",
       "policyTitle": "Dienstintegritätsrichtlinie",
-      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs- und Docling-Dienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
+      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs-, Docling-, Parsing- und Extraktionsdienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
       "allHealthy": "Alle Dienste sind funktionsfähig",
       "someUnhealthy": "Einige Dienste sind nicht funktionsfähig",
       "fetchFailed": "Fehler beim Prüfen des Dienststatus",
@@ -2246,6 +2246,14 @@
         "docling": {
           "label": "Docling-Dienst",
           "description": "Erweiterte Dokumentenverarbeitung und OCR"
+        },
+        "parsing": {
+          "label": "Parsing-Dienst",
+          "description": "Zerlegt Dokumente in strukturierte Blöcke für die Indexierung"
+        },
+        "extraction": {
+          "label": "Extraktionsdienst",
+          "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
       }
     }

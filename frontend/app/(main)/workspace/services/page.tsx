@@ -22,6 +22,7 @@ import {
   selectAppServices,
   selectLastChecked,
   type ServiceStatus,
+  type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api/axios-instance';
 
@@ -72,13 +73,23 @@ function buildInfraServices(deployment: Deployment | null, t: TFunction): Servic
   return services;
 }
 
-function buildAppServices(t: TFunction): ServiceMeta[] {
-  return [
+function buildAppServices(t: TFunction, appServices: AppServices | null): ServiceMeta[] {
+  const services: ServiceMeta[] = [
     { key: 'query', icon: 'search', label: t('workspace.services.app.query.label'), description: t('workspace.services.app.query.description') },
     { key: 'connector', icon: 'hub', label: t('workspace.services.app.connector.label'), description: t('workspace.services.app.connector.description') },
     { key: 'indexing', icon: 'dataset', label: t('workspace.services.app.indexing.label'), description: t('workspace.services.app.indexing.description') },
     { key: 'docling', icon: 'description', label: t('workspace.services.app.docling.label'), description: t('workspace.services.app.docling.description') },
   ];
+
+  // Parsing + extraction are opt-in (USE_PARSING_SERVICE); the health API only reports them when enabled
+  if (appServices && 'parsing' in appServices) {
+    services.push({ key: 'parsing', icon: 'article', label: t('workspace.services.app.parsing.label'), description: t('workspace.services.app.parsing.description') });
+  }
+  if (appServices && 'extraction' in appServices) {
+    services.push({ key: 'extraction', icon: 'data_object', label: t('workspace.services.app.extraction.label'), description: t('workspace.services.app.extraction.description') });
+  }
+
+  return services;
 }
 
 // ========================================
@@ -210,7 +221,7 @@ export default function ServicesPage() {
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
 
   const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
-  const appServiceList = useMemo(() => buildAppServices(t), [t]);
+  const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
