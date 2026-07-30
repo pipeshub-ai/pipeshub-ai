@@ -52,7 +52,7 @@
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
 - 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
-- 🔌 **Enterprise Connectors:** 30+ connectors with real-time and scheduled indexing out of the box.
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
 - 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
 - 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
@@ -228,7 +228,7 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
 
 ### How do I deploy PipesHub?
 
