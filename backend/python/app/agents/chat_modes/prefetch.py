@@ -159,7 +159,7 @@ async def prefetch_retrieval(
             virtual_to_record_map,
             blob_store=blob_store,
             org_id=org_id,
-            config_service=blob_store.config_service,
+            config_service=getattr(blob_store, "config_service", None),
         )
 
     final_results = sorted(flattened_results, key=flattened_result_sort_key)
