@@ -60,12 +60,7 @@ services:
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
-
-      # ETCD config
-      - ETCD_URL=http://etcd:2379
-      - ETCD_HOST=etcd
-      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # ArangoDB config
       - ARANGO_URL=http://arango:8529
@@ -153,8 +148,6 @@ services:
         condition: service_started
       mongodb:
         condition: service_started
-      etcd:
-        condition: service_started
       arango:
         condition: service_healthy
     volumes:
@@ -215,24 +208,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    restart: always
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    command: >
-      etcd
-      --name etcd-node
-      --data-dir /etcd-data
-      --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://0.0.0.0:2379
-      --listen-peer-urls http://0.0.0.0:2380
-      --initial-advertise-peer-urls http://0.0.0.0:2380
-      --initial-cluster etcd-node=http://0.0.0.0:2380
-    volumes:
-      - etcd_data:/etcd-data
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
@@ -313,8 +288,6 @@ volumes:
   redis_data:
     driver: local
   arango_data:
-    driver: local
-  etcd_data:
     driver: local
   qdrant_storage:
     driver: local
