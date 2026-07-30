@@ -785,10 +785,8 @@ class TestEnhanceTablesWithLlm:
                 container, parser.config_service, parser.logger, llm=MagicMock()
             )
 
-        assert bg.description == "summary"
         assert bg.data["table_summary"] == "summary"
         assert bg.data["column_headers"] == ["Col_A", "Col_B"]
-        assert bg.table_metadata.column_names == ["Col_A", "Col_B"]
         assert row.data["row_natural_language_text"] == "row desc"
         assert "row_natural_language_text" not in header.data
 

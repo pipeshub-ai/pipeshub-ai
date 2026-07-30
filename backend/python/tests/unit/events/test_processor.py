@@ -2316,7 +2316,7 @@ class TestEnhanceTablesWithLlmDetailed:
 
     @pytest.mark.asyncio
     async def test_table_group_no_markdown_skips(self):
-        """TABLE group with no table_markdown is skipped."""
+        """TABLE group with no data rows is skipped (not counted as an attempt)."""
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
         from app.utils.table_enrichment import enhance_tables_with_llm
         proc, _, _, _ = _make_processor()
@@ -2324,10 +2324,11 @@ class TestEnhanceTablesWithLlmDetailed:
         bg = BlockGroup(index=0, type=GroupType.TABLE, data={"no_markdown": True})
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        await enhance_tables_with_llm(
+        stats = await enhance_tables_with_llm(
             container, proc.config_service, proc.logger, llm=MagicMock()
         )
-        proc.logger.warning.assert_called()
+        assert stats.attempted == 0
+        proc.logger.warning.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_table_group_llm_returns_none(self):
@@ -2405,8 +2406,8 @@ class TestEnhanceTablesWithLlmDetailed:
                 container, proc.config_service, proc.logger, llm=MagicMock()
             )
 
-        assert bg.description == "This is a test table"
         assert bg.data["table_summary"] == "This is a test table"
+        assert bg.data["column_headers"] == ["Col_A", "Col_B"]
 
     @pytest.mark.asyncio
     async def test_table_group_exception_continues(self):

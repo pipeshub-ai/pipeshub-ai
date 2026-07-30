@@ -357,7 +357,7 @@ class TestProcessPdfWithOcrEmptyTableRows:
 class TestEnhanceTablesDataNoneAndTableMetadata:
     @pytest.mark.asyncio
     async def test_table_group_data_none_set_to_dict(self):
-        """Enrichment result propagates to table_group.data and table_metadata.column_names."""
+        """Enrichment result propagates to table_group.data (summary + column_headers)."""
         from app.models.blocks import (
             Block,
             BlockGroup,
@@ -408,10 +408,9 @@ class TestEnhanceTablesDataNoneAndTableMetadata:
         ):
             await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
-        # Verify data was updated with summary and headers
         assert bg.data["table_summary"] == "Test summary"
         assert bg.data["column_headers"] == ["col_a", "col_b"]
-        assert bg.table_metadata.column_names == ["col_a", "col_b"]
+        assert row_block.data["row_natural_language_text"] == "Row 1 description"
 
 
 # ===================================================================
@@ -1366,8 +1365,6 @@ class TestEnhanceTablesEmptyCellsDict:
 
         assert bg.data["column_headers"] == []
         assert row_block.data["row_natural_language_text"] == "Row desc"
-
-        mock_get_rows_text.assert_not_awaited()
 
 
 # ===================================================================
