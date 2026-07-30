@@ -1352,6 +1352,12 @@ describe('tokens_manager/routes/health.routes', () => {
     })
 
     describe('parsing + extraction services (USE_PARSING_SERVICE)', () => {
+      beforeEach(() => {
+        delete process.env.USE_PARSING_SERVICE
+        delete process.env.PARSING_SERVICE_URL
+        delete process.env.EXTRACTION_SERVICE_URL
+      })
+
       afterEach(() => {
         delete process.env.USE_PARSING_SERVICE
         delete process.env.PARSING_SERVICE_URL
