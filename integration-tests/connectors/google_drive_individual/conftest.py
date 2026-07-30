@@ -17,7 +17,6 @@ from typing import Any, AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from google.auth.exceptions import RefreshError  # type: ignore[import-not-found]
 
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.clients.users_client import UsersClient  # type: ignore[import-not-found]
@@ -57,45 +56,6 @@ _USER_GRAPH_TIMEOUT_SEC = int(
     os.getenv("GOOGLE_DRIVE_INDIVIDUAL_USER_GRAPH_TIMEOUT", "120")
 )
 
-_REFRESH_TOKEN_SKIP_HINT = (
-    "Drive personal suite skipped: refresh-token auth failed. "
-    "Remint GOOGLE_DRIVE_REFRESH_TOKEN via "
-    "scripts/mint_google_refresh_token.py and update .env.refresh_tokens."
-)
-
-
-def _is_refresh_token_error(exc: BaseException) -> bool:
-    """True when *exc* (or its cause chain) looks like an expired/invalid refresh token."""
-    if isinstance(exc, RefreshError):
-        return True
-    markers = (
-        "invalid_grant",
-        "token refresh failed",
-        "refresh token",
-        "refresh_token",
-        "token has been expired or revoked",
-        "expired or revoked",
-    )
-    current: BaseException | None = exc
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        text = str(current).lower()
-        if any(m in text for m in markers):
-            return True
-        if isinstance(current, RefreshError):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-def _skip_if_refresh_token_error(exc: BaseException) -> None:
-    """pytest.skip this suite on refresh-token failures; re-raise anything else."""
-    if _is_refresh_token_error(exc):
-        pytest.skip(f"{_REFRESH_TOKEN_SKIP_HINT} Original error: {exc}")
-    raise exc
-
-
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def drive_individual_datasource() -> GoogleDriveDataSource:
     """Session-scoped Drive datasource for the OAuth user (full drive scope)."""
@@ -109,9 +69,7 @@ async def drive_individual_datasource() -> GoogleDriveDataSource:
             client_id, client_secret, refresh_token
         )
     except Exception as e:
-        if _is_refresh_token_error(e):
-            pytest.skip(f"{_REFRESH_TOKEN_SKIP_HINT} Original error: {e}")
-        pytest.skip(f"Failed to build Drive personal datasource: {e}")
+        pytest.fail(f"Refresh token failed to fetch access token: {e}")
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -175,11 +133,7 @@ async def drive_individual_connector(
         )
         await _wait_for_active_user_in_graph(graph_provider, test_user)
 
-        try:
-            fixtures = await create_folder_filter_fixtures(drive_individual_datasource)
-        except Exception as e:
-            _skip_if_refresh_token_error(e)
-            raise
+        fixtures = await create_folder_filter_fixtures(drive_individual_datasource)
         state.update(fixtures)
 
         seed_folder_id = fixtures["seed_folder_id"]
@@ -227,7 +181,7 @@ async def drive_individual_connector(
                 client_secret_env_var=ENV_CLIENT_SECRET,
             )
         except Exception as e:
-            _skip_if_refresh_token_error(e)
+            pytest.fail(f"Refresh token failed to fetch access token: {e}")
 
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(

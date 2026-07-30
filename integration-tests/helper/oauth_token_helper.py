@@ -265,14 +265,16 @@ def exchange_refresh_token(
     )
     if not resp.ok:
         raise RuntimeError(
-            f"Token refresh failed: HTTP {resp.status_code}"
+            "Refresh token failed to fetch access token: "
+            f"HTTP {resp.status_code} — {resp.text}"
         )
 
     token_data = resp.json()
     access_token: Optional[str] = token_data.get("access_token")
     if not access_token:
         raise RuntimeError(
-            f"Token refresh response did not include access_token"
+            "Refresh token failed to fetch access token: "
+            "token response did not include access_token"
         )
 
     # Atlassian and some other providers rotate refresh tokens.
