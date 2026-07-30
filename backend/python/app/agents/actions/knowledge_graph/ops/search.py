@@ -59,11 +59,22 @@ async def execute_search(
     state: "ChatState",
     query: str | None,
     source_ids: list[str] | None = None,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
 ) -> str:
     """Run semantic search over the agent's knowledge scope.
 
     ``source_ids`` accepts both app-connector IDs and KB-collection IDs;
     resolution against the agent's configured scope is done here.
+
+    ``created_after``/``created_before``/``modified_after``/``modified_before``
+    are optional ISO 8601 date bounds (see ``ops/time_range.parse_time_range``)
+    that narrow results to records whose source creation/last-modified
+    timestamp falls in the given window. Applied as a hard pre-filter at the
+    graph permission-scoping step, before vector search ever runs.
 
     Returns a plain-text string suitable for LLM consumption (same format as
     the legacy retrieval tool).
@@ -79,6 +90,17 @@ async def execute_search(
             "status": "error",
             "message": "Tool state not initialized",
         })
+
+    from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+
+    time_range, time_error = parse_time_range(
+        created_after=created_after,
+        created_before=created_before,
+        modified_after=modified_after,
+        modified_before=modified_before,
+    )
+    if time_error is not None:
+        return time_error
 
     try:
         logger_instance = state.get("logger", logger)
@@ -138,6 +160,7 @@ async def execute_search(
                 user_id=user_id,
                 limit=adjusted_limit,
                 filter_groups=fg,
+                time_range=time_range,
             )
 
         if fan_out_sources:

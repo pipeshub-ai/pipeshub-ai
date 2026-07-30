@@ -529,7 +529,24 @@ class KnowledgeGraph:
             "count search results — navigate the record group or scope list_files to one "
             "source instead.\n\n"
             "Parallel searches: pass one source_id per call and run calls in parallel for "
-            "per-source recall. Omit source_ids to search all accessible sources in one call."
+            "per-source recall. Omit source_ids to search all accessible sources in one call.\n\n"
+            "Time filtering: use created_after/created_before to scope by source creation date, "
+            "and modified_after/modified_before to scope by source last-modified date. "
+            "All dates use the source system's timestamp (when the file was created in Drive, "
+            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "Time-filter guidance:\n"
+            "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
+            "quarter boundaries, not today's date as the end.\n"
+            "  - When the user says 'recent' or 'lately' without a specific date, use "
+            "modified_after with a generous window (e.g. 30-90 days back) rather than a "
+            "narrow one.\n"
+            "  - If a time-scoped search returns no results or too few results, retry WITHOUT "
+            "the date filters to check whether relevant records exist outside the time window "
+            "before concluding nothing exists. The user's time reference may not match the "
+            "source timestamp exactly (e.g. a document discussed in Q1 may have been created "
+            "in the prior quarter).\n"
+            "  - Omit date filters entirely when the question has no temporal signal — most "
+            "queries do not need them."
         ),
         parameters=[
             ToolParameter(
@@ -550,6 +567,55 @@ class KnowledgeGraph:
                 required=False,
                 items={"type": "string"},
             ),
+            ToolParameter(
+                name="created_after",
+                type=ParameterType.STRING,
+                description=(
+                    "Only include records created at the source on or after this date. "
+                    "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
+                    "with timezone (e.g. '2026-01-15T00:00:00Z'). "
+                    "This filters by the document's original creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "Use for questions like 'files created this quarter' or 'tickets opened "
+                    "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="created_before",
+                type=ParameterType.STRING,
+                description=(
+                    "Only include records created at the source on or before this date "
+                    "(inclusive). ISO 8601 format: 'YYYY-MM-DD' or full datetime with "
+                    "timezone. YYYY-MM-DD includes the entire day. Pair with created_after "
+                    "for a date window. Example: created_after='2026-01-01', "
+                    "created_before='2026-03-31' restricts to Q1 2026."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="modified_after",
+                type=ParameterType.STRING,
+                description=(
+                    "Only include records last modified at the source on or after this date. "
+                    "ISO 8601 format: 'YYYY-MM-DD' or full datetime with timezone. "
+                    "Use for questions about recently changed content: 'documents updated "
+                    "this week', 'pages modified since last Monday'. YYYY-MM-DD is "
+                    "interpreted as the start of that day in UTC."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="modified_before",
+                type=ParameterType.STRING,
+                description=(
+                    "Only include records last modified at the source on or before this date "
+                    "(inclusive). ISO 8601 format: 'YYYY-MM-DD' or full datetime with "
+                    "timezone. YYYY-MM-DD includes the entire day. Pair with modified_after "
+                    "for a modification date window."
+                ),
+                required=False,
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -567,6 +633,10 @@ class KnowledgeGraph:
         self,
         query: str | None = None,
         source_ids: list[str] | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
     ) -> str:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
@@ -574,6 +644,10 @@ class KnowledgeGraph:
             self.state,
             query=query,
             source_ids=source_ids,
+            created_after=created_after,
+            created_before=created_before,
+            modified_after=modified_after,
+            modified_before=modified_before,
         )
 
     # -----------------------------------------------------------------------

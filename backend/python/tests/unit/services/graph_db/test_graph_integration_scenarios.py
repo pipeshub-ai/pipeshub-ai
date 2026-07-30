@@ -380,6 +380,7 @@ class FakeGraphProvider:
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Reproduce the permission model by walking the 8 connector access paths
@@ -411,10 +412,26 @@ class FakeGraphProvider:
 
         virtual_id_map: dict[str, str] = {}
 
+        def _record_matches_time_range(rec: dict[str, object]) -> bool:
+            if not time_range:
+                return True
+            ts = rec.get("sourceCreatedAtTimestamp")
+            if ts is None:
+                return False
+            after_ms = time_range.get("source_created_after_ms")
+            before_ms = time_range.get("source_created_before_ms")
+            if after_ms is not None and ts < after_ms:
+                return False
+            if before_ms is not None and ts > before_ms:
+                return False
+            return True
+
         def _add_record(rec: dict[str, object]) -> None:
             vid = rec.get("virtualRecordId")
             rid = rec.get("id") or rec.get("_key")
             if vid and rid and rec.get("indexingStatus") == "COMPLETED":
+                if not _record_matches_time_range(rec):
+                    return
                 # Apply connector filter
                 if connector_filter and rec.get("connectorId") not in connector_filter:
                     return
@@ -953,8 +970,9 @@ def make_record(
     md5_checksum: str | None = None,
     size_in_bytes: int | None = None,
     mime_type: str = "application/pdf",
+    source_created_at_timestamp: int | None = None,
 ) -> dict[str, object]:
-    return {
+    rec = {
         "id": record_id,
         "_key": record_id,
         "orgId": org_id,
@@ -974,6 +992,9 @@ def make_record(
         "updatedAtTimestamp": _ts(),
         "isDeleted": False,
     }
+    if source_created_at_timestamp is not None:
+        rec["sourceCreatedAtTimestamp"] = source_created_at_timestamp
+    return rec
 
 
 def make_record_group(
@@ -2752,3 +2773,75 @@ class TestEdgeCases:
         p._ensure_collection(RECORDS)["rec-org-rg"] = make_record("rec-org-rg", org_id, app_id, "Org RG File")
         p._ensure_edge_collection(INHERIT_PERMISSIONS).append(inherit_edge("rec-org-rg", RECORDS, "rg-org-test", RECORD_GROUPS))
         assert "rec-org-rg" in (await p.get_accessible_virtual_record_ids("uid-ec5", org_id)).values()
+
+    @pytest.mark.asyncio
+    async def test_time_range_excludes_records_outside_window(self) -> None:
+        p = FakeGraphProvider()
+        org_id = "org-time-1"
+        user_key = "u-time1"
+        app_id = "app-time1"
+        p._ensure_collection(ORGS)[org_id] = make_org(org_id)
+        p._ensure_collection(USERS)[user_key] = make_user(user_key, "uid-time1", "time1@co.com", org_id)
+        p._ensure_collection(APPS)[app_id] = make_app(app_id, org_id, "App")
+        p._ensure_edge_collection(USER_APP_RELATION).append(user_app_edge(user_key, app_id))
+        p._ensure_edge_collection(BELONGS_TO).append(belongs_edge(user_key, USERS, org_id, ORGS))
+        for rec_id, ts in [("rec-early", 1000), ("rec-mid", 1500), ("rec-late", 2000)]:
+            p._ensure_collection(RECORDS)[rec_id] = make_record(
+                rec_id, org_id, app_id, rec_id, source_created_at_timestamp=ts
+            )
+            p._ensure_edge_collection(PERMISSION).append(
+                perm_edge(user_key, USERS, rec_id, RECORDS, "READER")
+            )
+        result = await p.get_accessible_virtual_record_ids(
+            "uid-time1",
+            org_id,
+            time_range={"source_created_after_ms": 1200, "source_created_before_ms": 1800},
+        )
+        assert set(result.values()) == {"rec-mid"}
+
+    @pytest.mark.asyncio
+    async def test_record_with_null_source_created_excluded_when_filter_set(self) -> None:
+        p = FakeGraphProvider()
+        org_id = "org-time-2"
+        user_key = "u-time2"
+        app_id = "app-time2"
+        p._ensure_collection(ORGS)[org_id] = make_org(org_id)
+        p._ensure_collection(USERS)[user_key] = make_user(user_key, "uid-time2", "time2@co.com", org_id)
+        p._ensure_collection(APPS)[app_id] = make_app(app_id, org_id, "App")
+        p._ensure_edge_collection(USER_APP_RELATION).append(user_app_edge(user_key, app_id))
+        p._ensure_edge_collection(BELONGS_TO).append(belongs_edge(user_key, USERS, org_id, ORGS))
+        p._ensure_collection(RECORDS)["rec-null-ts"] = make_record("rec-null-ts", org_id, app_id, "No TS")
+        p._ensure_collection(RECORDS)["rec-with-ts"] = make_record(
+            "rec-with-ts", org_id, app_id, "With TS", source_created_at_timestamp=1500
+        )
+        for rec_id in ("rec-null-ts", "rec-with-ts"):
+            p._ensure_edge_collection(PERMISSION).append(
+                perm_edge(user_key, USERS, rec_id, RECORDS, "READER")
+            )
+        result = await p.get_accessible_virtual_record_ids(
+            "uid-time2",
+            org_id,
+            time_range={"source_created_after_ms": 1000, "source_created_before_ms": 2000},
+        )
+        assert set(result.values()) == {"rec-with-ts"}
+
+    @pytest.mark.asyncio
+    async def test_no_time_range_returns_all_records(self) -> None:
+        p = FakeGraphProvider()
+        org_id = "org-time-3"
+        user_key = "u-time3"
+        app_id = "app-time3"
+        p._ensure_collection(ORGS)[org_id] = make_org(org_id)
+        p._ensure_collection(USERS)[user_key] = make_user(user_key, "uid-time3", "time3@co.com", org_id)
+        p._ensure_collection(APPS)[app_id] = make_app(app_id, org_id, "App")
+        p._ensure_edge_collection(USER_APP_RELATION).append(user_app_edge(user_key, app_id))
+        p._ensure_edge_collection(BELONGS_TO).append(belongs_edge(user_key, USERS, org_id, ORGS))
+        for rec_id, ts in [("rec-a", 1000), ("rec-b", 2000)]:
+            p._ensure_collection(RECORDS)[rec_id] = make_record(
+                rec_id, org_id, app_id, rec_id, source_created_at_timestamp=ts
+            )
+            p._ensure_edge_collection(PERMISSION).append(
+                perm_edge(user_key, USERS, rec_id, RECORDS, "READER")
+            )
+        result = await p.get_accessible_virtual_record_ids("uid-time3", org_id)
+        assert set(result.values()) == {"rec-a", "rec-b"}

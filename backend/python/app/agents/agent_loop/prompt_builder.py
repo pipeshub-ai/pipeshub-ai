@@ -344,6 +344,20 @@ def _build_finding_information(
             "repeating it or giving up."
         )
 
+    if surfaces.retrieval is not None:
+        parts.append(
+            "Time-scoped searches: when the question names a time period "
+            "(this week, last quarter, since January), use the date filter "
+            "parameters on the search tool. Prefer wider ranges — 'this "
+            "month' means the full calendar month, not the last 7 days. "
+            "Convert relative dates to YYYY-MM-DD using the current date "
+            "from the Time Context section. Source timestamps may not "
+            "match the user's mental timeline exactly, so if a "
+            "time-filtered search returns few or no results, retry the "
+            "same query WITHOUT date filters before concluding nothing "
+            "exists."
+        )
+
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
         parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
