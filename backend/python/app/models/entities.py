@@ -252,8 +252,16 @@ class Record(BaseModel):
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: str | None = Field(default=None, description="Internal record ID of the parent node")
 
-    # Breadcrumb path injected at retrieval time (not persisted)
-    location: str | None = Field(default=None, exclude=True, description="Rendered hierarchy path e.g. 'KB > Space > Page (parent id: abc123)'.")
+    # Runtime-only; injected at retrieval for to_llm_context. Not persisted (exclude=True).
+    location: str | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Runtime-only Location trail for LLM context (not stored in DB), e.g. "
+            "'Confluence (App ID: <id>) -> Software Development (Record Group ID: <id>) "
+            "-> Agent Loop Implementation (Record ID: <id>)'."
+        ),
+    )
 
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:

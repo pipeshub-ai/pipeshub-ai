@@ -401,8 +401,9 @@ class TestAbstractMethodInventory:
         "get_agents_by_model_key",
         # Upload validation
         "validate_folder_for_upload",
-        # Record location lookup
-        "get_record_locations",
+        # Record location / permission-aware trails
+        "filter_nodes_with_permission_role",
+        "get_record_parent_adjacency",
     ]
 
     def test_all_expected_methods_are_abstract(self):

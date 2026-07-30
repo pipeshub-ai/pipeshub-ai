@@ -360,6 +360,9 @@ class RetrievalService:
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
+            # Graph key for KH permission_role checks (Location trails).
+            user_key = (user.get("_key") or user.get("id")) if user else None
+
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id,"virtualRecordId": virtual_record_ids_from_tool},
@@ -538,103 +541,31 @@ class RetrievalService:
                     return {}
 
             async def fetch_locations() -> dict[str, str]:
-                """Batch-resolve location breadcrumbs for all unique records.
+                """Resolve permission-aware Location trails for retrieved records.
 
-                Prefer denormalized fields already on the fetched record docs
-                (``parentNodeId`` for attachments, ``recordGroupId`` for
-                project/space membership) — these are written at index time and
-                do not require an edge traversal. Fall back to the provider's
-                edge-based ``get_record_locations`` for anything still missing.
+                One adjacency query + KH permission_role batch on ancestors.
+                Soft-fail is App-only (never unfiltered RG/parent ids).
                 """
                 try:
                     from app.agents.actions.knowledge_graph.location import (
-                        RecordLocation,
-                        resolve_locations,
+                        resolve_ancestor_locations,
                     )
 
                     rids = list(unique_record_ids)
                     if not rids:
                         return {}
 
-                    # --- Path A: denormalized parentNodeId / recordGroupId ---
-                    # rid -> (collection, parent_id)
-                    rid_to_parent: dict[str, tuple[str, str]] = {}
-                    parent_ids_by_coll: dict[str, set[str]] = {
-                        CollectionNames.RECORDS.value: set(),
-                        CollectionNames.RECORD_GROUPS.value: set(),
-                    }
-                    for rid in rids:
-                        rec = record_id_to_record_map.get(rid)
-                        if not isinstance(rec, dict):
-                            continue
-                        parent_node_id = rec.get("parentNodeId")
-                        record_group_id = rec.get("recordGroupId")
-                        if parent_node_id:
-                            rid_to_parent[rid] = (CollectionNames.RECORDS.value, parent_node_id)
-                            parent_ids_by_coll[CollectionNames.RECORDS.value].add(parent_node_id)
-                        elif record_group_id:
-                            rid_to_parent[rid] = (
-                                CollectionNames.RECORD_GROUPS.value, record_group_id
-                            )
-                            parent_ids_by_coll[CollectionNames.RECORD_GROUPS.value].add(
-                                record_group_id
-                            )
-
-                    # Batch-fetch parent display names
-                    parent_names: dict[str, str] = {}
-                    fetch_tasks = []
-                    fetch_keys: list[tuple[str, str]] = []  # (collection, id)
-                    for coll, pids in parent_ids_by_coll.items():
-                        for pid in pids:
-                            fetch_tasks.append(self.graph_provider.get_document(pid, coll))
-                            fetch_keys.append((coll, pid))
-                    if fetch_tasks:
-                        fetched = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-                        for (coll, pid), doc in zip(fetch_keys, fetched):
-                            if not doc or isinstance(doc, Exception):
-                                continue
-                            if coll == CollectionNames.RECORDS.value:
-                                name = (
-                                    doc.get("recordName")
-                                    or doc.get("name")
-                                    or doc.get("title")
-                                    or pid
-                                )
-                            else:
-                                name = doc.get("groupName") or doc.get("name") or pid
-                            if name:
-                                parent_names[pid] = name
-
-                    result: dict[str, str] = {}
-                    for rid, (_coll, pid) in rid_to_parent.items():
-                        name = parent_names.get(pid)
-                        if not name:
-                            continue
-                        rendered = RecordLocation(
-                            path=(name,), parent_id=pid, truncated=False
-                        ).render()
-                        if rendered:
-                            result[rid] = rendered
-                    via_doc = len(result)
-
-                    # --- Path B: edge-based lookup for anything still missing ---
-                    missing = [rid for rid in rids if rid not in result]
-                    if missing:
-                        loc_cache: dict = {}
-                        locs = await resolve_locations(
-                            missing,
-                            graph_provider=self.graph_provider,
-                            org_id=org_id,
-                            cache=loc_cache,
-                        )
-                        for rid, loc in locs.items():
-                            rendered = loc.render()
-                            if rendered:
-                                result[rid] = rendered
-
+                    result = await resolve_ancestor_locations(
+                        rids,
+                        graph_provider=self.graph_provider,
+                        org_id=org_id,
+                        user_key=user_key or "",
+                        record_docs=record_id_to_record_map,
+                    )
                     self.logger.info(
-                        "fetch_locations: %d/%d resolved (%d via document fields, %d via edges)",
-                        len(result), len(rids), via_doc, len(result) - via_doc,
+                        "fetch_locations: %d/%d trails resolved",
+                        len(result),
+                        len(rids),
                     )
                     return result
                 except Exception as loc_exc:

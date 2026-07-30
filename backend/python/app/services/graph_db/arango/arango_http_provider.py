@@ -14701,135 +14701,228 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"get_knowledge_hub_breadcrumbs finished in {elapsed * 1000} ms")
         return breadcrumbs
 
-    async def get_record_locations(
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Batch KH permission_role check for record/recordGroup ancestor ids."""
+        if not nodes or not user_key or not self.http_client:
+            return set()
+
+        record_ids = [
+            str(n["id"])
+            for n in nodes
+            if n.get("id") and n.get("type") == "record"
+        ]
+        rg_ids = [
+            str(n["id"])
+            for n in nodes
+            if n.get("id") and n.get("type") == "recordGroup"
+        ]
+        if not record_ids and not rg_ids:
+            return set()
+
+        record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+        rg_permission_role_aql = self._get_permission_role_aql("recordGroup", "rg", "u")
+
+        query = f"""
+            LET u = DOCUMENT(@users_col, @user_key)
+            FILTER u != null
+
+            LET accessible_records = (
+                FOR rid IN @record_ids
+                    LET record = DOCUMENT(CONCAT(@records_col, "/", rid))
+                    FILTER record != null
+                        AND record.orgId == @org_id
+                        AND record.isDeleted != true
+                    {record_permission_role_aql}
+                    LET r_norm = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER r_norm != null AND r_norm != ""
+                    RETURN rid
+            )
+
+            LET accessible_rgs = (
+                FOR rgid IN @rg_ids
+                    LET rg = DOCUMENT(CONCAT(@rg_col, "/", rgid))
+                    FILTER rg != null AND rg.orgId == @org_id
+                    {rg_permission_role_aql}
+                    LET rg_norm = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+                    FILTER rg_norm != null AND rg_norm != ""
+                    RETURN rgid
+            )
+
+            RETURN APPEND(accessible_records, accessible_rgs, true)
+        """
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "record_ids": record_ids,
+                    "rg_ids": rg_ids,
+                    "users_col": CollectionNames.USERS.value,
+                    "records_col": CollectionNames.RECORDS.value,
+                    "rg_col": CollectionNames.RECORD_GROUPS.value,
+                },
+                txn_id=transaction,
+            )
+            rows = result if isinstance(result, list) else []
+            keys = rows[0] if rows else []
+            if not isinstance(keys, list):
+                return set()
+            return {str(k) for k in keys if k}
+        except Exception as exc:
+            self.logger.warning(
+                "filter_nodes_with_permission_role: AQL failed — %s", exc
+            )
+            return set()
+
+    async def get_record_parent_adjacency(
         self,
         record_ids: list[str],
         org_id: str,
         *,
-        max_depth: int = 6,
+        max_depth: int = 20,
         transaction: str | None = None,
-    ) -> dict[str, dict]:
-        """Batched immediate-parent lookup for a list of record IDs — one AQL round trip.
-
-        Resolves the nearest ancestor for each record:
-          1. ``parentNodeId`` denormalized field on the record document (attachments).
-          2. ``recordGroupId`` denormalized field on the record document (project/space).
-          3. A parent Record via a recordRelations PARENT_CHILD/ATTACHMENT edge.
-          4. A RecordGroup via a belongsTo record→recordGroup edge.
-          5. An App via a belongsTo record→app edge (KB records / no RecordGroup).
-
-        Returns ``{record_id: {path: [parentName], parentId: str|None, truncated: False}}``.
-        The path always contains at most one entry (the immediate parent's display name);
-        ``max_depth`` is accepted by the interface but only 1-level resolution is performed
-        here — deeper walks use ``get_knowledge_hub_breadcrumbs`` (single-node, N+1).
-
-        Records not found in the graph or whose orgId doesn't match are omitted.
-        Ancestor names are filtered to org_id so cross-org names never leak.
-        """
-        if not record_ids:
-            return {}
-
-        if not self.http_client:
-            return {}
+    ) -> dict[str, Any]:
+        """One-round-trip upward parent adjacency for Location trails."""
+        if not record_ids or not self.http_client:
+            return {"nodes": {}, "parents": {}}
 
         start = time.perf_counter()
+        depth = max(1, min(int(max_depth), self._KNOWLEDGE_HUB_INHERIT_MAX_DEPTH))
 
         query = """
-FOR rid IN @record_ids
-  LET rec = DOCUMENT(CONCAT("records/", rid))
-  FILTER rec != null AND rec.orgId == @org_id
+            LET seeds = @record_ids
 
-  // Priority 1: denormalized parentNodeId (set at index time for attachments)
-  LET field_parent_doc = rec.parentNodeId != null
-    ? DOCUMENT(CONCAT("records/", rec.parentNodeId))
-    : null
-  LET field_parent = (field_parent_doc != null AND field_parent_doc.orgId == @org_id)
-    ? {id: field_parent_doc._key, name: COALESCE(field_parent_doc.recordName, field_parent_doc.name, field_parent_doc.title, field_parent_doc._key)}
-    : null
+            LET closure_keys = UNIQUE(FLATTEN(
+                FOR seed IN seeds
+                    LET start = DOCUMENT(CONCAT(@records_col, "/", seed))
+                    FILTER start != null AND start.orgId == @org_id
+                    FOR v, e IN 0..@max_depth OUTBOUND start
+                        belongsTo, INBOUND recordRelations
+                        // Traversal FILTERs are post-filters only — PRUNE stops
+                        // expansion through non-parent edges, past cross-org
+                        // nodes, and beyond apps (roots).
+                        PRUNE (e != null
+                                AND HAS(e, "relationshipType")
+                                AND e.relationshipType NOT IN ["PARENT_CHILD", "ATTACHMENT"])
+                            OR (v != null AND IS_SAME_COLLECTION(@apps_col, v))
+                            OR (v != null
+                                AND !IS_SAME_COLLECTION(@apps_col, v)
+                                AND v.orgId != @org_id)
+                        OPTIONS { uniqueVertices: "global", bfs: true }
+                        FILTER e == null
+                            OR !HAS(e, "relationshipType")
+                            OR e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        FILTER v != null
+                        FILTER IS_SAME_COLLECTION(@apps_col, v)
+                            OR v.orgId == @org_id
+                        RETURN v._key
+            ))
 
-  // Priority 2: denormalized recordGroupId (project / space / drive)
-  LET field_rg_doc = (field_parent == null AND rec.recordGroupId != null)
-    ? DOCUMENT(CONCAT("recordGroups/", rec.recordGroupId))
-    : null
-  LET field_rg = (field_rg_doc != null AND field_rg_doc.orgId == @org_id)
-    ? {id: field_rg_doc._key, name: COALESCE(field_rg_doc.groupName, field_rg_doc.name, field_rg_doc._key)}
-    : null
+            LET all_keys = UNIQUE(APPEND(seeds, closure_keys))
 
-  // Priority 3: parent Record via recordRelations PARENT_CHILD/ATTACHMENT
-  LET rec_parent = (field_parent == null AND field_rg == null) ? FIRST(
-    FOR e IN recordRelations
-      FILTER e._to == rec._id
-        AND e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
-      LET p = DOCUMENT(e._from)
-      FILTER p != null
-        AND PARSE_IDENTIFIER(e._from).collection == "records"
-        AND p.orgId == @org_id
-      RETURN {id: p._key, name: COALESCE(p.recordName, p.name, p.title, p._key)}
-  ) : null
+            FOR id IN all_keys
+                LET rec = DOCUMENT(CONCAT(@records_col, "/", id))
+                LET rg = rec == null ? DOCUMENT(CONCAT(@rg_col, "/", id)) : null
+                LET app = (rec == null AND rg == null)
+                    ? DOCUMENT(CONCAT(@apps_col, "/", id)) : null
+                FILTER (rec != null AND rec.orgId == @org_id)
+                    OR (rg != null AND rg.orgId == @org_id)
+                    OR (app != null AND (app.orgId == null OR app.orgId == @org_id))
 
-  // Priority 4: parent RecordGroup via belongsTo record→recordGroup
-  LET rg_parent = (field_parent == null AND field_rg == null AND rec_parent == null) ? FIRST(
-    FOR e IN belongsTo
-      FILTER e._from == rec._id
-      LET rg = DOCUMENT(e._to)
-      FILTER rg != null
-        AND PARSE_IDENTIFIER(e._to).collection == "recordGroups"
-        AND rg.orgId == @org_id
-      RETURN {id: rg._key, name: COALESCE(rg.groupName, rg.name, rg._key)}
-  ) : null
+                LET node = rec != null ? rec : (rg != null ? rg : app)
+                LET ntype = rec != null ? "record"
+                    : (rg != null ? "recordGroup" : "app")
+                LET nname = rec != null
+                    ? COALESCE(rec.recordName, rec.name, rec.title, rec._key)
+                    : (rg != null
+                        ? COALESCE(rg.groupName, rg.name, rg._key)
+                        : COALESCE(app.name, app.appName, app._key))
 
-  // Priority 5: parent App via belongsTo record→app
-  LET app_parent = (field_parent == null AND field_rg == null AND rec_parent == null AND rg_parent == null) ? FIRST(
-    FOR e IN belongsTo
-      FILTER e._from == rec._id
-      LET a = DOCUMENT(e._to)
-      FILTER a != null
-        AND PARSE_IDENTIFIER(e._to).collection == "apps"
-        AND a.orgId == @org_id
-      RETURN {id: a._key, name: COALESCE(a.appName, a.name, a._key)}
-  ) : null
+                LET rr_parents = rec != null ? (
+                    FOR e IN recordRelations
+                        FILTER e._to == rec._id
+                            AND e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        LET p = DOCUMENT(e._from)
+                        FILTER p != null
+                            AND IS_SAME_COLLECTION(@records_col, p)
+                            AND p.orgId == @org_id
+                        RETURN {
+                            parent_id: p._key,
+                            parent_type: "record",
+                            via: "recordRelations"
+                        }
+                ) : []
 
-  LET immediate = COALESCE(field_parent, field_rg, rec_parent, rg_parent, app_parent)
+                LET bt_parents = app != null ? [] : (
+                    FOR e IN belongsTo
+                        FILTER e._from == node._id
+                        LET p = DOCUMENT(e._to)
+                        FILTER p != null
+                        LET ptype = IS_SAME_COLLECTION(@rg_col, p) ? "recordGroup"
+                            : (IS_SAME_COLLECTION(@apps_col, p) ? "app" : null)
+                        FILTER ptype != null
+                        FILTER ptype == "app" OR p.orgId == @org_id
+                        RETURN {
+                            parent_id: p._key,
+                            parent_type: ptype,
+                            via: "belongsTo"
+                        }
+                )
 
-  RETURN {
-    recordId: rid,
-    parentId: immediate != null ? immediate.id : null,
-    parentName: immediate != null ? immediate.name : null
-  }
-"""
+                RETURN {
+                    id: id,
+                    type: ntype,
+                    name: nname,
+                    parents: APPEND(rr_parents, bt_parents)
+                }
+        """
         try:
             result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"record_ids": record_ids, "org_id": org_id},
+                bind_vars={
+                    "record_ids": list(record_ids),
+                    "org_id": org_id,
+                    "max_depth": depth,
+                    "records_col": CollectionNames.RECORDS.value,
+                    "rg_col": CollectionNames.RECORD_GROUPS.value,
+                    "apps_col": CollectionNames.APPS.value,
+                },
                 txn_id=transaction,
             )
-            rows: list[dict] = result if isinstance(result, list) else []
+            rows = result if isinstance(result, list) else []
+            nodes: dict[str, Any] = {}
+            parents: dict[str, Any] = {}
+            for row in rows:
+                if not isinstance(row, dict) or not row.get("id"):
+                    continue
+                row_id = str(row["id"])
+                nodes[row_id] = {
+                    "id": row_id,
+                    "type": row.get("type") or "record",
+                    "name": row.get("name") or row_id,
+                }
+                parents[row_id] = row.get("parents") or []
+            elapsed = time.perf_counter() - start
+            self.logger.debug(
+                "get_record_parent_adjacency: %d seeds, %d nodes, %.1f ms",
+                len(record_ids), len(nodes), elapsed * 1000,
+            )
+            return {"nodes": nodes, "parents": parents}
         except Exception as exc:
-            self.logger.warning("get_record_locations: AQL failed — %s", exc)
-            return {}
-
-        output: dict[str, dict] = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            rid = row.get("recordId")
-            if not rid:
-                continue
-            parent_id = row.get("parentId")
-            parent_name = row.get("parentName")
-            path = [parent_name] if parent_name else []
-            output[rid] = {
-                "path": path,
-                "parentId": parent_id,
-                "truncated": False,
-            }
-
-        elapsed = time.perf_counter() - start
-        self.logger.debug(
-            "get_record_locations: %d records, %d resolved, %.1f ms",
-            len(record_ids), len(output), elapsed * 1000,
-        )
-        return output
+            self.logger.warning("get_record_parent_adjacency: AQL failed — %s", exc)
+            return {"nodes": {}, "parents": {}}
 
     async def get_user_app_ids(
         self,
