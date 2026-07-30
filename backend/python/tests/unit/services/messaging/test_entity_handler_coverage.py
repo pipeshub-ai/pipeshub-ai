@@ -253,47 +253,6 @@ class TestHandleAppDisabledExtended:
 
 
 # ===================================================================
-# __handle_user_added - immediate sync paths
-# ===================================================================
-
-# class TestHandleUserAddedImmediateSync:
-#
-#     @pytest.mark.asyncio
-#     async def test_immediate_sync_skips_calendar(self):
-#         svc = _make_service()
-#         svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
-#         svc.graph_provider.get_document = AsyncMock(
-#             return_value={"accountType": "ENTERPRISE"}
-#         )
-#         svc.graph_provider.batch_upsert_nodes = AsyncMock()
-#         svc.graph_provider.batch_create_edges = AsyncMock()
-#         svc.graph_provider.get_org_apps = AsyncMock(
-#             return_value=[
-#                 {"name": "Calendar"},
-#                 {"name": "Gmail"},
-#             ]
-#         )
-#         svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
-#         svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
-#         svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
-#
-#         result = await svc.process_event(
-#             "userAdded",
-#             {
-#                 "userId": "u1",
-#                 "orgId": "org-1",
-#                 "email": "user@test.com",
-#                 "syncAction": "immediate",
-#             },
-#         )
-#         assert result is True
-#         # Only Gmail should trigger sync, Calendar skipped
-#         assert svc._EntityEventService__handle_sync_event.await_count == 1
-#         call_kwargs = svc._EntityEventService__handle_sync_event.call_args[1]
-#         assert call_kwargs["event_type"] == "gmail.user"
-
-
-# ===================================================================
 # __handle_org_created - BUSINESS account type
 # ===================================================================
 
