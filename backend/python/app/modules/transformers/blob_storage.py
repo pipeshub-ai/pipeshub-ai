@@ -630,26 +630,19 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            # Compress for cloud storage only; local disk skips compression
-            compressed_record = None
-            use_compression = False
-            if storage_type != "local":
-                try:
-                    start_time = time.time()
-                    compressed_record = self._compress_record(record)
-                    compression_time_ms = (time.time() - start_time) * 1000
-                    self.logger.debug("⏱️ Compression completed in %.0fms", compression_time_ms)
-
-                    use_compression = True
-                except Exception as e:
-                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-                    compressed_record = None
-                    use_compression = False
+            # Compress record for both local and S3 storage
+            try:
+                compressed_record = self._compress_record(record)
+                use_compression = True
+            except Exception as e:
+                self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+                compressed_record = None
+                use_compression = False
 
             if storage_type == "local":
                 try:
                     async with aiohttp.ClientSession() as session:
-                        # Local: uncompressed JSON; cloud path may use zstd below
+                        # Use compressed data if available
                         upload_data = {
                             "isCompressed": use_compression,
                             "record": compressed_record if use_compression else record,
@@ -1084,19 +1077,14 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_record = None
-            use_compression = False
-            if storage_type != "local":
-                try:
-                    start_time = time.time()
-                    compressed_record = self._compress_record(record)
-                    compression_time_ms = (time.time() - start_time) * 1000
-                    self.logger.info("⏱️ Compression completed in %.0fms (upload_next_version)", compression_time_ms)
-                    use_compression = True
-                except Exception as e:
-                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-                    compressed_record = None
-                    use_compression = False
+            # Compress record for upload
+            try:
+                compressed_record = self._compress_record(record)
+                use_compression = True
+            except Exception as e:
+                self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+                compressed_record = None
+                use_compression = False
 
             upload_data = {
                 "isCompressed": use_compression,
@@ -1243,16 +1231,13 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_metadata = None
-            use_compression = False
-            if storage_type != "local":
-                try:
-                    compressed_metadata = self._compress_record(metadata_dict)
-                    use_compression = True
-                except Exception as e:
-                    self.logger.warning("⚠️ Metadata compression failed, uploading uncompressed: %s", str(e))
-                    compressed_metadata = None
-                    use_compression = False
+            try:
+                compressed_metadata = self._compress_record(metadata_dict)
+                use_compression = True
+            except Exception as e:
+                self.logger.warning("⚠️ Metadata compression failed, uploading uncompressed: %s", str(e))
+                compressed_metadata = None
+                use_compression = False
 
             upload_data = {
                 "isCompressed": use_compression,
