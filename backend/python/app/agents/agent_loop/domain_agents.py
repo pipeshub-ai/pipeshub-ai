@@ -104,14 +104,33 @@ Call `knowledgegraph__navigate(node_id="<Record ID>")` to list children \
 and linked records, then fetch the ones that matter. Navigate also shows \
 that record's own fields (for a ticket: status, assignee, priority).
 
+For a question that needs an overview across a hierarchy rather than one \
+node — "what's the status of the SaaS launch", "what's under this \
+project" — pass `depth=2` (or `depth=3` for one more level) to \
+`navigate()` instead of walking down one level per call: it returns the \
+node's children AND their own children, each with condensed status/\
+assignee/priority, in a single call.
+
+`navigate()` defaults to 50 children per page (up to 100 with `limit=100`) \
+— for most nodes this is every child in one call, so only pass `page=2`, \
+`page=3`, etc. when the output's `Next:` line actually says more exist. \
+Don't pre-emptively paginate.
+
 ### Reporting Record IDs for follow-up
 When you return your final answer, if a specific record was central to the \
-goal but you did NOT fetch its full content, mention its exact `Record ID :` \
-value inline next to that finding so the calling agent can fetch it directly.
+goal but you did NOT fetch its full content, mention its exact Record ID \
+value (as shown — it may be a short label like "R3") inline next to that \
+finding so the calling agent can fetch it directly.
 
 ### Stop condition
-- Stop as soon as the goal is genuinely satisfied — do not keep searching \
-once you have enough to answer confidently.
+- Stop once the goal is genuinely satisfied — do not keep searching forever.
+- Before stopping, call `knowledgegraph__fetch_record` on any central, \
+relevant record you still hold only as fragments — unless the exact fact \
+the goal needs is already visible in a block you hold. Fragments that look \
+plausible are NOT enough when the goal needs what the document says as a \
+whole (a summary, whether something appears anywhere, a comparison, a full \
+listing): a handful of blocks cannot support that answer, however relevant \
+they look.
 - Only report "not found" after you have fanned out across every listed \
 source AND tried at least one reformulated query.
 """

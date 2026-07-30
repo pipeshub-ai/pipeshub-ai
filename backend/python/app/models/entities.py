@@ -276,20 +276,19 @@ class Record(BaseModel):
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         lines = [
-            f"Record ID       : {self.id}",
-            f"Name            : {self.record_name}",
-            f"Connector       : {self.connector_name.value}",
-            f"Type            : {self.record_type.value}",
-            f"External ID     : {self.external_record_id}",
-            f"Created At      : {self._format_timestamp(self.source_created_at)}",
-            f"Last Updated At : {self._format_timestamp(self.source_updated_at)}",
-            f"Connector ID    : {self.connector_id if self.connector_id else 'N/A'}",
-            f"connector Name  : {self.connector_name.value if self.connector_name else 'N/A'}",
+            f"Record ID: {self.id}",
+            f"Name: {self.record_name}",
+            f"Connector: {self.connector_name.value}",
+            f"Type: {self.record_type.value}",
+            f"External ID: {self.external_record_id}",
+            f"Created At: {self._format_timestamp(self.source_created_at)}",
+            f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
+            f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
         ]
         if self.location:
-            lines.append(f"Location        : {self.location}")
+            lines.append(f"Location: {self.location}")
         if self.mime_type:
-            lines.append(f"MIME Type       : {self.mime_type}")
+            lines.append(f"MIME Type: {self.mime_type}")
 
         if self.weburl:
             if not self.weburl.startswith("http"):
@@ -298,13 +297,13 @@ class Record(BaseModel):
             else:
                 weburl = self.weburl
 
-            lines.append(f"Web URL         : {weburl}")
+            lines.append(f"Web URL: {weburl}")
 
         if self.semantic_metadata:
             if include_full_semantic:
                 lines.extend(self.semantic_metadata.to_llm_context())
             elif self.semantic_metadata.summary:
-                lines.append(f"Summary         : {self.semantic_metadata.summary}")
+                lines.append(f"Summary: {self.semantic_metadata.summary}")
 
         return "\n".join(lines)
 

@@ -6,9 +6,9 @@ history, surfacing requirements/success criteria) and — for `chatMode ==
 
 Deliberately reuses `build_capability_context()`, `build_prior_routing_
 messages()`, `build_tier_rubric()`, and `build_sql_verify_override()` from
-`app.modules.agents.qna.router` rather than re-deriving any of them — the
-tier definitions and conversation-history handling must never drift from
-what the legacy LangGraph path and `classify_route()` already use.
+`app.modules.agents.qna.router` rather than re-deriving any of them, so the
+tier definitions and conversation-history handling have exactly one
+implementation.
 
 Output format: the prompt asks for a detailed markdown write-up (headed
 sections for the restatement/requirements/success criteria/open

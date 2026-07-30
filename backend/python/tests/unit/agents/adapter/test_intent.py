@@ -2,10 +2,13 @@
 understanding agent run every chat mode goes through before the main
 `Agent.run()` (see `router.py::select_loop_and_goal`).
 
-Route classification (quick/react/deep) is handled separately by
-`classify_route()` in `app.modules.agents.qna.router`, NOT by this module.
+`parse_intent` is the `include_routing=False` wrapper around
+`parse_intent_and_route()` — it never performs tier classification, so
+`route` is always `None`. Route classification (quick/react/deep) is the
+SAME call with `include_routing=True` (see `test_router.py` in this
+directory), not a separate function.
 The model's full output becomes `rewritten_query` without structured
-parsing, and `route` is always `None`.
+parsing.
 """
 
 from __future__ import annotations
@@ -92,7 +95,9 @@ class TestParseIntent:
         assert decision.rewritten_query == output
 
     async def test_route_is_always_none(self) -> None:
-        """Route classification is handled by classify_route(), not parse_intent()."""
+        """`parse_intent()` always passes `include_routing=False` — route
+        classification only happens via `parse_intent_and_route(...,
+        include_routing=True)` directly."""
         output = "Summarize this week's bug bash.\n\nquick"
         transport = _script_task_complete(output)
 

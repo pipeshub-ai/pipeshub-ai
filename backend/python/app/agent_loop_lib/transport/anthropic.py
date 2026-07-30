@@ -27,7 +27,10 @@ from app.agent_loop_lib.transport.base import LLMTransport
 
 # Status codes considered transient/retryable regardless of which SDK exception
 # type raised them. Kept in sync with RetryConfig.retryable_status_codes default.
-_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# 529 is Anthropic's "overloaded_error" — capacity exhaustion across all
+# customers, not a client-side problem, and the single most common
+# transient failure in production (see anthropic.APIStatusError.status_code).
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504, 529}
 
 _STOP_REASON_MAP: dict[str | None, StopReason] = {
     "end_turn": StopReason.END_TURN,

@@ -258,6 +258,31 @@ class TestCitationRules:
         assert "opaque system token" in result or "Citation ID is NOT a URL" in result or "opaque" in result
 
 
+class TestRecordIdShorteningPromptNote:
+    """The "R<n>" short-label note in the Record & Block Structure section
+    is only accurate — and should only be shown — when this request opted
+    into `RecordIdShortener` (see `ChatQuery.enableRecordIdShortening`,
+    disabled by default)."""
+
+    _FA_PATCH = "app.agent_loop_lib.tools.builtin.planning.final_answer.final_answer_enabled"
+
+    def test_short_label_note_absent_when_flag_off_by_default(self) -> None:
+        with patch(self._FA_PATCH, return_value=False):
+            context = make_context(has_knowledge=True)
+            assert context.enable_record_id_shortening is False
+            result = _build(context)
+        assert "## Citation Rules" in result  # sanity: section is present
+        assert "short label" not in result
+        assert "R1" not in result and "R2" not in result
+
+    def test_short_label_note_present_when_flag_on(self) -> None:
+        with patch(self._FA_PATCH, return_value=False):
+            context = make_context(has_knowledge=True, enable_record_id_shortening=True)
+            result = _build(context)
+        assert "short label" in result
+        assert "`R1`, `R2`" in result
+
+
 class TestAnswerConfidence:
     """`AnswerFinalizer` parses a trailing `---\\nConfidence: <level>` off the
     answer (`parse_confidence_from_answer`) and puts it on `completion_data`

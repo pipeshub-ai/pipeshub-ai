@@ -642,22 +642,21 @@ class TestSemanticMetadata:
         meta = SemanticMetadata(sub_category_level_1="Sub1")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Sub-categories" in result[0]
-        assert "Level 1" in result[0]
+        assert "Category" in result[0]
         assert "Sub1" in result[0]
 
     def test_to_llm_context_sub_category_level_2_without_level_1(self):
-        """Level 2 appears even without level 1 (it's a separate if)."""
+        """Level 2 is included in the category path even without level 1."""
         meta = SemanticMetadata(sub_category_level_2="Sub2")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Level 2" in result[0]
+        assert "Sub2" in result[0]
 
     def test_to_llm_context_sub_category_level_3(self):
         meta = SemanticMetadata(sub_category_level_3="Sub3")
         result = meta.to_llm_context()
         assert len(result) == 1
-        assert "Level 3" in result[0]
+        assert "Sub3" in result[0]
 
     def test_to_llm_context_all_fields(self):
         meta = SemanticMetadata(
@@ -669,8 +668,10 @@ class TestSemanticMetadata:
             sub_category_level_3="REST",
         )
         result = meta.to_llm_context()
-        # summary(1) + topics(1) + categories(1) + sub1(1) + sub2(1) + sub3(1) = 6
-        assert len(result) == 6
+        # summary(1) + topics(1) + category path(1) = 3
+        assert len(result) == 3
+        category_line = result[2]
+        assert "Engineering > Backend > API > REST" in category_line
 
 
 # ============================================================================

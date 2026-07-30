@@ -118,6 +118,45 @@ class TestAnalyzeCoverage:
         cov = analyze_coverage([entry], vr_map)
         assert record_id in cov
 
+    def test_group_children_counted_in_total(self):
+        """Regression: retrieval flattens a table/list hit with `block_index`
+        pointing at a CHILD row, so children must count toward the total too.
+        Counting them only in the numerator let `held` exceed `total`, which
+        `build_candidates` read as "all blocks already retrieved" and dropped
+        — a 30-block spreadsheet the model held 3 rows of produced no
+        candidate at all."""
+        record_id = "rec-table"
+        vrid = "vrid-table"
+        blocks: list[dict] = [
+            {"index": 0, "type": "TEXT", "data": "intro"},
+            {"index": 1, "type": "TABLE", "data": {}},
+        ]
+        blocks += [
+            {"index": i, "type": "TEXT", "data": f"row {i}", "parent_index": 1}
+            for i in range(2, 22)
+        ]
+        record = {
+            "id": record_id,
+            "record_name": "Financials.xlsx",
+            "block_containers": {"blocks": blocks, "block_groups": []},
+            "semantic_metadata": {"topics": ["revenue"], "summary": "s"},
+        }
+        vr_map = {vrid: record}
+        # Retrieval matched three table rows — child block indices.
+        results = [_make_entry(vrid, record_id, i) for i in (5, 6, 7)]
+
+        held, total = analyze_coverage(results, vr_map)[record_id]
+        assert held == 3
+        assert total == 22
+        assert held < total
+
+        plan = build_candidates(
+            coverage={record_id: (held, total)},
+            records_in_relevance_order=[record],
+            already_fetched_ids=set(),
+        )
+        assert plan.has_candidates, "table-heavy record must still be offered for fetch"
+
 
 # ---------------------------------------------------------------------------
 # build_candidates
@@ -329,32 +368,45 @@ class TestRenderCandidateTable:
         out = render_candidate_table(self._simple_plan())
         assert "(5%)" in out
 
-    def test_footer_states_relevance_first(self):
-        """Footer must prompt the model to check relevance before coverage."""
+    def test_footer_names_the_read_step(self):
+        """Low-coverage footer names the fetch tool and drops the old
+        'and coverage is low' hedge — incomplete coverage alone is enough
+        to cue a fetch when the answer needs more than held blocks."""
         out = render_candidate_table(self._simple_plan())
-        assert "is it relevant to the question" in out
-
-    def test_states_the_generalizable_test(self):
-        """The closing guidance must state when blocks are an insufficient
-        basis — a summary, review, comparison, or complete listing."""
-        out = render_candidate_table(self._simple_plan())
-        assert "as a whole" in out.lower()
-        assert "summary" in out
+        assert "call `knowledgegraph__fetch_record` ONCE" in out
+        assert "Coverage is incomplete" in out
+        assert "and coverage is low" not in out
 
     def test_custom_tool_ref(self):
         out = render_candidate_table(self._simple_plan(), tool_ref="internal_exploration_agent")
         assert "internal_exploration_agent" in out
 
     def test_header_is_emphatic_when_bit_set(self):
+        """The CTA leads BEFORE the record rows for a whole-document
+        request — the model must see the instruction before the data, not
+        after it."""
         out = render_candidate_table(self._simple_plan(), needs_whole_document=True)
-        assert "this request needs whole-document content" in out
+        assert "this question needs whole-document content" in out
+        assert out.index("BEFORE answering") < out.index("Record ID: abc-123")
+
+    def test_whole_document_cta_is_imperative(self):
+        out = render_candidate_table(self._simple_plan(), needs_whole_document=True)
+        assert "BEFORE answering" in out
+        assert "Call `knowledgegraph__fetch_record` ONCE" in out
+
+    def test_whole_document_states_coverage_gap(self):
+        """Concrete penalty framing: the model should see WHY skipping the
+        fetch is costly, not just that it's instructed to fetch."""
+        out = render_candidate_table(self._simple_plan(), needs_whole_document=True)
+        assert "(5%)" in out
+        assert "will miss content the question requires" in out
 
     def test_header_low_coverage_when_bit_unset_and_sparse(self):
-        """For a 5%-coverage candidate (well below 30%), the low-coverage
-        header fires even without the needs_whole_document flag."""
+        """For a 5%-coverage candidate (well below 30%), the incomplete-
+        coverage header fires even without the needs_whole_document flag."""
         out = render_candidate_table(self._simple_plan(), needs_whole_document=False)
         assert "this request needs whole-document content" not in out
-        assert "coverage" in out.lower()
+        assert "incomplete" in out.lower()
         assert "4 of 87 blocks" in out
 
     def _high_coverage_plan(self) -> "FetchPlan":
@@ -374,12 +426,41 @@ class TestRenderCandidateTable:
             excluded=(),
         )
 
+    def test_unknown_total_is_never_shown_as_full_coverage(self):
+        """Regression: `analyze_coverage` reports total 0 for a record whose
+        block structure it could not read. Dividing by that fell back to
+        "(100%)", telling the model it already held the whole record — the one
+        reading that guarantees no fetch."""
+        from app.modules.agents.record_escalation.models import FetchCandidate
+
+        plan = FetchPlan(
+            candidates=(
+                FetchCandidate(
+                    record_id="rec-unknown",
+                    record_name="Ticket-123",
+                    topics=(),
+                    summary="",
+                    blocks_held=2,
+                    blocks_total=0,
+                ),
+            ),
+            excluded=(),
+        )
+        out = render_candidate_table(plan)
+        assert "(100%)" not in out
+        assert "of 0 blocks" not in out
+        assert "document length unknown" in out
+        # Unknown coverage must land on the incomplete path, not the optional one.
+        assert "Coverage is incomplete" in out
+
     def test_header_is_neutral_when_coverage_above_threshold(self):
         """At 88% coverage (above 30%), the neutral header fires when the
         needs_whole_document flag is unset."""
         out = render_candidate_table(self._high_coverage_plan(), needs_whole_document=False)
         assert "this request needs whole-document content" not in out
         assert "if this request needs more than the blocks above" in out
+        assert "BEFORE answering" not in out
+        assert "and coverage is low" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +469,10 @@ class TestRenderCandidateTable:
 
 
 class TestPolicyText:
-    """policy_text() now states the two-step decision test (relevance, then
+    """policy_text() states the two-step decision test (relevance, then
     sufficiency) inline so smaller models do not need to follow a
-    cross-reference to the function-calling schema."""
+    cross-reference to the function-calling schema. Fetch-when-incomplete
+    leads; skip-fetch is the narrow escape hatch."""
 
     def test_contains_tool_ref(self):
         text = policy_text("dynamic_fetch_full_record")
@@ -413,12 +495,22 @@ class TestPolicyText:
     def test_states_whole_document_scope(self):
         """The policy should describe the whole-document fetch use case."""
         text = policy_text("dynamic_fetch_full_record")
-        assert "property of the whole document" in text
+        assert "whole-document" in text
 
     def test_states_whole_document_examples(self):
         """The inline test should name concrete whole-document scenarios."""
         text = policy_text("dynamic_fetch_full_record")
         assert "summary" in text
+
+    def test_leads_with_fetch_when_incomplete(self):
+        """Fetch is step 2's default action; skip is a subordinate 'UNLESS'
+        clause inside that same step, not a co-equal numbered step — a
+        co-equal step gave the model an escape hatch with equal billing."""
+        text = policy_text("dynamic_fetch_full_record")
+        assert "call `dynamic_fetch_full_record`" in text
+        assert "UNLESS the exact fact needed" in text
+        assert "3. Skip the fetch" not in text
+        assert "Do NOT call" not in text
 
     def test_is_reasonable_length(self):
         """Regression guard: policy text is capped to stay below a reasonable ceiling."""

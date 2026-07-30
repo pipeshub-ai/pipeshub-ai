@@ -66,8 +66,8 @@ class TestCreate:
 
     async def test_direct_mode_skips_llm_router(self) -> None:
         """`"react"`/`"planExecute"`/`"verification"` all resolve via the
-        catalog synchronously — no LLM call, so `classify_route` must never
-        be reached."""
+        catalog synchronously with `include_routing=False`, so the tier
+        classifier must never run."""
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 

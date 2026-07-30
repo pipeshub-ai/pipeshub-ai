@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from app.modules.agents.context.connector_detection import _has_jira_tools
 from app.modules.agents.qna.chat_state import ChatState
 
 
@@ -35,15 +34,6 @@ def _format_user_context(state: ChatState) -> str:
 
     if org_info.get("name"):
         parts.append(f"- **Organization**: {org_info['name']}")
-
-    if user_email or user_name:
-        parts.append("")
-        parts.append("### Usage:")
-        parts.append("")
-
-
-        parts.append("**General:**")
-        parts.append("")
 
     return "\n".join(parts)
 

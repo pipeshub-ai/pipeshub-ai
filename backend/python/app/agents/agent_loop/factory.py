@@ -93,8 +93,6 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
-    full_record_fetch_tracking,
-    full_record_gate,
     looks_like_file_generation_request,
     resolve_attachments_for_goal,
     resolve_history_attachments,
@@ -802,10 +800,6 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
-        # Track which record IDs were actually fetched, so the gate can exclude
-        # them from its candidate re-computation.
-        hooks.on(HookEvent.POST_TOOL_USE).use(full_record_fetch_tracking(context))
-
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
@@ -818,18 +812,6 @@ class PipesHubAgentFactory:
         # ends up False for (set further up in `create()`, after intent
         # resolves the goal).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
-
-        # Full-record sufficiency gate: fires when the model answered from
-        # fragments but whole-document content is still needed. The judge
-        # runs at most once per request (guarded inside the middleware).
-        if transport_registry is not None:
-            from app.modules.agents.record_escalation.judge import LLMFetchJudge
-            _judge = LLMFetchJudge(
-                transport_registry,
-                model_name,
-                logging.getLogger("app.agents.agent_loop.full_record_judge"),
-            )
-            hooks.on(HookEvent.POST_MODEL).use(full_record_gate(context, _judge))
 
         # This adapter path builds its own HookRegistry directly (never
         # goes through ControlPlane.start()), so the coding_sandbox_safety

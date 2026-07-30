@@ -236,7 +236,7 @@ class TestToLlmContext:
         )
         ctx = rec.to_llm_context()
         assert (
-            "Location        : Jira (App ID: c1) -> PROJ (Record Group ID: rg1)" in ctx
+            "Location: Jira (App ID: c1) -> PROJ (Record Group ID: rg1)" in ctx
         )
 
     def test_location_absent_when_none(self) -> None:

@@ -78,6 +78,14 @@ class AgentContext(BaseModel):
     has_slack_knowledge: bool = False
     is_multimodal_llm: bool = False
 
+    # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+    # `utils/chat_helpers.py`. Opt-in per request (`ChatQuery.
+    # enableRecordIdShortening`, default False). Read by every knowledge
+    # tool's lazy-creation site via `tool_state["enable_record_id_shortening"]`
+    # (mirrored here for typed access) before minting a shortener — never
+    # created when this is False, so full record ids pass through unchanged.
+    enable_record_id_shortening: bool = False
+
     # Image attachment blocks (LangChain ``image_url`` dicts) resolved by
     # ``resolve_attachments_for_goal`` for the current turn. Consumed by
     # ``shape_image_injection`` (PRE_MODEL hook) to inject ``ImagePart``
@@ -213,14 +221,15 @@ class AgentContext(BaseModel):
     root_agent_spec: Any = None
 
     # Set once in factory.create() from the intent call (or the regex fallback
-    # when skip_intent is active). Read by the retrieval tool to decide whether
-    # to append the candidate list, and by full_record_gate to run the judge.
+    # when skip_intent is active). Read by retrieval/search to frame the
+    # candidate-list header (imperative vs optional). The list itself is
+    # appended whenever any incomplete record exists, regardless of this flag.
     # Tree-wide: top-level agent and every spawned child share this context.
     needs_whole_document: bool = False
 
-    # The model identifier passed to factory.create() — used by LLMFetchJudge
-    # and by the fetch-tool block cap. Stored here (not only on the transport)
-    # so ensure_fetch_full_record_available() (called from attachment_resolver,
+    # The model identifier passed to factory.create() — used by the
+    # fetch-tool block cap. Stored here (not only on the transport) so
+    # ensure_fetch_full_record_available() (called from attachment_resolver,
     # outside _build_hooks) can reach it without the TransportRegistry.
     model_name: str = ""
 
@@ -234,12 +243,12 @@ class AgentContext(BaseModel):
     is_reasoning_model: bool = False
 
     # Record IDs for which dynamic_fetch_full_record was called this request.
-    # Written by full_record_fetch_tracking (POST_TOOL_USE).
-    # Pydantic BaseModel requires default_factory for mutable defaults.
+    # Written directly by _FetchFullRecordTool.execute() (citations.py /
+    # ops/fetch.py) as each fetch completes. Read by retrieval.py/search.py
+    # to exclude already-fetched records from their own candidate-list
+    # rendering. Pydantic BaseModel requires default_factory for mutable
+    # defaults.
     full_records_fetched: set[str] = Field(default_factory=set)
-
-    # Bounds full_record_gate's nudges — same pattern as completion_gate_nudges.
-    full_record_gate_nudges: int = 0
 
     # The live, mutable ChatState-shaped dict PipesHub tools read/write
     # through unchanged — see module docstring. Populated by
@@ -340,6 +349,7 @@ class AgentContext(BaseModel):
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
+            enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
@@ -403,6 +413,7 @@ class AgentContext(BaseModel):
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
+            "enable_record_id_shortening": self.enable_record_id_shortening,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
@@ -416,11 +427,16 @@ class AgentContext(BaseModel):
             "known_record_ids": set(),
             "tool_records": [],
             "citation_ref_mapper": None,
+            # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+            # `utils/chat_helpers.py`. Lazily created by `retrieval.py` on
+            # first search call; resolved back to full ids in
+            # `hooks/citations.py`'s `_FetchFullRecordTool`.
+            "record_id_shortener": None,
             "all_tool_results": [],
             "web_records": [],
             "toolset_load_failures": self.toolset_load_failures,
             # record_escalation stash — retrieval.py writes these after each
-            # search call; full_record_gate reads them.
+            # search call for observability/debugging.
             "fetch_coverage": {},
             "fetch_plan": None,
             # Convenience read — retrieval.py mirrors context.needs_whole_document

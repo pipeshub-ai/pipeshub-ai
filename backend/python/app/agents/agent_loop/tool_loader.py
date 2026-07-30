@@ -157,6 +157,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 graph_provider=state.get("graph_provider"),
                 blob_store=state.get("blob_store"),
                 config_service=config_service,
+                tool_state=state,
             )
             setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
             a, t = split_original_tool_name(slack_thread_tool)

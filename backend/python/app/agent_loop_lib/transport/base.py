@@ -19,7 +19,15 @@ class RetryConfig(BaseModel):
     initial_delay: float = 1.0      # seconds
     backoff_factor: float = 2.0
     max_delay: float = 60.0
-    retryable_status_codes: list[int] = [429, 500, 502, 503, 504]
+    # 529 is Anthropic's non-standard "overloaded_error" status — capacity
+    # exhaustion across all Anthropic customers, not this request's fault,
+    # and by far the most common transient failure mode in production.
+    # Without it here, `_is_retryable()` (retry.py / retry_with_status.py)
+    # re-raises immediately on the very first overload instead of backing
+    # off — this list is the second of two places a status code must be
+    # allowed (the transport's own `_wrap_error` sets `.retryable` first;
+    # see e.g. `transport/anthropic.py`'s `_RETRYABLE_STATUS_CODES`).
+    retryable_status_codes: list[int] = [429, 500, 502, 503, 504, 529]
 
 
 class LLMTransport(ABC):

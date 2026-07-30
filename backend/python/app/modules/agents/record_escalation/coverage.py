@@ -2,14 +2,22 @@
 Block-coverage analysis for record-escalation.
 
 `analyze_coverage` answers: for each record we retrieved something from, how
-many distinct renderable blocks did we get, and how many exist in total?
+many distinct blocks did we get, and how many exist in total?
 
-The denominator mirrors what `record_to_message_content` in chat_helpers.py
-actually renders — fragment blocks (`parent_block_index is not None`) are
-skipped, as are TEXT blocks with a `parent_index`. Where the count is
-uncertain, we bias toward over-counting: an inflated total lists a record that
-a fetch would mostly duplicate (cheap), whereas an undercount silently excludes
-a record the query genuinely needs (the failure this feature exists to prevent).
+Numerator and denominator must range over the same set of blocks, or the
+"held == total" predicate stops meaning "we already have everything".
+Retrieval addresses group children directly — a table or list hit is
+flattened with `block_index` pointing at a child row (see
+`get_flattened_results` in chat_helpers.py) — so children must be counted on
+both sides. Only fragment blocks (`parent_block_index is not None`, produced
+by splitting a container around an inline image) are excluded from both,
+because retrieval routes those through their container's index, never their
+own.
+
+Where the count is uncertain we bias toward over-counting the total: an
+inflated total lists a record that a fetch would mostly duplicate (cheap),
+whereas an undercount silently excludes a record the query genuinely needs
+(the failure this feature exists to prevent).
 
 This module has no I/O, no LLM calls, no thresholds.
 """
@@ -26,11 +34,13 @@ def analyze_coverage(
     """
     Return record_id -> (blocks_held, blocks_total).
 
-    `blocks_held` counts distinct renderable block indices retrieved.
-    `blocks_total` counts renderable blocks in the full record.
+    `blocks_held` counts distinct countable block indices retrieved.
+    `blocks_total` counts countable blocks in the full record.
 
-    Both values use the same fragment-skipping logic so the predicate
-    "held == total" correctly means "we already have everything".
+    Both values range over the same set of blocks (see module docstring), so
+    the predicate "held == total" correctly means "we already have
+    everything" — and `held` can never exceed `total`, which would otherwise
+    make a barely-covered record look fully retrieved.
 
     Entries without a matching record in `virtual_record_id_to_result`
     are silently skipped (record was not loaded from storage).
@@ -56,7 +66,7 @@ def analyze_coverage(
 
         # For table/block-group hits content may be a (summary, children)
         # tuple; the entry-level block_index still applies.
-        if isinstance(block_index, int):
+        if isinstance(block_index, int) and _is_countable_index(record, block_index):
             held.setdefault(record_id, set()).add(block_index)
 
     coverage: dict[str, tuple[int, int]] = {}
@@ -65,7 +75,7 @@ def analyze_coverage(
         record = _find_record(record_id, virtual_record_id_to_result)
         if record is None:
             continue
-        total = _count_renderable_blocks(record)
+        total = _count_blocks(record)
         coverage[record_id] = (len(held_set), total)
 
     return coverage
@@ -85,34 +95,52 @@ def _find_record(
     return None
 
 
-def _count_renderable_blocks(record: dict[str, Any]) -> int:
-    """
-    Count blocks that record_to_message_content would render.
+def _is_fragment(block: dict[str, Any]) -> bool:
+    """A block split off a container around an inline image. Retrieval never
+    reports a fragment's own index — it substitutes the container's — so
+    fragments are excluded from both sides of the ratio."""
+    return block.get("parent_block_index") is not None
 
-    Mirrors chat_helpers.py record_to_message_content:
-    - Skips blocks where parent_block_index is not None (fragment blocks).
-    - Skips TEXT blocks where parent_index is not None (table-row children).
-    - IMAGE blocks without valid data are skipped by the renderer but counted
-      here (over-counting bias: cheap false positive, not a false negative).
+
+def _is_countable_index(record: dict[str, Any], block_index: int) -> bool:
+    """Whether `block_index` refers to a block `_count_blocks` also counts.
+
+    Guards the numerator against indices the denominator does not include:
+    counting one without the other let `held` exceed `total` on
+    table/list-heavy records, which `build_candidates` then read as "all
+    blocks already retrieved" and dropped from the candidate list.
+
+    An index we cannot resolve (out of range, unknown structure) counts —
+    over-counting `held` only understates the gap for one block, whereas
+    dropping it silently understates how much the model already holds.
+    """
+    block_containers = record.get("block_containers") or {}
+    blocks = block_containers.get("blocks") or []
+    if not (0 <= block_index < len(blocks)):
+        return True
+    block = blocks[block_index]
+    if not isinstance(block, dict):
+        return True
+    return not _is_fragment(block)
+
+
+def _count_blocks(record: dict[str, Any]) -> int:
+    """
+    Count the blocks a full fetch of this record would surface.
+
+    Group children (table rows, list items) ARE counted: retrieval addresses
+    them by their own `block_index`, so leaving them out of the total while
+    the numerator counts them made `held > total` possible.
+
+    IMAGE blocks without valid data are skipped by the renderer but counted
+    here (over-counting bias: cheap false positive, not a false negative).
 
     Records arrive as dicts (not Pydantic Record) in the retrieval path.
     """
     block_containers = record.get("block_containers") or {}
     blocks = block_containers.get("blocks") or []
 
-    count = 0
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("parent_block_index") is not None:
-            # Fragment block — renderer skips it.
-            continue
-        block_type = block.get("type", "")
-        if block_type == "TEXT" and block.get("parent_index") is not None:
-            # TABLE_ROW child rendered via its group, not individually.
-            continue
-        count += 1
-
-    # If we could not determine the block structure at all, return 0 so the
-    # record is never incorrectly excluded (over-counting bias).
-    return count
+    return sum(
+        1 for block in blocks
+        if isinstance(block, dict) and not _is_fragment(block)
+    )

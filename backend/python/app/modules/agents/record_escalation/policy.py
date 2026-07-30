@@ -207,12 +207,15 @@ def policy_text(tool_ref: str) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
 
-    States the two-step decision test inline so smaller models that do not
-    follow cross-references to function-calling schemas still get the rule.
+    States the decision inline so smaller models that do not follow
+    cross-references to function-calling schemas still get the rule.
 
     Step 1 — relevance: is the record actually about the question? If not, skip.
-    Step 2 — sufficiency: does the question need the full document, or is a
-    specific passage already visible in the blocks enough?
+    Step 2 — fetch by default: if relevant, call `tool_ref` unless the exact
+    fact needed is already visible in a block you hold (or metadata alone
+    settles a status/assignee-style question). The skip case is a subordinate
+    "unless", not a co-equal step — without a gate/judge backstop, giving it
+    equal billing reads as permission to stop after step 1.
 
     `tool_ref` is the tool name the model should call.
     """
@@ -222,17 +225,16 @@ def policy_text(tool_ref: str) -> str:
         f"`lookup_record`, `navigate`, and `list_files` return even less: "
         f"an ID and metadata, no content at all. Before answering, check "
         f"each record the question is actually about:\n\n"
-        f"- A locatable fact (a date, a name, a number, a status, one clause) "
-        f"is already visible IN A BLOCK YOU CAN SEE — answer from the blocks. "
-        f"You have no passage yet if you reached the record by lookup, "
-        f"navigation, or listing; check whether its fields (status, assignee) "
-        f"already settle the goal. Never infer content from a title.\n"
-        f"- A property of the whole document — a summary, its risks or key "
-        f"points, a comparison between documents, whether it mentions something "
-        f"anywhere — cannot be answered from a few blocks. "
-        f"Call `{tool_ref}` with those record_ids in ONE call, then answer.\n\n"
+        f"1. Is the record relevant? If not, skip it.\n"
+        f"2. If it is relevant, call `{tool_ref}` with those record_ids in "
+        f"ONE call, then answer — UNLESS the exact fact needed is already "
+        f"visible in a block you hold, or metadata alone (status, assignee) "
+        f"settles the goal. This covers both no content yet from lookup/"
+        f"navigate/list_files, and incomplete coverage for a whole-document "
+        f"property (a summary, risks or key points, a comparison, whether it "
+        f"mentions something anywhere). Never infer content from a title.\n\n"
         f"A retrieval result may include a candidate list showing how much of "
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
-        f"Pass the exact `Record ID :` value(s) shown — never invent IDs."
+        f"Pass the exact Record ID value(s) shown — never invent IDs."
     )

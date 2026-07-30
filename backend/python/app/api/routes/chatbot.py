@@ -75,6 +75,11 @@ class ChatQuery(BaseModel):
     # Per-request capability toggles for agent mode (both paths).
     # When absent defaults to both enabled, preserving existing behavior.
     agentCapabilities: dict[str, Any] | None = None
+    # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+    # `utils/chat_helpers.py`. Opt-in and disabled by default: short "R<n>"
+    # labels are only valid for the request that minted them, so callers
+    # that rely on record ids surviving across turns should leave this off.
+    enableRecordIdShortening: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
@@ -825,6 +830,7 @@ async def _generate_chat_stream_via_agent_loop(
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
         "attachments": query_info.attachments,
+        "enableRecordIdShortening": query_info.enableRecordIdShortening,
     }
     user_info = {
         "userId": user_id,

@@ -140,7 +140,10 @@ class TestFetchFullRecordTool:
         format_mock.assert_called_once()
 
     async def test_execute_reports_not_available_ids_in_formatted_text(self) -> None:
-        context = _make_context()
+        # Opt into the RecordIdShortener (disabled by default — see
+        # `ChatQuery.enableRecordIdShortening`) since this test asserts on
+        # the shortened-id path.
+        context = _make_context(enable_record_id_shortening=True)
         tool = _FetchFullRecordTool(CitationCollector(context), context)
 
         raw_result = {
@@ -162,8 +165,60 @@ class TestFetchFullRecordTool:
             output = await tool.execute(record_ids=["rec-1", "rec-missing"])
 
         assert output.success is True
-        assert "rec-missing" in output.data
         assert "not available" in output.data.lower()
+        # TEMPORARY token-savings experiment: _FetchFullRecordTool.execute()
+        # shortens ids in "not_available_ids" too — the raw full id no
+        # longer appears verbatim, but the shortener's mapping resolves it.
+        shortener = context.tool_state["record_id_shortener"]
+        assert "rec-missing" not in output.data
+        assert shortener.resolve(shortener.get_or_create_short_id("rec-missing")) == "rec-missing"
+
+    async def test_execute_skips_resolution_when_flag_off(self) -> None:
+        """Flag off (default) — no shortener is created, and whatever
+        `record_ids` the model passed must reach the wrapped tool call
+        byte-for-byte, never run through `.resolve()`."""
+        context = _make_context()
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        fake_structured_tool = MagicMock()
+        fake_structured_tool.coroutine = AsyncMock(
+            return_value={"ok": True, "records": [], "record_count": 0, "not_available_ids": []}
+        )
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=fake_structured_tool,
+        ):
+            await tool.execute(record_ids=["rec-1", "rec-2"])
+
+        assert context.tool_state.get("record_id_shortener") is None
+        _, call_kwargs = fake_structured_tool.coroutine.call_args
+        assert call_kwargs["record_ids"] == ["rec-1", "rec-2"]
+
+    async def test_execute_resolves_short_labels_when_flag_on(self) -> None:
+        """Flag on — a short "R<n>" label minted by an earlier tool call
+        (search/navigate/lookup_record) must resolve back to its full id
+        before reaching the wrapped tool call."""
+        from app.utils.chat_helpers import RecordIdShortener
+
+        shortener = RecordIdShortener()
+        short_label = shortener.get_or_create_short_id("rec-full-uuid")
+        context = _make_context(enable_record_id_shortening=True, record_id_shortener=shortener)
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        fake_structured_tool = MagicMock()
+        fake_structured_tool.coroutine = AsyncMock(
+            return_value={"ok": True, "records": [], "record_count": 0, "not_available_ids": []}
+        )
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=fake_structured_tool,
+        ):
+            await tool.execute(record_ids=[short_label])
+
+        _, call_kwargs = fake_structured_tool.coroutine.call_args
+        assert call_kwargs["record_ids"] == ["rec-full-uuid"]
 
     async def test_execute_updates_citation_ref_mapper_in_tool_state(self) -> None:
         """The (possibly new) ref_mapper returned by record_to_message_content

@@ -292,13 +292,18 @@ class TestFetchToolDescription:
 
     def test_states_the_test(self) -> None:
         text = self._description().lower()
-        assert "finding the right passage" in text
-        assert "as a whole" in text
+        assert "call this before answering" in text
+        assert "whole document" in text
 
     def test_covers_both_branches(self) -> None:
+        """Both fetch cases are stated as directives ('call this BEFORE
+        answering'); skip is a single parenthetical exception, not a
+        co-equal bullet — without a gate/judge backstop, equal billing for
+        the skip case reads as permission to take the cheaper path."""
         text = self._description()
-        assert "Do NOT call this" in text
-        assert "Call this first" in text
+        assert "Call this BEFORE answering" in text
+        assert "(Skip only when" in text
+        assert "Do NOT call this" not in text
 
     def test_explains_why_fragments_are_insufficient(self) -> None:
         assert "implying are unimportant" in self._description()
@@ -324,12 +329,12 @@ class TestFetchToolDescription:
 
     def test_covers_the_case_where_no_content_is_held(self) -> None:
         """The tool is reachable from lookup/navigate/list_files, which return
-        an ID and metadata and no blocks. The passage-is-enough branch names
-        "a status" — unqualified, that reads as "do not call this" on exactly
-        the path where reading is the only way to answer."""
+        an ID and metadata and no blocks. The skip-fetch escape hatch only
+        applies when the exact fact is already visible — unqualified
+        "do not call" must not fire on the zero-content path."""
         text = self._description()
         assert "You hold no passage at all" in text
-        assert "AND you can see that passage" in text
+        assert "(Skip only when" in text
 
     def test_accepts_ids_from_navigation_not_only_search(self) -> None:
         assert "record_id=" in self._description()

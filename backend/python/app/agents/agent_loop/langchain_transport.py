@@ -263,8 +263,18 @@ class LangChainTransport(LLMTransport):
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
+        # 529 is Anthropic's non-standard "overloaded_error" status —
+        # capacity exhaustion across all customers, not this request's
+        # fault — and in practice the single most common transient failure
+        # against the Anthropic API. `anthropic.APIStatusError` (raised
+        # directly through langchain_anthropic's `_astream`/`_agenerate`,
+        # unwrapped) carries it on `.status_code`, same as any other HTTP
+        # status. Kept in sync with `RetryConfig.retryable_status_codes`
+        # default (`transport/base.py`) and the native
+        # `AnthropicTransport._RETRYABLE_STATUS_CODES` — retryable=True
+        # here only gets a retry if that config list also allows the code.
         retryable = (
-            status_code in (429, 500, 502, 503, 504) if status_code else _is_network_error(exc)
+            status_code in (429, 500, 502, 503, 504, 529) if status_code else _is_network_error(exc)
         )
         return TransportError(
             f"LangChain transport error ({context}): {exc}",

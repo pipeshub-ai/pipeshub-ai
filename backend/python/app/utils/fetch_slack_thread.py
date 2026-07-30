@@ -80,7 +80,7 @@ class FetchSlackThreadArgs(BaseModel):
             "The Record ID of any Slack record currently in your context — typically a "
             "thread-burst record (its metadata shows isReply=True), or a "
             "channel-level Slack message that has replies. Use the exact "
-            "'Record ID :' value from the context — do NOT invent or guess."
+            "Record ID value shown in the context — do NOT invent or guess."
         ),
     )
     reason: str = Field(
@@ -411,6 +411,7 @@ def create_fetch_slack_thread_tool(
     graph_provider: Optional["IGraphDBProvider"] = None,
     blob_store: Optional["BlobStorage"] = None,
     config_service: Optional["ConfigurationService"] = None,
+    tool_state: Optional[Dict[str, Any]] = None,
 ) -> Callable:
     """Factory for the fetch_slack_thread tool with runtime deps injected.
 
@@ -423,6 +424,14 @@ def create_fetch_slack_thread_tool(
         blob_store: Blob storage for fetching record content.
         config_service: When ``blob_store`` is None (e.g. deep agent tools cached
             before retrieval), used to construct ``BlobStorage`` on each call.
+        tool_state: The same mutable `ChatState`/`AgentContext.tool_state`
+            dict retrieval/knowledge-graph tools share — kept by reference
+            (not copied) so the `record_id_shortener` a search call creates
+            *after* this tool is built is still visible here. TEMPORARY
+            token-savings experiment — see `RecordIdShortener` in
+            `utils/chat_helpers.py`. Slack records go through the same
+            retrieval-block shortening as everything else, so a `record_id`
+            copied from context may be a short "R<n>" label.
     """
 
     @tool("fetch_slack_thread", args_schema=FetchSlackThreadArgs)
@@ -442,7 +451,8 @@ def create_fetch_slack_thread_tool(
         indexed or to reply/react, use the live Slack toolset tools such as
         `slack__get_thread_replies`.
 
-        Pass the 'Record ID :' value from the context exactly. The tool will:
+        Pass the exact Record ID value shown in the context (may be a short
+        label such as "R3"). The tool will:
           1. Resolve the SLACK_THREAD RecordGroup the record belongs to.
           2. Return every record that BELONGS_TO that group (thread-burst
              MessageRecords + dependent FileRecords), in chronological order.
@@ -466,6 +476,10 @@ def create_fetch_slack_thread_tool(
             or {"ok": false, "error": "..."}.
         """
         try:
+            if tool_state is not None:
+                record_id_shortener = tool_state.get("record_id_shortener")
+                if record_id_shortener is not None:
+                    record_id = record_id_shortener.resolve(record_id)
             return await _fetch_thread_records_impl(
                 record_id=record_id,
                 virtual_record_id_to_result=virtual_record_id_to_result,

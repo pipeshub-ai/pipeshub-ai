@@ -175,6 +175,22 @@ class TestComplete:
         assert exc_info.value.retryable is True
         assert exc_info.value.status_code == 429
 
+    async def test_529_overloaded_status_code_marks_retryable(self) -> None:
+        """Anthropic's non-standard "overloaded_error" status (capacity
+        exhaustion across all customers, not this request's fault) — the
+        most common transient failure against the Anthropic API in
+        practice. `anthropic.APIStatusError` carries it on `.status_code`
+        same as any other HTTP status; regression for the bug where it was
+        missing from the retryable tuple and every overload failed the
+        request outright with zero retries."""
+        exc = RuntimeError("Overloaded")
+        exc.status_code = 529
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=exc))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert exc_info.value.retryable is True
+        assert exc_info.value.status_code == 529
+
     async def test_400_status_code_is_not_retryable(self) -> None:
         exc = RuntimeError("bad request")
         exc.status_code = 400
@@ -394,6 +410,23 @@ class TestStream:
         with pytest.raises(TransportError):
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
+
+    async def test_stream_529_overloaded_is_retryable(self) -> None:
+        """Same regression as `TestComplete.test_529_overloaded_status_code_
+        marks_retryable`, but for the streaming path — this is the branch
+        `Agent.step()`'s streaming turn actually calls
+        (`app/agent_loop_lib/agent/__init__.py`'s `_call_llm`), and where
+        the production incident (mid-stream `anthropic.APIStatusError`,
+        `overloaded_error`, status 529, zero retries) was observed."""
+        exc = RuntimeError("Overloaded")
+        exc.status_code = 529
+        transport = LangChainTransport(_FakeModel(raise_on_stream=exc))
+
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+        assert exc_info.value.status_code == 529
 
     async def test_stream_model_name_resolution(self) -> None:
         transport = LangChainTransport(

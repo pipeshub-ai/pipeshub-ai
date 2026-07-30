@@ -16,11 +16,13 @@ forward-compatible: the day `PRE_AGENT` dispatch lands upstream, this
 module's logic can move behind a real hook without changing its public
 signature.
 
-The classification prompt/heuristic itself is NOT duplicated here — both
-this router and the legacy `app/api/routes/agent.py::_auto_select_graph`
-call the same `classify_route()`/`build_tier_rubric()`
-(`app.modules.agents.qna.router`), so the two execution paths can never
-silently disagree on what "quick"/"react"/"deep" means.
+The classification prompt/heuristic itself is NOT duplicated here — the
+tier decision is made by `intent.parse_intent_and_route()` below, which
+builds its prompt from `build_tier_rubric()`/`build_capability_context()`/
+`build_sql_verify_override()` (`app.modules.agents.qna.router`) — the
+same shared building blocks the now-deleted legacy `classify_route()`/
+`app/api/routes/agent.py::_auto_select_graph` used to call directly, so
+there is exactly one place "quick"/"react"/"deep" is defined.
 
 Intent understanding is now merged into the SAME call: every request (not
 just `chatMode == "auto"`) goes through `intent.parse_intent_and_route()`
@@ -63,19 +65,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Guaranteed present in `MODE_CATALOG` — the fallback both `classify_route()`
-# and this module use when the tier classifier's own verdict is somehow
-# missing/unrecognized (defensive: never raise out of routing just because
-# the classifier returned something odd).
+# Guaranteed present in `MODE_CATALOG` — the fallback this module uses when
+# the tier classifier's own verdict is somehow missing/unrecognized
+# (defensive: never raise out of routing just because the classifier
+# returned something odd).
 _FALLBACK_MODE = resolve_mode("react")
 assert _FALLBACK_MODE is not None
 
 
 def _context_to_query_info(context: "AgentContext", query: str) -> dict[str, Any]:
     """Adapts `AgentContext`'s already-loaded fields into the plain-dict
-    shape `classify_route()`/`parse_intent_and_route()` expect (same shape
-    `chat_stream` passes to `_select_agent_graph_for_query` today) — no new
-    data fetching."""
+    shape `parse_intent_and_route()` expects (same shape `chat_stream`
+    used to pass to the now-deleted `_select_agent_graph_for_query`) — no
+    new data fetching."""
     return {
         "query": query,
         "knowledge": context.agent_knowledge or [],

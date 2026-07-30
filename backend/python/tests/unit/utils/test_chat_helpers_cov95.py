@@ -18,6 +18,7 @@ from app.models.entities import (
 )
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    RecordIdShortener,
     _find_first_block_index_recursive,
     build_message_content_array,
     build_multimodal_user_content,
@@ -29,6 +30,7 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_message_content,
     get_record,
+    get_record_id_shortener_if_enabled,
     is_base64_image,
     record_to_message_content,
 )
@@ -148,6 +150,169 @@ class TestCitationRefMapperSnapshots:
         snap = m.url_to_ref
         snap["https://evil"] = "refX"
         assert "https://evil" not in m.url_to_ref
+
+
+class TestRecordIdShortener:
+    """TEMPORARY token-savings experiment — see `RecordIdShortener` docstring."""
+
+    def test_get_or_create_short_id_is_sequential(self):
+        shortener = RecordIdShortener()
+        short = shortener.get_or_create_short_id("abcdef1234567890")
+        assert short == "R1"
+
+    def test_get_or_create_short_id_is_idempotent(self):
+        shortener = RecordIdShortener()
+        first = shortener.get_or_create_short_id("abcdef1234567890")
+        second = shortener.get_or_create_short_id("abcdef1234567890")
+        assert first == second == "R1"
+
+    def test_second_distinct_id_gets_next_label(self):
+        shortener = RecordIdShortener()
+        short_a = shortener.get_or_create_short_id("abcd1111")
+        short_b = shortener.get_or_create_short_id("abcd2222")
+        assert short_a == "R1"
+        assert short_b == "R2"
+        # Both resolve back to their own full id, not each other's.
+        assert shortener.resolve(short_a) == "abcd1111"
+        assert shortener.resolve(short_b) == "abcd2222"
+
+    def test_resolve_unknown_id_passes_through_unchanged(self):
+        shortener = RecordIdShortener()
+        assert shortener.resolve("full-uuid-from-navigate") == "full-uuid-from-navigate"
+
+    def test_shorten_record_ids_in_text_replaces_label_line(self):
+        shortener = RecordIdShortener()
+        text = "Record ID: abcdef1234567890\nName: Doc A"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "Record ID: R1\nName: Doc A"
+        assert shortener.resolve("R1") == "abcdef1234567890"
+
+    def test_shorten_record_ids_in_text_matches_linked_record_id_label(self):
+        shortener = RecordIdShortener()
+        text = "* Linked Record ID: abcdef1234567890"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "* Linked Record ID: R1"
+
+    def test_shorten_record_ids_in_text_is_consistent_across_calls(self):
+        shortener = RecordIdShortener()
+        first_pass = shortener.shorten_record_ids_in_text("Record ID: abcdef1234567890")
+        second_pass = shortener.shorten_record_ids_in_text(
+            "Record ID: abcdef1234567890 | Name: Doc A"
+        )
+        assert "Record ID: R1" in first_pass
+        assert "Record ID: R1" in second_pass
+
+    def test_shorten_record_ids_in_text_handles_multiple_records(self):
+        shortener = RecordIdShortener()
+        text = "Record ID: rec-aaa-111\n\nRecord ID: rec-bbb-222"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert "Record ID: R1" in result
+        assert "Record ID: R2" in result
+        assert "rec-aaa-111" not in result
+        assert "rec-bbb-222" not in result
+
+    def test_shorten_record_ids_in_text_empty_string(self):
+        shortener = RecordIdShortener()
+        assert shortener.shorten_record_ids_in_text("") == ""
+
+    def test_shorten_record_ids_in_text_no_match_unchanged(self):
+        shortener = RecordIdShortener()
+        text = "Name: Doc A\nType: FILE"
+        assert shortener.shorten_record_ids_in_text(text) == text
+
+    def test_shorten_record_ids_in_text_stops_before_trailing_comma(self):
+        """FK-relations footer format: `(Record ID: <id>, FK: ...)` — the id
+        must not swallow the trailing comma, or `resolve()` on the short
+        label returned later would produce an id that matches nothing."""
+        shortener = RecordIdShortener()
+        text = "  - Parent Table: orders (Record ID: rec-aaa-111, FK: col1 -> col2)"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "  - Parent Table: orders (Record ID: R1, FK: col1 -> col2)"
+        assert shortener.resolve("R1") == "rec-aaa-111"
+
+    def test_shorten_record_ids_in_text_stops_before_closing_paren(self):
+        shortener = RecordIdShortener()
+        text = "(Record ID: rec-aaa-111)"
+        result = shortener.shorten_record_ids_in_text(text)
+        assert result == "(Record ID: R1)"
+        assert shortener.resolve("R1") == "rec-aaa-111"
+
+    def test_shorten_record_id_assigns_in_text(self):
+        shortener = RecordIdShortener()
+        text = "- [Record/TICKET] Foo | record_id=abcdef1234567890 | has children"
+        result = shortener.shorten_record_id_assigns_in_text(text)
+        assert "record_id=R1" in result
+        assert "abcdef1234567890" not in result
+        assert shortener.resolve("R1") == "abcdef1234567890"
+
+    def test_shorten_node_id_assigns_in_text_preserves_quotes(self):
+        shortener = RecordIdShortener()
+        text = 'navigate(node_id="abcdef1234567890") to open a child'
+        result = shortener.shorten_node_id_assigns_in_text(text)
+        assert result == 'navigate(node_id="R1") to open a child'
+
+    def test_shorten_node_id_assigns_in_text_unquoted(self):
+        shortener = RecordIdShortener()
+        result = shortener.shorten_node_id_assigns_in_text("node_id=abcdef1234567890")
+        assert result == "node_id=R1"
+
+    def test_shorten_all_record_ids_applies_every_pattern(self):
+        shortener = RecordIdShortener()
+        text = (
+            "Record ID: abcdef1234567890\n"
+            "- [Record/TICKET] Foo | record_id=abcdef1234567890\n"
+            'navigate(node_id="abcdef1234567890") to open a child'
+        )
+        result = shortener.shorten_all_record_ids(text)
+        assert "abcdef1234567890" not in result
+        assert result.count("R1") == 3
+
+    def test_same_full_id_gets_same_label_across_patterns(self):
+        """A record surfaced by both a header line and a row/hint gets one label."""
+        shortener = RecordIdShortener()
+        shortener.shorten_record_ids_in_text("Record ID: abcdef1234567890")
+        result = shortener.shorten_record_id_assigns_in_text("record_id=abcdef1234567890")
+        assert "record_id=R1" in result
+
+
+class TestGetRecordIdShortenerIfEnabled:
+    """Single gate for all 7 knowledge-tool lazy-creation sites — see
+    `ChatQuery.enableRecordIdShortening` (opt-in, disabled by default)."""
+
+    def test_flag_absent_returns_none_and_does_not_create(self):
+        state: dict = {}
+        assert get_record_id_shortener_if_enabled(state) is None
+        assert "record_id_shortener" not in state
+
+    def test_flag_false_returns_none_and_does_not_create(self):
+        state = {"enable_record_id_shortening": False}
+        assert get_record_id_shortener_if_enabled(state) is None
+        assert "record_id_shortener" not in state
+
+    def test_flag_true_creates_and_stores_shortener(self):
+        state = {"enable_record_id_shortening": True}
+        shortener = get_record_id_shortener_if_enabled(state)
+        assert isinstance(shortener, RecordIdShortener)
+        assert state["record_id_shortener"] is shortener
+
+    def test_flag_true_reuses_existing_shortener_across_calls(self):
+        """Every one of the 7 lazy-creation sites must share the same
+        instance within a request — the second call must not mint a new
+        one, or short labels minted by one tool won't resolve in another."""
+        state = {"enable_record_id_shortening": True}
+        first = get_record_id_shortener_if_enabled(state)
+        second = get_record_id_shortener_if_enabled(state)
+        assert first is second
+
+    def test_existing_shortener_returned_even_if_flag_later_false(self):
+        """A shortener already minted this request (flag was True at some
+        earlier call) keeps being reused even if a later call site reads
+        the flag as False — `tool_state` is shared, so this should not
+        happen in practice, but the read path must not fabricate a second
+        competing instance."""
+        shortener = RecordIdShortener()
+        state = {"enable_record_id_shortening": False, "record_id_shortener": shortener}
+        assert get_record_id_shortener_if_enabled(state) is shortener
 
 
 class TestIsBase64ImageBranches:
@@ -373,7 +538,7 @@ class TestBuildMessageContentArrayBranches:
         merged = [x for sub in parts for x in sub]
         text_blocks = [m["text"] for m in merged if m.get("type") == "text"]
         blob = "\n".join(text_blocks)
-        assert "image description" in blob
+        assert "(image)" in blob
 
     def test_valid_group_label_renders_block_group_prompt(self):
         flat = [{

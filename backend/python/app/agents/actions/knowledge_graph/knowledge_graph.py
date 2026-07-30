@@ -54,6 +54,7 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
     node_id = args.get("node_id")
     name_filter = args.get("name_filter")
     page = args.get("page", 1)
+    depth = args.get("depth", 1)
     if node_id:
         base = f"Navigated to node {node_id}"
     else:
@@ -62,6 +63,8 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
         base += f" (filter: {name_filter!r})"
     if page and page > 1:
         base += f" — page {page}"
+    if depth and depth > 1:
+        base += f" (depth {depth})"
     return base
 
 
@@ -131,13 +134,29 @@ def _normalize_identifiers(raw: Any) -> list[str]:
     return []
 
 
+def _flatten_row_ids(rows: Any) -> list[str]:
+    """Every row id in `rows` plus, recursively, every id in their own
+    `children` (populated only by depth >= 2 — see `navigator.py`'s
+    `_expand_depth`). Depth=1 rows never carry `children`, so this is
+    equivalent to a flat `[row.id for row in rows]` for existing callers."""
+    ids: list[str] = []
+    for row in rows:
+        if row.is_record and row.id:
+            ids.append(row.id)
+        if row.children:
+            ids.extend(_flatten_row_ids(row.children))
+    return ids
+
+
 def _record_ids_in_view(view: NavigationView) -> list[str]:
     """Every fetchable Record ID this navigation showed the model.
 
     Only record/folder nodes — an app or recordGroup node id cannot be read
-    by `knowledgegraph__fetch_record`.
+    by `knowledgegraph__fetch_record`. Includes nested depth>=2 children so
+    a hierarchy-overview call makes every id it displayed fetchable, not
+    just the top-level rows.
     """
-    ids = [row.id for row in (*view.rows, *view.related) if row.is_record and row.id]
+    ids = _flatten_row_ids((*view.rows, *view.related))
     if view.current and view.current.is_record and view.current.id:
         ids.append(view.current.id)
     return ids
@@ -186,10 +205,15 @@ class KnowledgeGraph:
             "Opening a record shows its own metadata — for a ticket that includes status, assignee, "
             "priority and dates — so a question about one record is often answered by this call alone. "
             "For its content, pass the Record ID to knowledgegraph__fetch_record.\n\n"
+            "Pass depth=2 or depth=3 to see multiple levels in ONE call instead of navigating one level "
+            "at a time — e.g. an epic's stories AND their subtasks, each with condensed status/assignee. "
+            "Use this whenever the question needs an overview of a hierarchy rather than a single node "
+            "(status of a whole initiative, what a project contains end to end).\n\n"
             "Output always shows:\n"
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
-            "  Children listing with record_id= or node_id= for each item\n"
+            "  Children listing with record_id= or node_id= for each item, indented one level per "
+            "extra depth requested\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next"
         ),
@@ -220,9 +244,24 @@ class KnowledgeGraph:
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
-                description="Children per page (1–50, default 20).",
+                description="Children per page (1–100, default 50).",
                 required=False,
-                default=20,
+                default=50,
+            ),
+            ToolParameter(
+                name="depth",
+                type=ParameterType.INTEGER,
+                description=(
+                    "How many levels of children to return in this one call (1-3, default 1). "
+                    "depth=2 also fetches each child's own children (e.g. an epic's stories AND "
+                    "their subtasks); depth=3 goes one level deeper. Each deeper level shows fewer "
+                    "items per parent and condensed metadata (status/assignee/priority) instead of "
+                    "full detail, to stay within the response size limit. Only applies on page=1. "
+                    "Use depth=2/3 for hierarchy-overview questions instead of calling navigate() "
+                    "once per level."
+                ),
+                required=False,
+                default=1,
             ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
@@ -234,7 +273,8 @@ class KnowledgeGraph:
         node_id: str | None = None,
         name_filter: str | None = None,
         page: int = 1,
-        limit: int = 20,
+        limit: int = 50,
+        depth: int = 1,
     ) -> tuple[bool, str]:
         """Walk the knowledge graph hierarchy."""
         if not self.state:
@@ -254,7 +294,20 @@ class KnowledgeGraph:
         if name_filter and len(name_filter) < 2:
             name_filter = None
         page = max(1, page)
-        limit = min(max(1, limit), 50)
+        limit = min(max(1, limit), 100)
+        depth = min(max(1, depth), 3)
+
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`): node_id may be a short
+        # `R<n>` label this same shortener minted in an earlier tool call
+        # (search, a previous navigate, lookup_record, list_files) —
+        # resolve it back to the full id before it reaches the graph
+        # provider. IDs that were never shortened pass through `.resolve()`
+        # unchanged. Skipped entirely when the flag is off.
+        from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+        if node_id and record_id_shortener is not None:
+            node_id = record_id_shortener.resolve(node_id)
 
         # Get user key
         user_key = await _get_user_key(graph_provider, user_id)
@@ -318,13 +371,14 @@ class KnowledgeGraph:
                 limit=limit,
                 connector_ids=connector_ids or None,
                 record_group_ids=list(kb_ids) if kb_ids else None,
+                depth=depth,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
         remember_record_ids(state, _record_ids_in_view(view))
-        return True, render_navigation_view(view, page)
+        return True, render_navigation_view(view, page, record_id_shortener)
 
     @tool(
         path="/tools/knowledgegraph/lookup_record",
@@ -435,7 +489,16 @@ class KnowledgeGraph:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
         remember_record_ids(state, [m.id for m in result.matches])
-        text = render_lookup_result(result)
+
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
+        # in `utils/chat_helpers.py`. Same shared shortener as navigate()/
+        # search()/list_files(), keyed off tool_state so any tool the model
+        # calls first mints the shared mapping.
+        from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+
+        text = render_lookup_result(result, record_id_shortener)
         # "Zero accessible results" is a legitimate lookup outcome, not a
         # tool failure — `success=False` renders as a red failed-tool-call
         # in the frontend and tells the model "the tool broke" rather than

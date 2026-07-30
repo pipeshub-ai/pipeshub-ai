@@ -13,6 +13,16 @@ from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import RecordType, Status, TicketRecord
 
 
+def _short_id_for(state: dict, full_id: str) -> str:
+    """The short "R<n>" label `RecordIdShortener` assigned `full_id` in a
+    prior navigate()/lookup_record() call on this `state` — TEMPORARY
+    token-savings experiment (see `RecordIdShortener` in
+    `utils/chat_helpers.py`). Idempotent — returns the existing mapping."""
+    shortener = state.get("record_id_shortener")
+    assert shortener is not None, "record_id_shortener not set on state — call a KG tool first"
+    return shortener.get_or_create_short_id(full_id)
+
+
 def _make_state(**overrides):
     """Create a ChatState-like dict with sensible defaults."""
     gp = AsyncMock()
@@ -27,6 +37,10 @@ def _make_state(**overrides):
             {"connectorId": "conn-jira", "type": "JIRA"},
             {"connectorId": "conn-confluence", "type": "CONFLUENCE"},
         ],
+        # Opt into the RecordIdShortener (disabled by default — see
+        # `ChatQuery.enableRecordIdShortening`) so this suite continues to
+        # exercise the shortened-id path it was written against.
+        "enable_record_id_shortening": True,
     }
     state.update(overrides)
     return state
@@ -256,12 +270,12 @@ class TestNavigateRecordWithChildren:
             success, text = await tool.navigate(node_id="rec1")
 
         assert success
-        assert "Record ID: rec1" in text
+        assert f"Record ID: {_short_id_for(state, 'rec1')}" in text
         assert "PA-1787" in text
         assert "Jira" in text or "Payments" in text  # breadcrumbs
-        assert "record_id=child1" in text
+        assert f"record_id={_short_id_for(state, 'child1')}" in text
         assert "Related:" in text
-        assert "record_id=rel1" in text
+        assert f"record_id={_short_id_for(state, 'rel1')}" in text
 
 
 class TestNavigateExposesRecordMetadata:
@@ -309,7 +323,7 @@ class TestNavigateExposesRecordMetadata:
         assert "* Status: IN_PROGRESS" in text
         assert "* Priority: High" in text
         assert "* Assignee: Dana" in text
-        assert "External ID     : PA-1787" in text
+        assert "External ID: PA-1787" in text
 
     @pytest.mark.asyncio
     async def test_read_step_is_offered_for_a_record_node(self):
@@ -317,7 +331,12 @@ class TestNavigateExposesRecordMetadata:
 
         _success, text = await self._navigate(state)
 
-        assert 'knowledgegraph__fetch_record(record_ids=["rec1"])' in text
+        # The navigated record AND the children it just listed: a listing hands
+        # back ids and metadata and nothing the children say, so a hint naming
+        # only `rec1` left the model walking the tree without ever reading it.
+        rec_id = _short_id_for(state, "rec1")
+        child_id = _short_id_for(state, "child1")
+        assert f'knowledgegraph__fetch_record(record_ids=["{rec_id}", "{child_id}"])' in text
 
     @pytest.mark.asyncio
     async def test_read_step_is_not_offered_for_a_non_record_node(self):
@@ -335,8 +354,13 @@ class TestNavigateExposesRecordMetadata:
 
         _success, text = await self._navigate(state, node_id="rg1")
 
-        assert "Node ID: rg1" in text
-        assert "knowledgegraph__fetch_record" not in text
+        rg_id = _short_id_for(state, "rg1")
+        child_id = _short_id_for(state, "child1")
+        assert f"Node ID: {rg_id}" in text
+        # Its record children are readable and are offered; the recordGroup's
+        # own id must never reach a fetch call.
+        assert f'knowledgegraph__fetch_record(record_ids=["{child_id}"])' in text
+        assert rg_id not in text.split("Next:")[-1]
 
     @pytest.mark.asyncio
     async def test_metadata_load_failure_does_not_break_navigation(self):
@@ -346,8 +370,8 @@ class TestNavigateExposesRecordMetadata:
         success, text = await self._navigate(state)
 
         assert success
-        assert "Record ID: rec1" in text
-        assert "record_id=child1" in text
+        assert f"Record ID: {_short_id_for(state, 'rec1')}" in text
+        assert f"record_id={_short_id_for(state, 'child1')}" in text
 
     @pytest.mark.asyncio
     async def test_later_pages_skip_the_extra_record_read(self):
@@ -437,6 +461,212 @@ class TestNavigateAgentScoping:
         assert "connector_ids" in captured or "record_group_ids" in captured
 
 
+class TestNavigateDepthExpansion:
+    """`depth` (1-3) inlines extra levels of children in one navigate()
+    call — see `GraphNavigator._expand_depth`/`_attach_context_summaries`."""
+
+    def _state_on_epic(self, *, record_by_id=None):
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "epic1", "name": "SaaS Launch", "nodeType": "record", "subType": "EPIC",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=record_by_id)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_depth2_expands_children_of_children(self):
+        state = self._state_on_epic()
+
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        level1_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        subtask_item = _make_node_item("sub1", "Stripe setup", "record", "SUBTASK")
+        level2_resp = _make_knowledge_hub_response(items=[subtask_item], total=1)
+
+        async def fake_get_nodes(self_inner, **kwargs):
+            if kwargs.get("parent_id") == "epic1":
+                return level1_resp
+            if kwargs.get("parent_id") == "story1":
+                return level2_resp
+            return _make_knowledge_hub_response(items=[], total=0)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=fake_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="epic1", depth=2)
+
+        assert success
+        assert f"record_id={_short_id_for(state, 'story1')}" in text
+        assert f"record_id={_short_id_for(state, 'sub1')}" in text
+
+    @pytest.mark.asyncio
+    async def test_depth_omitted_does_not_expand(self):
+        """depth omitted (default 1) → identical call count to before this
+        feature existed: only the top-level fetch, no expansion query."""
+        state = self._state_on_epic()
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        mock_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+
+        call_count = {"n": 0}
+
+        async def counting_get_nodes(self_inner, **kwargs):
+            call_count["n"] += 1
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=counting_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="epic1")
+
+        assert success
+        assert call_count["n"] == 1
+        assert "Status:" not in text.split("Children")[-1]  # no condensed context at depth=1
+
+    @pytest.mark.asyncio
+    async def test_depth_clamped_to_max_three(self):
+        """depth=99 must not crash or fan out beyond the depth=3 cap."""
+        state = self._state_on_epic()
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=False)
+        mock_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, _text = await tool.navigate(node_id="epic1", depth=99)
+        assert success
+
+    @pytest.mark.asyncio
+    async def test_depth_ignored_on_page_greater_than_one(self):
+        """Depth expansion is page=1 only — a page>1 request must not
+        trigger any extra child-of-child queries."""
+        state = self._state_on_epic()
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        mock_resp = _make_knowledge_hub_response(items=[story_item], total=1, page=2)
+
+        call_count = {"n": 0}
+
+        async def counting_get_nodes(self_inner, **kwargs):
+            call_count["n"] += 1
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=counting_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            await tool.navigate(node_id="epic1", depth=2, page=2)
+
+        assert call_count["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_depth2_adds_condensed_context_from_ticket_record(self):
+        """Rows shown at depth>=2 get a one-line `* `-derived metadata
+        summary pulled from the real typed `Record`."""
+        state = self._state_on_epic(record_by_id=_ticket_record(id="story1"))
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=False)
+        mock_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="epic1", depth=2)
+
+        assert success
+        assert "Status: IN_PROGRESS" in text
+        assert "Assignee: Dana" in text
+
+    @pytest.mark.asyncio
+    async def test_depth2_expansion_reuses_same_scope(self):
+        """The child-of-child fetch must carry the same connector/KB scope
+        as the top-level call — permission narrowing is identical at every
+        level because both go through the same `get_nodes` path."""
+        state = self._state_on_epic()
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        level1_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        level2_resp = _make_knowledge_hub_response(items=[], total=0)
+
+        captured_calls: list[dict] = []
+
+        async def capturing_get_nodes(self_inner, **kwargs):
+            captured_calls.append(dict(kwargs))
+            if kwargs.get("parent_id") == "epic1":
+                return level1_resp
+            return level2_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capturing_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            await tool.navigate(node_id="epic1", depth=2)
+
+        top_call = next(c for c in captured_calls if c.get("parent_id") == "epic1")
+        expansion_call = next(c for c in captured_calls if c.get("parent_id") == "story1")
+        assert expansion_call.get("connector_ids") == top_call.get("connector_ids")
+        assert expansion_call.get("record_group_ids") == top_call.get("record_group_ids")
+
+    @pytest.mark.asyncio
+    async def test_depth2_uses_reduced_limit_for_children(self):
+        """Level-2 expansion uses a shrunk per-parent limit (max(5, limit//2))
+        so a wide hierarchy can't fan out into an unbounded number of reads."""
+        state = self._state_on_epic()
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        level1_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        level2_resp = _make_knowledge_hub_response(items=[], total=0)
+
+        captured_limits: dict[str, int] = {}
+
+        async def capturing_get_nodes(self_inner, **kwargs):
+            captured_limits[kwargs.get("parent_id")] = kwargs.get("limit")
+            if kwargs.get("parent_id") == "epic1":
+                return level1_resp
+            return level2_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capturing_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            await tool.navigate(node_id="epic1", depth=2, limit=20)
+
+        assert captured_limits["epic1"] == 20
+        assert captured_limits["story1"] == 10  # max(5, 20 // 2)
+
+    @pytest.mark.asyncio
+    async def test_depth2_skips_expansion_for_leaf_rows(self):
+        """A row with `has_children=False` costs no extra query at
+        depth>=2 — only rows that actually have children are expanded."""
+        state = self._state_on_epic()
+        leaf_item = _make_node_item("leaf1", "Standalone task", "record", "TASK", has_children=False)
+        mock_resp = _make_knowledge_hub_response(items=[leaf_item], total=1)
+
+        call_count = {"n": 0}
+
+        async def counting_get_nodes(self_inner, **kwargs):
+            call_count["n"] += 1
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=counting_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            await tool.navigate(node_id="epic1", depth=3)
+
+        assert call_count["n"] == 1  # only the top-level fetch
+
+
 class TestNavigateNameFilter:
     @pytest.mark.asyncio
     async def test_name_filter_short_ignored(self):
@@ -453,4 +683,78 @@ class TestNavigateNameFilter:
         ):
             tool = KnowledgeGraph(state=state)
             success, _ = await tool.navigate(name_filter="a")
-        assert success  # no crash from short filter
+        assert success
+
+
+class TestNavigateRecordIdShorteningFlag:
+    """`enable_record_id_shortening` is opt-in and disabled by default (see
+    `ChatQuery.enableRecordIdShortening`) — these pin the flag-off default
+    behavior against `TestNavigateExposesRecordMetadata`'s flag-on cases."""
+
+    def _state_on_ticket(self, *, enable_record_id_shortening: bool | None):
+        overrides = (
+            {} if enable_record_id_shortening is None
+            else {"enable_record_id_shortening": enable_record_id_shortening}
+        )
+        state = _make_state(**overrides)
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1",
+            "name": "SaaS launch",
+            "nodeType": "record",
+            "subType": "TICKET",
+            "connector": "JIRA",
+            "webUrl": "https://example.atlassian.net/browse/PA-1787",
+            "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=_ticket_record())
+        return state
+
+    async def _navigate(self, state, node_id="rec1"):
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            return await KnowledgeGraph(state=state).navigate(node_id=node_id)
+
+    @pytest.mark.asyncio
+    async def test_flag_off_shows_full_record_id_verbatim(self):
+        """`enable_record_id_shortening=False` (the production default) — the
+        full id must appear as-is and no shortener should have been minted."""
+        state = self._state_on_ticket(enable_record_id_shortening=False)
+
+        success, text = await self._navigate(state)
+
+        assert success
+        assert "Record ID: rec1" in text
+        assert state.get("record_id_shortener") is None
+
+    @pytest.mark.asyncio
+    async def test_flag_on_shows_short_label_not_full_id(self):
+        state = self._state_on_ticket(enable_record_id_shortening=True)
+
+        success, text = await self._navigate(state)
+
+        assert success
+        short_id = _short_id_for(state, "rec1")
+        assert short_id != "rec1"
+        assert f"Record ID: {short_id}" in text
+        assert "Record ID: rec1" not in text
+
+    @pytest.mark.asyncio
+    async def test_flag_off_node_id_passed_through_unresolved(self):
+        """With the flag off, a `node_id` the model passes in is never run
+        through `.resolve()` — there's no shortener to resolve against, and
+        the raw id must reach the graph provider unchanged."""
+        state = self._state_on_ticket(enable_record_id_shortening=False)
+        gp = state["graph_provider"]
+
+        await self._navigate(state, node_id="rec1")
+
+        assert state.get("record_id_shortener") is None
+        gp.get_knowledge_hub_node_access.assert_awaited()
+        assert gp.get_knowledge_hub_node_access.await_args.kwargs.get("node_id") == "rec1"

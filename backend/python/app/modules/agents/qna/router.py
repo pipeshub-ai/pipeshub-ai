@@ -1,23 +1,24 @@
-"""LLM-based query routing: classifies a user request into PipesHub's three
-execution tiers (`quick` / `react` / `deep`).
+"""Shared building blocks for classifying a user request into PipesHub's
+three execution tiers (`quick` / `react` / `deep`): the capability-context
+prompt block, the tier rubric, the SQL-toolset override, and prior-turn
+message construction.
 
-Extracted from `app/api/routes/agent.py::_auto_select_graph` (Phase 7 of the
-agent-loop migration) so the agent-loop auto-router
-(`app/agents/agent_loop/router.py`) and the legacy LangGraph route selector
-(both `_auto_select_graph` and the rest of LangGraph have since been
-deleted) shared exactly one classification prompt/heuristic instead of two
-forks that would silently drift apart. This module stops at the tier
-decision itself — mapping a tier to a `LoopStrategy` is the caller's own
-concern.
+Originally extracted from `app/api/routes/agent.py::_auto_select_graph`
+(Phase 7 of the agent-loop migration) alongside a standalone `classify_route()`
+call site. `classify_route()` itself has since been removed — the agent-loop
+adapter's `app.agents.agent_loop.intent.parse_intent_and_route()` now performs
+the actual tier classification (`include_routing=True`) as ONE LLM call that
+also does intent/query rewriting, reusing these same building blocks so the
+tier definitions never drift between the two concerns. This module now stops
+at the shared prompt pieces — the classification call itself lives in
+`intent.py`.
 """
 
 from __future__ import annotations
 
-from logging import Logger
 from typing import Any, Literal
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.modules.agents.capability_summary import (
@@ -25,8 +26,6 @@ from app.modules.agents.capability_summary import (
     format_connector_filter_lines,
 )
 from app.modules.agents.qna.tool_system import code_execution_enabled
-from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.attachment_utils import resolve_attachments
 
 
 class RouteDecision(BaseModel):
@@ -243,10 +242,9 @@ def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowled
     """Builds the quick/react/deep tier-classification system prompt from
     already-computed capability context.
 
-    Extracted out of `classify_route()` unchanged (byte-identical output for
-    the same inputs) so `app.agents.agent_loop.intent.parse_intent_and_route`
-    can reuse the SAME tier rubric for its merged intent+route call without
-    the two prompts drifting apart — see that module's docstring.
+    Shared verbatim by `app.agents.agent_loop.intent.parse_intent_and_route`
+    for its merged intent+route call, so the tier rubric never drifts
+    between the two call sites — see that module's docstring.
     """
     return (
         "You are a routing agent. Classify the user request into exactly one "
@@ -335,9 +333,9 @@ def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowled
 
 
 def build_sql_verify_override(query_info: dict[str, Any]) -> str:
-    """Extracted from `classify_route()` — SQL toolsets always force
-    `react` regardless of tier, since schema introspection + intermediate
-    verification is required before any SQL execution."""
+    """SQL toolsets always force `react` regardless of tier, since schema
+    introspection + intermediate verification is required before any SQL
+    execution."""
     toolsets = query_info.get("toolsets") or []
     has_sql_toolset = any(
         isinstance(ts, dict)
@@ -357,107 +355,10 @@ def build_sql_verify_override(query_info: dict[str, Any]) -> str:
     )
 
 
-async def classify_route(
-    query_info: dict[str, Any],
-    logger: Logger,
-    llm: BaseChatModel,
-    *,
-    config_service: Any = None,
-    graph_provider: Any = None,
-    is_multimodal_llm: bool = False,
-    org_id: str = "",
-    opik_tracer: Any = None,
-) -> RouteDecision:
-    """
-    Classify a query into one of three agent tiers: quick, react, or deep.
-    Falls back to 'react' if the query is empty or the LLM call/parsing fails.
-    """
-    user_query = query_info.get("query", "").strip()
-    if not user_query:
-        return RouteDecision(reasoning="empty query", route="react")
-
-    capability_block, n_knowledge, _sources, _tools_data = (
-        build_capability_context(query_info)
-    )
-    sql_verify_override = build_sql_verify_override(query_info)
-
-    # Create blob_store once; reused for both history attachments and current ones.
-    blob_store = None
-    if config_service and graph_provider:
-        try:
-            blob_store = BlobStorage(
-                logger=logger,
-                config_service=config_service,
-                graph_provider=graph_provider,
-            )
-        except Exception as _bs_exc:
-            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
-
-    prior_messages = await build_prior_routing_messages(
-        query_info,
-        blob_store=blob_store,
-        org_id=org_id,
-        is_multimodal_llm=is_multimodal_llm,
-    )
-
-    structured_llm = llm.with_structured_output(RouteDecision)
-
-    system_prompt = build_tier_rubric(capability_block, sql_verify_override, n_knowledge)
-
-    # Build the routing HumanMessage: the user query goes here so multimodal
-    # models receive both text and image blocks in the same turn.
-    # Prior-turn attachments are already carried by prior_messages in order.
-    routing_human_content: Any = f"user query : {user_query}"
-    attachments = query_info.get("attachments") or []
-    if blob_store:
-        try:
-            attachment_blocks: list[dict] = []
-            if attachments and is_multimodal_llm:
-                attachment_blocks = await resolve_attachments(
-                    attachments=attachments,
-                    blob_store=blob_store,
-                    org_id=org_id,
-                    is_multimodal_llm=True,
-                    logger=logger,
-                )
-            if attachment_blocks:
-                routing_human_content = [
-                    {"type": "text", "text": f"user query : {user_query}\n\nAttached files from the user:\n"},
-                    *attachment_blocks,
-                ]
-        except Exception as exc:
-            logger.warning("Router: failed to resolve attachments for routing context: %s", exc)
-
-    try:
-        invoke_config = {"callbacks": [opik_tracer]} if opik_tracer else {}
-
-        decision: RouteDecision = await structured_llm.ainvoke(
-            [
-                SystemMessage(content=system_prompt),
-                *prior_messages,
-                HumanMessage(content=routing_human_content),
-            ],
-            config=invoke_config,
-        )
-
-        logger.info(
-            "Query route: %s | (query=%s, reasoning=%s)",
-            decision.route,
-            user_query[:80],
-            decision.reasoning[:120],
-        )
-        return decision
-
-    except Exception as e:
-        logger.warning("Query route: react (fallback) | router failed: %s", e)
-        return RouteDecision(reasoning=f"router failed: {e}", route="react")
-
-
 __all__ = [
     "RouteDecision",
     "build_capability_context",
     "build_prior_routing_messages",
     "build_sql_verify_override",
     "build_tier_rubric",
-    "classify_route",
 ]

@@ -23,6 +23,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import Knowle
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
+    from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,17 @@ def _normalize_list(value: Any) -> list[str] | None:
     return None
 
 
-def _render_flat_text(response: KnowledgeHubNodesResponse, query: str | None) -> str:
-    """Render list_files output in the same flat-text grammar as navigate()."""
+def _render_flat_text(
+    response: KnowledgeHubNodesResponse,
+    query: str | None,
+    shortener: "RecordIdShortener | None" = None,
+) -> str:
+    """Render list_files output in the same flat-text grammar as navigate().
+
+    `shortener` is the TEMPORARY token-savings `RecordIdShortener` (see
+    `app.utils.chat_helpers`) — when supplied, every printed id becomes a
+    short `R<n>` label instead of the full record id.
+    """
     if not response.success:
         error = response.error or "Failed to browse knowledge files"
         return f"Error: {error}"
@@ -90,7 +100,8 @@ def _render_flat_text(response: KnowledgeHubNodesResponse, query: str | None) ->
         type_str = f"{label}/{sub}" if sub else label
 
         id_label = "record_id" if node_type in _FETCHABLE_NODE_TYPES else "node_id"
-        line = f"  [{type_str}] {item.name}  | {id_label}={item.id}"
+        item_id = shortener.get_or_create_short_id(item.id) if shortener is not None else item.id
+        line = f"  [{type_str}] {item.name}  | {id_label}={item_id}"
         if hasattr(item, "webUrl") and item.webUrl:
             line += f"  | url={item.webUrl}"
         lines.append(line)
@@ -103,8 +114,8 @@ def _render_flat_text(response: KnowledgeHubNodesResponse, query: str | None) ->
         lines.append("")
 
     lines.append(
-        "Next: pass record_id to knowledgegraph.navigate() to see its children, "
-        "or to knowledgegraph.fetch_record() to read its content."
+        "Next: pass record_id to knowledgegraph__navigate() to see its children, "
+        "or to knowledgegraph__fetch_record() to read its content."
     )
     return "\n".join(lines)
 
@@ -217,7 +228,11 @@ async def execute_list_files(
 
         from app.modules.agents.qna.chat_state import remember_record_ids
         remember_record_ids(state, _record_ids_in_items(response.items))
-        return True, _render_flat_text(response, query)
+
+        from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+
+        return True, _render_flat_text(response, query, record_id_shortener)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

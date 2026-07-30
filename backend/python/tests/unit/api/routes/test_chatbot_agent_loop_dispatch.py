@@ -138,6 +138,8 @@ class TestGenerateChatStreamViaAgentLoop:
         assert query_dict["conversationId"] == "conv-1"
         assert query_dict["attachments"] == [{"virtualRecordId": "vr1", "mimeType": "application/pdf"}]
         assert query_dict["filters"] == {"apps": ["confluence"]}
+        # Opt-in, disabled by default — see `ChatQuery.enableRecordIdShortening`.
+        assert query_dict["enableRecordIdShortening"] is False
 
         assert user_info["userId"] == "user-1"
         assert user_info["orgId"] == "org-1"
@@ -146,6 +148,36 @@ class TestGenerateChatStreamViaAgentLoop:
         policy_arg = call_args.args[3]
         assert policy_arg is AGENT_POLICY
         assert call_args.kwargs["protocol"] == "agui"
+
+    async def test_enable_record_id_shortening_forwarded_when_requested(self):
+        """Opt-in — see `ChatQuery.enableRecordIdShortening` — must reach
+        `query_dict` unchanged when the caller explicitly sets it."""
+        from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
+
+        request = self._mock_request({})
+        query_info = ChatQuery(query="hello", enableRecordIdShortening=True)
+
+        async def _fake_run_chat_stream(*args, **kwargs):
+            yield "event: complete\ndata: {}\n\n"
+
+        with (
+            patch(
+                "app.api.routes.chatbot.get_llm_for_chat",
+                new=AsyncMock(return_value=(MagicMock(), {"provider": "openai", "isMultimodal": False}, {})),
+            ),
+            patch(
+                "app.api.routes.chatbot.run_chat_stream", side_effect=_fake_run_chat_stream,
+            ) as mock_run_chat_stream,
+        ):
+            [
+                chunk
+                async for chunk in _generate_chat_stream_via_agent_loop(
+                    request, query_info, AsyncMock(), MagicMock(), AsyncMock(),
+                )
+            ]
+
+        query_dict = mock_run_chat_stream.call_args.args[0]
+        assert query_dict["enableRecordIdShortening"] is True
 
     async def test_ollama_provider_keeps_tool_calls_enabled(self):
         """Ollama must not be forced into the no-tools degradation path --

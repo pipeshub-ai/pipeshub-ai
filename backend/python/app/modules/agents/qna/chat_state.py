@@ -175,6 +175,10 @@ class ChatState(TypedDict):
 
     is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
     citation_ref_mapper: CitationRefMapper | None  # Bidirectional mapping between tiny refs (ref1, ref2) and full block web URLs
+    # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+    # `utils/chat_helpers.py`. Opt-in, disabled by default.
+    enable_record_id_shortening: bool | None
+    record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
 
@@ -603,6 +607,14 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
         "is_multimodal_llm": is_multimodal_llm,
         "citation_ref_mapper": None,
+
+        # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+        # `utils/chat_helpers.py`. Opt-in, disabled by default: knowledge
+        # tools only create a shortener when this is True.
+        "enable_record_id_shortening": bool(
+            chat_query.get("enable_record_id_shortening")
+            or chat_query.get("enableRecordIdShortening")
+        ),
 
         # Attachments (uploaded images/PDFs from client)
         "attachments": chat_query.get("attachments", []),

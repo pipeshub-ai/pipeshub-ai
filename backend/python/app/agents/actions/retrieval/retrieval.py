@@ -29,6 +29,7 @@ from app.utils.chat_helpers import (
     build_message_content_array,
     enrich_records_with_graph_context,
     get_flattened_results,
+    get_record_id_shortener_if_enabled,
 )
 
 if TYPE_CHECKING:
@@ -115,9 +116,11 @@ _HIERARCHICAL_RECORD_TYPES = frozenset({
     RecordType.SHAREPOINT_DOCUMENT_LIBRARY.value,
 })
 _NAVIGATE_TIP = (
-    "\n\nTip: these are content excerpts. For a record's sub-items (epic to "
+    "\n\nTip: these are content excerpts. To see a record's sub-items (epic to "
     "stories to sub-tasks, page to child pages) or its linked records, call "
-    'knowledgegraph.navigate(node_id="<Record ID>").'
+    'knowledgegraph.navigate(node_id="<Record ID>") — it returns structure and '
+    "Record IDs, not content, so reading what any of those records SAY is "
+    "still a fetch."
 )
 
 
@@ -126,6 +129,22 @@ def _has_hierarchical_record(virtual_record_id_to_result: dict[str, Any]) -> boo
         isinstance(rec, dict) and rec.get("record_type") in _HIERARCHICAL_RECORD_TYPES
         for rec in virtual_record_id_to_result.values()
     )
+
+
+def compose_result_tail(
+    virtual_record_id_to_result: dict[str, Any], candidate_suffix: str
+) -> str:
+    """Trailing guidance for a retrieval/search result, in the order the model
+    should read it.
+
+    The navigate tip must come BEFORE the candidate list, never after. It names
+    a different tool, so in the last position it reads as the answer to "how do
+    I get more?" and beats the fetch call-to-action on exactly the records where
+    both apply — tickets and Confluence pages. Shared with
+    `knowledge_graph.ops.search` so the two paths cannot drift.
+    """
+    tip = _NAVIGATE_TIP if _has_hierarchical_record(virtual_record_id_to_result) else ""
+    return tip + candidate_suffix
 
 
 def _extract_record_names(text: str) -> list[str]:
@@ -569,11 +588,13 @@ class Retrieval:
             # query signal misfires leaves it unable to judge a fetch at all.
             # The signal only chooses the header's framing.
             candidate_suffix = ""
+            coverage_note = ""
             needs_whole_doc = bool(self.state.get("needs_whole_document", False))
             from app.modules.agents.record_escalation import (
                 analyze_coverage,
                 build_candidates,
                 render_candidate_table,
+                render_coverage_note,
             )
             # Coverage over ALL accumulated results, not just this call's, so
             # parallel/repeat retrieval calls do not each report partial counts.
@@ -603,7 +624,7 @@ class Retrieval:
                 records_in_relevance_order=records_in_order,
                 already_fetched_ids=already_fetched,
             )
-            # Stash on state so full_record_gate can read without re-computing.
+            # Stash on state for observability/debugging.
             self.state["fetch_coverage"] = coverage
             self.state["fetch_plan"] = plan
 
@@ -618,6 +639,24 @@ class Retrieval:
                 candidate_suffix = render_candidate_table(
                     plan, needs_whole_document=needs_whole_doc,
                 )
+                # Placed at the TOP of the result (see `summary` below) —
+                # the full table above lands at the bottom, potentially
+                # thousands of tokens away on a long result, where the
+                # model may already be composing an answer from the blocks
+                # by the time it reaches it.
+                coverage_note = render_coverage_note(
+                    plan, needs_whole_document=needs_whole_doc,
+                )
+
+            # TEMPORARY token-savings experiment (opt-in, disabled by
+            # default — see `ChatQuery.enableRecordIdShortening`): shorten
+            # "Record ID: <id>" to a short "R<n>" label in everything the
+            # model sees from this call. The mapping lives on tool_state so
+            # `_FetchFullRecordTool` can resolve it back to the full id —
+            # see `RecordIdShortener`.
+            record_id_shortener = get_record_id_shortener_if_enabled(self.state)
+            if candidate_suffix and record_id_shortener is not None:
+                candidate_suffix = record_id_shortener.shorten_record_ids_in_text(candidate_suffix)
 
             # --- Format results like the chatbot does ---
             sorted_results = sorted(
@@ -626,7 +665,8 @@ class Retrieval:
             )
             ref_mapper = self.state.get("citation_ref_mapper") or CitationRefMapper()
             message_content_array, ref_mapper = build_message_content_array(
-                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True
+                sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True,
+                record_id_shortener=record_id_shortener,
             )
             self.state["citation_ref_mapper"] = ref_mapper
 
@@ -649,9 +689,11 @@ class Retrieval:
                 f"from {len(virtual_record_id_to_result)} "
                 f"record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
                 f"(ranked sample — other records may match).\n\n"
+                f"{coverage_note}"
             )
-            tip = _NAVIGATE_TIP if _has_hierarchical_record(virtual_record_id_to_result) else ""
-            return summary + "\n".join(formatted_records) + candidate_suffix + tip
+            return summary + "\n".join(formatted_records) + compose_result_tail(
+                virtual_record_id_to_result, candidate_suffix,
+            )
 
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger

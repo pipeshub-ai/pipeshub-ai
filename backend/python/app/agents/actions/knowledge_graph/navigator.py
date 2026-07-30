@@ -33,7 +33,53 @@ _CROSS_REF_RELATIONS = [
 ]
 
 _MAX_RELATED = 10
-_MAX_LIMIT = 50
+# Matches KnowledgeHubService.get_nodes()'s own cap (200) minus headroom —
+# kept below it rather than equal so a depth>=2 expansion's per-parent
+# sub-fetches (see `_depth_limit`) still shrink from a real ceiling instead
+# of already being at the backend's hard limit.
+_MAX_LIMIT = 100
+_MAX_DEPTH = 3
+# Bounds the total number of extra `get_record_by_id` reads a single
+# depth>=2 navigate() call can trigger for condensed per-row metadata —
+# a wide depth=3 hierarchy must not turn into dozens of uncapped record
+# reads. See `_attach_context_summaries`.
+_MAX_DEPTH_CONTEXT_SUMMARIES = 30
+
+
+def _depth_limit(base_limit: int, level: int) -> int:
+    """Per-parent children cap at nesting `level` (2 or 3) — shrinks as
+    depth increases so `limit * depth_limit(2) [* depth_limit(3)]` stays
+    bounded even when every row at every level has children. Level 1 (the
+    top listing) keeps the caller's own `limit` untouched."""
+    if level == 2:
+        return max(5, base_limit // 2)
+    if level == 3:
+        return max(3, base_limit // 4)
+    return base_limit
+
+
+def _flatten_rows(rows: list[NodeRow]) -> list[NodeRow]:
+    """All rows across every nested level already fetched — depth-first,
+    parents before their own children."""
+    out: list[NodeRow] = []
+    for row in rows:
+        out.append(row)
+        if row.children:
+            out.extend(_flatten_rows(row.children))
+    return out
+
+
+def _condensed_summary(context_block: str) -> str | None:
+    """Extract the `* Field: value` lines from a `Record.to_llm_context()`
+    block into one comma-joined line — the type-specific metadata (status,
+    assignee, priority, ...) a deep row needs, without repeating the
+    identity fields (id/name/url) the row already prints itself."""
+    parts = [
+        line[2:].strip()
+        for line in context_block.splitlines()
+        if line.startswith("* ")
+    ]
+    return ", ".join(parts) if parts else None
 
 
 def _node_ref(
@@ -151,21 +197,142 @@ class GraphNavigator:
         # must not take the whole navigation down with it.
         return block if isinstance(block, str) else None
 
+    async def _expand_row_children(
+        self,
+        row: NodeRow,
+        *,
+        limit: int,
+        connector_ids: list[str] | None,
+        record_group_ids: list[str] | None,
+    ) -> None:
+        """Fetch `row`'s own direct children in place, mutating `row.children`
+        — the same browse path `navigate()` itself uses for the top-level
+        listing (`KnowledgeHubService.get_nodes`), just scoped to this row
+        instead of the node the caller asked for. A failure here degrades to
+        "no children shown for this row" rather than failing the whole call."""
+        if not row.has_children:
+            return
+        try:
+            response = await self._service.get_nodes(
+                user_id=self._user_id,
+                org_id=self._org_id,
+                parent_id=row.id,
+                parent_type=row.node_type,
+                page=1,
+                limit=limit,
+                connector_ids=connector_ids,
+                record_group_ids=record_group_ids,
+            )
+        except Exception as e:
+            logger.warning("navigate depth expansion failed for node %s: %s", row.id, e)
+            return
+        sub_rows = [_node_item_to_row(item) for item in (response.items or [])]
+        row.children = sub_rows
+        pag = response.pagination
+        total = pag.totalItems if pag else len(sub_rows)
+        row.children_total = total
+        row.children_truncated = total > len(sub_rows)
+
+    async def _expand_depth(
+        self,
+        rows: list[NodeRow],
+        *,
+        depth: int,
+        limit: int,
+        connector_ids: list[str] | None,
+        record_group_ids: list[str] | None,
+    ) -> None:
+        """Fetch and attach nested children onto `rows` in place, up to
+        `depth` levels total (`rows` itself is level 1; this method adds
+        level 2 and, when `depth == 3`, level 3). Each level's fetches run
+        concurrently via `asyncio.gather` — only rows with `has_children`
+        cost a query — and use a shrinking per-parent limit (see
+        `_depth_limit`) so a wide hierarchy can't blow up the response."""
+        if depth < 2:
+            return
+
+        level2_limit = _depth_limit(limit, level=2)
+        expandable = [r for r in rows if r.has_children]
+        if not expandable:
+            return
+        await asyncio.gather(*(
+            self._expand_row_children(
+                row, limit=level2_limit,
+                connector_ids=connector_ids, record_group_ids=record_group_ids,
+            )
+            for row in expandable
+        ))
+
+        if depth < 3:
+            return
+
+        level3_limit = _depth_limit(limit, level=3)
+        level2_expandable = [
+            sub
+            for row in expandable if row.children
+            for sub in row.children if sub.has_children
+        ]
+        if not level2_expandable:
+            return
+        await asyncio.gather(*(
+            self._expand_row_children(
+                sub, limit=level3_limit,
+                connector_ids=connector_ids, record_group_ids=record_group_ids,
+            )
+            for sub in level2_expandable
+        ))
+
+    async def _attach_context_summaries(self, rows: list[NodeRow]) -> None:
+        """Condensed one-line metadata (status/assignee/priority/...) for
+        every record/folder row shown across all fetched levels — the
+        type-specific `* ` lines `Record.to_llm_context()` would print,
+        minus the identity fields the row already carries. Only called for
+        depth >= 2: at depth=1, the *current* node already gets the full
+        block via `_context_block`, and adding a record read per child row
+        would regress depth=1's existing cost profile for no new output.
+        Capped at `_MAX_DEPTH_CONTEXT_SUMMARIES` total reads regardless of
+        how many rows a depth=3 hierarchy surfaces."""
+        candidates = [r for r in _flatten_rows(rows) if r.is_record][:_MAX_DEPTH_CONTEXT_SUMMARIES]
+        if not candidates:
+            return
+        records = await asyncio.gather(
+            *(self._graph.get_record_by_id(record_id=r.id) for r in candidates),
+            return_exceptions=True,
+        )
+        for row, record in zip(candidates, records):
+            if isinstance(record, BaseException) or record is None:
+                continue
+            try:
+                block = record.to_llm_context(frontend_url=self._frontend_url)
+            except Exception:
+                continue
+            if isinstance(block, str):
+                row.context_summary = _condensed_summary(block)
+
     async def navigate(
         self,
         node_id: str | None = None,
         name_filter: str | None = None,
         page: int = 1,
-        limit: int = 20,
+        limit: int = 50,
         connector_ids: list[str] | None = None,
         record_group_ids: list[str] | None = None,
+        depth: int = 1,
     ) -> NavigationView:
         """Build a NavigationView for the given node.
 
         node_id=None → root (list of connected apps).
+        depth > 1 additionally fetches and inlines 1-2 more levels of
+        children (see `_expand_depth`) so the model can see a hierarchy
+        overview (e.g. an epic's stories AND their subtasks) in one call
+        instead of walking down one navigate() per level. Restricted to
+        page 1 — same rationale as breadcrumbs/related below: a paginated
+        deep listing would multiply the already-bounded query fan-out by
+        every page the model asks for.
         """
         limit = min(max(1, limit), _MAX_LIMIT)
         page = max(1, page)
+        depth = min(max(1, depth), _MAX_DEPTH)
 
         current: NodeRef | None = None
         breadcrumbs: list[NodeRef] = []
@@ -256,6 +423,14 @@ class GraphNavigator:
                 has_next=pag_raw.hasNext,
                 has_prev=pag_raw.hasPrev,
             )
+
+        # ── Depth expansion (page 1 only, depth >= 2) ───────────────────
+        if page == 1 and depth >= 2 and rows:
+            await self._expand_depth(
+                rows, depth=depth, limit=limit,
+                connector_ids=connector_ids, record_group_ids=record_group_ids,
+            )
+            await self._attach_context_summaries(rows)
 
         # ── Linked records (page 1, record/folder nodes only) ──────────
         if page == 1 and node_id and parent_type in ("record", "folder"):

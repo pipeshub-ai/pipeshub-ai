@@ -1313,9 +1313,9 @@ class TestGetMessageContent:
     def test_json_mode_record_summary_only_includes_record_metadata(self):
         record = _make_record_blob()
         record["context_metadata"] = (
-            "Record ID       : rec-1\n"
-            "Name            : Policy Doc\n"
-            "Summary         : High-level overview"
+            "Record ID: rec-1\n"
+            "Name: Policy Doc\n"
+            "Summary: High-level overview"
         )
         flattened = [
             _make_flattened_result(
@@ -1328,7 +1328,7 @@ class TestGetMessageContent:
         result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "Record ID       : rec-1" in combined
+        assert "Record ID: rec-1" in combined
         assert "Policy Doc" in combined
         assert "High-level overview" in combined
 
@@ -1364,7 +1364,7 @@ class TestGetMessageContent:
         result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
-        assert "image description" in combined
+        assert "(image)" in combined
 
     def test_json_mode_table_block_with_child_results(self):
         flattened = [
@@ -1515,9 +1515,9 @@ class TestRecordToMessageContent:
         text = _all_text(result)
         assert "First paragraph" in text
         assert "Second paragraph" in text
-        # New format uses Block Index, not R-labels
-        assert "Block Index: 0" in text
-        assert "Block Index: 1" in text
+        # Full-record blocks are sequential — compact ref-only format, no index.
+        assert "[ref1]" in text
+        assert "[ref2]" in text
 
     def test_block_web_url_in_output(self):
         """Citation refs map to block preview URLs (frontend_url + record id + block index)."""
@@ -1527,7 +1527,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Data")]
         content, ref_mapper = _record_to_message_content(record)
         text = _all_text(content)
-        assert "Citation ID:" in text
+        assert "[ref1]" in text
         assert "ref1" in text
         preview_url = ref_mapper.ref_to_url["ref1"]
         assert "rec-xyz" in preview_url
@@ -1550,7 +1550,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "* Block Group Type: table" in text
+        assert "[Table #0" in text
         assert "Row 0" in text
         assert "Row 1" in text
 
@@ -1564,7 +1564,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert text.count("* Block Group Type: table") == 1
+        assert text.count("[Table #0") == 1
 
     def test_text_block_with_parent_index_renders_group(self):
         block = _make_text_block(index=0, data="Item in list", parent_index=0)
@@ -3370,7 +3370,7 @@ class TestRecordToMessageContentEdgeCases:
         result = record_to_message_content(record)
         text = _all_text(result)
         assert "R0" in text
-        assert "* Block Group Type: table" in text
+        assert "[Table #0" in text
 
     def test_block_group_dedup_for_parent_index_blocks(self):
         """Multiple blocks with same parent_index should only render group once."""
@@ -4012,7 +4012,7 @@ class TestGetMessageContentDeeper:
         result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
-        assert any("image description" in t for t in text_parts)
+        assert any("(image)" in t for t in text_parts)
 
     def test_standard_mode_with_table_with_rows(self):
         """Standard mode with table block type and child results."""
@@ -5744,11 +5744,11 @@ class TestBuildRecordRelationsInfo:
 
     def test_renders_rich_context_metadata_when_present(self):
         context = (
-            "Record ID       : rec-task-1\n"
-            "Name            : [PST-10] Add test evidence\n"
-            "Connector       : JIRA\n"
-            "Type            : TICKET\n"
-            "Summary         : Task requesting addition of test evidence\n"
+            "Record ID: rec-task-1\n"
+            "Name: [PST-10] Add test evidence\n"
+            "Connector: JIRA\n"
+            "Type: TICKET\n"
+            "Summary: Task requesting addition of test evidence\n"
             "Ticket Information:\n"
             "* Status: DONE\n"
             "* Priority: MEDIUM"
@@ -5765,9 +5765,9 @@ class TestBuildRecordRelationsInfo:
         })
         assert "* Related records:" in text
         assert "CHILD:" in text
-        assert "Record ID       : rec-task-1" in text
+        assert "Record ID: rec-task-1" in text
         assert "Status: DONE" in text
-        assert "Summary         : Task requesting addition of test evidence" in text
+        assert "Summary: Task requesting addition of test evidence" in text
 
     def test_mixed_rich_and_minimal_entries(self):
         text = build_record_relations_info({
@@ -5829,7 +5829,7 @@ class TestToLlmLinkedContext:
             priority="High",
         )
         ctx = record.to_llm_linked_context()
-        assert "Summary         : A brief summary of this ticket." in ctx
+        assert "Summary: A brief summary of this ticket." in ctx
         assert "Topics" not in ctx
         assert "Category" not in ctx
         assert "Sub-categories" not in ctx
@@ -6040,7 +6040,7 @@ class TestGetFlattenedResultsNewBranches:
     @pytest.mark.asyncio
     async def test_record_summary_vector_hit_is_flattened(self):
         record = _make_record_blob()
-        record["context_metadata"] = "Record ID       : rec-1\nSummary         : Doc overview"
+        record["context_metadata"] = "Record ID: rec-1\nSummary: Doc overview"
         record["block_containers"]["blocks"] = []
         blob_store = self._make_blob_store(record)
         vr_map = {"vr-1": record}
@@ -6302,10 +6302,10 @@ class TestGetMessageContentFKRelations:
         # context_metadata is what drives record rendering; simulate what
         # Record.to_llm_context produces for a POSTGRES connector.
         context_metadata = (
-            "Record ID       : rec-1\n"
-            "Name            : Test Record\n"
-            "Connector       : POSTGRES\n"
-            "Connector ID    : conn-pg\n"
+            "Record ID: rec-1\n"
+            "Name: Test Record\n"
+            "Connector: POSTGRES\n"
+            "Connector ID: conn-pg\n"
         )
         vr_map = {"vr-1": _make_record_blob(
             connector_name="POSTGRES",

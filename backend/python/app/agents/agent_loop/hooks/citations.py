@@ -54,43 +54,49 @@ from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME 
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
 # sync with the langchain docstring in utils/fetch_full_record.py.
 #
-# Deliberately states ONE test rather than a list of qualifying scenarios: no
-# enumeration can cover every request shape, and a model matching a request
-# against a checklist fails on anything the checklist missed ("summarize this",
-# "what are the risks here"). The test generalizes because it turns on what the
-# ANSWER depends on, which the model can always evaluate for itself.
+# Leads with the action, not a decision test: without a gate/judge backstop,
+# a balanced "decide whether you need this" framing reads to the model as
+# permission to conclude it already has enough — the cheaper path it is
+# already biased toward. Naming the two fetch cases as directives ("call
+# this before answering") and demoting the skip case to a single
+# parenthetical after them keeps "don't fetch" a narrow, explicitly-marked
+# exception instead of a co-equal third option.
 #
-# The zero-content branch leads because this tool is now reachable from
-# lookup/navigate/list_files (see `citation_tracking`), where the model holds
-# an ID and no blocks — without it the passage-is-enough branch reads as
-# "a status? answer from the blocks you have", which on that path is nothing.
+# Still states illustrations rather than an exhaustive checklist: no
+# enumeration covers every request shape, and a model matching against a
+# checklist fails on anything the checklist missed ("summarize this", "what
+# are the risks here"). The reasoning generalizes because it turns on what
+# the ANSWER depends on, which the model can always evaluate for itself.
+#
+# The zero-content case follows the whole-document case because this tool is
+# reachable from lookup/navigate/list_files (see `citation_tracking`), where
+# the model holds an ID and no blocks.
 # ---------------------------------------------------------------------------
 _FETCH_FULL_RECORD_DESCRIPTION = (
     "Read one or more records end to end. Search gives you a few matching "
     "blocks per record; lookup_record/navigate/list_files give you an ID and "
     "metadata and no content at all; this gives you everything.\n"
-    "Decide with one test: can this be answered by finding the right passage, "
-    "or does answering it correctly require knowing what the document contains "
-    "AS A WHOLE?\n"
-    "- You hold no passage at all — the record came from lookup, navigation or "
-    "listing, so you have its ID and metadata and nothing it says. Answer from "
-    "that metadata if it settles the question outright (a ticket's status, its "
-    "assignee); otherwise call this before answering, and never infer content "
-    "from a title.\n"
-    "- Finding a passage is enough (a date, a name, a number, a status, one "
-    "clause) AND you can see that passage — answer from the blocks you already "
-    "have. Do NOT call this.\n"
-    "- The answer is a property of the whole document — a summary or overview, "
-    "what its risks/gaps/obligations/key points are, a review or assessment, a "
-    "comparison of documents, whether it mentions something anywhere, anything "
-    "asking for all of something — then a handful of blocks CANNOT support the "
-    "answer, however relevant those blocks look, because the parts you were not "
-    "given are exactly what you would be implying are unimportant. Call this "
-    "first, then answer.\n"
-    "Those are illustrations of the test, not a checklist — apply the test to "
+    "Call this BEFORE answering whenever what you currently hold is "
+    "incomplete for what the question needs:\n"
+    "- The answer is a property of the whole document — a summary or "
+    "overview, its risks/gaps/obligations/key points, a review or "
+    "assessment, a comparison of documents, whether it mentions something "
+    "anywhere, anything asking for all of something. A handful of blocks "
+    "CANNOT support that answer, however relevant they look, because the "
+    "parts you were not given are exactly what you would be implying are "
+    "unimportant.\n"
+    "- You hold no passage at all — the record came from lookup, navigation "
+    "or listing, so you have its ID and metadata and nothing it says. Never "
+    "infer content from a title.\n"
+    "(Skip only when the exact fact needed — a date, a name, a number, a "
+    "status, one clause — is already visible in a block you hold, or "
+    "metadata alone settles the question outright, e.g. a ticket's status "
+    "or assignee.)\n"
+    "Those are illustrations, not a checklist — apply the same reasoning to "
     "whatever was actually asked.\n"
     "Pass every record_id you need in ONE call, taken from a candidate list, a "
-    "'Record ID :' field or a record_id= shown by navigation — never invent "
+    "'Record ID' field, or a record_id=/node_id= shown by navigation — use it "
+    "exactly as shown (it may be a short label like 'R3') and never invent "
     "IDs. Large records return a continuation hint giving the start_block for "
     "the next slice."
 )
@@ -216,8 +222,9 @@ class _FetchFullRecordTool(Tool):
                 name="record_ids",
                 type=ParameterType.ARRAY,
                 description=(
-                    "Record IDs to fetch — use the exact 'Record ID :' values from the "
-                    "candidate list or context metadata. Do NOT invent IDs."
+                    "Record IDs to fetch — use the exact Record ID values shown in the "
+                    "candidate list or context metadata (may be short labels like 'R1', "
+                    "'R2'). Do NOT invent IDs."
                 ),
                 required=True,
                 items={"type": "string"},
@@ -261,6 +268,24 @@ class _FetchFullRecordTool(Tool):
         requested_max: int | None = kwargs.pop("max_blocks", None)
         block_cap = _resolve_block_cap(self._context.model_name, requested_max)
 
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`): an earlier retrieval/
+        # search/navigate/lookup_record/list_files call may have handed the
+        # model a short "R<n>" label instead of the full Record ID (see
+        # `RecordIdShortener` in `utils/chat_helpers.py`). Resolve it back
+        # before matching against `virtual_records`. Full ids the model
+        # copied verbatim pass through `.resolve()` unchanged. Created here
+        # (not just read) so a fetch that happens to be the first knowledge
+        # call this request still shortens the ids it prints below. `None`
+        # when the flag is off — record_ids pass through untouched.
+        from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+        record_id_shortener = get_record_id_shortener_if_enabled(self._context.tool_state)
+        raw_record_ids = kwargs.get("record_ids")
+        if raw_record_ids and record_id_shortener is not None:
+            kwargs["record_ids"] = [
+                record_id_shortener.resolve(rid) for rid in raw_record_ids
+            ]
+
         structured_tool = create_fetch_full_record_tool(
             self._collector.virtual_records,
             org_id=self._context.org_id,
@@ -300,12 +325,22 @@ class _FetchFullRecordTool(Tool):
                 ))
             self._context.tool_state["citation_ref_mapper"] = ref_mapper
             text = "\n".join(parts)
+            # TEMPORARY token-savings experiment: shorten every "Record ID:"
+            # this fetch prints (record headers, FK table rows) back down to
+            # the same "R<n>" label the model already saw from retrieval/
+            # navigate/lookup_record — see `RecordIdShortener`.
+            if record_id_shortener is not None:
+                text = record_id_shortener.shorten_record_ids_in_text(text)
             text += (
-                "\n\nCite facts from the above using the Citation ID for each block "
+                "\n\nCite facts from the above using each block's `[refN]` id "
                 "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
             )
             not_available = result.get("not_available_ids", [])
             if not_available:
+                if record_id_shortener is not None:
+                    not_available = [
+                        record_id_shortener.get_or_create_short_id(rid) for rid in not_available
+                    ]
                 ids_str = ", ".join(f"'{rid}'" for rid in not_available)
                 text += f"\n\nNote: The following record(s) are not available: {ids_str}"
             # Track fetched record IDs for the gate.

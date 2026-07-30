@@ -444,6 +444,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     analyze_coverage,
                     build_candidates,
                     render_candidate_table,
+                    render_coverage_note,
                 )
                 all_final = context.tool_state["final_results"]
                 vr_map = context.tool_state["virtual_record_id_to_result"]
@@ -473,21 +474,28 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 context.tool_state["fetch_coverage"] = coverage
                 context.tool_state["fetch_plan"] = plan
 
-                candidate_suffix = (
-                    render_candidate_table(
-                        plan,
-                        needs_whole_document=context.needs_whole_document,
+                candidate_suffix = ""
+                coverage_note = ""
+                if plan.has_candidates:
+                    candidate_suffix = render_candidate_table(
+                        plan, needs_whole_document=context.needs_whole_document,
                     )
-                    if plan.has_candidates
-                    else ""
-                )
+                    # Leads the constraint: the table lands after the whole
+                    # prefetched context, far enough down that the model may
+                    # already be answering from the blocks by the time it
+                    # reads how little of each record it holds.
+                    coverage_note = render_coverage_note(
+                        plan, needs_whole_document=context.needs_whole_document,
+                    )
                 log.info(
                     "prefetch: needs_whole_document=%s | candidates=%s",
                     context.needs_whole_document,
                     [c.record_id for c in plan.candidates],
                 )
 
-                context_with_candidates = prefetch_result.formatted_context + candidate_suffix
+                context_with_candidates = (
+                    coverage_note + prefetch_result.formatted_context + candidate_suffix
+                )
                 goal.constraints.append(
                     "Relevant internal knowledge base context retrieved for this query "
                     f"(cite using the Citation IDs shown, e.g. [source](ref1)):\n{context_with_candidates}"

@@ -12,6 +12,7 @@ from app.agent_loop_lib.core.types import ToolResult
 from app.agents.actions.retrieval.retrieval import (
     _search_internal_knowledge_args_summary as args_summary,
     _search_internal_knowledge_result_summary as result_summary,
+    compose_result_tail,
 )
 
 
@@ -35,10 +36,10 @@ class TestSearchInternalKnowledgeResultSummary:
     def test_success_with_records(self) -> None:
         content = (
             "Retrieved 36 knowledge blocks from 21 documents.\n\n"
-            "<record>\nRecord ID       : r1\nName            : Doc A\n"
-            "Web URL         : https://example.com/a\n\nRecord blocks (sorted):\n\n"
-            "<record>\nRecord ID       : r2\nName            : Doc B\n"
-            "Web URL         : https://example.com/b\n\nRecord blocks (sorted):\n\n"
+            "<record>\nRecord ID: r1\nName: Doc A\n"
+            "Web URL: https://example.com/a\n\nRecord blocks (sorted):\n\n"
+            "<record>\nRecord ID: r2\nName: Doc B\n"
+            "Web URL: https://example.com/b\n\nRecord blocks (sorted):\n\n"
         )
         summary = result_summary({"query": "bug bash"}, _result(content))
 
@@ -61,7 +62,7 @@ class TestSearchInternalKnowledgeResultSummary:
 
     def test_max_items_capped(self) -> None:
         records = "".join(
-            f"<record>\nRecord ID       : r{i}\nName            : Doc {i}\n\nRecord blocks (sorted):\n\n"
+            f"<record>\nRecord ID: r{i}\nName: Doc {i}\n\nRecord blocks (sorted):\n\n"
             for i in range(20)
         )
         content = f"Retrieved 40 knowledge blocks from 20 documents.\n\n{records}"
@@ -73,3 +74,43 @@ class TestSearchInternalKnowledgeResultSummary:
 
     def test_non_string_content_returns_none(self) -> None:
         assert result_summary({}, _result(None)) is None
+
+
+class TestComposeResultTail:
+    """Both retrieval and knowledgegraph__search end their result with this,
+    so the ordering invariant is asserted once here."""
+
+    _CANDIDATES = "\n\nCoverage is incomplete (as low as 5%) — call fetch_record."
+
+    def test_navigate_tip_precedes_the_candidate_list(self) -> None:
+        """Regression: the tip used to be appended AFTER the candidate list.
+        It names a different tool, so from the last position it read as the
+        answer to "how do I get more?" and the model navigated instead of
+        fetching — on tickets and Confluence pages only, which is why plain
+        documents kept working."""
+        tail = compose_result_tail(
+            {"v1": {"record_type": "TICKET"}}, self._CANDIDATES,
+        )
+
+        assert "navigate" in tail
+        assert tail.index("navigate") < tail.index("Coverage is incomplete")
+        assert tail.endswith(self._CANDIDATES)
+
+    def test_tip_says_navigate_returns_no_content(self) -> None:
+        """The two tools must read as complementary steps, not alternatives —
+        navigate yields structure, reading still needs a fetch."""
+        tail = compose_result_tail({"v1": {"record_type": "CONFLUENCE_PAGE"}}, "")
+
+        assert "not content" in tail
+        assert "still a fetch" in tail
+
+    def test_no_tip_for_flat_records(self) -> None:
+        """A plain document has no sub-items, so the tip would be noise."""
+        tail = compose_result_tail({"v1": {"record_type": "FILE"}}, self._CANDIDATES)
+
+        assert tail == self._CANDIDATES
+
+    def test_survives_malformed_record_entries(self) -> None:
+        tail = compose_result_tail({"v1": None, "v2": "oops", "v3": {}}, "")
+
+        assert tail == ""

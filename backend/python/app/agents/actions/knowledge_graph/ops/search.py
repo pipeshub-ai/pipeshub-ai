@@ -16,13 +16,13 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
-from app.models.entities import RecordType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     enrich_records_with_graph_context,
     get_flattened_results,
+    get_record_id_shortener_if_enabled,
 )
 
 if TYPE_CHECKING:
@@ -33,19 +33,6 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
 
-_HIERARCHICAL_RECORD_TYPES = frozenset({
-    RecordType.TICKET.value,
-    RecordType.PROJECT.value,
-    RecordType.CONFLUENCE_PAGE.value,
-    RecordType.SHAREPOINT_LIST.value,
-    RecordType.SHAREPOINT_DOCUMENT_LIBRARY.value,
-})
-_NAVIGATE_TIP = (
-    "\n\nTip: these are content excerpts. For a record's sub-items (epic to "
-    "stories to sub-tasks, page to child pages) or its linked records, call "
-    'knowledgegraph.navigate(node_id="<Record ID>").'
-)
-
 _RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
 _RETRIEVED_COUNT_RE = re.compile(
     r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE
@@ -53,13 +40,6 @@ _RETRIEVED_COUNT_RE = re.compile(
 _RETRIEVED_COUNT_RE_LEGACY = re.compile(
     r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
 )
-
-
-def _has_hierarchical_record(virtual_record_id_to_result: dict[str, Any]) -> bool:
-    return any(
-        isinstance(rec, dict) and rec.get("record_type") in _HIERARCHICAL_RECORD_TYPES
-        for rec in virtual_record_id_to_result.values()
-    )
 
 
 def normalize_source_ids(value: Any) -> list[str] | None:
@@ -292,8 +272,14 @@ async def execute_search(
 
         # Record escalation candidates
         candidate_suffix = ""
+        coverage_note = ""
         needs_whole_doc = bool(state.get("needs_whole_document", False))
-        from app.modules.agents.record_escalation import analyze_coverage, build_candidates, render_candidate_table
+        from app.modules.agents.record_escalation import (
+            analyze_coverage,
+            build_candidates,
+            render_candidate_table,
+            render_coverage_note,
+        )
         all_final = state.get("final_results", [])
         full_vr_map = state.get("virtual_record_id_to_result", {})
         coverage = analyze_coverage(all_final, full_vr_map)
@@ -320,6 +306,20 @@ async def execute_search(
         state["fetch_plan"] = plan
         if plan.has_candidates:
             candidate_suffix = render_candidate_table(plan, needs_whole_document=needs_whole_doc)
+            # Placed at the TOP of the result (see `summary` below) — the
+            # full table above lands at the bottom, potentially thousands of
+            # tokens away on a long result, where the model may already be
+            # composing an answer from the blocks by the time it reaches it.
+            coverage_note = render_coverage_note(plan, needs_whole_document=needs_whole_doc)
+
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
+        # in `utils/chat_helpers.py`. Same shared shortener as
+        # search_internal_knowledge/navigate/lookup_record/list_files, keyed
+        # off tool_state so whichever tool the model calls first mints it.
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+        if candidate_suffix and record_id_shortener is not None:
+            candidate_suffix = record_id_shortener.shorten_record_ids_in_text(candidate_suffix)
 
         sorted_results = sorted(
             final_results,
@@ -335,6 +335,7 @@ async def execute_search(
             is_multimodal_llm=is_multimodal_llm,
             ref_mapper=ref_mapper,
             from_tool=True,
+            record_id_shortener=record_id_shortener,
         )
         state["citation_ref_mapper"] = ref_mapper
 
@@ -350,9 +351,12 @@ async def execute_search(
             f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
             f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
             "(ranked sample — other records may match).\n\n"
+            f"{coverage_note}"
         )
-        tip = _NAVIGATE_TIP if _has_hierarchical_record(virtual_record_id_to_result) else ""
-        return summary + "\n".join(formatted_records) + candidate_suffix + tip
+        from app.agents.actions.retrieval.retrieval import compose_result_tail
+        return summary + "\n".join(formatted_records) + compose_result_tail(
+            virtual_record_id_to_result, candidate_suffix,
+        )
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

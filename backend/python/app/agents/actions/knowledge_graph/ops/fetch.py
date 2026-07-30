@@ -66,6 +66,20 @@ async def execute_fetch_record(
     if isinstance(record_ids, str):
         record_ids = [record_ids]
 
+    # TEMPORARY token-savings experiment (opt-in, disabled by default — see
+    # `ChatQuery.enableRecordIdShortening`): resolve any short "R<n>" labels
+    # (assigned by whichever knowledge tool ran first — see
+    # `RecordIdShortener` in `utils/chat_helpers.py`) back to full Record
+    # IDs before matching against `virtual_records`. IDs the model got
+    # elsewhere are never shortened and pass through unchanged. Created
+    # here (not just read) so a fetch that happens to be the first
+    # knowledge call this request still shortens the ids it prints below.
+    # `None` when the flag is off — record_ids pass through untouched.
+    from app.utils.chat_helpers import get_record_id_shortener_if_enabled
+    record_id_shortener = get_record_id_shortener_if_enabled(context.tool_state)
+    if record_id_shortener is not None:
+        record_ids = [record_id_shortener.resolve(rid) for rid in record_ids]
+
     block_cap = resolve_block_cap(context.model_name, max_blocks)
 
     structured_tool = create_fetch_full_record_tool(
@@ -94,12 +108,22 @@ async def execute_fetch_record(
             ))
 
         text = "\n".join(parts)
+        # TEMPORARY token-savings experiment: shorten every "Record ID:"
+        # this fetch prints back down to the same "R<n>" label the model
+        # already saw — see `RecordIdShortener`. No-op (full ids as-is)
+        # when the flag is off.
+        if record_id_shortener is not None:
+            text = record_id_shortener.shorten_record_ids_in_text(text)
         text += (
-            "\n\nCite facts from the above using the Citation ID for each block "
+            "\n\nCite facts from the above using each block's `[refN]` id "
             "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
         )
         not_available = result.get("not_available_ids", [])
         if not_available:
+            if record_id_shortener is not None:
+                not_available = [
+                    record_id_shortener.get_or_create_short_id(rid) for rid in not_available
+                ]
             ids_str = ", ".join(f"'{rid}'" for rid in not_available)
             text += f"\n\nNote: The following record(s) are not available: {ids_str}"
 

@@ -161,21 +161,58 @@ def _collect_leaf_toolsets(registry, *, exclude: frozenset[str] = frozenset()) -
     return lines
 
 
-_CITATION_RULES = """
+
+# TEMPORARY token-savings experiment (opt-in, disabled by default — see
+# `ChatQuery.enableRecordIdShortening`): only append this note when the
+# request enabled `RecordIdShortener`, since Record ID otherwise always
+# shows in its full form and this guidance would be misleading noise.
+_RECORD_ID_SHORTENING_NOTE = (
+    " Record ID is often shown as a short label (`R1`, `R2`, ...) rather than its full "
+    "form — always pass it back exactly as shown, never invent or reconstruct one."
+)
+
+_CITATION_RULES_TEMPLATE = """
+## Record & Block Structure
+
+Retrieved and fetched content is wrapped in `<record>...</record>`, one per document, with
+metadata (Record ID, Name, Type, Web URL) at the top.{record_id_note} Inside, blocks are compact:
+
+- `[idx|refN] content` — a block at position `idx` in the document, citable as `refN`. Used
+  by search results, where blocks are a sparse sample — a jump in `idx` (e.g. 5 then 47) means
+  blocks in between were not retrieved, not that they don't exist.
+- `[refN] content` — same, without a position: used when reading a full record top-to-bottom,
+  where blocks are already contiguous so the position adds nothing.
+- `[Table #g: summary]` / `[List #g]` / `[<Type> #g]` — a group header (table, list, section)
+  followed by its child blocks, each still individually citable as `[idx|refN]` or `[refN]`.
+
+`refN` (ref1, ref2, ...) is always the citable id, regardless of which of these layouts is
+used. Web search results use a different marker instead: `url/Citation ID: https://ref271.xyz`
+— same idea, same Citation Rules, just its own opaque token shape.
+
 ## Citation Rules
 
-Each citable block in a tool result is labelled `Citation ID: ref5` (internal knowledge,
-attachments) or `url/Citation ID: https://ref271.xyz` (web). Both are opaque tokens.
-
-- Cite as `[source](<that block's Citation ID>)`, copied exactly: "Revenue grew 29%
-  [source](ref5)."
+- Cite as `[source](refN)`, copied exactly: "Revenue grew 29% [source](ref5)."
 - Use a Citation ID ONLY inside `[source](...)` — it is an opaque system token, not a
   URL the user can open. The system replaces `[source](...)` with a numbered citation
   carrying the real link.
 - Cite the block each fact actually came from; use a distinct ID for each distinct claim.
 - One ID per link, inline right after the key claim it supports. The system numbers them.
   Omit the citation when no Citation ID is available for a fact.
+- Keep prose readable: cite the specific claim it backs, not every clause or sentence in a
+  row — a paragraph built from one source needs one citation at its end, not one per sentence.
+  Never stack multiple `[source](...)` links back to back; if several blocks support the same
+  claim, pick the single best one.
 """
+
+
+def _build_citation_rules(*, enable_record_id_shortening: bool) -> str:
+    """Render `_CITATION_RULES_TEMPLATE`, only mentioning the short "R<n>"
+    Record ID label format when this request opted into `RecordIdShortener`
+    (see `AgentContext.enable_record_id_shortening`) — otherwise Record ID
+    always shows in its full form and the note would mislead the model."""
+    return _CITATION_RULES_TEMPLATE.format(
+        record_id_note=_RECORD_ID_SHORTENING_NOTE if enable_record_id_shortening else "",
+    )
 
 # Parsed back off the terminal turn's text by `parse_confidence_from_answer`
 # (`utils/streaming.py`) in `respond.py::AnswerFinalizer`, which strips the
@@ -504,7 +541,9 @@ class PipesHubPromptBuilder:
         has_attachments_now = bool(state.get("attachments"))
         if not final_answer_enabled():
             if has_retrieval or has_attachments_now or surfaces.has_web_search or self._context.has_knowledge:
-                tpl.set("citation_rules", _CITATION_RULES)
+                tpl.set("citation_rules", _build_citation_rules(
+                    enable_record_id_shortening=self._context.enable_record_id_shortening,
+                ))
 
         # ── Finding information: the one source-precedence section ──────────
         tpl.set("finding_information", _build_finding_information(

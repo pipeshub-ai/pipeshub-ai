@@ -81,7 +81,7 @@ def skills_manager_config() -> SkillManagerConfig:
     return SkillManagerConfig(
         auto_approve=_env_bool("PIPESHUB_SKILLS_AUTO_APPROVE", False),
         write_approval=_env_bool("PIPESHUB_SKILLS_WRITE_APPROVAL", True),
-        learning_enabled=_env_bool("PIPESHUB_SKILLS_LEARNING_ENABLED", True),
+        learning_enabled=_env_bool("PIPESHUB_SKILLS_LEARNING_ENABLED", False),
         catalog_render_limit=int(os.getenv("PIPESHUB_SKILLS_CATALOG_RENDER_LIMIT", "40")),
     )
 

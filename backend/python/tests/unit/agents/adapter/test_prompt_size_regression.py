@@ -85,67 +85,75 @@ def _build_frontier_prompt(fixture_name: str) -> str:
 # ---------------------------------------------------------------------------
 # MID-tier ceilings (default UNKNOWN_PROFILE → MID, includes worked traces)
 #
-# Measured after Phase 9 added the worked_traces section for SMALL/MID tiers.
-# Baseline sizes / ceilings with ~10% headroom:
-#   no_sources:            6,148 →  6,800
-#   kb_only:               9,253 → 10,200
-#   kb_plus_3_apps:        9,462 → 10,450  (also checked in test_prompt_invariants.py)
-#   duplicate_apps:        9,499 → 10,450
-#   web_search_mode:       7,665 →  8,450
-#   kb_plus_service_tools: 9,908 → 10,900
-#   run_code_no_web:       7,167 →  7,900
-#   composed_agents:      10,664 → 11,750
-#   service_only:          6,933 →  7,650
-#   lazy_with_pinned:     11,068 → 12,200
-#   kb_with_full_record:  10,453 → 11,500
+# Re-measured after the block-token-usage optimization: `_CITATION_RULES`
+# gained a one-time "Record & Block Structure" explainer so the model can
+# parse the new compact `[idx|refN] content` block format (replacing the
+# old per-block `* Block Index / Citation ID / Block Type / Block Content`
+# scaffolding), and the worked traces were updated to match. This grows the
+# always-on system prompt by a small, fixed amount per request in exchange
+# for removing repeated per-block labels from every retrieval and full-record
+# tool result — a net token win once more than a couple of blocks are
+# returned. Baseline sizes / ceilings with ~10% headroom:
+#   no_sources:             7,162 →  7,900
+#   kb_only:               11,129 → 12,250
+#   kb_plus_3_apps:        11,338 → 12,500  (also checked in test_prompt_invariants.py)
+#   duplicate_apps:        11,375 → 12,550
+#   web_search_mode:        9,541 → 10,500
+#   kb_plus_service_tools: 11,784 → 13,000
+#   run_code_no_web:        8,362 →  9,200
+#   composed_agents:       12,721 → 14,000
+#   service_only:           7,947 →  8,750
+#   lazy_with_pinned:      12,944 → 14,250
+#   kb_with_full_record:   12,329 → 13,600
 # ---------------------------------------------------------------------------
 _MID_CHAR_CEILINGS: dict[str, int] = {
-    "no_sources":            7_400,
-    "kb_only":              10_850,
-    "kb_plus_3_apps":       11_050,
-    "duplicate_apps":       11_100,
-    "web_search_mode":       9_100,
-    "kb_plus_service_tools": 11_550,
-    "run_code_no_web":       8_550,
-    "composed_agents":      12_400,
-    "service_only":          8_300,
-    "lazy_with_pinned":     12_850,
-    "kb_with_full_record":  12_150,
+    "no_sources":            7_900,
+    "kb_only":              12_250,
+    "kb_plus_3_apps":       12_500,
+    "duplicate_apps":       12_550,
+    "web_search_mode":      10_500,
+    "kb_plus_service_tools": 13_000,
+    "run_code_no_web":       9_200,
+    "composed_agents":      14_000,
+    "service_only":          8_750,
+    "lazy_with_pinned":     14_250,
+    "kb_with_full_record":  13_600,
 }
 
 # ---------------------------------------------------------------------------
 # FRONTIER-tier ceilings (anthropic/200k → FRONTIER, no worked traces)
 #
-# Re-measured after disabling final_answer by default — Response Format and
-# Citation Rules sections are now back in the system prompt (they were
-# previously omitted when final_answer was enabled and carried them in its
-# tool parameter description instead).
+# Re-measured after the same block-token-usage optimization described above
+# `_MID_CHAR_CEILINGS` (the "Record & Block Structure" explainer in
+# `_CITATION_RULES` is tier-independent, so FRONTIER grows by the same fixed
+# amount even without worked traces). `no_sources` and `run_code_no_web`
+# are unchanged — those fixtures never render `_CITATION_RULES`.
 #
 # Baseline sizes / ceilings with ~10% headroom:
 #   no_sources:            4,568 →  5,050
-#   kb_only:               7,191 →  7,950
-#   kb_plus_3_apps:        7,400 →  8,150
-#   duplicate_apps:        7,437 →  8_200
-#   web_search_mode:       5,603 →  6,200
-#   kb_plus_service_tools: 7,846 →  8,650
+#   kb_only:               8,535 →  9,400
+#   kb_plus_3_apps:        8,744 →  9,650
+#   duplicate_apps:        8,781 →  9,700
+#   web_search_mode:       6,947 →  7,650
+#   kb_plus_service_tools: 9,190 → 10,150
 #   run_code_no_web:       5,768 →  6,350
-#   composed_agents:       8,602 →  9,500
-#   service_only:          4,871 →  5,400
-#   lazy_with_pinned:      9,006 →  9,950
-#   kb_with_full_record:   8,391 →  9,250
+#   composed_agents:      10,127 → 11,150
+#   service_only:          5,353 →  5,900
+#   lazy_with_pinned:     10,350 → 11,400
+#   kb_with_full_record:   9,735 → 10,750
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            5_050,
-    "kb_only":               7_950,
-    "kb_plus_3_apps":        8_150,
-    "duplicate_apps":        8_200,
-    "web_search_mode":       6_200,
-    "kb_plus_service_tools": 8_650,
+    "kb_only":               9_400,
+    "kb_plus_3_apps":        9_650,
+    "duplicate_apps":        9_700,
+    "web_search_mode":       7_650,
+    "kb_plus_service_tools": 10_150,
     "run_code_no_web":       6_350,
-    "composed_agents":       9_500,
-    "service_only":          5_400,
-    "lazy_with_pinned":      9_950,
-    "kb_with_full_record":   9_250,
+    "composed_agents":      11_150,
+    "service_only":          5_900,
+    "lazy_with_pinned":     11_400,
+    "kb_with_full_record":  10_750,
 }
 
 

@@ -96,6 +96,22 @@ class TestBuildInitialState:
         assert state["is_multimodal_llm"] is False
         assert state["model_name"] == "gpt-test"
         assert state["model_key"] == "test-model-key"
+        # Opt-in, disabled by default — see `ChatQuery.enableRecordIdShortening`.
+        assert state["enable_record_id_shortening"] is False
+
+    @pytest.mark.parametrize("key", ["enableRecordIdShortening", "enable_record_id_shortening"])
+    def test_enable_record_id_shortening_accepts_either_key_name(
+        self, mock_deps, minimal_user_info, key,
+    ):
+        """The route passes camelCase (`ChatQuery.enableRecordIdShortening`);
+        internal callers may pass the snake_case form directly."""
+        cq = {"query": "q", key: True}
+        state = build_initial_state(
+            chat_query=cq,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["enable_record_id_shortening"] is True
 
     def test_custom_chat_query_fields(self, mock_deps, minimal_user_info):
         cq = {

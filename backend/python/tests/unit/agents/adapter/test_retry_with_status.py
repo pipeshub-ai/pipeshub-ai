@@ -138,6 +138,32 @@ class TestRetryWithStatus:
         assert result == "ok"
         assert calls["count"] == 2
 
+    async def test_529_overloaded_is_retried_under_default_config(self) -> None:
+        """Regression: Anthropic's `overloaded_error` (HTTP 529) used to be
+        absent from `RetryConfig.retryable_status_codes`' default, so a
+        transport that correctly flagged it `retryable=True` still got
+        re-raised immediately here because 529 failed the second check
+        (`exc.status_code in config.retryable_status_codes`). Uses a real
+        default `RetryConfig()` (only the delays shortened) rather than
+        `_fast_config()`'s status-code list, since the bug was specifically
+        in the default list."""
+        default_cfg = RetryConfig(initial_delay=0.001, backoff_factor=1.0, max_delay=0.001)
+        sink = _RecordingSink()
+        middleware = retry_with_status(sink, default_cfg)
+        calls = {"count": 0}
+
+        async def _next() -> str:
+            calls["count"] += 1
+            if calls["count"] < 2:
+                raise TransportError("Overloaded", status_code=529, retryable=True)
+            return "ok"
+
+        result = await middleware(_next)
+
+        assert result == "ok"
+        assert calls["count"] == 2
+        assert "temporary error (529)" in sink.events[0]["data"]["message"]
+
     async def test_network_error_with_no_status_code_is_retried(self) -> None:
         sink = _RecordingSink()
         middleware = retry_with_status(sink, _fast_config())

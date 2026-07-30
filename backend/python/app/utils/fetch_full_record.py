@@ -25,7 +25,7 @@ class FetchFullRecordArgs(BaseModel):
     record_ids: list[str] = Field(
         ...,
         description=(
-            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID :' line "
+            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID:' line "
             "of the record's context metadata in the conversation. "
             "Use ONLY the exact Record IDs from the context — do NOT invent, guess, or reuse example IDs. "
             "Pass ALL record IDs in a single call."
@@ -302,37 +302,36 @@ def create_fetch_full_record_tool(
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
         """Read one or more records end to end. Search gives you a few matching blocks per record; lookup_record/navigate/list_files give you an ID and metadata and no content at all; this gives you everything.
 
-        Decide with one test: can this be answered by finding the right passage,
-        or does answering it correctly require knowing what the document contains
-        AS A WHOLE?
+        Call this BEFORE answering whenever what you currently hold is
+        incomplete for what the question needs:
 
-        - You hold no passage at all — the record came from lookup, navigation or
-          listing, so you have its ID and metadata and nothing it says. Answer
-          from that metadata if it settles the question outright (a ticket's
-          status, its assignee); otherwise call this before answering, and never
-          infer content from a title.
-        - Finding a passage is enough (a date, a name, a number, a status, one
-          clause) AND you can see that passage — answer from the blocks you
-          already have. Do NOT call this.
-        - The answer is a property of the whole document — a summary or overview,
-          what its risks/gaps/obligations/key points are, a review or assessment,
-          a comparison of documents, whether it mentions something anywhere,
-          anything asking for all of something — then a handful of blocks CANNOT
-          support the answer, however relevant those blocks look, because the parts
-          you were not given are exactly what you would be implying are
-          unimportant. Call this first, then answer.
+        - The answer is a property of the whole document — a summary or
+          overview, its risks/gaps/obligations/key points, a review or
+          assessment, a comparison of documents, whether it mentions something
+          anywhere, anything asking for all of something. A handful of blocks
+          CANNOT support that answer, however relevant they look, because the
+          parts you were not given are exactly what you would be implying are
+          unimportant.
+        - You hold no passage at all — the record came from lookup, navigation
+          or listing, so you have its ID and metadata and nothing it says.
+          Never infer content from a title.
 
-        Those are illustrations of the test, not a checklist — apply the test to
+        (Skip only when the exact fact needed — a date, a name, a number, a
+        status, one clause — is already visible in a block you hold, or
+        metadata alone settles the question outright, e.g. a ticket's status
+        or assignee.)
+
+        Those are illustrations, not a checklist — apply the same reasoning to
         whatever was actually asked.
 
         Pass every record_id you need in ONE call, taken from a candidate list, a
-        'Record ID :' field or a record_id= shown by navigation — never invent IDs.
+        'Record ID' field or a record_id= shown by navigation — never invent IDs.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.
 
         Args:
-            record_ids: List of Record IDs to fetch — use the exact 'Record ID :' values from the context
+            record_ids: List of Record IDs to fetch — use the exact Record ID values from the context
             reason: Brief explanation of why the full records are needed
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.

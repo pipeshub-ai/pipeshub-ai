@@ -448,6 +448,18 @@ ORG = "org-e2e"
 USER_ID = "user-e2e"
 
 
+def _short_id_for(state: dict, full_id: str) -> str:
+    """The short "R<n>" label `RecordIdShortener` assigned `full_id` in a
+    prior navigate()/lookup_record() call on this `state` — TEMPORARY
+    token-savings experiment (see `RecordIdShortener` in
+    `utils/chat_helpers.py`). `get_or_create_short_id` is idempotent, so
+    this returns the existing mapping rather than minting a new one, as
+    long as `full_id` was already surfaced once via a tool call."""
+    shortener = state.get("record_id_shortener")
+    assert shortener is not None, "record_id_shortener not set on state — call a KG tool first"
+    return shortener.get_or_create_short_id(full_id)
+
+
 @pytest.fixture
 def provider():
     return _build_seeded_graph(ORG)
@@ -463,6 +475,10 @@ def state(provider):
         "agent_knowledge": [
             {"connectorId": "app-jira", "type": "JIRA"},
         ],
+        # Opt into the RecordIdShortener (disabled by default — see
+        # `ChatQuery.enableRecordIdShortening`) so this suite continues to
+        # exercise the shortened-id path it was written against.
+        "enable_record_id_shortening": True,
     }
 
 
@@ -480,7 +496,7 @@ class TestNavigationWalk:
 
         assert success
         assert "Jira" in text
-        assert "app-jira" in text
+        assert _short_id_for(state, "app-jira") in text
 
     @pytest.mark.asyncio
     async def test_app_to_record_group(self, state, provider):
@@ -490,7 +506,7 @@ class TestNavigationWalk:
 
         assert success
         assert "Alpha Project" in text
-        assert "rg-alpha" in text
+        assert _short_id_for(state, "rg-alpha") in text
 
     @pytest.mark.asyncio
     async def test_record_group_to_epic(self, state, provider):
@@ -500,7 +516,7 @@ class TestNavigationWalk:
 
         assert success
         assert "Build Payment Gateway" in text
-        assert "rec-epic" in text
+        assert _short_id_for(state, "rec-epic") in text
 
     @pytest.mark.asyncio
     async def test_epic_to_stories_with_breadcrumbs(self, state, provider):
@@ -510,9 +526,9 @@ class TestNavigationWalk:
 
         assert success
         assert "Implement OAuth" in text
-        assert "rec-story-oauth" in text
+        assert _short_id_for(state, "rec-story-oauth") in text
         assert "Add retry logic" in text
-        assert "rg-alpha" in text or "Alpha Project" in text  # breadcrumb present
+        assert "Alpha Project" in text  # breadcrumb present (by name — id is shortened)
 
     @pytest.mark.asyncio
     async def test_story_has_linked_to_related(self, state, provider):
@@ -521,9 +537,9 @@ class TestNavigationWalk:
             success, text = await tool.navigate(node_id="rec-story-oauth")
 
         assert success
-        assert "rec-task-tests" in text
+        assert _short_id_for(state, "rec-task-tests") in text
         # LINKED_TO Confluence page in related section
-        assert "rec-conf-page" in text or "OAuth Design Doc" in text
+        assert "OAuth Design Doc" in text
 
     @pytest.mark.asyncio
     async def test_breadcrumb_contains_all_ancestor_ids(self, state, provider):
@@ -533,8 +549,8 @@ class TestNavigationWalk:
 
         assert success
         # Must show path from root down to the epic
-        assert "rec-epic" in text or "Build Payment Gateway" in text
-        assert "rg-alpha" in text or "Alpha Project" in text
+        assert "Build Payment Gateway" in text
+        assert "Alpha Project" in text
 
 
 class TestPagination:
@@ -578,7 +594,7 @@ class TestLookup:
         )
 
         assert success
-        assert "rec-epic" in text
+        assert _short_id_for(state, "rec-epic") in text
         assert "Build Payment Gateway" in text
 
     @pytest.mark.asyncio
@@ -587,7 +603,7 @@ class TestLookup:
         success, text = await tool.lookup_record(identifiers=["ALPHA-2"])
 
         assert success
-        assert "rec-story-oauth" in text
+        assert _short_id_for(state, "rec-story-oauth") in text
         assert "Implement OAuth" in text
 
     @pytest.mark.asyncio
@@ -608,23 +624,24 @@ class TestLookupEnrichedFields:
         success, text = await tool.lookup_record(identifiers=["ALPHA-1"])
 
         assert success
-        assert "rec-epic" in text
+        assert _short_id_for(state, "rec-epic") in text
         assert "External ID" in text
         assert "ALPHA-1" in text
         assert "* Status" in text
 
     @pytest.mark.asyncio
     async def test_lookup_printed_record_id_accepted_verbatim_by_navigate(self, state, provider):
-        """The exact `Record ID :` value lookup_record prints must resolve
-        with navigate() with no transformation — the tool-composition
-        contract the `Next:` hint promises."""
+        """The exact Record ID value lookup_record prints — a short "R<n>"
+        label, see `RecordIdShortener` — must resolve with navigate() with
+        no further transformation: the tool-composition contract the
+        `Next:` hint promises."""
         tool = KnowledgeGraph(state=state)
         _, lookup_text = await tool.lookup_record(identifiers=["ALPHA-1"])
 
         m = re.search(r"Record ID\s*:\s*(\S+)", lookup_text)
         assert m, f"No Record ID line found in: {lookup_text}"
         record_id = m.group(1)
-        assert record_id == "rec-epic"
+        assert record_id == _short_id_for(state, "rec-epic")
 
         with _patch_kh_service():
             success, nav_text = await tool.navigate(node_id=record_id)
@@ -643,23 +660,24 @@ class TestResolveEpicThenNavigateChildrenWalk:
         tool = KnowledgeGraph(state=state)
 
         _, lookup_text = await tool.lookup_record(identifiers=["ALPHA-1"])
-        assert "rec-epic" in lookup_text
-        assert 'Next: navigate(node_id="rec-epic")' in lookup_text
+        epic_short = _short_id_for(state, "rec-epic")
+        assert epic_short in lookup_text
+        assert f'Next: navigate(node_id="{epic_short}")' in lookup_text
 
         with _patch_kh_service():
             success, epic_children_text = await tool.navigate(node_id="rec-epic")
         assert success
         assert "Implement OAuth" in epic_children_text
-        assert "rec-story-oauth" in epic_children_text
+        assert _short_id_for(state, "rec-story-oauth") in epic_children_text
         assert "Add retry logic" in epic_children_text
 
         with _patch_kh_service():
             success, story_children_text = await tool.navigate(node_id="rec-story-oauth")
         assert success
         assert "Write unit tests" in story_children_text
-        assert "rec-task-tests" in story_children_text
+        assert _short_id_for(state, "rec-task-tests") in story_children_text
         assert "Review PR" in story_children_text
-        assert "rec-task-review" in story_children_text
+        assert _short_id_for(state, "rec-task-review") in story_children_text
 
     @pytest.mark.asyncio
     async def test_navigating_the_epic_shows_its_status_and_the_read_step(self, state, provider):
@@ -674,7 +692,15 @@ class TestResolveEpicThenNavigateChildrenWalk:
         assert success
         assert "* Status: IN_PROGRESS" in text
         assert "* Type: EPIC" in text
-        assert 'dynamic_fetch_full_record(record_ids=["rec-epic"]) to read the content' in text
+        # The read step names the epic AND the stories the walk just surfaced:
+        # a listing hands back their ids and metadata and nothing they say, so
+        # a hint covering only the epic left the walk with no way to read on.
+        epic_short = _short_id_for(state, "rec-epic")
+        story_short = _short_id_for(state, "rec-story-oauth")
+        read_hint = text.split("Next: ")[-1]
+        assert "knowledgegraph__fetch_record(record_ids=[" in read_hint
+        assert f'"{epic_short}"' in read_hint
+        assert f'"{story_short}"' in read_hint
 
     @pytest.mark.asyncio
     async def test_the_walk_unlocks_reading_every_record_it_surfaced(self, state, provider):
@@ -731,14 +757,14 @@ class TestRecordIdRoundTrip:
 
         assert success
         assert "records/" not in text
-        assert "rec-story-oauth" in text  # bare key present
+        assert _short_id_for(state, "rec-story-oauth") in text  # bare key present
 
     @pytest.mark.asyncio
     async def test_lookup_id_can_be_fed_into_navigate(self, state, provider):
         """An ID returned by lookup_record() passes straight to navigate()."""
         tool = KnowledgeGraph(state=state)
         _, lookup_text = await tool.lookup_record(identifiers=["ALPHA-1"])
-        assert "rec-epic" in lookup_text
+        assert _short_id_for(state, "rec-epic") in lookup_text
 
         with _patch_kh_service():
             success, nav_text = await tool.navigate(node_id="rec-epic")
@@ -767,6 +793,7 @@ def cross_connector_state(provider):
             {"id": "app-jira", "name": "Jira Cloud", "type": "JIRA"},
         ],
         # No agent_knowledge — chat mode without per-agent config
+        "enable_record_id_shortening": True,
     }
 
 
@@ -779,7 +806,7 @@ class TestCrossConnectorResolution:
         success, text = await tool.lookup_record(identifiers=["ALPHA-2"])
 
         assert success, f"Expected success but got: {text}"
-        assert "rec-story-oauth" in text
+        assert _short_id_for(cross_connector_state, "rec-story-oauth") in text
         assert "Implement OAuth" in text
 
     @pytest.mark.asyncio
@@ -790,7 +817,7 @@ class TestCrossConnectorResolution:
         success, text = await tool.lookup_record(identifiers=[url])
 
         assert success, f"Expected success but got: {text}"
-        assert "rec-conf-page" in text
+        assert _short_id_for(cross_connector_state, "rec-conf-page") in text
         assert "OAuth Design Doc" in text
 
     @pytest.mark.asyncio
@@ -802,8 +829,8 @@ class TestCrossConnectorResolution:
         )
 
         assert success
-        assert "rec-epic" in text
-        assert "rec-conf-page" in text
+        assert _short_id_for(cross_connector_state, "rec-epic") in text
+        assert _short_id_for(cross_connector_state, "rec-conf-page") in text
 
     @pytest.mark.asyncio
     async def test_chatbot_mode_root_navigate_uses_catalog(self, cross_connector_state, provider):

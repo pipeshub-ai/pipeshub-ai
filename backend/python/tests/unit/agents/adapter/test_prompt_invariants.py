@@ -101,11 +101,12 @@ _DIRECTIONAL_RE = re.compile(
 )
 
 # 4-source fixture prompt should stay under this ceiling after consolidation.
-# Updated from 8000 after Phase 9 added the worked_traces section for
-# SMALL/MID tiers (the default test context is MID via UNKNOWN_PROFILE).
-# Measured size after Phase 9 is ~9,462 chars — see
-# test_prompt_size_regression.py for the full per-tier table.
-_KB_PLUS_3_APPS_CHAR_CEILING = 11_050
+# Updated after the block-token-usage optimization added a one-time "Record &
+# Block Structure" explainer to `_CITATION_RULES` (compact `[idx|refN]`
+# block format, replacing the old per-block scaffolding). Measured size after
+# that change is ~11,338 chars — see test_prompt_size_regression.py for the
+# full per-tier table.
+_KB_PLUS_3_APPS_CHAR_CEILING = 12_500
 
 
 # ---------------------------------------------------------------------------

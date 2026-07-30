@@ -29,10 +29,6 @@ from app.agents.agent_loop.hooks.completion_gate import (
     completion_gate,
     looks_like_file_generation_request,
 )
-from app.agents.agent_loop.hooks.full_record_gate import (
-    full_record_fetch_tracking,
-    full_record_gate,
-)
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
@@ -54,8 +50,6 @@ __all__ = [
     "ensure_fetch_full_record_available",
     "completion_gate",
     "conversation_enrichment",
-    "full_record_fetch_tracking",
-    "full_record_gate",
     "seed_visible_tools_from_history",
     "looks_like_file_generation_request",
     "resolve_attachments_for_goal",

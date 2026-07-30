@@ -1,28 +1,17 @@
 
 
-agent_block_group_prompt = """* Block Group Index: {{block_group_index}}
-* Block Group Type: {{label}}
-* Block Group Content/Blocks:{% for block in blocks %}
-  - Block Content: {{block.content}}
+agent_block_group_prompt = """[{{label}} #{{block_group_index}}]{% for block in blocks %}
+- {{block.content}}
 {% endfor %}
 """
 
-table_prompt = """* Block Group Index: {{block_group_index}}
-* Block Group Type: table
-* Table Summary: {{ table_summary }}
-* Table Rows/Blocks:{% for row in table_rows %}
-  - Block Index: {{row.block_index}}
-  - Citation ID: {{row.citation_ref}}
-  - Block Content: {{row.content}}
+table_prompt = """[Table #{{block_group_index}}: {{ table_summary }}]{% for row in table_rows %}
+[{{row.block_index}}|{{row.citation_ref}}] {{row.content}}
 {% endfor %}
 """
 
-block_group_prompt = """* Block Group Index: {{block_group_index}}
-* Block Group Type: {{label}}
-* Block Group Content/Blocks:{% for block in blocks %}
-  - Block Index: {{block.block_index}}
-  - Citation ID: {{block.citation_ref}}
-  - Block Content: {{block.content}}
+block_group_prompt = """[{{label}} #{{block_group_index}}]{% for block in blocks %}
+[{{block.block_index}}|{{block.citation_ref}}] {{block.content}}
 {% endfor %}
 """
 

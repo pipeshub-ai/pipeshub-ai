@@ -135,6 +135,11 @@ class ChatQuery(BaseModel):
     # expand: an agent without web search configured stays without it even
     # if agentCapabilities.webSearch=True.
     agentCapabilities: dict[str, Any] | None = None
+    # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+    # `utils/chat_helpers.py`. Opt-in and disabled by default: short "R<n>"
+    # labels are only valid for the request that minted them, so callers
+    # that rely on record ids surviving across turns should leave this off.
+    enableRecordIdShortening: bool = False
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
@@ -3204,6 +3209,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "webSearch": web_search_provider,
             "webSearchConfig": web_search_tool_config,
             "attachments": chat_query.attachments,
+            "enableRecordIdShortening": chat_query.enableRecordIdShortening,
         }
 
         client_name = request.headers.get("client-name")

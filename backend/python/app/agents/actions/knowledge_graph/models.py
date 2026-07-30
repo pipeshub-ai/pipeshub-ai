@@ -32,6 +32,25 @@ class NodeRow(NodeRef):
     detail: str | None      # e.g. size, indexing status, relationship type
     web_url: str | None = None
     indexing_status: str | None = None
+    # Populated only when navigate() was called with depth >= 2: this row's
+    # own children, fetched and rendered inline instead of requiring a
+    # separate navigate() call. None at depth=1 (default) — distinct from an
+    # empty list, which means "fetched, but this node has no children".
+    children: list["NodeRow"] | None = None
+    # One-line condensed metadata (e.g. "Status: In Progress, Assignee: Dana")
+    # for a record row rendered at depth >= 2, where the full
+    # `Record.to_llm_context()` block would be too expensive to inline for
+    # every node in the subtree. None at depth=1, where the *current* node
+    # already gets the full block via `NavigationView.context_block`.
+    context_summary: str | None = None
+    # True when this row's own `children` list was cut short by the
+    # per-level cap at depth >= 2 (more children exist than were fetched) —
+    # lets the renderer point the model at navigate(id) for the rest.
+    children_truncated: bool = False
+    # Total number of children this row has, when known from the same
+    # provider call that fetched `children` (depth >= 2 only) — lets the
+    # renderer say "+2 more" instead of just "more exist".
+    children_total: int | None = None
 
 
 class PaginationInfo(BaseModel):

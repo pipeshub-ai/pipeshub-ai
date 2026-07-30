@@ -296,19 +296,19 @@ class TestInternalExplorationAgent:
         assert "knowledgegraph__fetch_record" in internal.system_prompt
         # candidate list is the new decision mechanism; policy explains to use it
         assert "candidate list" in internal.system_prompt.lower()
-        assert "Record ID :" in internal.system_prompt
+        assert "Record ID" in internal.system_prompt
 
     def test_playbook_covers_records_reached_without_a_search(self) -> None:
         """A record reached by lookup/navigate/list_files arrives with no
-        blocks, so "a status is already in front of you — answer from the
-        blocks" describes an option the agent does not have on that path."""
+        blocks — policy must tell the agent to fetch when it lacks passages,
+        not answer from empty content."""
         registry = _full_registry()
         _compose(registry)
 
         prompt = registry.resolve_by_name("internal_exploration_agent")._spec.system_prompt
-        assert "You have no passage yet" in prompt
-        assert "IN A BLOCK YOU CAN SEE" in prompt
+        assert "no content yet from lookup/navigate/list_files" in prompt
         assert "Never infer content from a title" in prompt
+        assert "UNLESS the exact fact needed is already" in prompt
 
     def test_playbook_instructs_reporting_record_ids_for_caller_follow_up(self) -> None:
         registry = _full_registry()

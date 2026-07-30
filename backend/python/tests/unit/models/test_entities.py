@@ -1728,7 +1728,7 @@ class TestRecordToLlmContextEdgeCases:
         """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
         rec = Record(**_record_kwargs(weburl="/record/abc"))
         ctx = rec.to_llm_context()
-        assert "Web URL         : http://localhost:3000/record/abc" in ctx
+        assert "Web URL: http://localhost:3000/record/abc" in ctx
 
     def test_to_llm_context_frontend_url_with_trailing_slash(self):
         """Trailing slash on frontend_url should not produce a double slash."""
@@ -1741,7 +1741,7 @@ class TestRecordToLlmContextEdgeCases:
         """Absolute weburl should pass through untouched regardless of frontend_url."""
         rec = Record(**_record_kwargs(weburl="https://example.com/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "Web URL         : https://example.com/doc" in ctx
+        assert "Web URL: https://example.com/doc" in ctx
         assert "localhost" not in ctx
 
 

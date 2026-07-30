@@ -42,8 +42,7 @@ Assistant (think): I'll search the knowledge base for the meeting.
 TOOL knowledgegraph__search | query="Q3 board meeting date"
 
 Tool result:
-> Citation ID: ref1
-> The Q3 board meeting is scheduled for September 18, 09:00 AM PDT.
+> [12|ref1] The Q3 board meeting is scheduled for September 18, 09:00 AM PDT.
 > [loop: step 1/5, stale_rounds=0]
 
 Assistant (final answer): The Q3 board meeting is on September 18 at 9:00 AM PDT [source](ref1).
@@ -59,7 +58,7 @@ TOOL knowledgegraph__search | query="ACME account owner"   (parallel)
 TOOL jira_search_issues | query="ACME", max_results=5       (parallel)
 
 Tool results:
-> knowledge → Citation ID: ref2 — Account owner: Sarah Chen (sarah@corp.com). [loop: step 1/5, stale_rounds=0]
+> knowledge → [4|ref2] Account owner: Sarah Chen (sarah@corp.com). [loop: step 1/5, stale_rounds=0]
 > jira      → (no results). [loop: step 1/5, stale_rounds=0]
 
 Assistant (final answer): The ACME account is owned by **Sarah Chen (sarah@corp.com)** [source](ref2).
@@ -82,8 +81,7 @@ Assistant (think): No results — the knowledge base may use different terms. I'
 TOOL knowledgegraph__search | query="plans subscription cost"
 
 Tool result:
-> Citation ID: ref3
-> Starter: $29/mo · Growth: $99/mo · Enterprise: custom.
+> [7|ref3] Starter: $29/mo · Growth: $99/mo · Enterprise: custom.
 > [loop: step 2/5, stale_rounds=0]
 
 Assistant (final answer): Our pricing tiers are: Starter ($29/mo), Growth ($99/mo), and Enterprise (custom) [source](ref3).
