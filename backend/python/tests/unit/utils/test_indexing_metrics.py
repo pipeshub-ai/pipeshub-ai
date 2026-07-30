@@ -34,14 +34,3 @@ def test_note_helpers_noop_without_active_context():
     note_rate_limit_retry()
     note_table_result(succeeded=False, degraded=True)
     assert indexing_metrics._counters.get() is None
-
-
-def test_llm_row_budget_respects_already():
-    from app.utils.table_enrichment import llm_row_budget
-
-    # Cumulative after each table must stay <= limit (same as the old mutable counter).
-    assert llm_row_budget([50, 900], 1000) == [True, True]
-    assert llm_row_budget([50, 951], 1000) == [True, False]
-    assert llm_row_budget([50, 900], 1000, already=100) == [True, False]
-    assert llm_row_budget([50, 50], 1000, already=950) == [True, False]
-    assert llm_row_budget([50], 1000, already=960) == [False]

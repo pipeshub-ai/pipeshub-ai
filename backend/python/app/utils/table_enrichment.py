@@ -330,7 +330,7 @@ async def _enhance_one_table(
 
     # cells are raw positional values (block.data["cells"]), same shape the LLM sees
     # regardless of whether column names are known yet.
-    grid = [(rb.data or {}).get("cells") or [] for rb in data_row_blocks]
+    grid = [(rb.data or {}).get("cells") or [] for rb in row_blocks]
 
     try:
         enrichment = await enrich_table_grid(
@@ -431,29 +431,6 @@ async def enhance_tables_with_llm(
 
     return stats
 
-
-def llm_row_budget(
-    row_counts: Sequence[int], limit: int, *, already: int = 0
-) -> List[bool]:
-    """Which tables may use the LLM for row descriptions, cumulatively in order.
-
-    Computed before fan-out: the running total cannot be mutated inside concurrent
-    tasks without making the cutoff non-deterministic.
-
-    ``already`` is the row count accumulated from earlier sheets/tables in the
-    same record (Excel's cross-sheet ``cumulative_row_count``).
-    """
-    allowed: List[bool] = []
-    running = already
-    for count in row_counts:
-        running += count
-        allowed.append(running <= limit)
-    return allowed
-
-
-def cumulative_row_total(row_counts: Sequence[int], already: int = 0) -> int:
-    """Sum of ``already`` plus every count in ``row_counts``."""
-    return already + sum(row_counts)
 
 async def get_rows_text(
     llm, table_data: dict, table_summary: str, column_headers: list[str]
