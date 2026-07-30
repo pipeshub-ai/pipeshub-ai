@@ -15,9 +15,14 @@ from app.connectors.sources.odoo.connector import (
     _parse_odoo_datetime,
     _str_or_none,
 )
-from app.models.entities import DealRecord, Record, RecordType
+from app.models.entities import DealRecord, FileRecord, Person, RecordType
 from app.models.permission import EntityType, PermissionType
-from app.sources.external.odoo.odoo import CrmLead, MailFollower, Partner
+from app.sources.external.odoo.odoo import (
+    Attachment,
+    CrmLead,
+    MailFollower,
+    Partner,
+)
 
 
 # ===========================================================================
@@ -33,6 +38,7 @@ def _make_mock_deps():
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.on_new_user_groups = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
@@ -67,6 +73,7 @@ def _mock_transaction(connector: OdooConnector, existing_record: Optional[Any] =
     existing_record (None for "new record")."""
     tx_store = MagicMock()
     tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    tx_store.batch_upsert_people = AsyncMock()
 
     tx_ctx = MagicMock()
     tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -99,6 +106,22 @@ def _partner(**overrides: Any) -> Partner:
     }
     defaults.update(overrides)
     return Partner.model_validate(defaults)
+
+
+def _attachment(**overrides: Any) -> Attachment:
+    defaults: dict[str, Any] = {
+        "id": 9,
+        "name": "proposal.pdf",
+        "mimetype": "application/pdf",
+        "file_size": 1024,
+        "res_id": 1,
+        "res_model": "crm.lead",
+        "create_date": "2024-01-01 08:00:00",
+        "write_date": "2024-01-02 08:00:00",
+        "checksum": "abc123",
+    }
+    defaults.update(overrides)
+    return Attachment.model_validate(defaults)
 
 
 # ===========================================================================
@@ -273,30 +296,45 @@ class TestBuildLeadPermissions:
 
 class TestProcessLead:
     @pytest.mark.asyncio
-    async def test_new_lead_with_team_gets_team_group(self):
+    async def test_new_lead_is_filed_under_its_company_group(self):
+        """Leads group under the customer company, the way Salesforce groups
+        an Opportunity under its Account — teams are user groups now."""
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._user_email_by_id = {7: "alice@example.com"}
         c._stage_is_won = {1: False}
 
-        record, permissions, is_new = await c._process_lead(_lead())
+        record, permissions, is_new = await c._process_lead(
+            _lead(), company_group_id="res.partner/99"
+        )
 
         assert is_new is True
         assert isinstance(record, DealRecord)
         assert record.record_type == RecordType.DEAL
-        assert record.external_record_group_id == "crm.team/3"
+        assert record.external_record_group_id == "res.partner/99"
         assert record.owner_id == "7"
         assert len(permissions) == 1
 
     @pytest.mark.asyncio
-    async def test_lead_without_team_falls_back_to_unassigned_group(self):
+    async def test_lead_without_company_falls_back_to_unassigned_group(self):
         c = _make_connector()
         _mock_transaction(c, existing_record=None)
         c._stage_is_won = {}
 
-        record, _permissions, _is_new = await c._process_lead(_lead(team_id=False))
+        record, _permissions, _is_new = await c._process_lead(_lead(partner_id=False))
 
-        assert record.external_record_group_id == c._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID
+        assert record.external_record_group_id == c._UNASSIGNED_DEAL_EXTERNAL_GROUP_ID
+
+    @pytest.mark.asyncio
+    async def test_team_is_not_used_as_a_record_group(self):
+        """Regression guard: a lead's team must never become its container."""
+        c = _make_connector()
+        _mock_transaction(c, existing_record=None)
+        c._stage_is_won = {}
+
+        record, _permissions, _is_new = await c._process_lead(_lead(team_id=[3, "Sales"]))
+
+        assert "crm.team" not in (record.external_record_group_id or "")
 
     @pytest.mark.asyncio
     async def test_is_won_resolved_from_stage_map(self):
@@ -361,100 +399,285 @@ class TestProcessLead:
 
 
 # ===========================================================================
-# _process_contact
+# Partners: companies -> RecordGroup, individuals -> Person
 # ===========================================================================
 
 
-class TestProcessContact:
-    @pytest.mark.asyncio
-    async def test_new_contact_goes_into_contacts_group(self):
+class TestBuildPerson:
+    def test_individual_becomes_person_keyed_by_email(self):
         c = _make_connector()
-        _mock_transaction(c, existing_record=None)
-        c.creator_email = "creator@example.com"
 
-        record, permissions, is_new = await c._process_contact(_partner())
+        person = c._build_person(_partner(name="Jane Doe", email="Jane@Acme.com"))
 
-        assert is_new is True
-        assert isinstance(record, Record)
-        assert record.record_type == RecordType.OTHERS
-        assert record.external_record_group_id == c._CONTACTS_EXTERNAL_GROUP_ID
-        assert len(permissions) == 1
-        assert permissions[0].email == "creator@example.com"
+        assert isinstance(person, Person)
+        assert person.email == "jane@acme.com"  # normalized
+        assert person.first_name == "Jane"
+        assert person.last_name == "Doe"
+
+    def test_same_email_yields_same_deterministic_id(self):
+        """One Person per email, so re-syncs upsert instead of duplicating."""
+        c = _make_connector()
+
+        first = c._build_person(_partner(id=1, email="dup@acme.com"))
+        second = c._build_person(_partner(id=2, email="DUP@acme.com"))
+
+        assert first.id == second.id
+
+    def test_contact_without_email_is_skipped(self):
+        c = _make_connector()
+
+        assert c._build_person(_partner(email=False)) is None
+
+    def test_single_word_name_has_no_last_name(self):
+        c = _make_connector()
+
+        person = c._build_person(_partner(name="Cher", email="cher@acme.com"))
+
+        assert person.first_name == "Cher"
+        assert person.last_name is None
+
+
+class TestBuildCompanyGroup:
+    def test_company_becomes_record_group(self):
+        c = _make_connector()
+
+        group = c._build_company_group(_partner(id=99, name="Acme Corp", is_company=True))
+
+        assert group.external_group_id == "res.partner/99"
+        assert group.name == "Acme Corp"
+
+
+class TestSyncPartners:
+    @pytest.mark.asyncio
+    async def _run(self, c, partners):
+        c.contact_sync_point = MagicMock()
+        c.contact_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.contact_sync_point.update_sync_point = AsyncMock()
+        c.sync_filters = FilterCollection(filters=[])
+        c.data_source.list_partners = AsyncMock(side_effect=[partners, []])
+        return _mock_transaction(c, existing_record=None)
 
     @pytest.mark.asyncio
-    async def test_contact_with_no_resolvable_creator_email_has_no_permissions(self):
+    async def test_splits_companies_and_individuals(self):
         c = _make_connector()
-        _mock_transaction(c, existing_record=None)
-        c.creator_email = None
-
-        _record, permissions, _is_new = await c._process_contact(_partner())
-
-        assert permissions == []
-
-    @pytest.mark.asyncio
-    async def test_existing_contact_reuses_id_and_bumps_version(self):
-        c = _make_connector()
-        existing = MagicMock(id="existing-contact-id", version=0)
-        _mock_transaction(c, existing_record=existing)
-        c.creator_email = "creator@example.com"
-
-        record, _permissions, is_new = await c._process_contact(_partner())
-
-        assert is_new is False
-        assert record.id == "existing-contact-id"
-        assert record.version == 1
-
-    @pytest.mark.asyncio
-    async def test_uses_create_date_not_write_date_for_created_at(self):
-        c = _make_connector()
-        _mock_transaction(c, existing_record=None)
-        c.creator_email = None
-
-        record, _permissions, _is_new = await c._process_contact(
-            _partner(create_date="2020-01-01 00:00:00", write_date="2024-06-01 00:00:00")
+        tx_store = await self._run(
+            c,
+            [
+                _partner(id=99, name="Acme Corp", is_company=True),
+                _partner(id=42, name="Jane Doe", email="jane@acme.com"),
+            ],
         )
 
-        assert record.created_at != record.updated_at
-        assert record.created_at == _parse_odoo_datetime("2020-01-01 00:00:00")
+        await c._sync_partners(full_sync=True)
+
+        # Company -> record group
+        group_batches = c.data_entities_processor.on_new_record_groups.call_args_list
+        created_group_ids = {
+            g.external_group_id for call in group_batches for g, _ in call[0][0]
+        }
+        assert "res.partner/99" in created_group_ids
+
+        # Individual -> Person node
+        tx_store.batch_upsert_people.assert_awaited_once()
+        people = tx_store.batch_upsert_people.call_args[0][0]
+        assert [p.email for p in people] == ["jane@acme.com"]
+
+    @pytest.mark.asyncio
+    async def test_contacts_are_not_created_as_records(self):
+        """Regression guard for the review: contacts must be Person nodes."""
+        c = _make_connector()
+        await self._run(c, [_partner(id=42, email="jane@acme.com")])
+
+        await c._sync_partners(full_sync=True)
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unassigned_group_always_ensured(self):
+        c = _make_connector()
+        await self._run(c, [])
+
+        await c._sync_partners(full_sync=True)
+
+        batches = c.data_entities_processor.on_new_record_groups.call_args_list
+        group_ids = {g.external_group_id for call in batches for g, _ in call[0][0]}
+        assert c._UNASSIGNED_DEAL_EXTERNAL_GROUP_ID in group_ids
 
 
 # ===========================================================================
-# _sync_teams
+# _sync_teams  (crm.team -> AppUserGroup)
 # ===========================================================================
 
 
 class TestSyncTeams:
     @pytest.mark.asyncio
-    async def test_always_creates_unassigned_and_contacts_groups(self):
+    async def test_team_becomes_user_group_with_members(self):
         c = _make_connector()
-        c.data_source.list_teams = AsyncMock(return_value=[])
-
-        await c._sync_teams()
-
-        calls = c.data_entities_processor.on_new_record_groups.call_args_list
-        assert len(calls) == 2
-        first_batch = calls[0][0][0]
-        group_ids = {g.external_group_id for g, _ in first_batch}
-        assert c._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID in group_ids
-
-        second_batch = calls[1][0][0]
-        assert second_batch[0][0].external_group_id == c._CONTACTS_EXTERNAL_GROUP_ID
-
-    @pytest.mark.asyncio
-    async def test_real_teams_included(self):
-        c = _make_connector()
-        # MagicMock(name=...) sets the mock's own repr, not an attribute —
-        # must be assigned after construction.
-        team = MagicMock(id=3)
+        c._user_email_by_id = {7: "alice@example.com", 8: "bob@example.com"}
+        team = MagicMock(id=3, member_ids=[7, 8])
         team.name = "Sales"
         c.data_source.list_teams = AsyncMock(return_value=[team])
 
         await c._sync_teams()
 
-        first_batch = c.data_entities_processor.on_new_record_groups.call_args_list[0][0][0]
-        group_ids = {g.external_group_id for g, _ in first_batch}
-        assert "crm.team/3" in group_ids
-        assert c._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID in group_ids
+        batch = c.data_entities_processor.on_new_user_groups.call_args[0][0]
+        group, members = batch[0]
+        assert group.source_user_group_id == "crm.team/3"
+        assert group.name == "Sales"
+        assert {m.email for m in members} == {"alice@example.com", "bob@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_teams_are_not_record_groups(self):
+        """The review's core point: crm.team is a UserGroup, not a RecordGroup."""
+        c = _make_connector()
+        team = MagicMock(id=3, member_ids=[])
+        team.name = "Sales"
+        c.data_source.list_teams = AsyncMock(return_value=[team])
+
+        await c._sync_teams()
+
+        c.data_entities_processor.on_new_record_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_member_is_skipped(self):
+        c = _make_connector()
+        c._user_email_by_id = {7: "alice@example.com"}
+        team = MagicMock(id=3, member_ids=[7, 999])
+        team.name = "Sales"
+        c.data_source.list_teams = AsyncMock(return_value=[team])
+
+        await c._sync_teams()
+
+        _group, members = c.data_entities_processor.on_new_user_groups.call_args[0][0][0]
+        assert [m.email for m in members] == ["alice@example.com"]
+
+
+# ===========================================================================
+# Attachments (ir.attachment -> FileRecord)
+# ===========================================================================
+
+
+class TestProcessAttachment:
+    @pytest.mark.asyncio
+    async def test_attachment_becomes_file_record(self):
+        c = _make_connector()
+        _mock_transaction(c, existing_record=None)
+
+        record, is_new = await c._process_attachment(_attachment())
+
+        assert is_new is True
+        assert isinstance(record, FileRecord)
+        assert record.record_type == RecordType.FILE
+        assert record.is_file is True
+        assert record.extension == "pdf"
+        assert record.mime_type == "application/pdf"
+        assert record.size_in_bytes == 1024
+        assert record.md5_hash == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_links_back_to_parent_lead(self):
+        c = _make_connector()
+        _mock_transaction(c, existing_record=None)
+
+        record, _is_new = await c._process_attachment(_attachment(res_id=5))
+
+        assert record.parent_external_record_id == "crm.lead/5"
+        assert record.parent_record_type == RecordType.DEAL
+
+    @pytest.mark.asyncio
+    async def test_name_without_extension(self):
+        c = _make_connector()
+        _mock_transaction(c, existing_record=None)
+
+        record, _is_new = await c._process_attachment(_attachment(name="README"))
+
+        assert record.extension is None
+
+    @pytest.mark.asyncio
+    async def test_existing_attachment_reuses_id_and_bumps_version(self):
+        c = _make_connector()
+        existing = MagicMock(id="existing-file-id", version=4)
+        _mock_transaction(c, existing_record=existing)
+
+        record, is_new = await c._process_attachment(_attachment())
+
+        assert is_new is False
+        assert record.id == "existing-file-id"
+        assert record.version == 5
+
+
+class TestFetchLeadPermissions:
+    @pytest.mark.asyncio
+    async def test_attachment_inherits_parent_lead_permissions(self):
+        c = _make_connector()
+        c._user_email_by_id = {7: "alice@example.com"}
+        c._user_email_by_partner_id = {50: "bob@example.com"}
+        c.data_source.read_leads = AsyncMock(return_value=[_lead(id=1)])
+        c.data_source.list_followers = AsyncMock(
+            return_value=[MailFollower(id=1, res_id=1, partner_id=[50, "Bob"])]
+        )
+
+        result = await c._fetch_lead_permissions([1])
+
+        assert {p.email for p in result[1]} == {"alice@example.com", "bob@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_empty_ids_skips_calls(self):
+        c = _make_connector()
+        c.data_source.read_leads = AsyncMock()
+
+        assert await c._fetch_lead_permissions([]) == {}
+        c.data_source.read_leads.assert_not_called()
+
+
+# ===========================================================================
+# _fetch_company_group_by_lead
+# ===========================================================================
+
+
+class TestFetchCompanyGroupByLead:
+    @pytest.mark.asyncio
+    async def test_company_partner_maps_to_its_own_group(self):
+        c = _make_connector()
+        c.data_source.read_partners = AsyncMock(
+            return_value=[_partner(id=99, is_company=True)]
+        )
+
+        result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=[99, "Acme"])])
+
+        assert result == {1: "res.partner/99"}
+
+    @pytest.mark.asyncio
+    async def test_individual_partner_maps_to_parent_company(self):
+        c = _make_connector()
+        c.data_source.read_partners = AsyncMock(
+            return_value=[_partner(id=42, is_company=False, parent_id=[99, "Acme"])]
+        )
+
+        result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=[42, "Jane"])])
+
+        assert result == {1: "res.partner/99"}
+
+    @pytest.mark.asyncio
+    async def test_individual_without_company_is_unmapped(self):
+        c = _make_connector()
+        c.data_source.read_partners = AsyncMock(
+            return_value=[_partner(id=42, is_company=False, parent_id=False)]
+        )
+
+        result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=[42, "Jane"])])
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_lead_without_partner_skips_lookup(self):
+        c = _make_connector()
+        c.data_source.read_partners = AsyncMock()
+
+        result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=False)])
+
+        assert result == {}
+        c.data_source.read_partners.assert_not_called()
 
 
 # ===========================================================================
@@ -546,11 +769,11 @@ class TestGetSignedUrl:
         assert url == "https://mycompany.odoo.com/web#id=5&model=crm.lead&view_type=form"
 
     @pytest.mark.asyncio
-    async def test_contact_url(self):
+    async def test_attachment_url_points_at_download_endpoint(self):
         c = _make_connector()
-        record = MagicMock(external_record_id="res.partner/42")
+        record = MagicMock(external_record_id="ir.attachment/9")
         url = await c.get_signed_url(record)
-        assert url == "https://mycompany.odoo.com/web#id=42&model=res.partner&view_type=form"
+        assert url == "https://mycompany.odoo.com/web/content/9?download=true"
 
 
 # ===========================================================================
@@ -564,26 +787,49 @@ class TestStreamRecordDispatch:
         c = _make_connector()
         record = MagicMock(external_record_id="crm.lead/1")
         c._stream_lead = AsyncMock(return_value="lead-response")
-        c._stream_contact = AsyncMock(return_value="contact-response")
+        c._stream_attachment = AsyncMock(return_value="attachment-response")
 
         result = await c.stream_record(record)
 
         assert result == "lead-response"
         c._stream_lead.assert_awaited_once_with(record)
-        c._stream_contact.assert_not_called()
+        c._stream_attachment.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dispatches_to_stream_contact(self):
+    async def test_dispatches_to_stream_attachment(self):
         c = _make_connector()
-        record = MagicMock(external_record_id="res.partner/1")
+        record = MagicMock(external_record_id="ir.attachment/9")
         c._stream_lead = AsyncMock(return_value="lead-response")
-        c._stream_contact = AsyncMock(return_value="contact-response")
+        c._stream_attachment = AsyncMock(return_value="attachment-response")
 
         result = await c.stream_record(record)
 
-        assert result == "contact-response"
-        c._stream_contact.assert_awaited_once_with(record)
+        assert result == "attachment-response"
+        c._stream_attachment.assert_awaited_once_with(record)
         c._stream_lead.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_attachment_decodes_base64_content(self):
+        import base64
+
+        c = _make_connector()
+        c.data_source.get_attachment_content = AsyncMock(
+            return_value=base64.b64encode(b"PDF-BYTES").decode()
+        )
+        record = MagicMock(
+            external_record_id="ir.attachment/9",
+            record_name="proposal.pdf",
+            mime_type="application/pdf",
+            id="r9",
+        )
+
+        response = await c._stream_attachment(record)
+
+        chunks = [chunk async for chunk in response.body_iterator]
+        body = b"".join(
+            ch if isinstance(ch, bytes) else ch.encode("utf-8") for ch in chunks
+        )
+        assert body == b"PDF-BYTES"
 
     @pytest.mark.asyncio
     async def test_raises_when_not_initialized(self):
@@ -668,24 +914,54 @@ class TestReindexRecords:
         c.data_entities_processor.on_new_records.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_changed_contact_dispatches_to_process_contact(self):
+    async def test_changed_attachment_dispatches_to_process_attachment(self):
         c = _make_connector()
         c._sync_users = AsyncMock()
         c._sync_stages = AsyncMock()
         c.creator_email = "creator@example.com"
-        c.data_source.get_partner = AsyncMock(
-            return_value=_partner(write_date="2024-03-01 00:00:00")
+        c.data_source.get_attachment = AsyncMock(
+            return_value=_attachment(write_date="2024-03-01 00:00:00")
         )
+        c.data_source.read_leads = AsyncMock(return_value=[])
+        c.data_source.list_followers = AsyncMock(return_value=[])
         _mock_transaction(c, existing_record=None)
         record = MagicMock(
-            id="r2",
-            external_record_id="res.partner/42",
+            id="r9",
+            external_record_id="ir.attachment/9",
             external_revision_id="2024-01-01 00:00:00",
         )
 
         await c.reindex_records([record])
 
         c.data_entities_processor.on_new_records.assert_awaited_once()
+        sent_record, _perms = c.data_entities_processor.on_new_records.call_args[0][0][0]
+        assert sent_record.record_type == RecordType.FILE
+
+    @pytest.mark.asyncio
+    async def test_reindexed_lead_keeps_its_company_group(self):
+        """Without the company lookup, reindex would silently re-file every
+        lead under "Unassigned"."""
+        c = _make_connector()
+        c._sync_users = AsyncMock()
+        c._sync_stages = AsyncMock()
+        c.data_source.get_lead = AsyncMock(
+            return_value=_lead(write_date="2024-02-01 00:00:00", partner_id=[99, "Acme"])
+        )
+        c.data_source.list_followers = AsyncMock(return_value=[])
+        c.data_source.read_partners = AsyncMock(
+            return_value=[_partner(id=99, is_company=True)]
+        )
+        _mock_transaction(c, existing_record=None)
+        record = MagicMock(
+            id="r1",
+            external_record_id="crm.lead/1",
+            external_revision_id="2024-01-01 00:00:00",
+        )
+
+        await c.reindex_records([record])
+
+        sent_record, _perms = c.data_entities_processor.on_new_records.call_args[0][0][0]
+        assert sent_record.external_record_group_id == "res.partner/99"
 
     @pytest.mark.asyncio
     async def test_empty_records_is_noop(self):

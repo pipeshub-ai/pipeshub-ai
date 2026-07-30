@@ -1,31 +1,39 @@
-"""Odoo connector — syncs CRM leads/opportunities (crm.lead) as DealRecord
-entries, sales teams (crm.team) as RecordGroups, plus salespersons
-(res.users) as AppUsers.
+"""Odoo connector — CRM sync, mapped onto the same graph entities the
+Salesforce connector uses (app/connectors/sources/salesforce/connector.py
+is the reference implementation for this mapping):
 
-Scope: CRM leads only, matching app/sources/external/odoo/odoo.py. Teams
-are synced purely as a structural container (every connector in this repo
-groups its records under something — Odoo is otherwise the only exception,
-and a flat/groupless connector's records don't show up at all in the "All
-Records" browse tree, since that view only queries RecordGroups under an
-app, not bare records). Team-based *sharing* (whole team can see the whole
-pipeline, not just its own leads) is a separate, still-open decision — see
-the permissions docstring below. Roles are intentionally not synced —
-res.groups/ir.rule gate model-level access, not individual records, so
-there's no clean "role -> these specific leads" list to sync the way
-BookStack's per-content role permissions work.
+    Odoo                      PipesHub            Salesforce equivalent
+    ------------------------  ------------------  ---------------------
+    crm.lead                  DealRecord          Opportunity
+    res.partner (company)     RecordGroup         Account
+    res.partner (individual)  Person              Contact
+    crm.team                  AppUserGroup        Public Group / Queue
+    ir.attachment             FileRecord          ContentVersion
+    res.users                 AppUser             User
+
+Leads are grouped under their customer company (the lead's partner_id, or
+that partner's parent company), mirroring how Salesforce groups
+Opportunities under their Account; leads with no resolvable company fall
+back to a single "Unassigned" group the same way Salesforce falls back to
+"UNASSIGNED-DEAL". Teams are *not* record groups — they are user groups,
+so team membership drives identity, not record containment.
+
+Roles are intentionally not synced — res.groups/ir.rule gate model-level
+access, not individual records, so there's no clean "role -> these
+specific leads" list to sync.
 
 Permissions per lead: OWNER for the assigned salesperson (user_id) plus
 READER for every mail.followers subscriber on that lead — followers are
-Odoo's only genuine per-record "who's actually looped into this" signal,
-closer to BookStack's content-level permissions than a coarse team-wide
-grant would be. Team-based sharing (whole team sees the whole pipeline) is
-a separate, still-open decision — add it if followers alone prove too
-narrow for how a given org actually uses Odoo teams.
+Odoo's only genuine per-record "who's actually looped into this" signal.
+Attachments inherit the permissions of the lead they hang off. Team-based
+sharing (whole team sees the whole pipeline) is still an open decision —
+add it if followers alone prove too narrow.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import uuid
 from collections import defaultdict
@@ -71,7 +79,10 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.odoo.apps import OdooApp
 from app.models.entities import (
     AppUser,
+    AppUserGroup,
     DealRecord,
+    FileRecord,
+    Person,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -79,7 +90,12 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.odoo.odoo import OdooClient, OdooClientBuilder
-from app.sources.external.odoo.odoo import CrmLead, OdooDataSource, Partner
+from app.sources.external.odoo.odoo import (
+    Attachment,
+    CrmLead,
+    OdooDataSource,
+    Partner,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -230,6 +246,12 @@ class OdooConnector(BaseConnector):
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=self.data_store_provider,
         )
+        self.attachment_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=self.data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=self.data_store_provider,
+        )
 
     @classmethod
     async def create_connector(
@@ -324,14 +346,19 @@ class OdooConnector(BaseConnector):
             self.logger.info("Syncing sales teams...")
             await self._sync_teams()
 
+            # Before leads: company record groups are the container leads are
+            # filed under, so they must exist before a lead references one.
+            self.logger.info("Syncing partners (res.partner)...")
+            await self._sync_partners(full_sync=full_sync)
+
             self.logger.info("Syncing stages...")
             await self._sync_stages()
 
             self.logger.info("Syncing leads/opportunities...")
             await self._sync_leads(full_sync=full_sync)
 
-            self.logger.info("Syncing contacts (res.partner)...")
-            await self._sync_contacts(full_sync=full_sync)
+            self.logger.info("Syncing attachments (ir.attachment)...")
+            await self._sync_attachments(full_sync=full_sync)
 
             self.logger.info(f"Odoo {label} sync completed.")
         except Exception as ex:
@@ -383,70 +410,63 @@ class OdooConnector(BaseConnector):
         self._stage_is_won = {stage.id: stage.is_won for stage in stages}
         self.logger.info(f"Loaded {len(stages)} CRM stages.")
 
-    # -- Teams / record-groups ---------------------------------------------
+    # -- Teams (user groups) -----------------------------------------------
 
-    # External group ID used for leads that have no sales team assigned.
-    _UNASSIGNED_TEAM_EXTERNAL_GROUP_ID = "crm.team/__unassigned__"
-    # External group ID for the Contacts record group.
-    _CONTACTS_EXTERNAL_GROUP_ID = "res.partner/__contacts__"
+    # Group leads are filed under when no customer company can be resolved,
+    # mirroring Salesforce's "UNASSIGNED-DEAL" account fallback.
+    _UNASSIGNED_DEAL_EXTERNAL_GROUP_ID = "res.partner/__unassigned__"
+    # Single container for every synced attachment (Salesforce does the same
+    # with its "Salesforce Files" record group).
+    _FILES_EXTERNAL_GROUP_ID = "ir.attachment/__files__"
 
     @staticmethod
-    def _team_external_group_id(team_id: int) -> str:
+    def _team_source_user_group_id(team_id: int) -> str:
         return f"crm.team/{team_id}"
 
+    @staticmethod
+    def _company_external_group_id(partner_id: int) -> str:
+        return f"res.partner/{partner_id}"
+
     async def _sync_teams(self) -> None:
+        """Sales teams are user groups, not record groups — a team is a set
+        of salespeople, not a container of documents. Membership comes from
+        crm.team.member_ids resolved through the user email map."""
         if not self.data_source:
             return
 
         teams = await self.data_source.list_teams()
-        groups: list[tuple[RecordGroup, list]] = [
-            (
-                RecordGroup(
-                    name=team.name or f"Team {team.id}",
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=self._team_external_group_id(team.id),
-                    connector_name=Connectors.ODOO,
-                    connector_id=self.connector_id,
-                    group_type=RecordGroupType.PROJECT,
-                ),
-                [],
-            )
-            for team in teams
-        ]
-        
-        groups.append(
-            (
-                RecordGroup(
-                    name="Unassigned",
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=self._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID,
-                    connector_name=Connectors.ODOO,
-                    connector_id=self.connector_id,
-                    group_type=RecordGroupType.PROJECT,
-                ),
-                [],
-            )
-        )
-        await self.data_entities_processor.on_new_record_groups(groups)
-        self.logger.info(f"Synced {len(groups) - 1} Odoo sales teams + 1 Unassigned group.")
+        org_id = self.data_entities_processor.org_id
 
-        # Always ensure the Contacts group exists so contact records appear
-        # in the All Records browse tree.
-        contacts_group: list[tuple[RecordGroup, list]] = [
-            (
-                RecordGroup(
-                    name="Contacts",
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=self._CONTACTS_EXTERNAL_GROUP_ID,
-                    connector_name=Connectors.ODOO,
+        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        for team in teams:
+            members = [
+                AppUser(
+                    app_name=Connectors.ODOO,
                     connector_id=self.connector_id,
-                    group_type=RecordGroupType.PROJECT,
-                ),
-                [],
+                    source_user_id=str(member_id),
+                    email=email,
+                    full_name="",
+                    org_id=org_id,
+                )
+                for member_id in team.member_ids
+                if (email := self._user_email_by_id.get(member_id))
+            ]
+            user_groups.append(
+                (
+                    AppUserGroup(
+                        app_name=Connectors.ODOO,
+                        connector_id=self.connector_id,
+                        source_user_group_id=self._team_source_user_group_id(team.id),
+                        name=team.name or f"Team {team.id}",
+                        org_id=org_id,
+                    ),
+                    members,
+                )
             )
-        ]
-        await self.data_entities_processor.on_new_record_groups(contacts_group)
-        self.logger.info("Ensured 'Contacts' record group exists.")
+
+        if user_groups:
+            await self.data_entities_processor.on_new_user_groups(user_groups)
+        self.logger.info(f"Synced {len(user_groups)} Odoo sales teams as user groups.")
 
     # -- Leads -------------------------------------------------------------
 
@@ -509,13 +529,16 @@ class OdooConnector(BaseConnector):
                 if not leads:
                     break
 
-                followers_by_lead = await self._fetch_followers_by_lead(
-                    [lead.id for lead in leads]
+                followers_by_lead, company_group_by_lead = await asyncio.gather(
+                    self._fetch_followers_by_lead([lead.id for lead in leads]),
+                    self._fetch_company_group_by_lead(leads),
                 )
 
                 for lead in leads:
                     record, permissions, is_new = await self._process_lead(
-                        lead, followers_by_lead.get(lead.id, [])
+                        lead,
+                        followers_by_lead.get(lead.id, []),
+                        company_group_by_lead.get(lead.id),
                     )
 
                     if is_new:
@@ -558,12 +581,49 @@ class OdooConnector(BaseConnector):
                 by_lead[follower.res_id].append(partner_id)
         return by_lead
 
-    # -- Contacts (res.partner) -------------------------------------------
+    async def _fetch_company_group_by_lead(
+        self, leads: List[CrmLead]
+    ) -> Dict[int, str]:
+        """Resolve each lead's customer company to the record group it should
+        be filed under (Salesforce files an Opportunity under its Account).
 
-    async def _sync_contacts(self, full_sync: bool = False) -> None:
-        """Sync Odoo contacts (res.partner) as RecordType.OTHERS records
-        inside a dedicated 'Contacts' record group. Uses its own write_date
-        cursor so it advances independently from leads."""
+        A lead's partner_id may be an individual rather than a company, so the
+        partner's parent company wins when there is one. One bulk read per
+        page keeps this off the N+1 path.
+        """
+        if not self.data_source:
+            return {}
+
+        partner_id_by_lead: Dict[int, int] = {}
+        for lead in leads:
+            partner_id = _m2o_id(lead.partner_id)
+            if partner_id is not None:
+                partner_id_by_lead[lead.id] = partner_id
+        if not partner_id_by_lead:
+            return {}
+
+        partners = await self.data_source.read_partners(
+            sorted(set(partner_id_by_lead.values()))
+        )
+        group_by_partner: Dict[int, str] = {}
+        for partner in partners:
+            company_id = partner.id if partner.is_company else _m2o_id(partner.parent_id)
+            if company_id is not None:
+                group_by_partner[partner.id] = self._company_external_group_id(company_id)
+
+        return {
+            lead_id: group_by_partner[partner_id]
+            for lead_id, partner_id in partner_id_by_lead.items()
+            if partner_id in group_by_partner
+        }
+
+    # -- Partners (res.partner) --------------------------------------------
+
+    async def _sync_partners(self, full_sync: bool = False) -> None:
+        """Split res.partner the way Salesforce splits Account vs Contact:
+        companies become RecordGroups (the container leads are filed under),
+        individuals become Person nodes. Uses its own write_date cursor so it
+        advances independently from leads."""
         if not self.data_source:
             return
 
@@ -579,9 +639,25 @@ class OdooConnector(BaseConnector):
         else:
             last_write_date = cursor_write_date or configured_since
 
-        batch_records: List[Tuple[Record, List[Permission]]] = []
+        # The fallback container for leads with no customer company has to
+        # exist no matter how few partners changed this run.
+        await self.data_entities_processor.on_new_record_groups([
+            (
+                RecordGroup(
+                    name="Unassigned",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._UNASSIGNED_DEAL_EXTERNAL_GROUP_ID,
+                    connector_name=Connectors.ODOO,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.PROJECT,
+                ),
+                [],
+            )
+        ])
+
         offset = 0
-        total = 0
+        total_companies = 0
+        total_people = 0
 
         while True:
             partners = await self.data_source.list_partners(
@@ -592,8 +668,129 @@ class OdooConnector(BaseConnector):
             if not partners:
                 break
 
+            company_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+            people: List[Person] = []
             for partner in partners:
-                record, permissions, is_new = await self._process_contact(partner)
+                if partner.is_company:
+                    company_groups.append((self._build_company_group(partner), []))
+                    continue
+                person = self._build_person(partner)
+                if person is not None:
+                    people.append(person)
+
+            if company_groups:
+                await self.data_entities_processor.on_new_record_groups(company_groups)
+                total_companies += len(company_groups)
+            if people:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.batch_upsert_people(people)
+                total_people += len(people)
+
+            offset += len(partners)
+            if len(partners) < self.batch_size:
+                break
+
+        await self.contact_sync_point.update_sync_point(
+            sync_key, {"write_date": current_timestamp}
+        )
+        self.logger.info(
+            f"Finished syncing {total_companies} Odoo companies (record groups) "
+            f"and {total_people} contacts (Person nodes)."
+        )
+
+    def _build_company_group(self, partner: Partner) -> RecordGroup:
+        return RecordGroup(
+            name=partner.name or f"Company #{partner.id}",
+            org_id=self.data_entities_processor.org_id,
+            external_group_id=self._company_external_group_id(partner.id),
+            connector_name=Connectors.ODOO,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.PROJECT,
+            source_created_at=_parse_odoo_datetime(partner.create_date),
+            source_updated_at=_parse_odoo_datetime(partner.write_date),
+        )
+
+    def _build_person(self, partner: Partner) -> Optional[Person]:
+        """Person nodes are keyed by email, so a contact without one can't be
+        deduplicated — skipped, same rule the Salesforce connector applies."""
+        email = _str_or_none(partner.email)
+        if not email:
+            return None
+        email = email.lower()
+        first_name, _, last_name = (partner.name or "").partition(" ")
+        return Person(
+            # Deterministic id so the same email is one Person across
+            # connectors — matches _upsert_external_person in the processor.
+            id=str(uuid.uuid5(uuid.NAMESPACE_DNS, email)),
+            email=email,
+            first_name=first_name or None,
+            last_name=last_name or None,
+            phone=_str_or_none(partner.phone),
+            created_at=_parse_odoo_datetime(partner.create_date) or get_epoch_timestamp_in_ms(),
+            updated_at=_parse_odoo_datetime(partner.write_date) or get_epoch_timestamp_in_ms(),
+        )
+
+    # -- Attachments (ir.attachment) ---------------------------------------
+
+    async def _sync_attachments(self, full_sync: bool = False) -> None:
+        """Sync files attached to leads as FileRecords inside one shared
+        "Odoo Files" record group — the same shape the Salesforce connector
+        uses for ContentVersion. Each file points back at the lead it hangs
+        off and inherits that lead's permissions."""
+        if not self.data_source:
+            return
+
+        current_timestamp = _odoo_now()
+        sync_key = generate_record_sync_point_key("odoo", "attachments", "global")
+        sync_point = await self.attachment_sync_point.read_sync_point(sync_key)
+        cursor_write_date = None if full_sync else sync_point.get("write_date")
+
+        configured_since = self._get_modified_since_filter()
+        if cursor_write_date and configured_since:
+            last_write_date = max(cursor_write_date, configured_since)
+        else:
+            last_write_date = cursor_write_date or configured_since
+
+        await self.data_entities_processor.on_new_record_groups([
+            (
+                RecordGroup(
+                    name="Odoo Files",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._FILES_EXTERNAL_GROUP_ID,
+                    connector_name=Connectors.ODOO,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.PROJECT,
+                    is_internal=True,
+                ),
+                [],
+            )
+        ])
+
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+        offset = 0
+        total = 0
+
+        while True:
+            attachments = await self.data_source.list_attachments(
+                res_model="crm.lead",
+                updated_since=last_write_date,
+                limit=self.batch_size,
+                offset=offset,
+            )
+            if not attachments:
+                break
+
+            permissions_by_lead = await self._fetch_lead_permissions(
+                [a.res_id for a in attachments if a.res_id is not None]
+            )
+
+            for attachment in attachments:
+                record, is_new = await self._process_attachment(attachment)
+                permissions = list(permissions_by_lead.get(attachment.res_id) or [])
+                if not permissions:
+                    fallback = self._creator_owner_permission()
+                    if fallback:
+                        permissions.append(fallback)
 
                 if is_new:
                     batch_records.append((record, permissions))
@@ -607,25 +804,41 @@ class OdooConnector(BaseConnector):
                     )
                 total += 1
 
-            offset += len(partners)
-            if len(partners) < self.batch_size:
+            offset += len(attachments)
+            if len(attachments) < self.batch_size:
                 break
 
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
 
-        await self.contact_sync_point.update_sync_point(
+        await self.attachment_sync_point.update_sync_point(
             sync_key, {"write_date": current_timestamp}
         )
-        self.logger.info(f"Finished syncing {total} Odoo contacts.")
+        self.logger.info(f"Finished syncing {total} Odoo attachments.")
 
-    async def _process_contact(
-        self, partner: Partner
-    ) -> Tuple[Record, List[Permission], bool]:
-        """Map a res.partner row to a base Record(RecordType.OTHERS) inside
-        the Contacts record group, with the connector creator as fallback owner
-        (contacts have no per-record ownership concept in Odoo)."""
-        external_id = f"res.partner/{partner.id}"
+    async def _fetch_lead_permissions(
+        self, lead_ids: List[int]
+    ) -> Dict[int, List[Permission]]:
+        """Owner+follower permissions for a page of parent leads, so an
+        attachment ends up visible to exactly whoever can see its lead."""
+        if not self.data_source or not lead_ids:
+            return {}
+        unique_ids = sorted(set(lead_ids))
+        leads, followers_by_lead = await asyncio.gather(
+            self.data_source.read_leads(unique_ids),
+            self._fetch_followers_by_lead(unique_ids),
+        )
+        return {
+            lead.id: self._build_lead_permissions(
+                _m2o_id(lead.user_id), followers_by_lead.get(lead.id, [])
+            )
+            for lead in leads
+        }
+
+    async def _process_attachment(
+        self, attachment: Attachment
+    ) -> Tuple[FileRecord, bool]:
+        external_id = f"ir.attachment/{attachment.id}"
 
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(
@@ -633,40 +846,42 @@ class OdooConnector(BaseConnector):
             )
         is_new = existing_record is None
 
-        created_at_ms = _parse_odoo_datetime(partner.create_date) or get_epoch_timestamp_in_ms()
-        updated_at_ms = _parse_odoo_datetime(partner.write_date) or get_epoch_timestamp_in_ms()
+        created_at_ms = _parse_odoo_datetime(attachment.create_date) or get_epoch_timestamp_in_ms()
+        updated_at_ms = _parse_odoo_datetime(attachment.write_date) or get_epoch_timestamp_in_ms()
+        name = attachment.name or f"Attachment #{attachment.id}"
+        extension = name.rpartition(".")[2] if "." in name else None
+        parent_id = (
+            f"crm.lead/{attachment.res_id}" if attachment.res_id is not None else None
+        )
 
-        display_name = partner.name or f"Contact #{partner.id}"
-
-        record = Record(
+        record = FileRecord(
             id=existing_record.id if existing_record else str(uuid.uuid4()),
-            record_name=display_name,
+            record_name=name,
             external_record_id=external_id,
             connector_name=Connectors.ODOO,
             connector_id=self.connector_id,
-            record_type=RecordType.OTHERS,
+            record_type=RecordType.FILE,
             origin=OriginTypes.CONNECTOR,
             org_id=self.data_entities_processor.org_id,
             version=0 if is_new else existing_record.version + 1,
-            external_revision_id=partner.write_date,
-            external_record_group_id=self._CONTACTS_EXTERNAL_GROUP_ID,
+            external_revision_id=attachment.write_date,
+            external_record_group_id=self._FILES_EXTERNAL_GROUP_ID,
             record_group_type=RecordGroupType.PROJECT,
-            weburl=f"{self.base_url}/web#id={partner.id}&model=res.partner&view_type=form",
-            mime_type=MimeTypes.PLAIN_TEXT.value,
+            parent_external_record_id=parent_id,
+            parent_record_type=RecordType.DEAL if parent_id else None,
+            weburl=f"{self.base_url}/web/content/{attachment.id}?download=true",
+            mime_type=_str_or_none(attachment.mimetype) or MimeTypes.UNKNOWN.value,
+            is_file=True,
+            extension=extension,
+            size_in_bytes=attachment.file_size,
+            md5_hash=_str_or_none(attachment.checksum),
             created_at=created_at_ms,
             updated_at=updated_at_ms,
             source_created_at=created_at_ms,
             source_updated_at=updated_at_ms,
             inherit_permissions=False,
         )
-
-        # Contacts have no owner in Odoo — fall back to connector creator.
-        permissions: List[Permission] = []
-        fallback = self._creator_owner_permission()
-        if fallback:
-            permissions.append(fallback)
-
-        return record, permissions, is_new
+        return record, is_new
 
     def _creator_owner_permission(self) -> Optional[Permission]:
         """Fallback OWNER grant so records with no resolvable Odoo owner/
@@ -724,7 +939,10 @@ class OdooConnector(BaseConnector):
         return permissions
 
     async def _process_lead(
-        self, lead: CrmLead, follower_partner_ids: Optional[List[int]] = None
+        self,
+        lead: CrmLead,
+        follower_partner_ids: Optional[List[int]] = None,
+        company_group_id: Optional[str] = None,
     ) -> Tuple[DealRecord, List[Permission], bool]:
         external_id = f"crm.lead/{lead.id}"
 
@@ -737,12 +955,7 @@ class OdooConnector(BaseConnector):
         owner_id = _m2o_id(lead.user_id)
         permissions = self._build_lead_permissions(owner_id, follower_partner_ids or [])
 
-        team_id = _m2o_id(lead.team_id)
-        external_group_id = (
-            self._team_external_group_id(team_id)
-            if team_id is not None
-            else self._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID
-        )
+        external_group_id = company_group_id or self._UNASSIGNED_DEAL_EXTERNAL_GROUP_ID
 
         created_at_ms = _parse_odoo_datetime(lead.create_date) or get_epoch_timestamp_in_ms()
         updated_at_ms = _parse_odoo_datetime(lead.write_date) or get_epoch_timestamp_in_ms()
@@ -794,6 +1007,8 @@ class OdooConnector(BaseConnector):
         parts = record.external_record_id.split("/")
         model = parts[0] if len(parts) >= 2 else "crm.lead"
         rec_id = parts[-1]
+        if model == "ir.attachment":
+            return f"{self.base_url}/web/content/{rec_id}?download=true"
         return f"{self.base_url}/web#id={rec_id}&model={model}&view_type=form"
 
     async def stream_record(self, record: Record) -> StreamingResponse:
@@ -804,8 +1019,8 @@ class OdooConnector(BaseConnector):
             )
 
         # Dispatch on the model embedded in the external_record_id.
-        if record.external_record_id.startswith("res.partner/"):
-            return await self._stream_contact(record)
+        if record.external_record_id.startswith("ir.attachment/"):
+            return await self._stream_attachment(record)
         return await self._stream_lead(record)
 
     async def _stream_lead(self, record: Record) -> StreamingResponse:
@@ -938,57 +1153,27 @@ class OdooConnector(BaseConnector):
             fallback_filename=f"record_{record.id}",
         )
 
-    async def _stream_contact(self, record: Record) -> StreamingResponse:
-        """Stream a res.partner contact as plain text for indexing."""
+    async def _stream_attachment(self, record: Record) -> StreamingResponse:
+        """Stream an ir.attachment's binary content for indexing. Odoo returns
+        it base64-encoded over XML-RPC, so it is decoded before streaming."""
         assert self.data_source is not None  # guarded by stream_record()
-        partner_id = int(record.external_record_id.split("/")[-1])
-        partner = await self.data_source.get_partner(partner_id)
-        if partner is None:
+        attachment_id = int(record.external_record_id.split("/")[-1])
+        encoded = await self.data_source.get_attachment_content(attachment_id)
+        if encoded is None:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="Contact not found or access denied",
+                detail="Attachment not found or has no content",
             )
 
-        lines: List[str] = [f"Name: {partner.name}"]
+        content = base64.b64decode(encoded)
 
-        if partner.is_company:
-            lines.append("Type: Company")
-        else:
-            lines.append("Type: Individual Contact")
-
-        if _str_or_none(partner.email):
-            lines.append(f"Email: {partner.email}")
-        if _str_or_none(partner.phone):
-            lines.append(f"Phone: {partner.phone}")
-        if _str_or_none(partner.mobile):
-            lines.append(f"Mobile: {partner.mobile}")
-        if _str_or_none(partner.function):
-            lines.append(f"Job Position: {partner.function}")
-
-        # Parent company (for individual contacts linked to a company)
-        if _m2o_name(partner.parent_id):
-            lines.append(f"Company: {_m2o_name(partner.parent_id)}")
-
-        # Address
-        addr_parts = [
-            _str_or_none(partner.street),
-            _str_or_none(partner.city),
-            _m2o_name(partner.state_id),
-            _m2o_name(partner.country_id),
-        ]
-        addr = ", ".join(p for p in addr_parts if p)
-        if addr:
-            lines.append(f"Address: {addr}")
-
-        content = "\n".join(lines).encode("utf-8")
-
-        async def _contact_stream() -> AsyncGenerator[bytes, None]:
+        async def _attachment_stream() -> AsyncGenerator[bytes, None]:
             yield content
 
         return create_stream_record_response(
-            _contact_stream(),
+            _attachment_stream(),
             filename=record.record_name,
-            mime_type=MimeTypes.PLAIN_TEXT.value,
+            mime_type=record.mime_type or MimeTypes.UNKNOWN.value,
             fallback_filename=f"record_{record.id}",
         )
 
@@ -1018,17 +1203,29 @@ class OdooConnector(BaseConnector):
 
             for record in records:
                 try:
-                    is_contact = record.external_record_id.startswith("res.partner/")
+                    is_attachment = record.external_record_id.startswith("ir.attachment/")
                     rec_id = int(record.external_record_id.split("/")[-1])
 
-                    if is_contact:
-                        partner = await self.data_source.get_partner(rec_id)
-                        if partner is None:
+                    if is_attachment:
+                        attachment = await self.data_source.get_attachment(rec_id)
+                        if attachment is None:
                             continue
-                        if partner.write_date != record.external_revision_id:
-                            updated_record, permissions, _is_new = (
-                                await self._process_contact(partner)
+                        if attachment.write_date != record.external_revision_id:
+                            updated_record, _is_new = await self._process_attachment(
+                                attachment
                             )
+                            permissions_by_lead = await self._fetch_lead_permissions(
+                                [attachment.res_id]
+                                if attachment.res_id is not None
+                                else []
+                            )
+                            permissions = list(
+                                permissions_by_lead.get(attachment.res_id) or []
+                            )
+                            if not permissions:
+                                fallback = self._creator_owner_permission()
+                                if fallback:
+                                    permissions.append(fallback)
                             updated_records.append((updated_record, permissions))
                         else:
                             non_updated_records.append(record)
@@ -1045,8 +1242,17 @@ class OdooConnector(BaseConnector):
                                 for f in followers
                                 if (pid := _m2o_id(f.partner_id)) is not None
                             ]
+                            # Resolve the company group too, or the lead would
+                            # be re-filed under "Unassigned" on every reindex.
+                            company_group_by_lead = (
+                                await self._fetch_company_group_by_lead([lead])
+                            )
                             updated_record, permissions, _is_new = (
-                                await self._process_lead(lead, follower_partner_ids)
+                                await self._process_lead(
+                                    lead,
+                                    follower_partner_ids,
+                                    company_group_by_lead.get(lead.id),
+                                )
                             )
                             updated_records.append((updated_record, permissions))
                         else:
