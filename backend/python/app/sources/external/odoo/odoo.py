@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LEAD_FIELDS = [
     "id", "name", "type", "partner_name", "email_from", "phone",
-    "stage_id", "team_id", "user_id", "tag_ids",
+    "stage_id", "team_id", "user_id", "partner_id", "tag_ids",
     "expected_revenue", "probability", "description",
     "priority", "active",
     "date_open", "date_closed", "date_deadline", "lost_reason_id",
@@ -71,7 +71,7 @@ DEFAULT_USER_FIELDS = ["id", "name", "email", "login", "active", "partner_id"]
 
 DEFAULT_ATTACHMENT_FIELDS = [
     "id", "name", "mimetype", "file_size", "res_id", "res_model",
-    "create_date", "checksum",
+    "create_date", "write_date", "checksum",
 ]
 
 
@@ -97,6 +97,7 @@ class CrmLead(BaseModel):
     stage_id: Any = None
     team_id: Any = None
     user_id: Any = None
+    partner_id: Any = None
     tag_ids: list[int] = []
     expected_revenue: float = 0.0
     probability: float = 0.0
@@ -136,6 +137,7 @@ class CrmTeam(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: int
     name: str = ""
+    member_ids: list[int] = []
 
 
 class CrmTag(BaseModel):
@@ -239,6 +241,7 @@ class Attachment(BaseModel):
     res_id: int | None = None
     res_model: str | None = None
     create_date: str | None = None
+    write_date: str | None = None
     checksum: str | bool | None = None
 
 
@@ -297,6 +300,18 @@ class OdooDataSource:
         )
         return CrmLead.model_validate(rows[0]) if rows else None
 
+    async def read_leads(
+        self, lead_ids: list[int], fields: list[str] | None = None
+    ) -> list[CrmLead]:
+        """Bulk-read leads by id — one call for a whole page of attachments
+        instead of one get_lead() per attachment."""
+        if not lead_ids:
+            return []
+        rows = await self._client.execute_kw(
+            "crm.lead", "read", [lead_ids], {"fields": fields or DEFAULT_LEAD_FIELDS}
+        )
+        return [CrmLead.model_validate(row) for row in rows]
+
     async def count_leads(
         self, lead_type: str | None = None, updated_since: str | None = None
     ) -> int:
@@ -314,7 +329,7 @@ class OdooDataSource:
 
     async def list_teams(self) -> list[CrmTeam]:
         rows = await self._client.execute_kw(
-            "crm.team", "search_read", [[]], {"fields": ["name"]}
+            "crm.team", "search_read", [[]], {"fields": ["name", "member_ids"]}
         )
         return [CrmTeam.model_validate(row) for row in rows]
 
@@ -481,6 +496,18 @@ class OdooDataSource:
         )
         return Partner.model_validate(rows[0]) if rows else None
 
+    async def read_partners(
+        self, partner_ids: list[int], fields: list[str] | None = None
+    ) -> list[Partner]:
+        """Bulk-read partners by id — one call for a whole page of leads
+        instead of one get_partner() per lead."""
+        if not partner_ids:
+            return []
+        rows = await self._client.execute_kw(
+            "res.partner", "read", [partner_ids], {"fields": fields or DEFAULT_PARTNER_FIELDS}
+        )
+        return [Partner.model_validate(row) for row in rows]
+
     async def count_partners(self, updated_since: str | None = None) -> int:
         domain: list[list[Any]] = []
         if updated_since is not None:
@@ -502,6 +529,7 @@ class OdooDataSource:
         self,
         res_model: str = "crm.lead",
         res_id: int | None = None,
+        updated_since: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Attachment]:
@@ -509,13 +537,31 @@ class OdooDataSource:
         domain: list[list[Any]] = [["res_model", "=", res_model]]
         if res_id is not None:
             domain.append(["res_id", "=", res_id])
+        if updated_since is not None:
+            domain.append(["write_date", ">=", updated_since])
         rows = await self._client.execute_kw(
             "ir.attachment",
             "search_read",
             [domain],
-            {"fields": DEFAULT_ATTACHMENT_FIELDS, "limit": limit, "offset": offset},
+            {
+                "fields": DEFAULT_ATTACHMENT_FIELDS,
+                "limit": limit,
+                "offset": offset,
+                "order": "write_date asc",
+            },
         )
         return [Attachment.model_validate(row) for row in rows]
+
+    async def get_attachment(
+        self, attachment_id: int, fields: list[str] | None = None
+    ) -> Attachment | None:
+        rows = await self._client.execute_kw(
+            "ir.attachment",
+            "read",
+            [[attachment_id]],
+            {"fields": fields or DEFAULT_ATTACHMENT_FIELDS},
+        )
+        return Attachment.model_validate(rows[0]) if rows else None
 
     async def get_attachment_content(self, attachment_id: int) -> str | None:
         """Base64-encoded file content, fetched on demand (not part of
