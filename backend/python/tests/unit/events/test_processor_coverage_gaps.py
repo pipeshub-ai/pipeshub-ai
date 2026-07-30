@@ -514,34 +514,49 @@ class TestOcrCoverageGaps:
 class TestEnhanceTablesCoverageGaps:
     @pytest.mark.asyncio
     async def test_data_none_initialized_before_summary_keys(self):
-        proc = _make_processor()
-        bg = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| A |"})
-        container = BlocksContainer(blocks=[], block_groups=[bg])
-        response = MagicMock(summary="sum", headers=["A"])
+        """table_group.data going None mid-enrichment is reinitialized before writes."""
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
-        async def _summary(*_a, **_k):
+        proc = _make_processor()
+        row = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"cells": ["1"]},
+        )
+        bg = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| A |"})
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        container = BlocksContainer(blocks=[row], block_groups=[bg])
+        result = TableEnrichmentResult(
+            summary="sum", headers=["A"], header_row_count=0, descriptions=["d"]
+        )
+
+        async def _enrich(*_a, **_k):
             bg.data = None
-            return response
+            return result
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            side_effect=_summary,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([], []),
+            side_effect=_enrich,
         ):
-            await proc._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
         assert bg.data["table_summary"] == "sum"
         assert bg.data["column_headers"] == ["A"]
 
     @pytest.mark.asyncio
     async def test_blockgroup_children_edge_filters(self):
+        """OOB indices, non-TABLE_ROW blocks and header rows are excluded; a short
+
+        description list no longer desyncs the remaining rows from the wrong text -
+        they fall back to simple generated text instead of being left unset.
+        """
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
         proc = _make_processor()
-        # Keep row_blocks/row_dicts aligned: every TABLE_ROW that enters row_blocks
-        # must also contribute a row_dict (data with a "cells" key).
         blocks = [
             Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="t"),
             Block(
@@ -579,30 +594,36 @@ class TestEnhanceTablesCoverageGaps:
         # OOB (10), TEXT (0), header (1), non-list cells (2), good (3), extra non-header (4)
         bg.children = BlockGroupChildren.from_indices(block_indices=[10, 0, 1, 2, 3, 4])
         container = BlocksContainer(blocks=blocks, block_groups=[bg])
-        response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["only one desc"]
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["only one desc"], []),
-        ) as mock_rows:
-            await proc._enhance_tables_with_llm(container)
+            return_value=result,
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
-        mock_rows.assert_awaited_once()
+        mock_enrich.assert_awaited_once()
         # Header skipped; sole description maps to first non-header row_blocks entry
-        # (index 2 — non-list cells), later non-header rows get nothing.
+        # (index 2 — non-list cells); later non-header rows fall back to simple text.
         assert blocks[1].data.get("row_natural_language_text") is None
         assert blocks[2].data.get("row_natural_language_text") == "only one desc"
-        assert blocks[3].data.get("row_natural_language_text") is None
-        assert blocks[4].data.get("row_natural_language_text") is None
+        assert blocks[3].data.get("row_natural_language_text") is not None
+        assert blocks[4].data.get("row_natural_language_text") is not None
 
     @pytest.mark.asyncio
-    async def test_blockgroup_row_without_cells_skipped_for_row_dicts(self):
-        """Cover no-cells filter (751): TABLE_ROW enters row_blocks but not row_dicts."""
+    async def test_blockgroup_row_without_cells_still_enriched(self):
+        """A TABLE_ROW with no "cells" key is now still counted as a data row
+
+        (its grid row is simply empty) rather than being filtered out before the LLM
+        call, since row_blocks/descriptions must always stay aligned.
+        """
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
         proc = _make_processor()
         row_no_cells = Block(
             index=0,
@@ -617,24 +638,27 @@ class TestEnhanceTablesCoverageGaps:
         )
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[row_no_cells], block_groups=[bg])
-        response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["desc"]
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
-            await proc._enhance_tables_with_llm(container)
+            return_value=result,
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
-        mock_rows.assert_not_awaited()
-        assert "row_natural_language_text" not in row_no_cells.data
+        mock_enrich.assert_awaited_once()
+        assert row_no_cells.data.get("row_natural_language_text") == "desc"
 
     @pytest.mark.asyncio
     async def test_blockgroup_falsy_data_skips_description_write(self):
-        """Cover falsy row_block.data write skip (820)."""
+        """Cover falsy row_block.data write skip."""
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
         proc = _make_processor()
         row_cleared = MagicMock()
         row_cleared.type = BlockType.TABLE_ROW
@@ -652,28 +676,30 @@ class TestEnhanceTablesCoverageGaps:
         container = MagicMock()
         container.block_groups = [bg]
         container.blocks = [row_cleared]
-        response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["d1"]
+        )
 
-        async def _rows(*_a, **_k):
+        async def _enrich(*_a, **_k):
             row_cleared.data = None
-            return (["d1"], [])
+            return result
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            side_effect=_rows,
+            side_effect=_enrich,
         ):
-            await proc._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
         assert row_cleared.data is None
 
     @pytest.mark.asyncio
     async def test_legacy_list_children_edge_filters(self):
         """Bypass pydantic children converter with MagicMock so list branch runs."""
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
         proc = _make_processor()
         blocks = [
             Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="t"),
@@ -707,23 +733,29 @@ class TestEnhanceTablesCoverageGaps:
         container = MagicMock()
         container.block_groups = [bg]
         container.blocks = blocks
-        response = MagicMock(summary="s", headers=[])
+        result = TableEnrichmentResult(
+            summary="s", headers=[], header_row_count=0, descriptions=["d1", "d2"]
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([], []),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
         assert bg.data["table_summary"] == "s"
 
     @pytest.mark.asyncio
     async def test_children_neither_list_nor_blockgroup_children(self):
+        """An unrecognized children shape yields no row blocks, so the table is
+
+        skipped entirely (no LLM call, no data written) rather than crashing.
+        """
+        from app.utils.table_enrichment import enhance_tables_with_llm
+
         proc = _make_processor()
         bg = MagicMock()
         bg.type = GroupType.TABLE
@@ -735,16 +767,17 @@ class TestEnhanceTablesCoverageGaps:
         container = MagicMock()
         container.block_groups = [bg]
         container.blocks = []
-        response = MagicMock(summary="s", headers=["A"])
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=response,
-        ):
-            await proc._enhance_tables_with_llm(container)
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
-        assert bg.data["table_summary"] == "s"
+        mock_enrich.assert_not_awaited()
+        assert "table_summary" not in bg.data
 
 
 # ---------------------------------------------------------------------------

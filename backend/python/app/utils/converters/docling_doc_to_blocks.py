@@ -16,9 +16,12 @@ from app.models.blocks import (
     Point,
     TableMetadata,
 )
-from app.utils.indexing_helpers import (
-    get_rows_text,
-    get_table_summary_n_headers,
+from app.utils.indexing_metrics import track_indexing_enrichment
+from app.utils.llm import get_llm_for_role
+from app.utils.table_enrichment import (
+    TableEnrichmentResult,
+    enrich_table_grid,
+    enrich_tables,
 )
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
@@ -31,6 +34,61 @@ DOCLING_TABLE_BLOCK_TYPE = "tables"
 DOCLING_GROUP_BLOCK_TYPE = "groups"
 DOCLING_PAGE_BLOCK_TYPE = "pages"
 DOCLING_REF_NODE= "$ref"
+
+_ITEM_TYPES = (
+    DOCLING_TEXT_BLOCK_TYPE,
+    DOCLING_GROUP_BLOCK_TYPE,
+    DOCLING_IMAGE_BLOCK_TYPE,
+    DOCLING_TABLE_BLOCK_TYPE,
+)
+
+
+def _resolve_ref(doc_dict: dict[str, Any], ref_path: str) -> dict[str, Any] | None:
+    """Resolve a ``#/<type>/<index>`` reference to its item, or None."""
+    if not ref_path or not ref_path.startswith("#/"):
+        return None
+    parts = ref_path[2:].split("/")
+    item_type = parts[0]
+    try:
+        index = int(parts[1])
+    except (IndexError, ValueError):
+        return None
+    items = doc_dict.get(item_type, [])
+    if index >= len(items):
+        return None
+    item = items[index]
+    if not isinstance(item, dict) or item_type not in _ITEM_TYPES:
+        return None
+    return item
+
+
+def collect_reachable_table_refs(doc_dict: dict[str, Any]) -> list[str]:
+    """Table refs reachable from the body, in document order.
+
+    Mirrors ``_process_item``'s ref-following so the tables enriched up front are
+    exactly the ones the walk will render. ``doc_dict["tables"]`` can also hold entries
+    unreachable from the body, which would otherwise be enriched for nothing.
+    """
+    seen: set[str] = set()
+    table_refs: list[str] = []
+
+    def walk(ref: Any) -> None:  # noqa: ANN401
+        ref_path = ref.get(DOCLING_REF_NODE, "") if isinstance(ref, dict) else ref
+        # Dedupe over every ref type, matching _process_item's processed_refs.
+        if not ref_path or ref_path in seen:
+            return
+        seen.add(ref_path)
+        item = _resolve_ref(doc_dict, ref_path)
+        if item is None:
+            return
+        if ref_path[2:].split("/")[0] == DOCLING_TABLE_BLOCK_TYPE:
+            table_refs.append(ref_path)
+        for child in item.get("children", []):
+            walk(child)
+
+    for child in doc_dict.get("body", {}).get("children", []):
+        walk(child)
+    return table_refs
 
 
 
@@ -262,18 +320,26 @@ class DoclingDocToBlocksConverter():
                 self.logger.warning(f"No table cells found in the table data: {table_data}")
                 return None
 
-            # Get table grid for summary generation
             table_grid = table_data.get("grid", [])
-            table_grid_data = [
-                [cell.get("text", "") for cell in row]
-                for row in table_grid
-            ]
 
-            response = await get_table_summary_n_headers(self.config, table_grid_data)
-            table_summary = response.summary if response else ""
-            column_headers = response.headers if response else []
+            enrichment = table_enrichments.get(ref_path)
+            if enrichment is None:
+                # The pre-pass and this walk are meant to visit the same tables; a miss
+                # means they drifted apart. Enrich inline so correctness never depends
+                # on the two walks staying in sync - only the latency win does.
+                self.logger.warning(f"Table {ref_path} missed pre-enrichment; enriching inline")
+                fallback_llm = llm
+                if fallback_llm is None:
+                    fallback_llm, _ = await get_llm_for_role(self.config, "indexing")
+                enrichment = await enrich_table_grid(
+                    fallback_llm,
+                    table_grid,
+                    logger=self.logger,
+                )
 
-            table_rows_text,table_rows = await get_rows_text(self.config, table_data, table_summary, column_headers)
+            table_summary = enrichment.summary
+            column_headers = enrichment.headers
+            table_rows_text = enrichment.descriptions
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])
@@ -308,7 +374,7 @@ class DoclingDocToBlocksConverter():
             _enrich_metadata(block_group, item, doc_dict, default_page_number=page_number)
 
             table_row_block_indices = []
-            for i, _row in enumerate(table_rows):
+            for i, row_text in enumerate(table_rows_text):
                 index = len(blocks)
                 block = Block(
                     id=str(uuid.uuid4()),
@@ -323,7 +389,7 @@ class DoclingDocToBlocksConverter():
                     source_type=None,
                     parent_index=block_group.index,
                     data={
-                        "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
+                        "row_natural_language_text": row_text,
                         "row_number": i+1
                     },
                     citation_metadata=block_group.citation_metadata
@@ -393,6 +459,37 @@ class DoclingDocToBlocksConverter():
 
         # Start processing from body
         doc_dict = doc.export_to_dict()
+
+        # Enrich every reachable table up front, concurrently, before the ordered walk
+        # below touches anything. The walk itself (block/BlockGroup append order,
+        # index=len(blocks) assignment) is unchanged - it just reads from this dict
+        # instead of awaiting an LLM call inline per table.
+        table_refs = collect_reachable_table_refs(doc_dict)
+        llm = None
+        table_enrichments: dict[str, TableEnrichmentResult] = {}
+        if table_refs:
+            grids = []
+            valid_refs = []
+            for ref_path in table_refs:
+                table_item = _resolve_ref(doc_dict, ref_path)
+                if table_item is None:
+                    continue
+                table_data = table_item.get("data", {})
+                grid = table_data.get("grid", [])
+                if not table_data.get("table_cells") or not grid:
+                    continue
+                grids.append(grid)
+                valid_refs.append(ref_path)
+
+            if grids:
+                llm, _ = await get_llm_for_role(self.config, "indexing")
+                results = await enrich_tables(
+                    llm,
+                    grids,
+                    logger=self.logger,
+                )
+                table_enrichments = dict(zip(valid_refs, results))
+
         body = doc_dict.get("body", {})
         for child in body.get("children", []):
             await _process_item(child,doc)
@@ -401,7 +498,9 @@ class DoclingDocToBlocksConverter():
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def convert(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
-        return await self._process_content_in_order(doc, page_number=page_number)
+        label = f"docling-page-{page_number}" if page_number is not None else "docling"
+        with track_indexing_enrichment(self.logger, label=label):
+            return await self._process_content_in_order(doc, page_number=page_number)
 
 
 

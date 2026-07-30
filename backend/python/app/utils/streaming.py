@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 from collections.abc import AsyncGenerator
 from typing import (
@@ -40,7 +41,9 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
 )
+from app.utils.concurrency import indexing_llm_slot
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
@@ -65,6 +68,42 @@ TOOL_EXECUTION_TOKEN_RATIO = 0.5
 MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
+MAX_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
+        return True
+    message = str(exc).lower()
+    return any(marker in message for marker in _RATE_LIMIT_MARKERS)
+
+
+async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  # noqa: ANN401
+    """Invoke *llm*, holding a slot in the process-wide indexing budget.
+
+    Retries rate-limit errors with jittered backoff. The jitter matters more than the
+    retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
+    429ed all retry in lockstep.
+    """
+    delay = 0.0
+    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+        async with indexing_llm_slot():
+            try:
+                result = await llm.ainvoke(messages)
+                note_llm_call()
+                return result
+            except Exception as e:
+                if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
+                    raise
+                note_rate_limit_retry()
+                delay = 2 ** attempt + random.uniform(0, 1)
+        logger.warning(
+            f"Rate limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
+            f"retrying in {delay:.1f}s"
+        )
+        # Sleep outside the slot so a backing-off call does not occupy the budget.
+        await asyncio.sleep(delay)
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -999,7 +1038,7 @@ async def invoke_with_structured_output_and_reflection(
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
 
     try:
-        response = await llm_with_structured_output.ainvoke(messages)
+        response = await _ainvoke_throttled(llm_with_structured_output, messages)
     except Exception as e:
         logger.error(f"LLM invocation failed: {e}")
         return None
@@ -1061,7 +1100,7 @@ Respond only with valid JSON that matches the schema."""
 
         for attempt in range(max_retries):
             try:
-                reflection_response = await llm_with_structured_output.ainvoke(reflection_messages)
+                reflection_response = await _ainvoke_throttled(llm_with_structured_output, reflection_messages)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1102,46 +1141,49 @@ Respond only with valid JSON that matches the schema."""
         return None
 
 
-async def invoke_with_row_descriptions_and_reflection(
+async def invoke_with_count_validation_and_reflection(
     llm: BaseChatModel,
     messages: list,
+    schema: type[SchemaT],
+    count_field: str,
     expected_count: int,
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> RowDescriptions | None:
+) -> SchemaT | None:
     """
-    Invoke LLM with row description output and validate count matches expected.
+    Invoke LLM with structured output and validate that a list field has the expected length.
 
-    If the LLM returns an incorrect number of descriptions, performs reflection
-    to give it one chance to correct the count mismatch.
+    If the LLM returns the wrong number of items, performs one reflection to correct it.
 
     Args:
         llm: The LangChain chat model to use
         messages: List of messages to send to the LLM
-        expected_count: Expected number of row descriptions
+        schema: Pydantic model class to validate the response against
+        count_field: Name of the list field on *schema* whose length must match
+        expected_count: Expected length of that field
         max_retries: Maximum number of reflection retries on parse failure (default: 2)
 
     Returns:
-        Validated RowDescriptions instance with correct count, or None if validation fails
+        Validated schema instance with correct count, or None if validation fails
     """
     # First, try to get a parsed response using the standard reflection function
     parsed_response = await invoke_with_structured_output_and_reflection(
-        llm, messages, RowDescriptions, max_retries
+        llm, messages, schema, max_retries
     )
 
     if parsed_response is None:
-        logger.warning("Failed to parse RowDescriptions after initial attempts")
+        logger.warning(f"Failed to parse {schema.__name__} after initial attempts")
         return None
 
     # Validate the count matches expected
-    actual_count = len(parsed_response.descriptions)
+    actual_count = len(getattr(parsed_response, count_field) or [])
 
     if actual_count == expected_count:
-        logger.debug(f"Row count validation passed: {actual_count} descriptions")
+        logger.debug(f"Count validation passed: {actual_count} {count_field}")
         return parsed_response
 
     # Count mismatch detected - perform reflection to correct it
     logger.warning(
-        f"Row count mismatch: LLM returned {actual_count} descriptions "
+        f"Count mismatch: LLM returned {actual_count} {count_field} "
         f"but {expected_count} were expected. Attempting reflection..."
     )
 
@@ -1151,15 +1193,15 @@ async def invoke_with_row_descriptions_and_reflection(
         AIMessage(content=json.dumps(parsed_response.model_dump()))
     )
 
-    reflection_prompt = f"""Your previous response contained {actual_count} descriptions, but exactly {expected_count} descriptions are required.
+    reflection_prompt = f"""Your previous response contained {actual_count} {count_field}, but exactly {expected_count} {count_field} are required.
 
-CRITICAL: You must provide EXACTLY {expected_count} descriptions - one for each row, in the same order they were provided.
+CRITICAL: You must provide EXACTLY {expected_count} {count_field} - one for each row, in the same order they were provided.
 
-Please correct your response to include exactly {expected_count} descriptions. Do not skip any rows, do not combine rows, and do not split rows.
+Please correct your response to include exactly {expected_count} {count_field}. Do not skip any rows, do not combine rows, and do not split rows.
 
 Respond with a valid JSON object:
 {{
-    "descriptions": [
+    "{count_field}": [
         "Description for row 1",
         "Description for row 2",
         ...
@@ -1172,7 +1214,7 @@ Respond with a valid JSON object:
     # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
     try:
         reflection_response = await invoke_with_structured_output_and_reflection(
-            llm, reflection_messages, RowDescriptions, max_retries=1
+            llm, reflection_messages, schema, max_retries=1
         )
 
         if reflection_response is None:
@@ -1180,16 +1222,16 @@ Respond with a valid JSON object:
             return None
 
         # Validate the count again
-        reflection_count = len(reflection_response.descriptions)
+        reflection_count = len(getattr(reflection_response, count_field) or [])
 
         if reflection_count == expected_count:
             logger.info(
-                f"Reflection successful: corrected from {actual_count} to {reflection_count} descriptions"
+                f"Reflection successful: corrected from {actual_count} to {reflection_count} {count_field}"
             )
             return reflection_response
         else:
             logger.error(
-                f"Reflection failed: still have {reflection_count} descriptions "
+                f"Reflection failed: still have {reflection_count} {count_field} "
                 f"instead of {expected_count}"
             )
             return None
@@ -1197,3 +1239,15 @@ Respond with a valid JSON object:
     except Exception as e:
         logger.error(f"Reflection attempt failed with error: {e}")
         return None
+
+
+async def invoke_with_row_descriptions_and_reflection(
+    llm: BaseChatModel,
+    messages: list,
+    expected_count: int,
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> RowDescriptions | None:
+    """Invoke LLM for row descriptions and validate the count matches expected."""
+    return await invoke_with_count_validation_and_reflection(
+        llm, messages, RowDescriptions, "descriptions", expected_count, max_retries
+    )

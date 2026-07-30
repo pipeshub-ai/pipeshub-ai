@@ -35,11 +35,10 @@ from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegionType,
     extract_layout_regions,
 )
-from app.utils.indexing_helpers import (
-    generate_simple_row_text,
-    get_rows_text,
-    get_table_summary_n_headers,
-)
+from app.utils.indexing_helpers import generate_simple_row_text
+from app.utils.indexing_metrics import track_indexing_enrichment
+from app.utils.llm import get_llm_for_role
+from app.utils.table_enrichment import TableEnrichmentResult, enrich_table_grid, enrich_tables
 
 
 _NUMBERED_LIST_ITEM_RE = re.compile(
@@ -138,6 +137,30 @@ class PDFPlumberOpenCVProcessor:
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
 
+        # Pre-pass: collect every table region in walk order (grid extraction is pure
+        # CPU/pdfplumber work), enrich them all concurrently, then build blocks below in
+        # the same order as before - append order, and every index=len(blocks)
+        # assignment, is unaffected by when the enrichment itself finished.
+        table_regions: List[LayoutRegion] = []
+        if not skip_llm_enrichment:
+            for pd in parsed_data:
+                if page_number is not None and pd.page_number != page_number:
+                    continue
+                for region in pd.regions:
+                    if region.type == LayoutRegionType.TABLE and region.table_grid:
+                        table_regions.append(region)
+
+        table_enrichments: dict[int, TableEnrichmentResult] = {}
+        if table_regions:
+            with track_indexing_enrichment(self.logger, label="pdfplumber"):
+                llm, _ = await get_llm_for_role(self.config, "indexing")
+                results = await enrich_tables(
+                    llm,
+                    [region.table_grid for region in table_regions],
+                    logger=self.logger,
+                )
+                table_enrichments = dict(zip((id(r) for r in table_regions), results))
+
         for pd in parsed_data:
             if page_number is not None and pd.page_number != page_number:
                 continue
@@ -150,6 +173,7 @@ class PDFPlumberOpenCVProcessor:
                         blocks,
                         block_groups,
                         skip_llm_enrichment=skip_llm_enrichment,
+                        enrichment=table_enrichments.get(id(region)),
                     )
                 elif region.type == LayoutRegionType.IMAGE:
                     self._build_image_block(region, pd, blocks)
@@ -228,6 +252,7 @@ class PDFPlumberOpenCVProcessor:
         blocks: List[Block],
         block_groups: List[BlockGroup],
         skip_llm_enrichment: bool = False,
+        enrichment: Optional[TableEnrichmentResult] = None,
     ) -> Optional[BlockGroup]:
         grid = region.table_grid
         if not grid or len(grid) == 0:
@@ -252,18 +277,18 @@ class PDFPlumberOpenCVProcessor:
                     for i, cell in enumerate(row)
                 }
                 table_rows_text.append(generate_simple_row_text(row_dict))
-            table_rows = data_rows
         else:
-            response = await get_table_summary_n_headers(self.config, grid)
-            table_summary = response.summary if response else ""
-            column_headers = response.headers if response else []
+            if enrichment is None:
+                # The pre-pass and this walk are meant to visit the same table
+                # regions; a miss means they drifted apart. Enrich inline so
+                # correctness never depends on the two walks staying in sync.
+                self.logger.warning("Table missed pre-enrichment; enriching inline")
+                llm, _ = await get_llm_for_role(self.config, "indexing")
+                enrichment = await enrich_table_grid(llm, grid, logger=self.logger)
 
-            table_rows_text, table_rows = await get_rows_text(
-                self.config,
-                {"grid": grid},
-                table_summary,
-                column_headers,
-            )
+            table_summary = enrichment.summary
+            column_headers = enrichment.headers
+            table_rows_text = enrichment.descriptions
 
         num_rows = len(grid)
         num_cols = len(grid[0]) if grid else 0
@@ -291,7 +316,9 @@ class PDFPlumberOpenCVProcessor:
         )
 
         row_indices: List[int] = []
-        for i, _row in enumerate(table_rows):
+        for i, row_text in enumerate(table_rows_text):
+            if not row_text:
+                continue
             idx = len(blocks)
             block = Block(
                 id=str(uuid.uuid4()),
@@ -301,9 +328,7 @@ class PDFPlumberOpenCVProcessor:
                 comments=[],
                 parent_index=bg.index,
                 data={
-                    "row_natural_language_text": (
-                        table_rows_text[i] if i < len(table_rows_text) else ""
-                    ),
+                    "row_natural_language_text": row_text,
                     "row_number": i + 1,
                 },
                 citation_metadata=citation,
