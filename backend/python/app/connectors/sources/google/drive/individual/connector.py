@@ -93,6 +93,7 @@ from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
+    to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
@@ -1632,10 +1633,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming file: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str, drive_id: str) -> RecordGroup:
         """Create a personal record group for the user."""

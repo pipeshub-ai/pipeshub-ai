@@ -21,6 +21,7 @@ from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response, start_streaming_response
@@ -67,6 +68,41 @@ class TestMapSourceStatus:
 
     def test_message_reads_without_a_connector_name(self) -> None:
         assert "the source" in map_source_status(404).detail
+
+
+class TestRaiseForStreamFetch:
+    def test_success_with_payload_returns(self) -> None:
+        raise_for_stream_fetch(
+            success=True, has_payload=True, connector="Acme"
+        )
+
+    def test_success_empty_payload_is_404(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_for_stream_fetch(
+                success=True, has_payload=False, connector="Acme"
+            )
+        assert exc_info.value.status_code == 404
+        assert "no longer exists" in exc_info.value.detail
+
+    def test_failure_with_status_is_mapped(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector="Acme",
+                status=403,
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_failure_without_status_raises_runtime_error(self) -> None:
+        """No proven status must not invent a 404 — to_stream_error maps this to 500."""
+        with pytest.raises(RuntimeError, match="rate limited"):
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector="Acme",
+                message="rate limited",
+            )
 
 
 class TestToStreamError:

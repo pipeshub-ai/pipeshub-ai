@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.core.registry.filters import (
@@ -1874,7 +1875,7 @@ class TestLinearFetchDocumentContent:
         mock_ds.document = AsyncMock(return_value=resp)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await c._fetch_document_content("doc-1")
 
     @pytest.mark.asyncio

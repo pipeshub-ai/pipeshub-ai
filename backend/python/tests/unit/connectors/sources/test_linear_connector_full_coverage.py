@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
@@ -2799,7 +2800,7 @@ class TestFetchDocumentContent:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await connector._fetch_document_content("doc-missing")
 
     @pytest.mark.asyncio
