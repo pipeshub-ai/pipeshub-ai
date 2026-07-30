@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.sources.zammad.connector import (
@@ -884,7 +885,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "42_1_99"
-        with pytest.raises(Exception, match="Failed to download attachment"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
     async def test_kb_attachment_api_failure(self, connector):
@@ -894,7 +895,7 @@ class TestProcessFileForStreaming:
 
         record = MagicMock()
         record.external_record_id = "kb_answer_5_attachment_10"
-        with pytest.raises(Exception, match="Failed to download KB"):
+        with pytest.raises(RuntimeError):
             await connector._process_file_for_streaming(record)
 
 
@@ -1683,7 +1684,7 @@ class TestProcessTicketBlockgroupsForStreaming:
         record = MagicMock()
         record.external_record_id = "44"
 
-        with pytest.raises(Exception, match="Failed to fetch ticket"):
+        with pytest.raises(RuntimeError):
             await connector._process_ticket_blockgroups_for_streaming(record)
 
     async def test_ticket_skips_system_articles(self, connector):

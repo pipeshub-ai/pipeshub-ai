@@ -32,6 +32,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -2602,9 +2606,14 @@ class OutlookConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Post not found: {response.error}",
+                    self.logger.warning(
+                        "Failed to fetch group post %s: %s",
+                        post_id,
+                        response.error,
+                    )
+                    # MSGraphResponse has no HTTP status — do not invent a 404.
+                    raise RuntimeError(
+                        response.error or f"Failed to fetch group post {post_id}"
                     )
 
                 # response.data is a Pydantic Post object
@@ -2670,9 +2679,11 @@ class OutlookConnector(BaseConnector):
             if record.record_type == RecordType.MAIL:
                 # User email - message is a Pydantic Message object
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
+                if not message:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Message object
-                if message and message.body:
+                if message.body:
                     email_body = message.body.content or ''
                 else:
                     email_body = ''
@@ -2714,11 +2725,10 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Message | None:
         """Get a specific message by ID using external Outlook API.

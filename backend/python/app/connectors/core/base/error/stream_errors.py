@@ -107,6 +107,32 @@ def not_found_at_source(connector: str | None = None) -> HTTPException:
     )
 
 
+def raise_for_stream_fetch(
+    *,
+    success: bool,
+    has_payload: bool,
+    connector: str | None = None,
+    status: int | None = None,
+    message: str | None = None,
+) -> None:
+    """Map a source fetch result onto a stream HTTPException, or return if OK.
+
+    Rules (match the stream_errors contract):
+      - success + payload → return (caller continues)
+      - success + empty payload → 404 (resource genuinely absent)
+      - failure with an HTTP status → map_source_status
+      - failure with no status → raise RuntimeError so to_stream_error →
+        generic 500 (never invent a 404 for auth/rate-limit/5xx)
+    """
+    if success and has_payload:
+        return
+    if success and not has_payload:
+        raise not_found_at_source(connector)
+    if _is_http_status(status):
+        raise map_source_status(status, connector=connector)  # type: ignore[arg-type]
+    raise RuntimeError(message or "Failed to fetch from source")
+
+
 def to_stream_error(exc: BaseException, *, connector: str | None = None) -> HTTPException:
     """Best-effort mapping of an arbitrary exception onto an HTTP status."""
     if isinstance(exc, HTTPException):
