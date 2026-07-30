@@ -129,6 +129,23 @@ class TestSuccessPath:
         event_types = [e["event"] for e in sink.events]
         assert event_types == ["answer_chunk", "complete"]
 
+    async def test_confidence_trailer_only_answer_falls_back_to_default_response(self) -> None:
+        """The model's whole answer is the confidence trailer it was told to
+        append — non-empty raw, but nothing survives the strip. Node rejects an
+        empty answer outright, so `answer: ""` turned a finished run into
+        RUN_ERROR and a `Failed` conversation."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="---\nConfidence: Low",
+            event_sink=sink,
+        )
+
+        assert result["answer"] == "I wasn't able to generate a response. Please try rephrasing."
+        assert sink.events[0]["data"]["accumulated"] == result["answer"]
+
     async def test_exception_during_finalization_yields_error_response(self) -> None:
         context = make_context()
         finalizer = AnswerFinalizer(context, CitationCollector(context))
