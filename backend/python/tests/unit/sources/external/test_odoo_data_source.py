@@ -165,6 +165,18 @@ class TestGetLead:
 
 
 class TestCountLeads:
+    async def test_read_leads_bulk_by_ids(self, data_source, client):
+        """Used to resolve attachment permissions from their parent leads."""
+        client.execute_kw.return_value = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+        leads = await data_source.read_leads([1, 2])
+        assert [lead.id for lead in leads] == [1, 2]
+        model, method, args = client.execute_kw.await_args.args[:3]
+        assert (model, method, args) == ("crm.lead", "read", [[1, 2]])
+
+    async def test_read_leads_empty_skips_call(self, data_source, client):
+        assert await data_source.read_leads([]) == []
+        client.execute_kw.assert_not_awaited()
+
     async def test_count_passes_domain_through(self, data_source, client):
         client.execute_kw.return_value = 17
         count = await data_source.count_leads(lead_type="lead")
@@ -197,6 +209,15 @@ class TestLookupLists:
         client.execute_kw.return_value = [{"id": 1, "name": "Sales"}]
         teams = await data_source.list_teams()
         assert teams == [CrmTeam(id=1, name="Sales")]
+
+    async def test_list_teams_fetches_members(self, data_source, client):
+        """Members are what turn a crm.team into an AppUserGroup."""
+        client.execute_kw.return_value = [
+            {"id": 1, "name": "Sales", "member_ids": [7, 8]}
+        ]
+        teams = await data_source.list_teams()
+        assert teams[0].member_ids == [7, 8]
+        assert "member_ids" in client.execute_kw.await_args.args[3]["fields"]
 
     async def test_list_tags(self, data_source, client):
         client.execute_kw.return_value = [{"id": 1, "name": "Hot", "color": 2}]
@@ -323,6 +344,21 @@ class TestPartners:
         model, method, args = client.execute_kw.await_args.args
         assert (model, method, args) == ("res.partner", "search_count", [[]])
 
+    async def test_read_partners_bulk_by_ids(self, data_source, client):
+        """One read for a page of lead partner_ids, not one call per lead."""
+        client.execute_kw.return_value = [
+            {"id": 5, "name": "Acme", "is_company": True},
+            {"id": 6, "name": "Bob"},
+        ]
+        partners = await data_source.read_partners([5, 6])
+        assert [p.id for p in partners] == [5, 6]
+        model, method, args = client.execute_kw.await_args.args[:3]
+        assert (model, method, args) == ("res.partner", "read", [[5, 6]])
+
+    async def test_read_partners_empty_skips_call(self, data_source, client):
+        assert await data_source.read_partners([]) == []
+        client.execute_kw.assert_not_awaited()
+
 
 class TestUsers:
     async def test_list_users_default(self, data_source, client):
@@ -376,6 +412,22 @@ class TestAttachments:
         assert ["res_id", "=", 42] in domain
         fields = client.execute_kw.await_args.args[3]["fields"]
         assert "datas" not in fields
+
+    async def test_list_attachments_filters_by_updated_since(self, data_source, client):
+        client.execute_kw.return_value = []
+        await data_source.list_attachments(updated_since="2026-01-01 00:00:00")
+        domain = client.execute_kw.await_args.args[2][0]
+        assert ["write_date", ">=", "2026-01-01 00:00:00"] in domain
+
+    async def test_get_attachment_found(self, data_source, client):
+        client.execute_kw.return_value = [{"id": 9, "name": "quote.pdf"}]
+        attachment = await data_source.get_attachment(9)
+        assert isinstance(attachment, Attachment)
+        assert attachment.id == 9
+
+    async def test_get_attachment_not_found_returns_none(self, data_source, client):
+        client.execute_kw.return_value = []
+        assert await data_source.get_attachment(999) is None
 
     async def test_get_attachment_content_found(self, data_source, client):
         client.execute_kw.return_value = [{"datas": "base64stufff=="}]
