@@ -327,12 +327,10 @@ def authenticate_connector_with_refresh_token(
 
     refresh_token = os.getenv(refresh_token_env_var)
     if not refresh_token:
-        logger.warning(
-            "authenticate_connector_with_refresh_token: %s is not set in %s — skipping.",
-            refresh_token_env_var,
-            env_file,
+        raise ValueError(
+            f"Refresh token env var {refresh_token_env_var!r} is not set in {env_file}. "
+            "Add it to .env.refresh_tokens."
         )
-        return
 
     client_id = os.getenv(client_id_env_var)
     client_secret = os.getenv(client_secret_env_var)

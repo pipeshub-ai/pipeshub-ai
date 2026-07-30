@@ -73,8 +73,15 @@ def static_data_source_provider(
     return provide
 
 
+def _escape_drive_q_value(value: str) -> str:
+    """Escape a value for use inside a single-quoted Drive `q` string literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _parents_clause(folder_ids: List[str]) -> str:
-    return " or ".join(f"'{folder_id}' in parents" for folder_id in folder_ids)
+    return " or ".join(
+        f"'{_escape_drive_q_value(folder_id)}' in parents" for folder_id in folder_ids
+    )
 
 
 def _child_list_params(

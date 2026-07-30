@@ -878,7 +878,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
             return
 
         frontier: List[str] = []
-        drive_id_by_folder: dict = {}
         for folder_id in self._folder_seed_ids:
             probe = await probe_can_list_children(
                 folder_id, self._fresh_drive_data_source, self.logger

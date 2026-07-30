@@ -180,6 +180,9 @@ async def drive_individual_connector(
                 client_id_env_var=ENV_CLIENT_ID,
                 client_secret_env_var=ENV_CLIENT_SECRET,
             )
+        except ValueError as e:
+            # Missing env (token / client / SECRET_KEY) — skip rather than timeout later.
+            pytest.skip(str(e))
         except Exception as e:
             pytest.fail(f"Refresh token failed to fetch access token: {e}")
 
