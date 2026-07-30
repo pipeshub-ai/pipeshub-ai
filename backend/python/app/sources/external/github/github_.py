@@ -78,6 +78,17 @@ class GitHubDataSource:
         return {k: v for k, v in params.items() if v is not None}
 
     @staticmethod
+    def _failed_response(exc: BaseException, *, prefix: str | None = None) -> GitHubResponse:
+        """Build a failed GitHubResponse, preserving HTTP status when available."""
+        status = getattr(exc, "status", None)
+        if not isinstance(status, int):
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+        if not isinstance(status, int):
+            status = None
+        error = f"{prefix}: {exc}" if prefix else str(exc)
+        return GitHubResponse(success=False, error=error, status_code=status)
+
+    @staticmethod
     def _issues_only(items: list) -> list:
         """Filter to items that are issues (pull_request is None), excluding PRs."""
         return [i for i in items if getattr(i, "pull_request", None) is None]
@@ -259,7 +270,7 @@ class GitHubDataSource:
             issue = r.get_issue(number)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._failed_response(e)
 
 
     def create_issue(self, owner: str, repo: str, title: str, body: str | None = None, assignees: Sequence[str] | None = None, labels: Sequence[str] | None = None) -> GitHubResponse[Issue]:
@@ -400,7 +411,7 @@ class GitHubDataSource:
             pr = r.get_pull(number)
             return GitHubResponse(success=True, data=pr)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._failed_response(e)
 
     def get_pull_commits(self, owner: str, repo: str, number: int) -> GitHubResponse[list[Commit]]:
         """Get commits of a PR."""
@@ -1413,7 +1424,11 @@ class GitHubDataSource:
                 img_data = resp.content
                 return GitHubResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
-            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
+            return GitHubResponse(
+                success=False,
+                error=f"HTTP {e.response.status_code} fetching image from {image_url}",
+                status_code=e.response.status_code,
+            )
         except Exception as e:
             return GitHubResponse(success=False, error=f"Error fetching image from {image_url}: {str(e)}")
 
@@ -1432,6 +1447,10 @@ class GitHubDataSource:
                 file_data = resp.content
                 return GitHubResponse(success=True, data=file_data)
         except httpx.HTTPStatusError as e:
-            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching file content from {weburl}")
+            return GitHubResponse(
+                success=False,
+                error=f"HTTP {e.response.status_code} fetching file content from {weburl}",
+                status_code=e.response.status_code,
+            )
         except Exception as e:
             return GitHubResponse(success=False, error=f"Error fetching file from {weburl}: {str(e)}")

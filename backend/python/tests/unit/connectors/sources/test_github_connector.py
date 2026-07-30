@@ -1836,11 +1836,10 @@ class TestStreamRecord:
         github_connector_cov.data_source.get_attachment_files_content = AsyncMock(
             return_value=_make_response(False, error="not found")
         )
-        # A bare Exception surfaced as an opaque 500; the source's own status
-        # must reach the client instead.
+        # Failure with no HTTP status must not invent a 404 — to_stream_error → 500.
         with pytest.raises(HTTPException) as exc_info:
             await github_connector_cov.stream_record(record)
-        assert exc_info.value.status_code == 404
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, github_connector_cov):
@@ -2235,7 +2234,7 @@ class TestBuildTicketBlocks:
 
         github_connector_cov.data_source = MagicMock()
         github_connector_cov.data_source.get_issue.return_value = _make_response(False, error="not found")
-        with pytest.raises(Exception, match="Failed to fetch issue"):
+        with pytest.raises(RuntimeError, match="not found"):
             await github_connector_cov._build_ticket_blocks(record)
 
 
@@ -2257,7 +2256,7 @@ class TestBuildPullRequestBlocks:
         record.external_record_id = "ext-1"
         github_connector_cov.data_source = MagicMock()
         github_connector_cov.data_source.get_pull.return_value = _make_response(False, error="not found")
-        with pytest.raises(Exception, match="Failed to fetch pull request"):
+        with pytest.raises(RuntimeError, match="not found"):
             await github_connector_cov._build_pull_request_blocks(record)
 
 
