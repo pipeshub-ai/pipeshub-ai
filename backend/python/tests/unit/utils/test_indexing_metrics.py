@@ -2,8 +2,8 @@
 
 import logging
 
+from app.utils import indexing_metrics
 from app.utils.indexing_metrics import (
-    current_enrichment_counters,
     note_llm_call,
     note_rate_limit_retry,
     note_table_result,
@@ -24,16 +24,16 @@ def test_track_indexing_enrichment_accumulates_and_clears():
         assert counters.tables_attempted == 2
         assert counters.tables_succeeded == 1
         assert counters.degraded_tables == 1
-        assert current_enrichment_counters() is counters
+        assert indexing_metrics._counters.get() is counters
 
-    assert current_enrichment_counters() is None
+    assert indexing_metrics._counters.get() is None
 
 
 def test_note_helpers_noop_without_active_context():
     note_llm_call()
     note_rate_limit_retry()
     note_table_result(succeeded=False, degraded=True)
-    assert current_enrichment_counters() is None
+    assert indexing_metrics._counters.get() is None
 
 
 def test_llm_row_budget_respects_already():
