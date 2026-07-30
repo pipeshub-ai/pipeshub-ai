@@ -173,7 +173,11 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             display_name="Folder IDs",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            description="Limit sync to specific Google Drive folder IDs. Add one or more folder IDs; leave empty to sync all folders.",
+            description=(
+                """
+                To find a folder ID: Open the folder in Google Drive. The folder ID is the last segment of the URL: 
+                `drive.google.com/drive/folders/<FOLDER_ID>`.
+                """),
             option_source_type=OptionSourceType.MANUAL,
             allowed_operators=[FilterOperator.IN],
         ))
