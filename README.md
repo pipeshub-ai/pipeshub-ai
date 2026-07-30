@@ -60,6 +60,12 @@
 - 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
 - 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
 
+## PipesHub Cloud
+
+Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+
+👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+
 ## PipesHub in Action
 
 ### Connectors
