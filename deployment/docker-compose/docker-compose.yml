@@ -47,6 +47,12 @@ services:
         limits:
           memory: ${APP_MEMORY_LIMIT:-10G}
     shm_size: 2gb
+    # 7 services (node, frontend, 5 python) share one container's fd budget;
+    # docker's 1024 default hits EMFILE on accept() during startup.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     init: true
     logging:
       driver: local
