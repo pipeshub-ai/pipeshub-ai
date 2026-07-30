@@ -51,6 +51,12 @@ class NodeRow(NodeRef):
     # provider call that fetched `children` (depth >= 2 only) — lets the
     # renderer say "+2 more" instead of just "more exist".
     children_total: int | None = None
+    # Source-system timestamps (epoch ms), when known — e.g. when a file was
+    # created/modified in Google Drive, not when PipesHub indexed it. None
+    # when the underlying NodeItem/dict didn't carry one (e.g. related-record
+    # rows from get_linked_records, which don't project timestamps).
+    source_created_at: int | None = None
+    source_modified_at: int | None = None
 
 
 class PaginationInfo(BaseModel):

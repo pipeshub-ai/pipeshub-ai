@@ -335,8 +335,8 @@ def _make_node_item(n: dict) -> NodeItem:
         recordType=n.get("subType") if n.get("nodeType") == "record" else None,
         recordGroupType=n.get("subType") if n.get("nodeType") == "recordGroup" else None,
         indexingStatus=n.get("indexingStatus"),
-        createdAt=0,
-        updatedAt=0,
+        createdAt=n.get("createdAt", 0),
+        updatedAt=n.get("updatedAt", 0),
         webUrl=n.get("webUrl"),
         hasChildren=n.get("hasChildren", False),
     )
@@ -361,10 +361,15 @@ _HIERARCHY: dict[str | None, list[dict]] = {
     "rec-epic": [
         {"id": "rec-story-oauth", "name": "Implement OAuth", "nodeType": "record",
          "parentId": "rec-epic", "connector": "JIRA", "subType": "STORY",
-         "hasChildren": True},
+         "hasChildren": True,
+         # 2026-06-01T00:00:00Z — older story, outside the July window
+         # `TestNavigateTimeFiltering` filters for below.
+         "createdAt": 1780272000000},
         {"id": "rec-story-retry", "name": "Add retry logic", "nodeType": "record",
          "parentId": "rec-epic", "connector": "JIRA", "subType": "STORY",
-         "hasChildren": False},
+         "hasChildren": False,
+         # 2026-07-15T00:00:00Z — inside the July window.
+         "createdAt": 1784073600000},
     ],
     "rec-story-oauth": [
         {"id": "rec-task-tests", "name": "Write unit tests", "nodeType": "record",
@@ -413,6 +418,23 @@ def _patch_kh_service():
         children = list(_HIERARCHY.get(parent_id, []))
         if q:
             children = [c for c in children if q.lower() in c["name"].lower()]
+        # Mimics the real AQL/Cypher `FILTER created_expr >= @gte AND
+        # created_expr <= @lte` — see `IGraphDBProvider.get_knowledge_hub_search`
+        # in both arango_http_provider.py and neo4j_provider.py.
+        if created_at:
+            gte, lte = created_at.get("gte"), created_at.get("lte")
+            children = [
+                c for c in children
+                if (gte is None or c.get("createdAt", 0) >= gte)
+                and (lte is None or c.get("createdAt", 0) <= lte)
+            ]
+        if updated_at:
+            gte, lte = updated_at.get("gte"), updated_at.get("lte")
+            children = [
+                c for c in children
+                if (gte is None or c.get("updatedAt", 0) >= gte)
+                and (lte is None or c.get("updatedAt", 0) <= lte)
+            ]
         total = len(children)
         offset = (page - 1) * limit
         page_items = children[offset: offset + limit]
@@ -551,6 +573,88 @@ class TestNavigationWalk:
         # Must show path from root down to the epic
         assert "Build Payment Gateway" in text
         assert "Alpha Project" in text
+
+
+class TestNavigateTimeFiltering:
+    """navigate(created_after=..., ...) end-to-end: `rec-story-oauth` was
+    seeded with a June creation date and `rec-story-retry` with a July one
+    (see `_HIERARCHY["rec-epic"]`) — a July-only filter must surface only
+    the latter, and its row must show the source creation date."""
+
+    @pytest.mark.asyncio
+    async def test_created_after_filters_out_older_sibling(self, state, provider):
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_after="2026-07-01")
+
+        assert success
+        assert "Add retry logic" in text
+        assert "Implement OAuth" not in text
+
+    @pytest.mark.asyncio
+    async def test_created_before_filters_out_newer_sibling(self, state, provider):
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_before="2026-06-30")
+
+        assert success
+        assert "Implement OAuth" in text
+        assert "Add retry logic" not in text
+
+    @pytest.mark.asyncio
+    async def test_output_includes_created_date_on_matching_row(self, state, provider):
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_after="2026-07-01")
+
+        assert success
+        assert "| created: 2026-07-15" in text
+
+    @pytest.mark.asyncio
+    async def test_no_time_filter_shows_both_siblings(self, state, provider):
+        """Regression guard: an unfiltered call is unaffected by the seeded
+        createdAt values — both stories still show up."""
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic")
+
+        assert success
+        assert "Implement OAuth" in text
+        assert "Add retry logic" in text
+
+    @pytest.mark.asyncio
+    async def test_sparse_time_filtered_result_carries_retry_hint(self, state, provider):
+        """A window matching only one of two children (< 3 rows) should
+        nudge the model to widen the range or drop the filter."""
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_after="2026-07-01")
+
+        assert success
+        assert "widen" in text.lower()
+        assert "retry without time filters" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_window_matching_neither_sibling_is_empty_with_hint(self, state, provider):
+        # A past-but-later date than both seeded siblings (not in the
+        # future, so it doesn't hit `parse_time_range`'s not-future guard).
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_after="2026-07-20")
+
+        assert success
+        assert "Implement OAuth" not in text
+        assert "Add retry logic" not in text
+        assert "widen" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_returns_error_and_does_not_navigate(self, state, provider):
+        with _patch_kh_service():
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(node_id="rec-epic", created_after="not-a-date")
+
+        assert not success
+        assert "ISO 8601" in text
 
 
 class TestPagination:

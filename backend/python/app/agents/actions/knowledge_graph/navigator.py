@@ -116,6 +116,14 @@ def _node_item_to_row(item: Any) -> NodeRow:
     if status and status != "COMPLETED":
         detail_parts.append(status)
 
+    # `createdAt`/`updatedAt` on NodeItem are already the projected source
+    # timestamps (KnowledgeHubService._doc_to_node_item / the graph
+    # provider's coalescing expressions prefer sourceCreatedAtTimestamp for
+    # connector records). 0 is the "missing" sentinel used when a doc has no
+    # timestamp at all — treat it as None so we don't render 1970-01-01.
+    created_at = getattr(item, "createdAt", None) or None
+    updated_at = getattr(item, "updatedAt", None) or None
+
     return NodeRow(
         id=item.id,
         name=item.name,
@@ -126,6 +134,8 @@ def _node_item_to_row(item: Any) -> NodeRow:
         detail=", ".join(detail_parts) or None,
         web_url=getattr(item, "webUrl", None),
         indexing_status=status,
+        source_created_at=created_at,
+        source_modified_at=updated_at,
     )
 
 
@@ -204,12 +214,19 @@ class GraphNavigator:
         limit: int,
         connector_ids: list[str] | None,
         record_group_ids: list[str] | None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
     ) -> None:
         """Fetch `row`'s own direct children in place, mutating `row.children`
         — the same browse path `navigate()` itself uses for the top-level
         listing (`KnowledgeHubService.get_nodes`), just scoped to this row
         instead of the node the caller asked for. A failure here degrades to
-        "no children shown for this row" rather than failing the whole call."""
+        "no children shown for this row" rather than failing the whole call.
+
+        `created_at`/`updated_at` are the same time-range filters applied to
+        the top-level listing — propagated here so a time-filtered navigate()
+        with depth >= 2 doesn't only filter the first level while showing
+        every nested child unfiltered."""
         if not row.has_children:
             return
         try:
@@ -222,6 +239,8 @@ class GraphNavigator:
                 limit=limit,
                 connector_ids=connector_ids,
                 record_group_ids=record_group_ids,
+                created_at=created_at,
+                updated_at=updated_at,
             )
         except Exception as e:
             logger.warning("navigate depth expansion failed for node %s: %s", row.id, e)
@@ -241,13 +260,19 @@ class GraphNavigator:
         limit: int,
         connector_ids: list[str] | None,
         record_group_ids: list[str] | None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
     ) -> None:
         """Fetch and attach nested children onto `rows` in place, up to
         `depth` levels total (`rows` itself is level 1; this method adds
         level 2 and, when `depth == 3`, level 3). Each level's fetches run
         concurrently via `asyncio.gather` — only rows with `has_children`
         cost a query — and use a shrinking per-parent limit (see
-        `_depth_limit`) so a wide hierarchy can't blow up the response."""
+        `_depth_limit`) so a wide hierarchy can't blow up the response.
+
+        `created_at`/`updated_at` (see `_expand_row_children`) are forwarded
+        to every level so a time-filtered call stays time-filtered at every
+        depth, not just the top one."""
         if depth < 2:
             return
 
@@ -259,6 +284,7 @@ class GraphNavigator:
             self._expand_row_children(
                 row, limit=level2_limit,
                 connector_ids=connector_ids, record_group_ids=record_group_ids,
+                created_at=created_at, updated_at=updated_at,
             )
             for row in expandable
         ))
@@ -278,6 +304,7 @@ class GraphNavigator:
             self._expand_row_children(
                 sub, limit=level3_limit,
                 connector_ids=connector_ids, record_group_ids=record_group_ids,
+                created_at=created_at, updated_at=updated_at,
             )
             for sub in level2_expandable
         ))
@@ -318,6 +345,8 @@ class GraphNavigator:
         connector_ids: list[str] | None = None,
         record_group_ids: list[str] | None = None,
         depth: int = 1,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
     ) -> NavigationView:
         """Build a NavigationView for the given node.
 
@@ -329,6 +358,15 @@ class GraphNavigator:
         page 1 — same rationale as breadcrumbs/related below: a paginated
         deep listing would multiply the already-bounded query fan-out by
         every page the model asks for.
+
+        `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
+        "lte": epoch_ms|None}` filters on the child's source
+        creation/modification timestamp — passed straight through to
+        `KnowledgeHubService.get_nodes()`, whose `_has_flattening_filters`
+        already treats a non-empty dict here as a signal to use the
+        search/flattened path (which supports these filters) instead of
+        the plain browse path. Applied at every depth level fetched (see
+        `_expand_depth`), not just the top listing.
         """
         limit = min(max(1, limit), _MAX_LIMIT)
         page = max(1, page)
@@ -408,6 +446,8 @@ class GraphNavigator:
             q=name_filter if name_filter else None,
             connector_ids=connector_ids,
             record_group_ids=record_group_ids,
+            created_at=created_at,
+            updated_at=updated_at,
             # page 1 only: include breadcrumbs is handled above via get_knowledge_hub_breadcrumbs
         )
 
@@ -429,6 +469,7 @@ class GraphNavigator:
             await self._expand_depth(
                 rows, depth=depth, limit=limit,
                 connector_ids=connector_ids, record_group_ids=record_group_ids,
+                created_at=created_at, updated_at=updated_at,
             )
             await self._attach_context_summaries(rows)
 

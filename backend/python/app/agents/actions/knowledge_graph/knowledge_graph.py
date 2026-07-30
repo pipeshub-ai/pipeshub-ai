@@ -16,6 +16,7 @@ Scoping for lookup_record:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,13 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
         base += f" — page {page}"
     if depth and depth > 1:
         base += f" (depth {depth})"
+    time_bits = []
+    if args.get("created_after") or args.get("created_before"):
+        time_bits.append("created")
+    if args.get("modified_after") or args.get("modified_before"):
+        time_bits.append("modified")
+    if time_bits:
+        base += f" (time-filtered: {'/'.join(time_bits)})"
     return base
 
 
@@ -169,6 +177,48 @@ def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
     return list(scope.app_ids), list(scope.kb_ids)
 
 
+def _time_range_to_kh_filters(
+    time_range: dict[str, int] | None,
+) -> tuple[dict[str, int | None] | None, dict[str, int | None] | None]:
+    """Bridge `ops.time_range.parse_time_range()`'s epoch-ms dict (keyed by
+    source_created_after_ms/source_created_before_ms/source_updated_after_ms/
+    source_updated_before_ms — the shape knowledgegraph__search's retrieval
+    path expects) to the `{"gte": ..., "lte": ...}` shape
+    `KnowledgeHubService.get_nodes()` expects for its `created_at`/
+    `updated_at` params. Reusing the same parser as search() (rather than a
+    second, separate ISO-parsing implementation) means navigate() gets the
+    exact same validation: rejecting timezone-naive datetimes, checking
+    after <= before, and rejecting future created_after dates.
+    """
+    if not time_range:
+        return None, None
+    created_at: dict[str, int | None] | None = None
+    if "source_created_after_ms" in time_range or "source_created_before_ms" in time_range:
+        created_at = {
+            "gte": time_range.get("source_created_after_ms"),
+            "lte": time_range.get("source_created_before_ms"),
+        }
+    updated_at: dict[str, int | None] | None = None
+    if "source_updated_after_ms" in time_range or "source_updated_before_ms" in time_range:
+        updated_at = {
+            "gte": time_range.get("source_updated_after_ms"),
+            "lte": time_range.get("source_updated_before_ms"),
+        }
+    return created_at, updated_at
+
+
+def _time_range_error_message(error_json: str) -> str:
+    """Extract the plain-text `message` field from a `parse_time_range()`
+    error JSON string, matching navigate()'s other plain-text
+    tuple[bool, str] error returns (search() returns the JSON as-is since
+    its own contract is a raw string, but navigate()'s is bool + message)."""
+    try:
+        parsed = json.loads(error_json)
+        return parsed.get("message", error_json) if isinstance(parsed, dict) else error_json
+    except (json.JSONDecodeError, AttributeError):
+        return error_json
+
+
 # ---------------------------------------------------------------------------
 # Toolset
 # ---------------------------------------------------------------------------
@@ -213,9 +263,15 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, indented one level per "
-            "extra depth requested\n"
+            "extra depth requested, with a created: date when known\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
-            "  Next: exactly what to call next"
+            "  Next: exactly what to call next\n\n"
+            "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
+            "to filter children by source timestamp (see parameter descriptions for date format) — "
+            "use this instead of fetching all children when the question specifies a date range. "
+            "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
+            "from the user's timezone. If time-filtered results are empty or too few, widen the "
+            "range or retry without time filters and filter manually from the listing."
         ),
         parameters=[
             ToolParameter(
@@ -263,6 +319,52 @@ class KnowledgeGraph:
                 required=False,
                 default=1,
             ),
+            ToolParameter(
+                name="created_after",
+                type=ParameterType.STRING,
+                description=(
+                    "Only show children whose source creation date is on or after this. "
+                    "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime with "
+                    "timezone (e.g. '2026-01-15T00:00:00Z'). YYYY-MM-DD is interpreted as the "
+                    "start of that day in UTC. Use for questions like 'pages created this month' "
+                    "or 'tickets filed after January'. Prefer conservative (wider) ranges — pad "
+                    "by a day when the user's timezone is unknown. If results are sparse, retry "
+                    "with a wider range or without time filters before concluding nothing exists."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="created_before",
+                type=ParameterType.STRING,
+                description=(
+                    "Only show children whose source creation date is on or before this "
+                    "(inclusive of the whole day for a date-only value). ISO 8601 format: "
+                    "'YYYY-MM-DD' or full datetime with timezone. Pair with created_after for "
+                    "a date window, e.g. created_after='2026-01-01', created_before='2026-03-31' "
+                    "for Q1 2026."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="modified_after",
+                type=ParameterType.STRING,
+                description=(
+                    "Only show children last modified at the source on or after this date. "
+                    "ISO 8601 format: 'YYYY-MM-DD' or full datetime with timezone. Use for "
+                    "questions about recently changed content ('pages updated this week')."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="modified_before",
+                type=ParameterType.STRING,
+                description=(
+                    "Only show children last modified at the source on or before this date "
+                    "(inclusive). ISO 8601 format: 'YYYY-MM-DD' or full datetime with timezone. "
+                    "Pair with modified_after for a modification date window."
+                ),
+                required=False,
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=_navigate_args_summary,
@@ -275,6 +377,10 @@ class KnowledgeGraph:
         page: int = 1,
         limit: int = 50,
         depth: int = 1,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        modified_after: str | None = None,
+        modified_before: str | None = None,
     ) -> tuple[bool, str]:
         """Walk the knowledge graph hierarchy."""
         if not self.state:
@@ -296,6 +402,23 @@ class KnowledgeGraph:
         page = max(1, page)
         limit = min(max(1, limit), 100)
         depth = min(max(1, depth), 3)
+
+        # Same parser knowledgegraph__search uses for its own
+        # created_after/created_before/modified_after/modified_before —
+        # rejects timezone-naive datetimes, validates after <= before, and
+        # rejects a future created_after, so navigate() gets identical
+        # (and identically-worded) validation instead of a second,
+        # looser ISO-parsing implementation.
+        from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
+        time_range, time_error = parse_time_range(
+            created_after=created_after,
+            created_before=created_before,
+            modified_after=modified_after,
+            modified_before=modified_before,
+        )
+        if time_error is not None:
+            return False, _time_range_error_message(time_error)
+        created_at, updated_at = _time_range_to_kh_filters(time_range)
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`): node_id may be a short
@@ -372,13 +495,27 @@ class KnowledgeGraph:
                 connector_ids=connector_ids or None,
                 record_group_ids=list(kb_ids) if kb_ids else None,
                 depth=depth,
+                created_at=created_at,
+                updated_at=updated_at,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
         remember_record_ids(state, _record_ids_in_view(view))
-        return True, render_navigation_view(view, page, record_id_shortener)
+        text = render_navigation_view(view, page, record_id_shortener)
+
+        # Sparse-result retry nudge: only fires when time filters were
+        # actually applied, so a plain (unfiltered) empty/near-empty listing
+        # isn't told to "retry without time filters" for no reason.
+        had_time_filters = bool(created_at or updated_at)
+        if had_time_filters and len(view.rows) < 3:
+            text += (
+                "\n\nHint: few/no results with this time range. Try widening the "
+                "range (pad +/- 1 day) or retry without time filters to see all "
+                "children, then filter manually."
+            )
+        return True, text
 
     @tool(
         path="/tools/knowledgegraph/lookup_record",
@@ -525,6 +662,11 @@ class KnowledgeGraph:
             "When to combine with other tools:\n"
             "  - Call navigate() on any returned Record ID to see its children, siblings, "
             "or linked records that search structurally cannot surface.\n"
+            "  - Search results may include a Location breadcrumb showing the hierarchy "
+            "(e.g. 'Confluence > Space > Parent Page (Record ID: ...)'). If a parent "
+            "container looks relevant (e.g. a 'Daily Bug Bash' parent page), pass its "
+            "Record ID to navigate(node_id=...) to browse siblings and children the "
+            "search could not surface.\n"
             "  - For questions that must be exhaustive ('all', 'how many', 'every'), do NOT "
             "count search results — navigate the record group or scope list_files to one "
             "source instead.\n\n"

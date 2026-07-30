@@ -17,6 +17,7 @@ without a separate navigate() call per level.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from .models import LookupMatch, LookupResult, NavigationView, NodeRef, NodeRow
@@ -39,6 +40,17 @@ def _trunc(name: str, n: int = _MAX_NAME_LEN) -> str:
     if len(name) <= n:
         return name
     return name[: n - 1] + "…"
+
+
+def _compact_date(epoch_ms: int | None) -> str | None:
+    """`YYYY-MM-DD` for a source timestamp — date only (no time) to keep
+    each row cheap in tokens; the full timestamp is already available via
+    `fetch_record`/`Record.to_llm_context()` for whichever row the model
+    reads next. None/0 (missing-timestamp sentinel — see
+    `navigator._node_item_to_row`) renders nothing."""
+    if not epoch_ms:
+        return None
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 def _short(node_id: str, shortener: "RecordIdShortener | None") -> str:
@@ -86,6 +98,9 @@ def _row_line(
     id_label = row.display_id_label.lower().replace(" ", "_")  # record_id or node_id
     parts = [f"[{row.node_type}/{row.sub_type or '?'}]", _trunc(row.name)]
     parts.append(f"| {id_label}={_short(row.id, shortener)}")
+    created_label = _compact_date(row.source_created_at)
+    if created_label:
+        parts.append(f"| created: {created_label}")
     if row.context_summary:
         parts.append(f"| {row.context_summary}")
     if row.detail:
@@ -286,6 +301,15 @@ def render_navigation_view(
         first_row = view.rows[0]
         id_arg = f'node_id="{_short(first_row.id, shortener)}"'
         hints.append(f'navigate({id_arg}) to open a child')
+    # Points back UP the tree — `view.breadcrumbs` is root→parent (not
+    # including `current`), so the last entry is the immediate parent.
+    # Page 1 only: breadcrumbs aren't recomputed on later pages, and the
+    # sibling set doesn't change page to page anyway.
+    if page == 1 and view.breadcrumbs:
+        parent = view.breadcrumbs[-1]
+        hints.append(
+            f'navigate(node_id="{_short(parent.id, shortener)}") to see siblings'
+        )
     if pag and pag.has_next and view.current:
         hints.append(
             f'navigate(node_id="{_short(view.current.id, shortener)}", page={pag.page + 1}) for more'

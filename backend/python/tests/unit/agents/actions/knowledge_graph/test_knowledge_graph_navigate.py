@@ -4,11 +4,17 @@ Uses the _make_state pattern from test_retrieval.py.
 All graph provider and service calls are mocked.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+from app.agents.actions.knowledge_graph.knowledge_graph import (
+    KnowledgeGraph,
+    _navigate_args_summary,
+    _time_range_error_message,
+    _time_range_to_kh_filters,
+)
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import RecordType, Status, TicketRecord
 
@@ -84,7 +90,7 @@ def _ticket_record(id: str = "rec1") -> TicketRecord:
 
 
 def _make_node_item(id: str, name: str, node_type: str = "record", record_type: str = "TICKET",
-                    has_children: bool = False):
+                    has_children: bool = False, created_at: int = 0, updated_at: int = 0):
     item = MagicMock()
     item.id = id
     item.name = name
@@ -96,6 +102,11 @@ def _make_node_item(id: str, name: str, node_type: str = "record", record_type: 
     item.indexingStatus = "COMPLETED"
     item.sizeInBytes = None
     item.webUrl = None
+    # Explicit ints (not left as auto-created MagicMocks) — `_node_item_to_row`
+    # does epoch-ms arithmetic on these via `getattr(item, "createdAt", None)`,
+    # which would break on an unset MagicMock attribute.
+    item.createdAt = created_at
+    item.updatedAt = updated_at
     return item
 
 
@@ -758,3 +769,327 @@ class TestNavigateRecordIdShorteningFlag:
         assert state.get("record_id_shortener") is None
         gp.get_knowledge_hub_node_access.assert_awaited()
         assert gp.get_knowledge_hub_node_access.await_args.kwargs.get("node_id") == "rec1"
+
+
+class TestTimeRangeToKhFilters:
+    """`_time_range_to_kh_filters` bridges `ops.time_range.parse_time_range`'s
+    output shape (source_created_after_ms/... keys) to the {"gte":, "lte":}
+    shape `KnowledgeHubService.get_nodes()` expects for created_at/updated_at."""
+
+    def test_none_time_range_returns_none_none(self):
+        assert _time_range_to_kh_filters(None) == (None, None)
+
+    def test_empty_dict_returns_none_none(self):
+        assert _time_range_to_kh_filters({}) == (None, None)
+
+    def test_created_after_only(self):
+        created_at, updated_at = _time_range_to_kh_filters({"source_created_after_ms": 100})
+        assert created_at == {"gte": 100, "lte": None}
+        assert updated_at is None
+
+    def test_created_before_only(self):
+        created_at, updated_at = _time_range_to_kh_filters({"source_created_before_ms": 200})
+        assert created_at == {"gte": None, "lte": 200}
+        assert updated_at is None
+
+    def test_modified_after_and_before(self):
+        created_at, updated_at = _time_range_to_kh_filters({
+            "source_updated_after_ms": 300,
+            "source_updated_before_ms": 400,
+        })
+        assert created_at is None
+        assert updated_at == {"gte": 300, "lte": 400}
+
+    def test_both_created_and_modified_present(self):
+        created_at, updated_at = _time_range_to_kh_filters({
+            "source_created_after_ms": 100,
+            "source_updated_before_ms": 400,
+        })
+        assert created_at == {"gte": 100, "lte": None}
+        assert updated_at == {"gte": None, "lte": 400}
+
+
+class TestTimeRangeErrorMessage:
+    def test_extracts_message_field(self):
+        import json
+        err = json.dumps({"status": "error", "message": "bad date"})
+        assert _time_range_error_message(err) == "bad date"
+
+    def test_non_json_string_passed_through_unchanged(self):
+        assert _time_range_error_message("not json") == "not json"
+
+
+class TestNavigateArgsSummaryTimeFilters:
+    def test_created_filter_mentioned(self):
+        summary = _navigate_args_summary({"created_after": "2026-07-01"})
+        assert "time-filtered" in summary
+        assert "created" in summary
+
+    def test_modified_filter_mentioned(self):
+        summary = _navigate_args_summary({"modified_before": "2026-07-01"})
+        assert "time-filtered" in summary
+        assert "modified" in summary
+
+    def test_no_time_filters_not_mentioned(self):
+        summary = _navigate_args_summary({"node_id": "rec1"})
+        assert "time-filtered" not in summary
+
+
+class TestNavigateTimeFilters:
+    """created_after/created_before/modified_after/modified_before on
+    navigate() — parsed via the same `ops.time_range.parse_time_range` as
+    knowledgegraph__search, then bridged to KnowledgeHubService's
+    created_at/updated_at {"gte":, "lte":} dicts."""
+
+    def _state(self):
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        return state
+
+    async def _navigate_capturing(self, state, **kwargs):
+        captured = {}
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+
+        async def capture_get_nodes(self_inner, **inner_kwargs):
+            captured.update(inner_kwargs)
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            result = await KnowledgeGraph(state=state).navigate(**kwargs)
+        return result, captured
+
+    @pytest.mark.asyncio
+    async def test_created_after_only(self):
+        (success, _text), captured = await self._navigate_capturing(
+            self._state(), created_after="2026-07-01"
+        )
+        assert success
+        assert captured["created_at"]["gte"] is not None
+        assert captured["created_at"]["lte"] is None
+        assert captured.get("updated_at") is None
+
+    @pytest.mark.asyncio
+    async def test_created_before_only(self):
+        (success, _text), captured = await self._navigate_capturing(
+            self._state(), created_before="2026-07-31"
+        )
+        assert success
+        assert captured["created_at"]["gte"] is None
+        assert captured["created_at"]["lte"] is not None
+
+    @pytest.mark.asyncio
+    async def test_created_after_and_before(self):
+        (success, _text), captured = await self._navigate_capturing(
+            self._state(), created_after="2026-07-01", created_before="2026-07-31"
+        )
+        assert success
+        assert captured["created_at"]["gte"] is not None
+        assert captured["created_at"]["lte"] is not None
+
+    @pytest.mark.asyncio
+    async def test_modified_after_and_before(self):
+        (success, _text), captured = await self._navigate_capturing(
+            self._state(), modified_after="2026-07-01", modified_before="2026-07-31"
+        )
+        assert success
+        assert captured.get("created_at") is None
+        assert captured["updated_at"]["gte"] is not None
+        assert captured["updated_at"]["lte"] is not None
+
+    @pytest.mark.asyncio
+    async def test_created_and_modified_together(self):
+        (success, _text), captured = await self._navigate_capturing(
+            self._state(), created_after="2026-07-01", modified_after="2026-07-15"
+        )
+        assert success
+        assert captured["created_at"]["gte"] is not None
+        assert captured["updated_at"]["gte"] is not None
+
+    @pytest.mark.asyncio
+    async def test_no_time_filters_get_nodes_receives_none(self):
+        (success, _text), captured = await self._navigate_capturing(self._state())
+        assert success
+        assert captured.get("created_at") is None
+        assert captured.get("updated_at") is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_iso_string_returns_error_without_calling_get_nodes(self):
+        state = self._state()
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(side_effect=AssertionError("get_nodes must not be called on bad input")),
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, text = await tool.navigate(created_after="not-a-date")
+        assert not success
+        assert "not a valid ISO 8601 date" in text
+
+    @pytest.mark.asyncio
+    async def test_naive_datetime_without_timezone_rejected(self):
+        """A full datetime with no timezone offset is rejected outright
+        (not silently assumed to be UTC) — the ambiguity is a strong signal
+        the LLM guessed a timezone. Date-only strings ('2026-07-01') are
+        still accepted and interpreted as UTC — see test_created_after_only."""
+        state = self._state()
+        tool = KnowledgeGraph(state=state)
+        success, text = await tool.navigate(created_after="2026-07-01T00:00:00")
+        assert not success
+        assert "timezone" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_inverted_range_returns_error(self):
+        state = self._state()
+        tool = KnowledgeGraph(state=state)
+        success, text = await tool.navigate(
+            created_after="2026-07-31", created_before="2026-07-01"
+        )
+        assert not success
+        assert "on or before" in text.lower() or "inverted" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_future_created_after_returns_error(self):
+        state = self._state()
+        tool = KnowledgeGraph(state=state)
+        success, text = await tool.navigate(created_after="2099-01-01")
+        assert not success
+        assert "future" in text.lower()
+
+
+class TestNavigateDepthExpansionTimeFilters:
+    """Time filters must apply at every level a depth>=2 navigate() fetches,
+    not just the top listing — see `GraphNavigator._expand_depth`."""
+
+    @pytest.mark.asyncio
+    async def test_time_filters_propagated_to_child_expansion(self):
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "epic1", "name": "SaaS Launch", "nodeType": "record", "subType": "EPIC",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        level1_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        level2_resp = _make_knowledge_hub_response(items=[], total=0)
+
+        captured_calls: list[dict] = []
+
+        async def capturing_get_nodes(self_inner, **kwargs):
+            captured_calls.append(dict(kwargs))
+            if kwargs.get("parent_id") == "epic1":
+                return level1_resp
+            return level2_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capturing_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, _text = await tool.navigate(
+                node_id="epic1", depth=2, created_after="2026-07-01"
+            )
+
+        assert success
+        top_call = next(c for c in captured_calls if c.get("parent_id") == "epic1")
+        expansion_call = next(c for c in captured_calls if c.get("parent_id") == "story1")
+        assert top_call.get("created_at") is not None
+        assert expansion_call.get("created_at") == top_call.get("created_at")
+
+
+class TestNavigateSparseResultHint:
+    """When time filters were applied and few/no rows come back, the tool
+    appends a retry nudge — but never on a plain, unfiltered empty listing,
+    which already has its own "(no children)"/"(no items at root...)" text."""
+
+    def _state(self):
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_hint_shown_when_time_filtered_and_empty(self):
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=self._state())
+            success, text = await tool.navigate(created_after="2026-07-01")
+        assert success
+        assert "widen" in text.lower()
+        assert "retry without time filters" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_hint_absent_without_time_filters_even_if_empty(self):
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=self._state())
+            success, text = await tool.navigate()
+        assert success
+        assert "widen" not in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_hint_absent_when_time_filtered_with_enough_rows(self):
+        items = [_make_node_item(f"item{i}", f"Item {i}") for i in range(3)]
+        mock_resp = _make_knowledge_hub_response(items=items, total=3)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=self._state())
+            success, text = await tool.navigate(created_after="2026-07-01")
+        assert success
+        assert "widen" not in text.lower()
+
+
+class TestNavigateTimestampRendering:
+    """Rows print a compact `created: YYYY-MM-DD` when the underlying
+    NodeItem carries a non-zero source creation timestamp."""
+
+    def _state(self):
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=None)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_created_date_shown_on_child_row(self):
+        created_ms = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        item = _make_node_item("child1", "Some doc", created_at=created_ms)
+        mock_resp = _make_knowledge_hub_response(items=[item], total=1)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=self._state())
+            success, text = await tool.navigate()
+        assert success
+        assert "created: 2026-07-01" in text
+
+    @pytest.mark.asyncio
+    async def test_zero_timestamp_omits_created_label(self):
+        item = _make_node_item("child1", "Some doc", created_at=0)
+        mock_resp = _make_knowledge_hub_response(items=[item], total=1)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            tool = KnowledgeGraph(state=self._state())
+            success, text = await tool.navigate()
+        assert success
+        assert "created:" not in text

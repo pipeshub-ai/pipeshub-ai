@@ -11,6 +11,8 @@ Tests:
 - record row prints record_id=; container row prints node_id=
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.agents.actions.knowledge_graph.models import (
@@ -40,6 +42,8 @@ def _row(
     sub_type: str | None = None,
     has_children: bool = False,
     detail: str | None = None,
+    source_created_at: int | None = None,
+    source_modified_at: int | None = None,
 ) -> NodeRow:
     return NodeRow(
         id=id,
@@ -49,6 +53,8 @@ def _row(
         is_record=node_type in ("record", "folder"),
         has_children=has_children,
         detail=detail,
+        source_created_at=source_created_at,
+        source_modified_at=source_modified_at,
     )
 
 
@@ -367,6 +373,123 @@ class TestNestedChildrenByteBudgetFallback:
         # was rendered to omit in the first place).
         assert "record_id=c0" not in text
         assert "omitted to fit response size" not in text
+
+
+class TestRowTimestampRendering:
+    """`_row_line()` renders a compact `created: YYYY-MM-DD` when
+    `NodeRow.source_created_at` is set — see `navigator._node_item_to_row`."""
+
+    def test_created_date_rendered_when_set(self):
+        created_ms = int(datetime(2026, 7, 15, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        row = _row("rec1", "PA-1787", "record", "TICKET", source_created_at=created_ms)
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "| created: 2026-07-15" in text
+
+    def test_omitted_when_none(self):
+        row = _row("rec1", "PA-1787", "record", "TICKET", source_created_at=None)
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "created:" not in text
+
+    def test_omitted_when_zero(self):
+        """0 is the "missing timestamp" sentinel some docs default to —
+        must not render as 1970-01-01."""
+        row = _row("rec1", "PA-1787", "record", "TICKET", source_created_at=0)
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "created:" not in text
+        assert "1970" not in text
+
+    def test_only_created_at_rendered_not_modified_at(self):
+        """Only source_created_at is surfaced per row today (Phase 2 scope) —
+        source_modified_at is stored on the model but not yet rendered."""
+        created_ms = int(datetime(2026, 7, 15, tzinfo=timezone.utc).timestamp() * 1000)
+        modified_ms = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        row = _row(
+            "rec1", "PA-1787", "record", "TICKET",
+            source_created_at=created_ms, source_modified_at=modified_ms,
+        )
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "| created: 2026-07-15" in text
+        assert "2026-08-01" not in text
+
+    def test_byte_budget_not_exceeded_with_dates_on_large_listing(self):
+        rows = [
+            _row(f"rec{i}", f"Record {i}", "record", "TICKET",
+                 source_created_at=int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000))
+            for i in range(200)
+        ]
+        view = NavigationView(
+            current=_ref("rg1", "Big Group", "recordGroup"),
+            breadcrumbs=[], rows=rows, related=[],
+            pagination=_pag(total=200), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert len(text.encode("utf-8")) <= 12_300  # slightly over cap due to truncation line
+
+
+class TestSiblingHint:
+    """navigate() output points back at the parent so the model can browse
+    siblings the current listing didn't include — see
+    `render_navigation_view`'s `Next:` hints."""
+
+    def test_sibling_hint_shown_when_breadcrumbs_present(self):
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787 Payment outage", "record", "TICKET"),
+            breadcrumbs=[
+                _ref("app1", "Jira", "app", "JIRA"),
+                _ref("rg1", "Payments Project", "recordGroup", "PROJECT"),
+            ],
+            rows=[_row("child1", "PA-1801 Fix retry", "record", "TICKET")],
+            related=[],
+            pagination=_pag(total=1),
+            web_url=None, indexing_status=None, connector="JIRA",
+        )
+        text = render_navigation_view(view, page=1)
+        next_line = text.split("Next:")[-1]
+        assert 'navigate(node_id="rg1") to see siblings' in next_line
+
+    def test_sibling_hint_absent_at_root(self):
+        """Root/app-level nodes with no breadcrumbs have no parent to browse
+        siblings under."""
+        view = NavigationView(
+            current=_ref("app1", "Jira", "app", "JIRA"),
+            breadcrumbs=[],
+            rows=[_row("rg1", "Payments Project", "recordGroup", "PROJECT")],
+            related=[],
+            pagination=_pag(total=1),
+            web_url=None, indexing_status=None, connector="JIRA",
+        )
+        text = render_navigation_view(view, page=1)
+        assert "to see siblings" not in text
+
+    def test_sibling_hint_absent_on_page_greater_than_one(self):
+        """Breadcrumbs aren't recomputed on page > 1, and the sibling set
+        doesn't change page to page — the hint is page 1 only."""
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787 Payment outage", "record", "TICKET"),
+            breadcrumbs=[_ref("rg1", "Payments Project", "recordGroup", "PROJECT")],
+            rows=[_row("child2", "PA-1802 Second task", "record", "TICKET")],
+            related=[],
+            pagination=_pag(page=2, total=5, has_prev=True),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=2)
+        assert "to see siblings" not in text
 
 
 class TestLookupResultRenderer:
