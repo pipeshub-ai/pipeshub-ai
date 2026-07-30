@@ -8,12 +8,13 @@ been handed immediately.
 Mirrors the "Standard path: upfront retrieval" branch `chatbot.py`'s
 `_generate_internal_search_stream()` ran today (`search_with_filters` ->
 `get_flattened_results` -> `enrich_virtual_record_id_to_result_with_fk_
-children` -> sort), and formats results with the exact same `build_
-message_content_array(..., from_tool=True)` call the shared `search_
-internal_knowledge` tool (`app/agents/actions/retrieval/retrieval.py`) uses
-for ITS OWN return text -- so a prefetched context block and a follow-up
-tool-call result look identical to the model, and citation ref numbering
-stays on one `CitationRefMapper` across both.
+children` -> `enrich_records_with_graph_context` -> sort), and formats
+results with the exact same `build_message_content_array(..., from_tool=True)`
+call the shared `search_internal_knowledge` tool
+(`app/agents/actions/retrieval/retrieval.py`) uses for ITS OWN return text
+-- so a prefetched context block and a follow-up tool-call result look
+identical to the model, and citation ref numbering stays on one
+`CitationRefMapper` across both.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
+    enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     flattened_result_sort_key,
     get_flattened_results,
@@ -149,6 +151,16 @@ async def prefetch_retrieval(
     await enrich_virtual_record_id_to_result_with_fk_children(
         virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results,
     )
+    if flattened_results and graph_provider:
+        await enrich_records_with_graph_context(
+            virtual_record_id_to_result,
+            graph_provider,
+            flattened_results,
+            virtual_to_record_map,
+            blob_store=blob_store,
+            org_id=org_id,
+            config_service=getattr(blob_store, "config_service", None),
+        )
 
     final_results = sorted(flattened_results, key=flattened_result_sort_key)
     if not final_results:

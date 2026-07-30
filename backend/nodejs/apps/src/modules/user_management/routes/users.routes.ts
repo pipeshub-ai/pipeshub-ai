@@ -25,6 +25,7 @@ import { NotFoundError } from '../../../libs/errors/http.errors';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
+import { NotificationProducer } from '../../notification/service/notification.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -723,6 +724,43 @@ export function createUserRouter(container: Container) {
       }
     },
   );
+
+  router.post(
+    '/bulk/invite/upload',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
+    smtpConfigCheck(config.cmBackend),
+    userAdminCheck,
+    accountTypeCheck,
+    ...FileProcessorFactory.createBufferUploadProcessor({
+      fieldName: 'file',
+      allowedExtensions: ['csv', 'xlsx', 'xls'],
+      allowedMimeTypes: [
+        'text/csv',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/octet-stream',
+      ],
+      maxFilesAllowed: 1,
+      isMultipleFilesAllowed: false,
+      processingType: FileProcessingType.BUFFER,
+      maxFileSize: 5 * 1024 * 1024,
+      strictFileUpload: true,
+    }).getMiddleware,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.addManyUsersFromFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.post(
     '/:id/resend-invite',
     authMiddleware.authenticate,
@@ -789,6 +827,7 @@ export function createUserRouter(container: Container) {
               container.get<AuthService>('AuthService'),
               logger,
               container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+              container.get<NotificationProducer>('NotificationProducer'),
             );
           });
         res.status(200).json({

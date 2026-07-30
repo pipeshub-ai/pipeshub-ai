@@ -855,6 +855,8 @@
         "groupPlaceholder": "समूह चुनें",
         "groupSearchPlaceholder": "समूह खोजें...",
         "importCsv": "CSV आयात करें",
+        "import": "आयात करें",
+        "importTooltip": "CSV और Excel फ़ाइलें समर्थित हैं (.csv, .xlsx, .xls)",
         "cancel": "रद्द करें",
         "send": "आमंत्रण भेजें",
         "successTitle": "आमंत्रण भेजे गए",
