@@ -132,6 +132,45 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(mockLogger.error.called).to.be.true;
   });
 
+  it('collapses a storm of failures into one notification per org', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
+
+    // 50 recipients failing back-to-back, as in a bad-SMTP bulk import.
+    for (let i = 0; i < 50; i++) {
+      await deliver(payload({ mail: { ...payload().mail, sendEmailTo: [`u${i}@example.com`] } }));
+    }
+
+    expect(mockSender.send.callCount).to.equal(50);
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(1);
+  });
+
+  it('notifies again after the window and reports what was suppressed', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
+
+    await deliver(payload());
+    await deliver(payload());
+    await deliver(payload());
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(1);
+
+    await clock.tickAsync(5 * 60_000 + 1_000);
+    await deliver(payload());
+
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(2);
+    const second = mockNotificationProducer.publishEvent.secondCall.args[0];
+    expect(second.payload.payload.suppressedFailures).to.equal(2);
+    expect(second.payload.message).to.contain('suppressed');
+  });
+
+  it('throttles per org, not globally', async () => {
+    mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
+
+    await deliver(payload({ orgId: '507f1f77bcf86cd799439012' }));
+    await deliver(payload({ orgId: '507f1f77bcf86cd799439099' }));
+
+    // A noisy org must not silence a different one.
+    expect(mockNotificationProducer.publishEvent.callCount).to.equal(2);
+  });
+
   it('skips an event whose payload is not a mail job', async () => {
     let captured: any;
     mockConsumer.consume.callsFake(async (cb: any) => {
