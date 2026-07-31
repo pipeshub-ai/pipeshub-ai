@@ -17,6 +17,12 @@ import nodemailer from 'nodemailer';
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
+
+const SMTP_DNS_TIMEOUT_MS = 10_000;
+const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+const SMTP_GREETING_TIMEOUT_MS = 10_000;
+const SMTP_SOCKET_TIMEOUT_MS = 20_000;
+
 @injectable()
 export class MailController {
   constructor(
@@ -93,6 +99,11 @@ export class MailController {
         host: smtpConfig.host,
         port: smtpConfig.port || 587,
         secure: false,
+
+        dnsTimeout: SMTP_DNS_TIMEOUT_MS,
+        connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+        greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+        socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
         ...(smtpConfig.password
           ? {
             auth: {

@@ -19,6 +19,8 @@ interface SendMailResponse {
   data: any;
 }
 
+const SEND_MAIL_TIMEOUT_MS = 30_000;
+
 @injectable()
 export class MailService {
   constructor(
@@ -70,6 +72,7 @@ export class MailService {
           'Content-Type': 'application/json',
         },
         data,
+        timeout: SEND_MAIL_TIMEOUT_MS,
       };
       const response = await axios(config);
       return { statusCode: 200, data: response.data };
