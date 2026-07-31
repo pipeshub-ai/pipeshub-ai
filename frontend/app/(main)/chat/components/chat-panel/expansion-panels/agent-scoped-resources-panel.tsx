@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import {
@@ -14,136 +14,14 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore } from '@/chat/store';
+import { useAgentCapabilitiesForContext } from '@/chat/hooks/use-agent-capabilities';
 import { CollectionRow } from './connectors-collections/collection-row';
-import { AgentCapabilitiesBar } from './agent-capabilities-bar';
+import { ResourceTabSwitcher, type ResourceTab } from './resource-tab-switcher';
 
 type ExpansionViewMode = 'inline' | 'overlay';
-
-const TAB_VALUES = ['connectors', 'collections', 'actions'] as const;
-type TabValue = (typeof TAB_VALUES)[number];
-
-/** Figma segmented control track (`7523:16159` / Settings spec): fixed width, 32px height, 4px radius */
-const FIGMA_TABLIST_WIDTH = 246;
-const FIGMA_TABLIST_HEIGHT = 32;
-const FIGMA_TABLIST_RADIUS = 4;
-
-/**
- * Segmented tabs matching Figma (node `7523:16159` + dark CSS from spec):
- * — Track: layered gradients + base tint; light uses MCP tokens, dark uses spec rgba.
- * — Items: 12px type, 0.04px tracking, 16px line-height; inactive regular, selected medium.
- * — Selected: light = page surface + neutral hairline; dark = `#111113` + frosted border.
- */
-function AgentFilterTablist({
-  value,
-  onValueChange,
-  labels,
-  disabledTabs = [],
-}: {
-  value: TabValue;
-  onValueChange: (next: TabValue) => void;
-  labels: Record<TabValue, string>;
-  disabledTabs?: TabValue[];
-}) {
-  const { appearance } = useThemeAppearance();
-  const isDark = appearance === 'dark';
-
-  const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH,
-    maxWidth: '100%',
-    height: FIGMA_TABLIST_HEIGHT,
-    borderRadius: FIGMA_TABLIST_RADIUS,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    boxSizing: 'border-box',
-    flexShrink: 0,
-    ...(isDark
-      ? {
-          background:
-            'linear-gradient(90deg, rgba(221, 234, 248, 0.0784314) 0%, rgba(221, 234, 248, 0.0784314) 100%), rgba(0, 0, 0, 0.25)',
-        }
-      : {
-          background:
-            'linear-gradient(90deg, rgba(0, 0, 51, 0.059) 0%, rgba(0, 0, 51, 0.059) 100%), linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%)',
-        }),
-  };
-
-  const inactiveColor = isDark ? 'rgba(252, 253, 255, 0.937255)' : 'rgba(0, 5, 9, 0.89)';
-  const selectedBorder = isDark
-    ? '1px solid rgba(211, 237, 248, 0.113725)'
-    : '1px solid rgba(0, 0, 45, 0.09)';
-  const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = TAB_VALUES.indexOf(value);
-    if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    }
-  };
-
-  return (
-    <div
-      role="tablist"
-      aria-label="Chat filters"
-      onKeyDown={onKeyDown}
-      style={trackStyle}
-    >
-      {TAB_VALUES.map((tabValue) => {
-        const selected = value === tabValue;
-        const isDisabled = disabledTabs.includes(tabValue);
-        return (
-          <button
-            key={tabValue}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            aria-disabled={isDisabled}
-            disabled={isDisabled}
-            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
-            style={{
-              boxSizing: 'border-box',
-              flex: '1 1 0',
-              minWidth: 0,
-              height: FIGMA_TABLIST_HEIGHT,
-              padding: '0 12px',
-              gap: 4,
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: FIGMA_TABLIST_RADIUS,
-              border: selected ? selectedBorder : '1px solid transparent',
-              background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
-              fontSize: 12,
-              lineHeight: '16px',
-              letterSpacing: '0.04px',
-              fontWeight: selected ? 500 : 400,
-              fontFamily: 'inherit',
-              cursor: isDisabled ? 'not-allowed' : 'pointer',
-              opacity: isDisabled ? 0.5 : 1,
-              isolation: 'isolate',
-            }}
-          >
-            {labels[tabValue]}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /** Figma: olive-2 surface, olive-3 hairline border, 3px radius */
 const OLIVE_ROW = {
@@ -169,9 +47,6 @@ function humanizeUnderscores(value: string): string {
 function connectorIconHint(row: { connectorKind?: string; label: string }): string {
   return `${row.connectorKind ?? ''} ${row.label}`.trim();
 }
-
-/** Stable fallback so the Zustand selector always returns the same reference when no scoped caps exist. */
-const DEFAULT_AGENT_CAPS = { internalSearch: true, webSearch: true } as const;
 
 interface AgentScopedResourcesPanelProps {
   onToggleView?: () => void;
@@ -239,8 +114,8 @@ export function AgentScopedResourcesPanel({
   viewMode = 'inline',
 }: AgentScopedResourcesPanelProps) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<TabValue>('connectors');
   const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<ResourceTab>('connectors');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const connectors = useChatStore((s) => s.agentChatConnectors);
@@ -253,17 +128,9 @@ export function AgentScopedResourcesPanel({
   const setTools = useChatStore((s) => s.setAgentStreamTools);
 
   const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const agentHasWebSearch = useChatStore((s) => s.agentHasWebSearch);
-  const kbIds = useChatStore((s) => s.agentChatKbIds);
-  const agentHasInternalSearch = connectors.length > 0 || kbIds.length > 0;
-
-  const scopedCaps = useChatStore((s) =>
-    agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
-  );
-  const setScopedCaps = useChatStore((s) => s.setScopedAgentCapabilities);
-
-  const internalSearchEnabled = agentHasInternalSearch ? scopedCaps.internalSearch : false;
-  const webSearchEnabled = agentHasWebSearch ? scopedCaps.webSearch : false;
+  // Only the disabled-tabs gate is still needed here — the toggles themselves
+  // now live in the main chat toolbar (chat-input.tsx).
+  const { internalSearch: internalSearchEnabled } = useAgentCapabilitiesForContext(true, agentId);
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
@@ -408,15 +275,6 @@ export function AgentScopedResourcesPanel({
     setTools(null);
   }, [setScope, setTools]);
 
-  const disabledTabs = useMemo<TabValue[]>(
-    () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
-    [internalSearchEnabled]
-  );
-
-  useEffect(() => {
-    if (disabledTabs.includes(tab)) setTab('actions');
-  }, [disabledTabs, tab]);
-
   const filteredConnectors = useMemo(() => {
     if (!search.trim()) return connectors;
     const q = search.toLowerCase();
@@ -447,23 +305,12 @@ export function AgentScopedResourcesPanel({
       .filter((g) => g.fullNames.length > 0);
   }, [toolGroups, search]);
 
-  const tabPlaceholders = [
-    t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
-    t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
-    t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
-  ];
-
-  const tabIndex = TAB_VALUES.indexOf(tab);
-  const searchPlaceholder = tabPlaceholders[tabIndex >= 0 ? tabIndex : 0];
-
-  const tabLabels = useMemo(
-    () => ({
-      connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
-      collections: t('nav.collections', { defaultValue: 'Collections' }),
-      actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
-    }),
-    [t]
-  );
+  const searchPlaceholder =
+    activeTab === 'actions'
+      ? t('chat.agentResources.searchActions', { defaultValue: 'Search actions' })
+      : activeTab === 'collections'
+        ? t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' })
+        : t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' });
 
   const toggleGroupExpanded = (key: string) => {
     setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -475,30 +322,32 @@ export function AgentScopedResourcesPanel({
       gap="3"
       style={{ flex: 1, minHeight: 0, height: '100%', overflow: 'hidden' }}
     >
-      {/* Capabilities toggles */}
-      <AgentCapabilitiesBar
-        internalSearch={internalSearchEnabled}
-        webSearch={webSearchEnabled}
-        onToggleInternalSearch={(enabled) => {
-          if (agentId) setScopedCaps(agentId, { internalSearch: enabled });
+      {/* Indexed Data Search / Web Search toggles now live in the main chat toolbar (chat-input.tsx). */}
+
+      {/* Tab switcher: Connectors | Collections | Actions */}
+      <ResourceTabSwitcher
+        value={activeTab}
+        onChange={setActiveTab}
+        counts={{
+          connectors: filteredConnectors.length,
+          collections: filteredCollections.length,
+          actions: filteredToolGroups.reduce((sum, g) => sum + g.fullNames.length, 0),
         }}
-        onToggleWebSearch={(enabled) => {
-          if (agentId) setScopedCaps(agentId, { webSearch: enabled });
-        }}
-        agentHasInternalSearch={agentHasInternalSearch ? undefined : false}
-        agentHasWebSearch={agentHasWebSearch ? undefined : false}
       />
 
-      <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>
-        <AgentFilterTablist
-          value={tab}
-          onValueChange={(next) => {
-            setTab(next);
-            setSearch('');
-          }}
-          labels={tabLabels}
-          disabledTabs={disabledTabs}
-        />
+      {/* Header: unified search + expand/collapse toggle */}
+      <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
+        <TextField.Root
+          size="2"
+          placeholder={searchPlaceholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          <TextField.Slot>
+            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+          </TextField.Slot>
+        </TextField.Root>
         <IconButton
           variant="ghost"
           color="gray"
@@ -514,21 +363,7 @@ export function AgentScopedResourcesPanel({
         </IconButton>
       </Flex>
 
-      <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
-        <TextField.Root
-          size="2"
-          placeholder={searchPlaceholder}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: 1, minWidth: 0 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-          </TextField.Slot>
-        </TextField.Root>
-      </Flex>
-
-      {(tab === 'connectors' || tab === 'collections') && showKnowledgeClearedWarning && (
+      {internalSearchEnabled && showKnowledgeClearedWarning && (
         <Callout.Root color="amber" size="1" style={{ flexShrink: 0 }}>
           <Callout.Icon>
             <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
@@ -541,87 +376,99 @@ export function AgentScopedResourcesPanel({
 
       <Flex
         direction="column"
-        gap="2"
+        gap="3"
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', width: '100%' }}
       >
-        {tab === 'connectors' && (
-          <>
-            {filteredConnectors.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noConnectors', {
-                  defaultValue: 'No connectors configured for this agent.',
-                })}
-              </Text>
-            ) : (
-              filteredConnectors.map((c) => (
-                <Flex
-                  key={c.id}
-                  align="center"
-                  justify="between"
-                  gap="2"
-                  onClick={() => toggleConnector(c.id)}
-                  style={{
-                    ...OLIVE_ROW,
-                    padding: 'var(--space-2) var(--space-3)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                    <span style={CHECKBOX_ALIGN}>
-                      <Checkbox
-                        size="1"
-                        checked={eff.apps.includes(c.id)}
-                        onCheckedChange={() => toggleConnector(c.id)}
-                        onClick={(e) => e.stopPropagation()}
+        {activeTab === 'connectors' ? (
+          internalSearchEnabled ? (
+            <Flex direction="column" gap="1">
+              {filteredConnectors.length === 0 ? (
+                <Text size="2" style={{ color: 'var(--slate-9)', padding: '0 var(--space-1)' }}>
+                  {t('chat.agentResources.noConnectors', {
+                    defaultValue: 'No connectors configured for this agent.',
+                  })}
+                </Text>
+              ) : (
+                filteredConnectors.map((c) => (
+                  <Flex
+                    key={c.id}
+                    align="center"
+                    justify="between"
+                    gap="2"
+                    onClick={() => toggleConnector(c.id)}
+                    style={{
+                      ...OLIVE_ROW,
+                      padding: 'var(--space-2) var(--space-3)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                      <span style={CHECKBOX_ALIGN}>
+                        <Checkbox
+                          size="1"
+                          checked={eff.apps.includes(c.id)}
+                          onCheckedChange={() => toggleConnector(c.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </span>
+                      <ConnectorIcon
+                        type={resolveConnectorType(connectorIconHint(c))}
+                        size={20}
                       />
-                    </span>
-                    <ConnectorIcon
-                      type={resolveConnectorType(connectorIconHint(c))}
-                      size={20}
-                    />
-                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                      {c.label}
-                    </Text>
+                      <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                        {c.label}
+                      </Text>
+                    </Flex>
                   </Flex>
-                </Flex>
-              ))
-            )}
-          </>
-        )}
-
-        {tab === 'collections' && (
-          <>
-            {collectionRows.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noCollections', {
-                  defaultValue: 'No collections configured for this agent.',
-                })}
-              </Text>
-            ) : filteredCollections.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noCollectionMatches', {
-                  defaultValue: 'No collections match your search.',
-                })}
-              </Text>
-            ) : (
-              filteredCollections.map((row) => (
-                <CollectionRow
-                  key={row.id}
-                  id={row.id}
-                  name={row.name}
-                  sourceType={row.sourceType}
-                  isSelected={eff.kb.includes(row.id)}
-                  onToggle={toggleKb}
-                />
-              ))
-            )}
-          </>
-        )}
-
-        {tab === 'actions' && (
-          <>
+                ))
+              )}
+            </Flex>
+          ) : (
+            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+              {t('chat.agentResources.enableIndexedSearchHint', {
+                defaultValue: 'Enable Indexed Data Search to configure connectors and collections.',
+              })}
+            </Text>
+          )
+        ) : activeTab === 'collections' ? (
+          internalSearchEnabled ? (
+            <Flex direction="column" gap="1">
+              {collectionRows.length === 0 ? (
+                <Text size="2" style={{ color: 'var(--slate-9)', padding: '0 var(--space-1)' }}>
+                  {t('chat.agentResources.noCollections', {
+                    defaultValue: 'No collections configured for this agent.',
+                  })}
+                </Text>
+              ) : filteredCollections.length === 0 ? (
+                <Text size="2" style={{ color: 'var(--slate-9)', padding: '0 var(--space-1)' }}>
+                  {t('chat.agentResources.noCollectionMatches', {
+                    defaultValue: 'No collections match your search.',
+                  })}
+                </Text>
+              ) : (
+                filteredCollections.map((row) => (
+                  <CollectionRow
+                    key={row.id}
+                    id={row.id}
+                    name={row.name}
+                    sourceType={row.sourceType}
+                    isSelected={eff.kb.includes(row.id)}
+                    onToggle={toggleKb}
+                  />
+                ))
+              )}
+            </Flex>
+          ) : (
+            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+              {t('chat.agentResources.enableIndexedSearchHint', {
+                defaultValue: 'Enable Indexed Data Search to configure connectors and collections.',
+              })}
+            </Text>
+          )
+        ) : (
+          <Flex direction="column" gap="2">
             {filteredToolGroups.length === 0 ? (
-              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+              <Text size="2" style={{ color: 'var(--slate-9)', padding: '0 var(--space-1)' }}>
                 {t('chat.agentResources.noActions', {
                   defaultValue: 'No actions (toolsets) configured for this agent.',
                 })}
@@ -799,7 +646,7 @@ export function AgentScopedResourcesPanel({
                 </Flex>
               </>
             )}
-          </>
+          </Flex>
         )}
       </Flex>
 

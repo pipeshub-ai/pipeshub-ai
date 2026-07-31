@@ -21,7 +21,6 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
@@ -29,124 +28,10 @@ import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
-import { AgentCapabilitiesBar } from './agent-capabilities-bar';
+import { useAgentCapabilitiesForContext } from '@/chat/hooks/use-agent-capabilities';
+import { ResourceTabSwitcher, type ResourceTab } from './resource-tab-switcher';
 
 type ExpansionViewMode = 'inline' | 'overlay';
-
-const TAB_VALUES = ['connectors', 'collections', 'actions'] as const;
-type TabValue = (typeof TAB_VALUES)[number];
-
-const FIGMA_TABLIST_WIDTH = 246;
-const FIGMA_TABLIST_HEIGHT = 32;
-const FIGMA_TABLIST_RADIUS = 4;
-
-function UniversalAgentFilterTablist({
-  value,
-  onValueChange,
-  labels,
-  disabledTabs = [],
-}: {
-  value: TabValue;
-  onValueChange: (next: TabValue) => void;
-  labels: Record<TabValue, string>;
-  disabledTabs?: TabValue[];
-}) {
-  const { appearance } = useThemeAppearance();
-  const isDark = appearance === 'dark';
-
-  const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH,
-    maxWidth: '100%',
-    height: FIGMA_TABLIST_HEIGHT,
-    borderRadius: FIGMA_TABLIST_RADIUS,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    boxSizing: 'border-box',
-    flexShrink: 0,
-    ...(isDark
-      ? {
-          background:
-            'linear-gradient(90deg, rgba(221, 234, 248, 0.0784314) 0%, rgba(221, 234, 248, 0.0784314) 100%), rgba(0, 0, 0, 0.25)',
-        }
-      : {
-          background:
-            'linear-gradient(90deg, rgba(0, 0, 51, 0.059) 0%, rgba(0, 0, 51, 0.059) 100%), linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%)',
-        }),
-  };
-
-  const inactiveColor = isDark ? 'rgba(252, 253, 255, 0.937255)' : 'rgba(0, 5, 9, 0.89)';
-  const selectedBorder = isDark
-    ? '1px solid rgba(211, 237, 248, 0.113725)'
-    : '1px solid rgba(0, 0, 45, 0.09)';
-  const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = TAB_VALUES.indexOf(value);
-    if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    }
-  };
-
-  return (
-    <div
-      role="tablist"
-      aria-label="Universal agent filters"
-      onKeyDown={onKeyDown}
-      style={trackStyle}
-    >
-      {TAB_VALUES.map((tabValue) => {
-        const selected = value === tabValue;
-        const isDisabled = disabledTabs.includes(tabValue);
-        return (
-          <button
-            key={tabValue}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            aria-disabled={isDisabled}
-            disabled={isDisabled}
-            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
-            style={{
-              boxSizing: 'border-box',
-              flex: '1 1 0',
-              minWidth: 0,
-              height: FIGMA_TABLIST_HEIGHT,
-              padding: '0 12px',
-              gap: 4,
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: FIGMA_TABLIST_RADIUS,
-              border: selected ? selectedBorder : '1px solid transparent',
-              background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
-              fontSize: 12,
-              lineHeight: '16px',
-              letterSpacing: '0.04px',
-              fontWeight: selected ? 500 : 400,
-              fontFamily: 'inherit',
-              cursor: isDisabled ? 'not-allowed' : 'pointer',
-              opacity: isDisabled ? 0.5 : 1,
-              isolation: 'isolate',
-            }}
-          >
-            {labels[tabValue]}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 const OLIVE_ROW = {
   backgroundColor: 'var(--olive-2)',
@@ -324,14 +209,13 @@ export function UniversalAgentResourcesPanel({
   viewMode = 'inline',
 }: UniversalAgentResourcesPanelProps) {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<TabValue>('connectors');
   const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<ResourceTab>('connectors');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
-  const setAgentCapabilities = useChatStore((s) => s.setAgentCapabilities);
-  const agentCapabilities = settings.agentCapabilities;
+  const { internalSearch: internalSearchEnabled } = useAgentCapabilitiesForContext(false);
 
   const toolGroups = useChatStore((s) => s.universalAgentToolGroups);
   const toolCatalog = useChatStore((s) => s.universalAgentToolCatalogFullNames);
@@ -549,18 +433,6 @@ export function UniversalAgentResourcesPanel({
     setFilters({ apps: [], kb: [] });
   }, [setSelectedTools, setFilters]);
 
-  // When internalSearch is turned off, snap tab to 'actions' if currently on a disabled tab.
-  const internalSearchEnabled = agentCapabilities.internalSearch;
-  const disabledTabs = useMemo<TabValue[]>(
-    () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
-    [internalSearchEnabled]
-  );
-
-  // If the active tab becomes disabled, switch to 'actions'
-  React.useEffect(() => {
-    if (disabledTabs.includes(tab)) setTab('actions');
-  }, [disabledTabs, tab]);
-
   // ── Filtered views ──
 
   const filteredToolGroups = useMemo(() => {
@@ -579,22 +451,12 @@ export function UniversalAgentResourcesPanel({
       .filter((g) => g.fullNames.length > 0);
   }, [toolGroups, search]);
 
-  const tabPlaceholders = [
-    t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
-    t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
-    t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
-  ];
-  const tabIndex = TAB_VALUES.indexOf(tab);
-  const searchPlaceholder = tabPlaceholders[tabIndex >= 0 ? tabIndex : 0];
-
-  const tabLabels = useMemo(
-    () => ({
-      connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
-      collections: t('nav.collections', { defaultValue: 'Collections' }),
-      actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
-    }),
-    [t]
-  );
+  const searchPlaceholder =
+    activeTab === 'actions'
+      ? t('chat.agentResources.searchActions', { defaultValue: 'Search actions' })
+      : activeTab === 'collections'
+        ? t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' })
+        : t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' });
 
   const toggleGroupExpanded = (key: string) => {
     setExpandedGroups((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -628,25 +490,30 @@ export function UniversalAgentResourcesPanel({
         </Callout.Root>
       )}
 
-      {/* Capabilities toggles */}
-      <AgentCapabilitiesBar
-        internalSearch={agentCapabilities.internalSearch}
-        webSearch={agentCapabilities.webSearch}
-        onToggleInternalSearch={(enabled) => setAgentCapabilities({ internalSearch: enabled })}
-        onToggleWebSearch={(enabled) => setAgentCapabilities({ webSearch: enabled })}
+      {/* Indexed Data Search / Web Search toggles now live in the main chat toolbar (chat-input.tsx). */}
+
+      {/* Tab switcher: Connectors | Collections | Actions */}
+      <ResourceTabSwitcher
+        value={activeTab}
+        onChange={setActiveTab}
+        counts={{
+          actions: filteredToolGroups.reduce((sum, g) => sum + g.fullNames.length, 0),
+        }}
       />
 
-      {/* Header: tabs + expand/collapse toggle */}
-      <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>
-        <UniversalAgentFilterTablist
-          value={tab}
-          onValueChange={(next) => {
-            setTab(next);
-            setSearch('');
-          }}
-          labels={tabLabels}
-          disabledTabs={disabledTabs}
-        />
+      {/* Header: unified search + expand/collapse toggle */}
+      <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
+        <TextField.Root
+          size="2"
+          placeholder={searchPlaceholder}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ flex: 1, minWidth: 0 }}
+        >
+          <TextField.Slot>
+            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+          </TextField.Slot>
+        </TextField.Root>
         <IconButton
           variant="ghost"
           color="gray"
@@ -662,46 +529,30 @@ export function UniversalAgentResourcesPanel({
         </IconButton>
       </Flex>
 
-      {/* Search (only on Actions tab) */}
-      {tab === 'actions' && (
-        <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
-          <TextField.Root
-            size="2"
-            placeholder={searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-            </TextField.Slot>
-          </TextField.Root>
-        </Flex>
-      )}
-
-      {/* Tab content */}
       <Flex
         direction="column"
-        gap="2"
+        gap="3"
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', width: '100%' }}
       >
-        {/* Connectors + Collections share one CollectionsTab instance so the root list is
-            fetched only once. Switching between the two tabs changes filterMode (a prop),
-            which re-filters already-loaded data without any additional API call.
-            The component only unmounts when the user switches to the Actions tab. */}
-        {(tab === 'connectors' || tab === 'collections') && (
-          <CollectionsTab
-            apps={settings.filters?.apps ?? []}
-            kb={settings.filters?.kb ?? []}
-            onSelectionChange={handleCollectionSelectionChange}
-            filterMode={tab}
-          />
-        )}
-
-        {/* Actions — from my-toolsets (authenticated instances) */}
-        {tab === 'actions' && (
-          <>
-            {toolsLoading && (
+        {activeTab === 'connectors' || activeTab === 'collections' ? (
+          internalSearchEnabled ? (
+            <CollectionsTab
+              apps={settings.filters?.apps ?? []}
+              kb={settings.filters?.kb ?? []}
+              onSelectionChange={handleCollectionSelectionChange}
+              filterMode={activeTab}
+              controlledSearchQuery={search}
+            />
+          ) : (
+            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+              {t('chat.agentResources.enableIndexedSearchHint', {
+                defaultValue: 'Enable Indexed Data Search to configure connectors and collections.',
+              })}
+            </Text>
+          )
+        ) : (
+          <Flex direction="column" gap="2">
+          {toolsLoading && (
               <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-4)' }}>
                 <Spinner size="2" />
                 <Text size="2" style={{ color: 'var(--gray-10)' }}>
@@ -949,7 +800,7 @@ export function UniversalAgentResourcesPanel({
                 </Flex>
               </>
             )}
-          </>
+          </Flex>
         )}
       </Flex>
 
@@ -958,22 +809,20 @@ export function UniversalAgentResourcesPanel({
         <Button type="button" size="1" variant="outline" color="gray" onClick={resetToDefaults}>
           {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
         </Button>
-        {tab === 'actions' && (
-          <Flex align="center" gap="2">
-            {atToolCap && (
-              <Text size="1" style={{ color: 'var(--amber-11)' }}>
-                {t('chat.universalAgent.toolCapReached', { defaultValue: 'Tool limit reached' })}
-              </Text>
-            )}
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>
-              {t('chat.universalAgent.toolCount', {
-                count: selectedCount,
-                max: MAX_USER_TOOLS,
-                defaultValue: `{{count}} / {{max}} tools`,
-              })}
+        <Flex align="center" gap="2">
+          {atToolCap && (
+            <Text size="1" style={{ color: 'var(--amber-11)' }}>
+              {t('chat.universalAgent.toolCapReached', { defaultValue: 'Tool limit reached' })}
             </Text>
-          </Flex>
-        )}
+          )}
+          <Text size="1" style={{ color: 'var(--gray-9)' }}>
+            {t('chat.universalAgent.toolCount', {
+              count: selectedCount,
+              max: MAX_USER_TOOLS,
+              defaultValue: `{{count}} / {{max}} tools`,
+            })}
+          </Text>
+        </Flex>
       </Flex>
     </Flex>
   );

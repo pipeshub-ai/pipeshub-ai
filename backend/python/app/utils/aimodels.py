@@ -519,6 +519,72 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
 
     return True
 
+_OPENAI_TOOLS_BLOCK_MIN_GPT5_MINOR = 4
+
+
+def _gpt5_minor_version(model_name: str | None) -> int | None:
+    """Extract the minor version from an OpenAI GPT-5.x model id, if any.
+
+    Matches bare ``gpt-5`` (minor ``0``) as well as ``gpt-5.4``,
+    ``gpt-5.6-luna``, ``openai/gpt-5.6-terra``, ``gpt-5.4-2026-03-05``, etc.
+    Returns ``None`` for non-GPT-5 models.
+    """
+    if not model_name:
+        return None
+    match = re.search(r"gpt-5(?:\.(\d+))?", model_name.lower())
+    if not match:
+        return None
+    return int(match.group(1)) if match.group(1) else 0
+
+
+def _openai_reasoning_effort_override(model_name: str | None) -> str | None:
+    """``reasoning_effort`` value to force for a reasoning model, if any.
+
+    Starting with GPT-5.4, OpenAI hard-blocks combining function tools with
+    a non-``'none'`` reasoning effort on the legacy Chat Completions endpoint
+    (``/v1/chat/completions``) -- even when the caller never set
+    ``reasoning_effort`` explicitly, since the server applies its own
+    default for these models: ``"Function tools with reasoning_effort are
+    not supported for <model> in /v1/chat/completions. To use function
+    tools, use /v1/responses or set reasoning_effort to 'none'."`` This
+    affects every OpenAI-compatible surface we talk to (OpenAI itself,
+    Azure OpenAI, Requesty, LiteLLM proxy, and other gateways), all of which
+    go through Chat Completions here rather than the newer Responses API.
+
+    Older GPT-5 tiers (5.0-5.3) and non-GPT-5 reasoning models (o1/o3/etc.)
+    don't have this restriction and keep full reasoning, so this returns
+    ``None`` for them -- callers should leave ``reasoning_effort`` unset.
+    """
+    minor = _gpt5_minor_version(model_name)
+    if minor is not None and minor >= _OPENAI_TOOLS_BLOCK_MIN_GPT5_MINOR:
+        return "none"
+    return None
+
+
+def _resolve_openai_temperature_and_reasoning_effort(
+    model_name: str | None,
+    configuration: dict[str, Any],
+    is_reasoning_model: bool,
+) -> tuple[float, str | None]:
+    """Resolve ``(temperature, reasoning_effort)`` for an OpenAI-family model.
+
+    - Non-reasoning models: the user-configured temperature, no override.
+    - Reasoning models on GPT-5.4+ (5.4, 5.5, 5.6-sol/terra/luna, ...): pin
+      ``reasoning_effort='none'`` so tool-calling agents don't 400 on Chat
+      Completions. With effort pinned to ``'none'``, OpenAI also allows a
+      custom temperature again, so we honor the configured value.
+    - Older reasoning models (bare gpt-5, o1, o3, ...): OpenAI only accepts
+      ``temperature=1`` here, and reasoning + function tools already work
+      together fine on Chat Completions, so no override is sent.
+    """
+    if not is_reasoning_model:
+        return configuration.get("temperature", 0.2), None
+    reasoning_effort = _openai_reasoning_effort_override(model_name)
+    if reasoning_effort is not None:
+        return configuration.get("temperature", 0.2), reasoning_effort
+    return 1, None
+
+
 def get_generator_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
@@ -619,11 +685,11 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai import ChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
 
         is_claude_model = "claude" in model_name
         if is_claude_model:
             max_tokens = _get_anthropic_max_tokens(model_name)
+            claude_temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
             azure_claude_kwargs: Dict[str, Any] = dict(
                 model=model_name,
                 base_url=configuration.get("endpoint"),
@@ -632,32 +698,43 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 max_tokens=configuration.get("maxTokens", max_tokens),
             )
             if _anthropic_supports_sampling_params(model_name):
-                azure_claude_kwargs["temperature"] = temperature
+                azure_claude_kwargs["temperature"] = claude_temperature
             return ChatAnthropic(**azure_claude_kwargs)
         else:
-            return ChatOpenAI(
-                    model=model_name,
-                    temperature=temperature,
-                    timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                    api_key=configuration.get("apiKey"),
-                    base_url=configuration.get("endpoint"),
-                    stream_usage=True,  # Enable token usage tracking for Opik
-                )
+            temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+                model_name, configuration, is_reasoning_model
+            )
+            azure_ai_kwargs: Dict[str, Any] = dict(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                api_key=configuration.get("apiKey"),
+                base_url=configuration.get("endpoint"),
+                stream_usage=True,  # Enable token usage tracking for Opik
+            )
+            if reasoning_effort is not None:
+                azure_ai_kwargs["reasoning_effort"] = reasoning_effort
+            return ChatOpenAI(**azure_ai_kwargs)
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return AzureChatOpenAI(
-                api_key=configuration["apiKey"],
-                azure_endpoint=configuration["endpoint"],
-                api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                azure_deployment=configuration["deploymentName"],
-                stream_usage=True,
-            )
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        azure_openai_kwargs: Dict[str, Any] = dict(
+            api_key=configuration["apiKey"],
+            azure_endpoint=configuration["endpoint"],
+            api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            azure_deployment=configuration["deploymentName"],
+            stream_usage=True,
+        )
+        if reasoning_effort is not None:
+            azure_openai_kwargs["reasoning_effort"] = reasoning_effort
+        return AzureChatOpenAI(**azure_openai_kwargs)
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
@@ -746,15 +823,20 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai import ChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        openai_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+            stream_usage=True,  # Enable token usage tracking for Opik
+        )
+        if reasoning_effort is not None:
+            openai_kwargs["reasoning_effort"] = reasoning_effort
+        return ChatOpenAI(**openai_kwargs)
 
     elif provider == LLMProvider.XAI.value:
         from langchain_xai import ChatXAI
@@ -780,55 +862,78 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                base_url=configuration["endpoint"],
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        compatible_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+            base_url=configuration["endpoint"],
+            stream_usage=True,  # Enable token usage tracking for Opik
+        )
+        if reasoning_effort is not None:
+            # Gateways like Requesty apply their own reasoning defaults for
+            # GPT-5.4+ models; pinning 'none' here overrides that so tool
+            # calls don't 400. See _openai_reasoning_effort_override.
+            compatible_kwargs["reasoning_effort"] = reasoning_effort
+        return ChatOpenAI(**compatible_kwargs)
 
     elif provider == LLMProvider.LM_STUDIO.value:
         from langchain_openai import ChatOpenAI
-        is_reasoning_model = config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration.get("apiKey") or "lm-studio",
-                base_url=configuration["endpoint"],
-                stream_usage=True,
-            )
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        lm_studio_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration.get("apiKey") or "lm-studio",
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        if reasoning_effort is not None:
+            lm_studio_kwargs["reasoning_effort"] = reasoning_effort
+        return ChatOpenAI(**lm_studio_kwargs)
 
     elif provider == LLMProvider.LITELLM_PROXY.value:
         from langchain_openai import ChatOpenAI
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration.get("apiKey"),
-                base_url=configuration["endpoint"],
-                stream_usage=True,
-            )
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        litellm_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration.get("apiKey"),
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        if reasoning_effort is not None:
+            litellm_kwargs["reasoning_effort"] = reasoning_effort
+        return ChatOpenAI(**litellm_kwargs)
 
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration["apiKey"],
-                base_url=OPENROUTER_BASE_URL,
-                stream_usage=True,
-            )
+        temperature, reasoning_effort = _resolve_openai_temperature_and_reasoning_effort(
+            model_name, configuration, is_reasoning_model
+        )
+        openrouter_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url=OPENROUTER_BASE_URL,
+            stream_usage=True,
+        )
+        if reasoning_effort is not None:
+            openrouter_kwargs["reasoning_effort"] = reasoning_effort
+        return ChatOpenAI(**openrouter_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI

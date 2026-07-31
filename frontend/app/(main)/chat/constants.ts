@@ -39,13 +39,16 @@ export const MODEL_DESCRIPTIONS: Record<string, string> = {
 
 
 /**
- * Query mode configurations for the mode selector panel.
+ * Query mode configuration — Agent is the only selectable mode; Internal
+ * Search and Web Search are no longer standalone modes, they're capability
+ * toggles inside Agent mode (see `AgentCapabilitiesBar`). This entry is kept
+ * (rather than removed) purely so `getQueryModeConfig('agent')` still has a
+ * color/icon source for the toolbar, and so legacy persisted `queryMode`
+ * values (from conversations created before this change) have a safe
+ * fallback via {@link getQueryModeConfig}.
  *
- * Each mode references CSS variables defined in globals.css
+ * The mode references CSS variables defined in globals.css
  * (--mode-{id}-bg, --mode-{id}-fg, --mode-{id}-icon).
- *
- * Disabled modes are shown in the panel but cannot be selected.
- * Enable them here once backend support is added.
  */
 export const QUERY_MODES: QueryModeConfig[] = [
   {
@@ -60,36 +63,6 @@ export const QUERY_MODES: QueryModeConfig[] = [
       fg: 'var(--mode-agent-fg)',
       icon: 'var(--mode-agent-icon)',
       toggle: 'var(--mode-agent-toggle)',
-    },
-    enabled: true,
-  },
-  {
-    id: 'chat',
-    label: 'Internal Search',
-    toolbarLabel: 'chat.queryModes.chat.toolbarLabel',
-    description: 'Search and reason across your internal knowledge base',
-    icon: 'chat-star',
-    iconType: 'component',
-    colors: {
-      bg: 'var(--mode-chat-bg)',
-      fg: 'var(--mode-chat-fg)',
-      icon: 'var(--mode-chat-icon)',
-      toggle: 'var(--mode-chat-active-toggle)',
-    },
-    enabled: true,
-  },
-  {
-    id: 'web-search',
-    label: 'Web Search',
-    toolbarLabel: 'chat.queryModes.web-search.toolbarLabel',
-    description: 'Live web search',
-    icon: 'language',
-    iconType: 'material',
-    colors: {
-      bg: 'var(--mode-web-search-bg)',
-      fg: 'var(--mode-web-search-fg)',
-      icon: 'var(--mode-web-search-icon)',
-      toggle: 'var(--mode-web-search-toggle)',
     },
     enabled: true,
   },

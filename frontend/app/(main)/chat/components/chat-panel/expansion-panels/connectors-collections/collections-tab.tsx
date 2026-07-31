@@ -159,6 +159,12 @@ interface CollectionsTabProps {
   restrictToKbIds?: string[] | null;
   /** Narrows which hub roots are shown — defaults to 'all'. */
   filterMode?: CollectionsTabFilterMode;
+  /**
+   * When provided, search is driven by this externally-controlled value instead
+   * of the component's own search input (which is hidden in that case). Lets a
+   * parent panel share one search box across Connectors/Collections/Actions.
+   */
+  controlledSearchQuery?: string;
 }
 
 /**
@@ -172,9 +178,12 @@ export function CollectionsTab({
   onSelectionChange,
   restrictToKbIds = null,
   filterMode = 'all',
+  controlledSearchQuery,
 }: CollectionsTabProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const isSearchControlled = controlledSearchQuery !== undefined;
+  const effectiveSearch = isSearchControlled ? controlledSearchQuery : searchQuery;
   const [collections, setCollections] = useState<CollectionSelectItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -331,20 +340,20 @@ export function CollectionsTab({
   // already the whole selectable unit, nothing to expand or merge in.
   const flatKbItems = useMemo(() => {
     if (filterMode !== 'collections') return [];
-    const query = searchQuery.toLowerCase();
+    const query = effectiveSearch.toLowerCase();
     return collections
       .filter(isCollectionAppRow)
       .filter((row) => !query || row.name.toLowerCase().includes(query))
       .map((row) => ({ id: row.id, name: row.name }));
-  }, [filterMode, collections, searchQuery]);
+  }, [filterMode, collections, effectiveSearch]);
 
   const groupedCollections = useMemo(() => {
-    // In 'collections' mode we render flatKbItems instead of this grouped list
+    // In 'collections' mode we render the flat list above instead.
     if (filterMode === 'collections') return [];
 
-    let filtered = searchQuery
+    let filtered = effectiveSearch
       ? collections.filter((c) =>
-          c.name.toLowerCase().includes(searchQuery.toLowerCase())
+          c.name.toLowerCase().includes(effectiveSearch.toLowerCase())
         )
       : collections;
 
@@ -355,7 +364,77 @@ export function CollectionsTab({
 
     const groups = groupByTime(filtered, (c) => c.updatedAt);
     return getNonEmptyGroups(groups, (c) => c.updatedAt);
-  }, [collections, searchQuery, filterMode]);
+  }, [collections, effectiveSearch, filterMode]);
+
+  /** Shared row renderer for a hub root (connector app or Collection/KB). */
+  const renderRootRow = (col: CollectionSelectItem) => {
+    const isCollection = isCollectionAppRow(col);
+    const rowChecked = isCollection ? kb.includes(col.id) : apps.includes(col.id);
+
+    return (
+      <Flex key={col.id} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
+        <Flex
+          align="center"
+          justify="between"
+          gap="1"
+          style={{
+            ...OLIVE_ROW,
+            cursor: 'default',
+          }}
+        >
+          <Flex
+            align="center"
+            gap="2"
+            style={{ minWidth: 0, flex: 1 }}
+            onClick={() => toggleRoot(col.id)}
+            role="presentation"
+          >
+            <span style={CHECKBOX_ALIGN}>
+              <Checkbox
+                size="1"
+                variant="classic"
+                checked={rowChecked}
+                onCheckedChange={() => toggleRoot(col.id)}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </span>
+            <span
+              style={{
+                display: 'inline-flex',
+                flexShrink: 0,
+                alignItems: 'center',
+                lineHeight: 0,
+              }}
+              aria-hidden
+            >
+              {isCollection ? (
+                <CollectionLeadingIcon
+                  sourceType={col.connector?.trim() || col.subType?.trim() || 'KB'}
+                  size={20}
+                />
+              ) : (
+                <KbNodeNameIcon
+                  isKnowledgeHub
+                  nodeType={col.nodeType as NodeType}
+                  connector={col.connector?.trim() || col.subType?.trim() || null}
+                  name={col.name}
+                  size={20}
+                />
+              )}
+            </span>
+            <Text
+              size="2"
+              weight="medium"
+              truncate
+              style={{ color: 'var(--slate-11)', cursor: 'pointer' }}
+            >
+              {col.name}
+            </Text>
+          </Flex>
+        </Flex>
+      </Flex>
+    );
+  };
 
   /** Treat collection/record-group picks (`kb`) as scoped knowledge — same bar as connectors. */
   const showDefaultConnectorHint =
@@ -370,45 +449,47 @@ export function CollectionsTab({
       gap="2"
       style={{ flex: 1, minWidth: 0, width: '100%', overflow: 'hidden' }}
     >
-      <Flex align="center" gap="1" style={{ width: '100%' }}>
-        <Flex
-          align="center"
-          gap="2"
-          style={{
-            flex: 1,
-            height: 'var(--space-6)',
-            border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
-            borderRadius: 'var(--radius-2)',
-            paddingLeft: 'var(--space-2)',
-            paddingRight: 'var(--space-2)',
-            backgroundColor: 'var(--slate-1)',
-          }}
-        >
-          <MaterialIcon
-            name="search"
-            size={ICON_SIZES.PRIMARY}
-            color="var(--slate-9)"
-          />
-          <input
-            type="text"
-            className="collections-search-input"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            placeholder={t('chat.searchCollections')}
+      {!isSearchControlled && (
+        <Flex align="center" gap="1" style={{ width: '100%' }}>
+          <Flex
+            align="center"
+            gap="2"
             style={{
               flex: 1,
-              border: 'none',
-              outline: 'none',
-              backgroundColor: 'transparent',
-              color: 'var(--slate-12)',
-              fontSize: 'var(--font-size-2)',
-              fontFamily: 'inherit',
+              height: 'var(--space-6)',
+              border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
+              borderRadius: 'var(--radius-2)',
+              paddingLeft: 'var(--space-2)',
+              paddingRight: 'var(--space-2)',
+              backgroundColor: 'var(--slate-1)',
             }}
-          />
+          >
+            <MaterialIcon
+              name="search"
+              size={ICON_SIZES.PRIMARY}
+              color="var(--slate-9)"
+            />
+            <input
+              type="text"
+              className="collections-search-input"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder={t('chat.searchCollections')}
+              style={{
+                flex: 1,
+                border: 'none',
+                outline: 'none',
+                backgroundColor: 'transparent',
+                color: 'var(--slate-12)',
+                fontSize: 'var(--font-size-2)',
+                fontFamily: 'inherit',
+              }}
+            />
+          </Flex>
         </Flex>
-      </Flex>
+      )}
 
       {showDefaultConnectorHint && (
         <Text
@@ -454,7 +535,7 @@ export function CollectionsTab({
           flatKbItems.length === 0 ? (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
               <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
+                {effectiveSearch ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
               </Text>
             </Flex>
           ) : (
@@ -476,7 +557,7 @@ export function CollectionsTab({
         {filterMode !== 'collections' && !isLoading && !hasError && collections.length === 0 && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
             <Text size="2" style={{ color: 'var(--slate-9)' }}>
-              {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
+              {effectiveSearch ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
             </Text>
           </Flex>
         )}
@@ -506,74 +587,7 @@ export function CollectionsTab({
                 </span>
               </Flex>
 
-              {items.map((col) => {
-                const isCollection = isCollectionAppRow(col);
-                const rowChecked = isCollection ? kb.includes(col.id) : apps.includes(col.id);
-
-                return (
-                  <Flex key={col.id} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
-                    <Flex
-                      align="center"
-                      justify="between"
-                      gap="1"
-                      style={{
-                        ...OLIVE_ROW,
-                        cursor: 'default',
-                      }}
-                    >
-                      <Flex
-                        align="center"
-                        gap="2"
-                        style={{ minWidth: 0, flex: 1 }}
-                        onClick={() => toggleRoot(col.id)}
-                        role="presentation"
-                      >
-                        <span style={CHECKBOX_ALIGN}>
-                          <Checkbox
-                            size="1"
-                            variant="classic"
-                            checked={rowChecked}
-                            onCheckedChange={() => toggleRoot(col.id)}
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                        </span>
-                        <span
-                          style={{
-                            display: 'inline-flex',
-                            flexShrink: 0,
-                            alignItems: 'center',
-                            lineHeight: 0,
-                          }}
-                          aria-hidden
-                        >
-                          {isCollection ? (
-                            <CollectionLeadingIcon
-                              sourceType={col.connector?.trim() || col.subType?.trim() || 'KB'}
-                              size={20}
-                            />
-                          ) : (
-                            <KbNodeNameIcon
-                              isKnowledgeHub
-                              nodeType={col.nodeType as NodeType}
-                              connector={col.connector?.trim() || col.subType?.trim() || null}
-                              name={col.name}
-                              size={20}
-                            />
-                          )}
-                        </span>
-                        <Text
-                          size="2"
-                          weight="medium"
-                          truncate
-                          style={{ color: 'var(--slate-11)', cursor: 'pointer' }}
-                        >
-                          {col.name}
-                        </Text>
-                      </Flex>
-                    </Flex>
-                  </Flex>
-                );
-              })}
+              {items.map(renderRootRow)}
             </Flex>
           ))}
 

@@ -164,28 +164,46 @@ test.describe('Chat — page structure', () => {
       .first();
     await expect(appsIcon).toBeVisible({ timeout: 5_000 });
   });
+
+  test('clicking the apps button opens the resources panel with Connectors, Collections and Actions tabs', async ({ page }) => {
+    const appsBtn = page
+      .locator('button')
+      .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'apps' }) })
+      .first();
+    await appsBtn.click();
+    await expect(page.getByText('Connectors', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText('Collections', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText('Actions', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+  });
 });
 
-test.describe('Chat — mode switcher', () => {
+test.describe('Chat — agent capability toggles', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
   });
 
-  test('chat / search toggle buttons are present', async ({ page }) => {
-    // ModeSwitcher renders Flex (div) elements, not <button> elements.
-    // The left pill shows the active query mode toolbar label; in en-US the
-    // default "chat" mode translates to "Internal Search". Other possible
-    // visible labels are "Agent" and "Web". The right pill shows "Search"
-    // text only when search mode is active (icon-only in chat mode).
-    const knownLabels = ['Internal Search', 'Agent', 'Web', 'Search'];
-    let anyVisible = false;
-    for (const label of knownLabels) {
-      anyVisible = await page.getByText(label, { exact: true }).first().isVisible().catch(() => false);
-      if (anyVisible) break;
-    }
-    expect(anyVisible).toBeTruthy();
+  test('Indexed Data Search and Web Search toggle switches are visible in the toolbar', async ({ page }) => {
+    // Agent is now the only mode — the old "Different Modes of Query" selector
+    // and plain "Agent" text pill are gone; these two toggles are always
+    // visible inline in the toolbar instead.
+    await expect(page.getByText('Indexed Data Search', { exact: true }).first()).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(page.getByText('Web Search', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+  });
+
+  test('the removed query-mode selector is not reachable', async ({ page }) => {
+    await expect(page.getByText('Different Modes of Query')).toHaveCount(0);
+    await expect(page.getByText('Internal Search', { exact: true })).toHaveCount(0);
+  });
+
+  test('clicking the Indexed Data Search toggle flips its checked state', async ({ page }) => {
+    const switchBtn = page.locator('button[role="switch"]').first();
+    await expect(switchBtn).toHaveAttribute('aria-checked', 'true');
+    await page.getByText('Indexed Data Search', { exact: true }).first().click();
+    await expect(switchBtn).toHaveAttribute('aria-checked', 'false');
   });
 });
 

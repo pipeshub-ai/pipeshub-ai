@@ -21,9 +21,16 @@ export interface AgentCapabilitiesBarProps {
    * `false` = scoped agent does not have this capability; toggle is disabled.
    */
   agentHasWebSearch?: boolean;
+  /**
+   * `panel` (default) — header row inside the expanded resources panel: shows the
+   * "Capabilities" label and a bottom divider.
+   * `toolbar` — compact inline row for the main chat input toolbar: no label,
+   * no divider, tighter gap so it sits next to other toolbar controls.
+   */
+  variant?: 'panel' | 'toolbar';
 }
 
-/** Thin horizontal bar with Internal Search / Web Search toggles for agent mode. */
+/** Thin horizontal bar with Indexed Data Search / Web Search toggles for agent mode. */
 export function AgentCapabilitiesBar({
   internalSearch,
   webSearch,
@@ -31,8 +38,10 @@ export function AgentCapabilitiesBar({
   onToggleWebSearch,
   agentHasInternalSearch,
   agentHasWebSearch,
+  variant = 'panel',
 }: AgentCapabilitiesBarProps) {
   const { t } = useTranslation();
+  const isToolbar = variant === 'toolbar';
 
   const internalSearchDisabled = agentHasInternalSearch === false;
   const webSearchDisabled = agentHasWebSearch === false;
@@ -44,19 +53,25 @@ export function AgentCapabilitiesBar({
   return (
     <Flex
       align="center"
-      gap="4"
-      style={{
-        flexShrink: 0,
-        paddingBottom: 'var(--space-2)',
-        borderBottom: '1px solid var(--gray-4)',
-      }}
+      gap={isToolbar ? '3' : '4'}
+      style={
+        isToolbar
+          ? { flexShrink: 0 }
+          : {
+              flexShrink: 0,
+              paddingBottom: 'var(--space-2)',
+              borderBottom: '1px solid var(--gray-4)',
+            }
+      }
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--gray-10)', whiteSpace: 'nowrap' }}>
-        {t('chat.agentCapabilities.label', { defaultValue: 'Capabilities' })}
-      </Text>
+      {!isToolbar && (
+        <Text size="1" weight="medium" style={{ color: 'var(--gray-10)', whiteSpace: 'nowrap' }}>
+          {t('chat.agentCapabilities.label', { defaultValue: 'Capabilities' })}
+        </Text>
+      )}
 
-      <Flex align="center" gap="3" style={{ flexWrap: 'wrap' }}>
-        {/* Internal Search toggle */}
+      <Flex align="center" gap="3" style={{ flexWrap: isToolbar ? 'nowrap' : 'wrap' }}>
+        {/* Indexed Data Search toggle */}
         <Tooltip
           content={
             internalSearchDisabled
@@ -85,7 +100,7 @@ export function AgentCapabilitiesBar({
                 if (!internalSearchDisabled) onToggleInternalSearch(checked);
               }}
               aria-label={t('chat.agentCapabilities.internalSearchAria', {
-                defaultValue: 'Toggle internal search',
+                defaultValue: 'Toggle indexed data search',
               })}
             />
             <Text
@@ -96,7 +111,7 @@ export function AgentCapabilitiesBar({
                 whiteSpace: 'nowrap',
               }}
             >
-              {t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal Search' })}
+              {t('chat.agentCapabilities.internalSearch', { defaultValue: 'Indexed Data Search' })}
             </Text>
           </Flex>
         </Tooltip>

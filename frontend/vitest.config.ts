@@ -36,6 +36,12 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      // Mirror tsconfig.json's more specific path aliases first — Vite's
+      // resolver matches object keys in insertion order, so these need to
+      // win over the generic '@' -> root fallback below.
+      '@/chat': path.resolve(__dirname, 'app/(main)/chat'),
+      '@/knowledge-base': path.resolve(__dirname, 'app/(main)/knowledge-base'),
+      '@/workspace': path.resolve(__dirname, 'app/(main)/workspace'),
       '@': path.resolve(__dirname, '.'),
     },
   },

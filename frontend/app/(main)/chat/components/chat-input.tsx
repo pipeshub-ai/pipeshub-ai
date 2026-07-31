@@ -10,23 +10,22 @@ import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
 import { ChatInputOverlayPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-overlay-panel';
-import { QueryModePanel } from '@/chat/components/chat-panel/expansion-panels/query-mode-panel';
 import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/connectors-collections-panel';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
+import { AgentCapabilitiesBar } from '@/chat/components/chat-panel/expansion-panels/agent-capabilities-bar';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
-  ModeSwitcher,
   AgentStrategyModeSwitcher,
   AgentStrategyModePanel,
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
-import { MobileQueryModesSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-modes-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useAgentCapabilitiesForContext } from '@/chat/hooks/use-agent-capabilities';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -174,7 +173,6 @@ export function ChatInput({
   const [isPanelDragging, setIsPanelDragging] = useState(false);
   const [isExpanded, setIsExpanded] = useState(variant === 'full');
   const [isAnimatingIn, setIsAnimatingIn] = useState(false);
-  const [isModePanelOpen, setIsModePanelOpen] = useState(false);
   const [isAgentStrategyPanelOpen, setIsAgentStrategyPanelOpen] = useState(false);
   const [isCollectionsPanelOpen, setIsCollectionsPanelOpen] = useState(false);
   /** Agent chat: Connectors / Collections / Actions (Figma agent input). */
@@ -183,7 +181,6 @@ export function ChatInput({
   const [isModelButtonHovered, setIsModelButtonHovered] = useState(false);
   const [isAddFileButtonHovered, setIsAddFileButtonHovered] = useState(false);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
-  const [isMobileModesOpen, setIsMobileModesOpen] = useState(false);
   const [isCompactToolbar, setIsCompactToolbar] = useState(false);
   const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -243,7 +240,6 @@ export function ChatInput({
   // Read all chat settings directly from the shared store
   const settings = useChatStore((s) => s.settings);
   const setMode = useChatStore((s) => s.setMode);
-  const setQueryMode = useChatStore((s) => s.setQueryMode);
   const setAgentStrategy = useChatStore((s) => s.setAgentStrategy);
   const setFilters = useChatStore((s) => s.setFilters);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
@@ -320,7 +316,7 @@ export function ChatInput({
   /** True when universal agent tool data is loading (disable send while loading). */
   const isUniversalAgentLoading =
     !isAgentChat && settings.queryMode === 'agent' && universalAgentToolsLoading;
-  const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('chat')!;
+  const activeQueryConfig = getQueryModeConfig(settings.queryMode) ?? getQueryModeConfig('agent')!;
   /** Internal-search / chat modes: `settings.filters` drives the connectors & collections picker. */
   const hubFilterQueryMode =
     !isAgentChat && settings.queryMode !== 'agent' && settings.queryMode !== 'web-search';
@@ -330,13 +326,15 @@ export function ChatInput({
   const modeColors = activeQueryConfig.colors;
   const agentQueryToolbarConfig = getQueryModeConfig('agent')!;
   const agentStrategyToolbarColors = agentQueryToolbarConfig.colors;
-  /** Query-mode, agent-strategy, or agent resources panel — chrome + outside click. */
+  /** Agent-strategy or agent resources panel — chrome + outside click (assistant has no mode panel anymore). */
   const modeChromeOpen = isAgentChat
     ? isAgentStrategyPanelOpen || isAgentResourcesPanelOpen
-    : isModePanelOpen;
+    : false;
+
+  /** Indexed Data Search / Web Search toggle state — shared source of truth with the resources panels. */
+  const capabilities = useAgentCapabilitiesForContext(isAgentChat, agentId);
 
   const dismissExpansionPanels = useCallback(() => {
-    setIsModePanelOpen(false);
     setIsAgentStrategyPanelOpen(false);
     setIsCollectionsPanelOpen(false);
     setIsAgentResourcesPanelOpen(false);
@@ -348,6 +346,7 @@ export function ChatInput({
   useEffect(() => {
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
+
 
   // Build selected collections from store (roots → apps API; record groups → kb API).
   // Includes connector metadata so pills show the right icon per source type.
@@ -454,7 +453,7 @@ export function ChatInput({
     [isAgentChat, agentKnowledgeScope, agentKnowledgeDefaults, setAgentKnowledgeScope, settings.filters, setFilters]
   );
 
-  // Toolbar icon color follows the active query mode so it stays consistent with ModeSwitcher.
+  // Toolbar icon color follows the active query mode config.
   const activeIconColor = isSearchMode
     ? 'var(--mode-search-icon)'
     : modeColors.icon;
@@ -1016,7 +1015,6 @@ export function ChatInput({
     const next = !showUploadArea;
     if (next) {
       // Close all other panels before opening the upload area
-      setIsModePanelOpen(false);
       setIsAgentStrategyPanelOpen(false);
       setIsCollectionsPanelOpen(false);
       setIsAgentResourcesPanelOpen(false);
@@ -1097,9 +1095,7 @@ export function ChatInput({
   }, [isExpanded, variant]);
 
   useEffect(() => {
-    if (isAgentChat) {
-      setIsModePanelOpen(false);
-    } else {
+    if (!isAgentChat) {
       setIsAgentStrategyPanelOpen(false);
       setIsAgentResourcesPanelOpen(false);
     }
@@ -1130,20 +1126,8 @@ export function ChatInput({
           padding: 'var(--space-1)',
         }}
       >
-        {/* Single row: mode-switcher + input + send */}
+        {/* Single row: input + send */}
         <Flex align="center" justify="between" gap="3">
-          {!isAgentChat && (
-            <ModeSwitcher
-              activeQueryConfig={activeQueryConfig}
-              modeColors={modeColors}
-              isSearchMode={isSearchMode}
-              isModePanelOpen={false}
-              showFullUI={false}
-              onLeftClick={handleExpand}
-              onRightClick={handleExpand}
-            />
-          )}
-
           {/* Input field */}
           <input
             type="text"
@@ -1595,24 +1579,6 @@ export function ChatInput({
             }}
           />
         </ChatInputExpansionPanel>
-      ) : isModePanelOpen && !isAgentChat ? (
-        <ChatInputExpansionPanel
-          open={isModePanelOpen}
-          onClose={() => setIsModePanelOpen(false)}
-          minHeight='0'
-          height='fit-content'
-        >
-          <QueryModePanel
-            activeMode={settings.queryMode}
-            onSelect={(queryMode) => {
-              setQueryMode(queryMode);
-              if (isSearchMode) {
-                setMode('chat');
-              }
-              setIsModePanelOpen(false);
-            }}
-          />
-        </ChatInputExpansionPanel>
       ) : isModelPanelOpen ? (
         <ChatInputExpansionPanel
           open={isModelPanelOpen}
@@ -1736,60 +1702,64 @@ export function ChatInput({
 
       {/* Bottom controls */}
       <Flex align="center" justify="between">
-        {/* Left side — query ModeSwitcher or agent badge. */}
-        {isAgentChat ? (
+        {/* Left side — Indexed Data Search / Web Search toggles (Agent is the only mode now). */}
+        {isSearchMode ? (
+          /* Keyword-search UI is active — the capability toggles don't apply; show a way back to chat. */
           <Flex
             align="center"
             gap="2"
+            onClick={() => {
+              setMode('chat');
+              useChatStore.getState().clearSearchResults();
+            }}
             style={{
               height: '32px',
               borderRadius: 'var(--radius-2)',
-              background: 'var(--accent-3)',
+              background: 'var(--mode-search-bg)',
               paddingLeft: 'var(--space-3)',
               paddingRight: 'var(--space-3)',
+              cursor: 'pointer',
               flexShrink: 0,
             }}
           >
-            <MaterialIcon name="bolt" size={ICON_SIZES.MINIMAL} color="var(--accent-11)" />
-            <Text size="2" weight="medium" style={{ color: 'var(--accent-11)', whiteSpace: 'nowrap' }}>
-              {t('chat.queryModes.agent.toolbarLabel', { defaultValue: 'Agent' })}
-            </Text>
+            <MaterialIcon name="arrow_back" size={ICON_SIZES.MINIMAL} color="var(--mode-search-fg)" />
+            {!isMobile && (
+              <Text size="2" weight="medium" style={{ color: 'var(--mode-search-fg)', whiteSpace: 'nowrap' }}>
+                {t('form.search')}
+              </Text>
+            )}
           </Flex>
         ) : (
-          <Box style={isRegenerateMode ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
-            <ModeSwitcher
-              activeQueryConfig={activeQueryConfig}
-              modeColors={modeColors}
-              isSearchMode={isSearchMode}
-              isModePanelOpen={isModePanelOpen}
-              showFullUI={showFullUI}
-              onLeftClick={
-                isSearchMode
-                  ? () => {
-                      setMode('chat');
-                      useChatStore.getState().clearSearchResults();
-                    }
-                  : isMobile
-                    ? () => setIsMobileModesOpen(true)
-                    : () => {
-                        setIsModePanelOpen((prev) => !prev);
-                        setIsAgentStrategyPanelOpen(false);
-                        setIsCollectionsPanelOpen(false);
-                        setIsAgentResourcesPanelOpen(false);
-                        setShowUploadArea(false);
-                      }
-              }
-              onRightClick={
-                isSearchMode
-                  ? () => {}
-                  : () => {
-                      useCommandStore.getState().dispatch('newChat');
-                      setMode('search');
-                      setIsModePanelOpen(false);
-                    }
-              }
+          <Flex
+            align="center"
+            gap="3"
+            style={isRegenerateMode ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
+          >
+            <AgentCapabilitiesBar
+              variant="toolbar"
+              internalSearch={capabilities.internalSearch}
+              webSearch={capabilities.webSearch}
+              onToggleInternalSearch={capabilities.setInternalSearch}
+              onToggleWebSearch={capabilities.setWebSearch}
+              agentHasInternalSearch={capabilities.agentHasInternalSearch ? undefined : false}
+              agentHasWebSearch={capabilities.agentHasWebSearch ? undefined : false}
             />
-          </Box>
+            {!isAgentChat && (
+              <IconButton
+                variant="ghost"
+                color="gray"
+                size="1"
+                aria-label={t('form.search')}
+                onClick={() => {
+                  useCommandStore.getState().dispatch('newChat');
+                  setMode('search');
+                }}
+                style={{ margin: 0, cursor: 'pointer', flexShrink: 0 }}
+              >
+                <MaterialIcon name="search" size={ICON_SIZES.SECONDARY} color={activeIconColor} />
+              </IconButton>
+            )}
+          </Flex>
         )}
 
         {/* Right side - Controls */}
@@ -2008,7 +1978,6 @@ export function ChatInput({
                           if (prev) setExpansionViewMode('inline');
                           return !prev;
                         });
-                        setIsModePanelOpen(false);
                         setIsAgentStrategyPanelOpen(false);
                         setIsModelPanelOpen(false);
                         setShowUploadArea(false);
@@ -2032,7 +2001,6 @@ export function ChatInput({
                           if (prev) setExpansionViewMode('inline');
                           return !prev;
                         });
-                        setIsModePanelOpen(false);
                         setIsAgentStrategyPanelOpen(false);
                         setIsCollectionsPanelOpen(false);
                         setIsModelPanelOpen(false);
@@ -2204,13 +2172,6 @@ export function ChatInput({
       onOpenChange={setIsMobileOptionsOpen}
       isAgentChat={isAgentChat}
       agentId={agentId}
-    />
-
-    {/* Mobile query modes sheet — mode switcher → sheet flow */}
-    <MobileQueryModesSheet
-      open={isMobileModesOpen}
-      onOpenChange={setIsMobileModesOpen}
-      agentChat={isAgentChat}
     />
 
     {/* Overlay panel — collections (assistant) or agent resources (overlay mode) */}

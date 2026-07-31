@@ -48,7 +48,8 @@ export function ChatInputWrapper() {
 
     if (lastEffectiveAgentIdForQueryMode !== null) {
       lastEffectiveAgentIdForQueryMode = null;
-      useChatStore.getState().setQueryMode('chat');
+      // Agent is the only mode now — no more "Internal Search" fallback to reset to.
+      useChatStore.getState().setQueryMode('agent');
     }
   }, [effectiveAgentId]);
 

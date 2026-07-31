@@ -50,6 +50,29 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
   }
 }
 
+// ── localStorage helpers for the selected-model-per-context map ──────
+
+const LS_SELECTED_MODELS_KEY = 'pipeshub-chat-selected-models';
+
+function lsGetSelectedModels(): Record<string, import('./types').ModelOverride | null> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(LS_SELECTED_MODELS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, import('./types').ModelOverride | null>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function lsSetSelectedModels(models: Record<string, import('./types').ModelOverride | null>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(LS_SELECTED_MODELS_KEY, JSON.stringify(models));
+  } catch {
+    // Storage unavailable — silently ignore
+  }
+}
+
 /**
  * File preview state for citation preview in chat.
  */
@@ -596,14 +619,20 @@ const initialState = {
 
   settings: {
     mode: 'chat' as ChatMode,
-    queryMode: 'chat' as QueryMode,
+    // Agent is the only selectable mode now (see QUERY_MODES in constants.ts).
+    // 'chat' only still exists on the QueryMode type for mapping legacy
+    // persisted conversations (see apply-conversation-model-info.ts) — it must
+    // never be the live default, or the toolbar falls back to the old
+    // hub-filter chrome (`hubFilterQueryMode` in chat-input.tsx) instead of
+    // the Connectors/Collections/Actions resources panel.
+    queryMode: 'agent' as QueryMode,
     agentStrategy: 'quick' as AgentStrategy,
     filters: {
       apps: [] as string[],
       kb: [] as string[],
     },
     agentCapabilities: lsGetAgentCapabilities(),
-    selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
+    selectedModels: lsGetSelectedModels(),
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
   },
@@ -854,6 +883,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentContextAccess: null,
         agentDeprecatedToolNames: [],
         isAgentsSidebarOpen: false,
+        // Seed this agent's capability toggles from localStorage the first time it's
+        // visited this session — otherwise the selector falls back to hardcoded
+        // defaults instead of the user's saved preference.
+        scopedAgentCapabilities: state.scopedAgentCapabilities[id]
+          ? state.scopedAgentCapabilities
+          : { ...state.scopedAgentCapabilities, [id]: lsGetAgentCapabilities(id) },
       };
     }),
 
@@ -1162,12 +1197,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     settings: { ...state.settings, filters },
   })),
 
-  setSelectedModelForCtx: (ctxKey, model) => set((state) => ({
-    settings: {
-      ...state.settings,
-      selectedModels: { ...state.settings.selectedModels, [ctxKey]: model },
-    },
-  })),
+  setSelectedModelForCtx: (ctxKey, model) => set((state) => {
+    const next = { ...state.settings.selectedModels, [ctxKey]: model };
+    lsSetSelectedModels(next);
+    return {
+      settings: { ...state.settings, selectedModels: next },
+    };
+  }),
 
   setDefaultModelForCtx: (ctxKey, model) => set((state) => ({
     settings: {

@@ -139,8 +139,13 @@ function applyModeAndStrategy(
 ): void {
   const mode = rawMode === 'web_search' ? 'web-search' : rawMode;
 
+  // Legacy conversations created before Internal Search / Web Search were
+  // folded into Agent-mode capability toggles. Restore the equivalent Agent
+  // state instead of the now-removed standalone modes.
   if (mode === 'web-search') {
-    store.setQueryMode('web-search');
+    store.setQueryMode('agent');
+    store.setAgentCapabilities({ internalSearch: false, webSearch: true });
+    store.setMode('chat');
     return;
   }
 
@@ -182,7 +187,11 @@ function applyModeAndStrategy(
     return;
   }
 
-  store.setQueryMode('chat');
+  // Legacy "Internal Search" (or any other unrecognized) mode — restore as
+  // Agent with web search off, since Internal Search only ever searched
+  // indexed/connected knowledge sources.
+  store.setQueryMode('agent');
+  store.setAgentCapabilities({ internalSearch: true, webSearch: false });
   store.setMode('chat');
 }
 

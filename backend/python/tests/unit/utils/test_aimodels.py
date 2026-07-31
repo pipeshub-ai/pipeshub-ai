@@ -12,11 +12,53 @@ from app.utils.aimodels import (
     EmbeddingProvider,
     LLMProvider,
     _get_anthropic_max_tokens,
+    _gpt5_minor_version,
+    _openai_reasoning_effort_override,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
     is_multimodal_llm,
 )
+
+
+# ---------------------------------------------------------------------------
+# _gpt5_minor_version / _openai_reasoning_effort_override
+# ---------------------------------------------------------------------------
+class TestOpenAIReasoningEffortOverride:
+    """Tests for the GPT-5.4+ tools+reasoning_effort Chat Completions guard."""
+
+    @pytest.mark.parametrize(
+        "model_name,expected",
+        [
+            ("gpt-5", 0),
+            ("gpt-5-mini", 0),
+            ("gpt-5.3", 3),
+            ("gpt-5.4", 4),
+            ("gpt-5.4-2026-03-05", 4),
+            ("gpt-5.6-luna", 6),
+            ("openai/gpt-5.6-terra", 6),
+            ("azure/openai-responses/gpt-5.6-sol@eastus2", 6),
+        ],
+    )
+    def test_gpt5_minor_version_parses(self, model_name, expected):
+        assert _gpt5_minor_version(model_name) == expected
+
+    @pytest.mark.parametrize("model_name", [None, "", "o1", "o3", "claude-4.5-sonnet"])
+    def test_gpt5_minor_version_non_gpt5_returns_none(self, model_name):
+        assert _gpt5_minor_version(model_name) is None
+
+    @pytest.mark.parametrize(
+        "model_name", ["gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.3", "o1", "o3", None]
+    )
+    def test_no_override_below_5_4(self, model_name):
+        assert _openai_reasoning_effort_override(model_name) is None
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+    )
+    def test_override_none_from_5_4_onward(self, model_name):
+        assert _openai_reasoning_effort_override(model_name) == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +525,50 @@ class TestGetGeneratorModel:
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["temperature"] == 1
 
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_gpt5_pre_5_4_keeps_reasoning_with_tools(self, mock_cls):
+        """gpt-5, gpt-5.1-5.3 have no tools+reasoning restriction on Chat
+        Completions, so no reasoning_effort override should be sent."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.3")
+        get_generator_model(LLMProvider.OPENAI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 1
+        assert "reasoning_effort" not in call_kwargs
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_gpt5_4_pins_reasoning_effort_none(self, mock_cls):
+        """gpt-5.4+ 400s when function tools are combined with a non-'none'
+        reasoning effort on /v1/chat/completions, so we pin 'none' and allow
+        a custom temperature again."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.4")
+        get_generator_model(LLMProvider.OPENAI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "none"
+        assert call_kwargs["temperature"] == 0.2
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_gpt5_6_luna_pins_reasoning_effort_none(self, mock_cls):
+        """Named GPT-5.6 tiers (sol/terra/luna) hit the same restriction."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.6-luna")
+        get_generator_model(LLMProvider.OPENAI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "none"
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_non_gpt5_reasoning_flag_unaffected(self, mock_cls):
+        """o-series models flagged via isReasoning aren't GPT-5.x, so they
+        keep the old temperature=1 behavior with no reasoning_effort override."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("o3")
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.OPENAI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 1
+        assert "reasoning_effort" not in call_kwargs
+
     @patch("langchain_xai.ChatXAI")
     def test_xai(self, mock_cls):
         mock_cls.return_value = MagicMock()
@@ -506,6 +592,31 @@ class TestGetGeneratorModel:
         result = get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config)
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_compatible_requesty_gpt5_6_pins_reasoning_effort_none(self, mock_cls):
+        """Requesty (and similar gateways) apply their own reasoning default
+        for GPT-5.4+ models and route through /v1/chat/completions, so a
+        function-calling agent must pin reasoning_effort='none' or it 400s:
+        'Function tools with reasoning_effort are not supported for
+        gpt-5.6-luna in /v1/chat/completions. To use function tools, use
+        /v1/responses or set reasoning_effort to 'none'.'"""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("openai/gpt-5.6-luna")
+        config["configuration"]["endpoint"] = "https://router.requesty.ai/v1"
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "none"
+        assert call_kwargs["base_url"] == "https://router.requesty.ai/v1"
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_compatible_old_reasoning_model_no_override(self, mock_cls):
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("openai/gpt-5-mini")
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 1
+        assert "reasoning_effort" not in call_kwargs
 
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax(self, mock_cls):
