@@ -4,6 +4,19 @@ import { MailController } from '../controller/mail.controller';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import {
+  IMessageConsumer,
+  IMessageProducer,
+} from '../../../libs/types/messaging.types';
+import {
+  createMailMessageConsumer,
+  createMessageProducer,
+  resolveMessageBrokerConfig,
+} from '../../../libs/services/message-broker.factory';
+import { MailSenderService } from '../services/mail.sender.service';
+import { MailConsumer } from '../services/mail.consumer';
+import { MailProducer } from '../services/mail.producer';
+import { NotificationProducer } from '../../notification/service/notification.producer';
 
 const loggerConfig = {
   service: 'Mail Service',
@@ -30,8 +43,41 @@ export class MailServiceContainer {
     appConfig: AppConfig,
   ): Promise<void> {
     try {
+      // Producer for failure notifications, consumer for mail jobs. The mail
+      // topic gets its own consumer group so it tracks offsets independently
+      // of the notification consumer.
+      const messageProducer = createMessageProducer(
+        resolveMessageBrokerConfig(appConfig),
+        container.get('Logger'),
+      );
+      await messageProducer.connect();
+      container
+        .bind<IMessageProducer>('MessageProducer')
+        .toConstantValue(messageProducer);
+
+      const messageConsumer: IMessageConsumer = createMailMessageConsumer(
+        appConfig,
+        container.get('Logger'),
+      );
+      container
+        .bind<IMessageConsumer>('MessageConsumer')
+        .toConstantValue(messageConsumer);
+
+      container
+        .bind<() => AppConfig>('AppConfigProvider')
+        .toConstantValue(() => container.get<AppConfig>('AppConfig'));
+
+      container.bind(MailSenderService).toSelf().inSingletonScope();
+      container.bind(MailProducer).toSelf().inSingletonScope();
+      container.bind(NotificationProducer).toSelf().inSingletonScope();
+      container.bind(MailConsumer).toSelf().inSingletonScope();
+
       container.bind<MailController>('MailController').toDynamicValue(() => {
-        return new MailController(appConfig, container.get('Logger'));
+        return new MailController(
+          appConfig,
+          container.get('Logger'),
+          container.get<MailSenderService>(MailSenderService),
+        );
       });
       const jwtSecret = appConfig.jwtSecret;
       const scopedJwtSecret = appConfig.scopedJwtSecret;
@@ -61,6 +107,23 @@ export class MailServiceContainer {
 
   static async dispose(): Promise<void> {
     if (this.instance) {
+      const c = this.instance;
+      try {
+        if (c.isBound('MessageConsumer')) {
+          const consumer = c.get<IMessageConsumer>('MessageConsumer');
+          if (consumer.isConnected()) {
+            await consumer.disconnect();
+          }
+        }
+        if (c.isBound('MessageProducer')) {
+          const producer = c.get<IMessageProducer>('MessageProducer');
+          if (producer.isConnected()) {
+            await producer.disconnect();
+          }
+        }
+      } catch {
+        // ignore disconnect errors during shutdown
+      }
       this.instance = null!;
       this.logger.info('Mail Services Successfully disconnected');
     }

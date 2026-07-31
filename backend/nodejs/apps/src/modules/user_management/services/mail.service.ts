@@ -1,8 +1,10 @@
-import axios from 'axios';
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { MailProducer } from '../../mail/services/mail.producer';
+import { MailEventType } from '../../mail/types/mail-event.types';
+import { MailBody } from '../../mail/middlewares/types';
 interface SendMailParams {
   emailTemplateType: string;
   initiator: { orgId?: string; jwtAuthToken: string };
@@ -22,8 +24,11 @@ interface SendMailResponse {
 @injectable()
 export class MailService {
   constructor(
-    @inject('AppConfig') private userConfig: AppConfig,
+    // Retained so existing call sites keep their signature; delivery config
+    // now lives with the consumer, not this publisher.
+    @inject('AppConfig') _userConfig: AppConfig,
     @inject('Logger') private logger: Logger,
+    @inject(MailProducer) private readonly mailProducer: MailProducer,
   ) {}
 
   async sendMail({
@@ -44,7 +49,7 @@ export class MailService {
       if (!emailTemplateType)
         throw new BadRequestError('emailTemplateType is empty');
 
-      const data: Record<string, any> = {
+      const data: MailBody = {
         productName: 'PIP',
         emailTemplateType,
         isAutoEmail: false,
@@ -62,27 +67,23 @@ export class MailService {
         data.sendCcTo = ccEmails;
       }
 
-      const config = {
-        method: 'post' as const,
-        url: `${this.userConfig.communicationBackend}/api/v1/mail/emails/sendEmail`,
-        headers: {
-          Authorization: `Bearer ${initiator.jwtAuthToken}`,
-          'Content-Type': 'application/json',
-        },
-        data,
-      };
-      const response = await axios(config);
-      return { statusCode: 200, data: response.data };
+      // Delivery is handed to the mail topic instead of being awaited here, so
+      // a slow or unreachable SMTP server can no longer stall the request. A
+      // 200 now means "accepted for delivery"; failures reach admins via the
+      // notification published by MailConsumer.
+      await this.mailProducer.publishEvent({
+        eventType: MailEventType.SendMailEvent,
+        timestamp: Date.now(),
+        payload: { mail: data, orgId: initiator.orgId },
+      });
+      return { statusCode: 200, data: { message: 'Email queued for delivery' } };
     } catch (error: any) {
-      this.logger.error('Error sending mail', { error: error?.response?.data });
+      // Kept at 500 regardless of the underlying error so existing callers,
+      // which only branch on `statusCode !== 200`, behave exactly as before.
+      this.logger.error('Error queueing mail', { error: error?.message });
       return {
-        statusCode: error?.response?.status || 500,
-        data:
-          error?.response?.data?.error?.message ||
-          error?.response?.data?.message ||
-          (typeof error?.response?.data === 'string' ? error.response.data : null) ||
-          error?.message ||
-          'Error sending mail.',
+        statusCode: 500,
+        data: error?.message || 'Error sending mail.',
       };
     }
   }

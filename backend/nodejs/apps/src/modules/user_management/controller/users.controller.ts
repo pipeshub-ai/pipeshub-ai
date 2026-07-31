@@ -1407,6 +1407,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailAuthToken,
+            orgId,
           },
           usersMails: [email],
           subject: `You are invited to join ${org?.registeredName} `,
@@ -1424,6 +1425,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId,
           },
           usersMails: [email],
           subject: `You are invited to join ${org?.registeredName} `,
@@ -1912,7 +1914,7 @@ export class UserController {
           );
         result = await this.mailService.sendMail({
           emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: mailAuthToken },
+          initiator: { jwtAuthToken: mailAuthToken, orgId },
           usersMails: [email],
           subject,
           templateData: {
@@ -1926,6 +1928,7 @@ export class UserController {
           emailTemplateType: 'appuserInvite',
           initiator: {
             jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+            orgId,
           },
           usersMails: [email],
           subject,
@@ -2253,7 +2256,7 @@ export class UserController {
       const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
       const emailSentResponse = await this.mailService.sendMail({
         emailTemplateType: 'resetEmail',
-        initiator: { jwtAuthToken: mailAuthToken },
+        initiator: { jwtAuthToken: mailAuthToken, orgId: user.orgId?.toString() },
         usersMails: [newEmail],
         subject: 'PipesHub | Verify your email !',
         templateData: {

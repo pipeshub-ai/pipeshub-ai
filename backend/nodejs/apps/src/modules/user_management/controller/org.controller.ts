@@ -282,6 +282,7 @@ export class OrgController {
               contactEmail,
               this.config.scopedJwtSecret,
             ),
+            orgId: (org._id as mongoose.Types.ObjectId).toString(),
           },
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',

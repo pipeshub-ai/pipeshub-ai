@@ -51,6 +51,8 @@ import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
+import { MailConsumer } from './modules/mail/services/mail.consumer';
+import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import {
   loadAppConfig,
@@ -232,6 +234,7 @@ export class Application {
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
+      this.bootstrapMailBrokerConsumer();
 
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
@@ -546,6 +549,25 @@ export class Application {
     })();
   }
 
+  /** Starts the mail consumer so SMTP delivery happens off the request path. */
+  private bootstrapMailBrokerConsumer(): void {
+    void (async () => {
+      try {
+        const consumer =
+          this.mailServiceContainer.get<MailConsumer>(MailConsumer);
+        await consumer.start();
+        await consumer.subscribe([BrokerTopic.MAIL_EVENTS], false);
+        await consumer.consume(async () => {
+          /* delivery + retry + failure notification implemented in MailConsumer */
+        });
+      } catch (error) {
+        this.logger.error('Mail broker consumer failed to start', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
   async start(): Promise<void> {
     try {
       await new Promise<void>((resolve) => {
@@ -577,6 +599,15 @@ export class Application {
         await notificationConsumer.stop();
       } catch (err) {
         this.logger.warn('NotificationConsumer not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        const mailConsumer =
+          this.mailServiceContainer.get<MailConsumer>(MailConsumer);
+        await mailConsumer.stop();
+      } catch (err) {
+        this.logger.warn('MailConsumer not available during shutdown', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
