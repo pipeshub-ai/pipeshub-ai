@@ -659,8 +659,8 @@ def create_execute_query_tool(
         Runs against the **live** database instance (not indexed rows). The
         `connector_id` and table schema come from the indexed `SQL_TABLE` record
         shown in context — use that schema to construct the query. This tool is
-        distinct from `mariadb__execute_query` and `database_sandbox__execute_sqlite`:
-        use this when an indexed SQL_TABLE record provides the connector context.
+        distinct from `mariadb__execute_query`: use this when an indexed
+        SQL_TABLE record provides the connector context.
 
         Supported sources: PostgreSQL, Snowflake, MariaDB.
 
