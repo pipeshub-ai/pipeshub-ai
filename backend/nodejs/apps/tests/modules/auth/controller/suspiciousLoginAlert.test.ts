@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import bcrypt from 'bcryptjs';
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
@@ -77,10 +78,43 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
     });
   };
 
-  const runLogin = () =>
+  const setupFifthWrongOtp = (controllerRef: any) => {
+    sinon.stub(Org, 'findOne').resolves({ shortName: 'Corp' } as any);
+    sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+    sinon.stub(UserActivities, 'create').resolves({} as any);
+    sinon.stub(UserCredentials, 'findOne').resolves({
+      userId: 'u1',
+      orgId: 'o1',
+      otpValidity: Date.now() + 60_000,
+      // A real hash of a different OTP, so bcrypt.compare genuinely misses.
+      hashedOTP: bcrypt.hashSync('999999', 4),
+      wrongCredentialCount: 4,
+      isBlocked: false,
+      save: sinon.stub().resolves(),
+    } as any);
+    sinon.stub(controllerRef, 'ensureBlockStatus').resolves(false);
+    sinon.stub(controllerRef, 'incrementWrongCredentialCount').resolves({
+      userId: 'u1',
+      orgId: 'o1',
+      wrongCredentialCount: 5,
+      isBlocked: false,
+      save: sinon.stub().resolves(),
+    });
+  };
+
+  const runPasswordLogin = () =>
     (controller as any).authenticateWithPassword(
       { _id: 'u1', orgId: 'o1', email: 'user@example.com' },
       'wrong-password',
+      '127.0.0.1',
+    );
+
+  const runOtpLogin = () =>
+    (controller as any).verifyOTP(
+      'u1',
+      'o1',
+      '000000',
+      'user@example.com',
       '127.0.0.1',
     );
 
@@ -88,24 +122,25 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
     setupWrongPassword(controller);
 
     let surfaced: Error | undefined;
-    try { await runLogin(); } catch (e) { surfaced = e as Error; }
+    try { await runPasswordLogin(); } catch (e) { surfaced = e as Error; }
 
     expect(surfaced!.message).to.contain('Incorrect password');
     expect(mockMailService.sendMail.calledOnce).to.be.true;
   });
 
+
   it('still raises the security error when the alert mail fails', async () => {
-    setupWrongPassword(controller);
+    setupFifthWrongOtp(controller);
     // What a 30s SMTP deadline looks like to this caller.
     mockMailService.sendMail.rejects(new Error('timeout of 30000ms exceeded'));
 
     let surfaced: Error | undefined;
-    try { await runLogin(); } catch (e) { surfaced = e as Error; }
+    try { await runOtpLogin(); } catch (e) { surfaced = e as Error; }
 
     expect(surfaced, 'a security error must still be raised').to.exist;
     // Never replaced by a mail-plumbing error.
     expect(surfaced!.message).to.not.contain('timeout of 30000ms');
-    expect(surfaced!.message).to.contain('Incorrect password');
+    expect(surfaced!.message).to.contain('Account Blocked');
     // Recorded rather than swallowed, and never retried into a duplicate.
     expect(mockLogger.error.called).to.be.true;
     expect(mockMailService.sendMail.callCount).to.equal(1);
