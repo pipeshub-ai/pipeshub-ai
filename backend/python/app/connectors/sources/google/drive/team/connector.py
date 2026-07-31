@@ -1259,6 +1259,50 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         return [], 0
 
+    async def _user_can_access_drive_file(
+        self,
+        drive_data_source: GoogleDriveDataSource,
+        file_id: str,
+        user_email: str,
+    ) -> bool:
+        """Return True if ``files.get`` succeeds for this user.
+
+        Personal incremental sync uses ``includeItemsFromAllDrives=False``, so
+        Shared Drive items that were just shared with the user often arrive as
+        ``{removed: true, fileId}`` with no ``file`` body — the same shape as a
+        real delete/unshare. Probe access before stripping graph permissions.
+        """
+        try:
+            await drive_data_source.files_get(
+                fileId=file_id,
+                supportsAllDrives=True,
+                fields="id",
+            )
+            return True
+        except HttpError as http_error:
+            status = http_error.resp.status if http_error.resp is not None else None
+            if status in (
+                HttpStatusCode.NOT_FOUND.value,
+                HttpStatusCode.FORBIDDEN.value,
+            ):
+                return False
+            self.logger.warning(
+                "Unexpected HttpError probing file %s for user %s: %s — "
+                "keeping permission to avoid false revoke",
+                file_id,
+                user_email,
+                http_error,
+            )
+            return True
+        except Exception as e:
+            self.logger.warning(
+                "Failed probing file %s for user %s: %s — keeping permission",
+                file_id,
+                user_email,
+                e,
+            )
+            return True
+
     async def _handle_drive_error(
         self,
         error: Exception,
@@ -2344,19 +2388,40 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
+                        file_id = change.get("fileId")
                         existing_record = None
                         async with self.data_store_provider.transaction() as tx_store:
                             existing_record = await tx_store.get_record_by_external_id(
                                 connector_id=self.connector_id,
-                                external_id=change.get("fileId")
+                                external_id=file_id,
                             )
 
                         if existing_record and existing_record.id:
-                            self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
-
-                            await self.data_entities_processor.delete_permission_from_record(
+                            # removed=true with no file body is also how Google
+                            # surfaces Shared Drive shares under
+                            # includeItemsFromAllDrives=False. Confirm the user
+                            # actually lost access before deleting the edge.
+                            if file_id and await self._user_can_access_drive_file(
+                                user_drive_data_source,
+                                str(file_id),
+                                user.email,
+                            ):
+                                self.logger.debug(
+                                    "Skipping permission removal for %s (%s): "
+                                    "user %s can still access file",
+                                    existing_record.record_name,
+                                    file_id,
+                                    user.email,
+                                )
+                            else:
+                                self.logger.info(
+                                    "Removing permission from record %s for user %s",
+                                    existing_record.record_name,
+                                    user.email,
+                                )
+                                await self.data_entities_processor.delete_permission_from_record(
                                     record_id=existing_record.id,
-                                    user_email=user.email
+                                    user_email=user.email,
                                 )
 
                     if file_metadata:
