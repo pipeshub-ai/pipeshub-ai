@@ -11,7 +11,12 @@ sys.modules["cchardet"] = chardet
 # raw strings, which trips Python 3.12+'s SyntaxWarning at import time. This is
 # upstream noise we can't fix without patching the dependency, so silence it.
 with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"talon(\..*)?")
+    warnings.filterwarnings(
+        "ignore",
+        message=r"invalid escape sequence.*",
+        category=SyntaxWarning,
+        module=r"^talon(?:\..+)?$",
+    )
     from talon import quotations  # noqa: E402
 
 quotations.register_xpath_extensions()
