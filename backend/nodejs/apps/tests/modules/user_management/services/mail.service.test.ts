@@ -9,6 +9,7 @@ describe('MailService', () => {
   let axiosStub: sinon.SinonStub;
   let mockLogger: any;
   let mockConfig: any;
+  let mockMailProducer: any;
 
   beforeEach(() => {
     mockLogger = {
@@ -22,7 +23,13 @@ describe('MailService', () => {
       communicationBackend: 'http://localhost:3002',
     };
 
-    mailService = new MailService(mockConfig, mockLogger);
+    mockMailProducer = {
+      publishEvent: sinon.stub().resolves(),
+      start: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+    };
+
+    mailService = new MailService(mockConfig, mockLogger, mockMailProducer);
   });
 
   afterEach(() => {
@@ -30,29 +37,35 @@ describe('MailService', () => {
   });
 
   describe('sendMail', () => {
-    it('should return statusCode 200 when axios succeeds', async () => {
-      const origAdapter = axios.defaults.adapter;
-      axios.defaults.adapter = async () => ({
-        data: { messageId: 'm1' },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: {} as any,
+    it('publishes a mail event instead of sending inline, and returns 200', async () => {
+      const result = await mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: { jwtAuthToken: 'test-token', orgId: '507f1f77bcf86cd799439012' },
+        usersMails: ['user@test.com'],
+        subject: 'Test Subject',
       });
 
-      try {
-        const result = await mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: 'test-token' },
-          usersMails: ['user@test.com'],
-          subject: 'Test Subject',
-        });
+      expect(result.statusCode).to.equal(200);
+      expect(mockMailProducer.publishEvent.calledOnce).to.be.true;
 
-        expect(result.statusCode).to.equal(200);
-        expect(result.data).to.deep.equal({ messageId: 'm1' });
-      } finally {
-        axios.defaults.adapter = origAdapter;
-      }
+      const event = mockMailProducer.publishEvent.firstCall.args[0];
+      expect(event.payload.orgId).to.equal('507f1f77bcf86cd799439012');
+      expect(event.payload.mail.sendEmailTo).to.deep.equal(['user@test.com']);
+      expect(event.payload.mail.subject).to.equal('Test Subject');
+    });
+
+    it('returns 500 without publishing when the broker rejects the job', async () => {
+      mockMailProducer.publishEvent.rejects(new Error('broker down'));
+
+      const result = await mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: { jwtAuthToken: 'test-token' },
+        usersMails: ['user@test.com'],
+        subject: 'Test Subject',
+      });
+
+      expect(result.statusCode).to.equal(500);
+      expect(result.data).to.equal('broker down');
     });
 
     it('should send mail successfully and return statusCode 200', async () => {
