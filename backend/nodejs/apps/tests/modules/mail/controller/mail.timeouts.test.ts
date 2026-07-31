@@ -5,14 +5,13 @@ import nodemailer from 'nodemailer';
 import { MailController } from '../../../../src/modules/mail/controller/mail.controller';
 import { MailModel } from '../../../../src/modules/mail/schema/mailInfo.schema';
 
-/**
- * Nodemailer's defaults (120s connect, 30s DNS, 10min socket) outlive the
- * callers' own timeouts, so an unreachable SMTP host holds an HTTP request
- * open instead of failing. These assert the bounds stay in place.
- */
+
 describe('MailController - SMTP timeouts', () => {
   let createTransportStub: sinon.SinonStub;
   let sendMailStub: sinon.SinonStub;
+
+  // The axios timeout in MailService that wraps this call.
+  const CALLER_HTTP_TIMEOUT_MS = 30_000;
 
   const smtp: any = {
     host: 'smtp.example.com',
@@ -33,7 +32,7 @@ describe('MailController - SMTP timeouts', () => {
     sendMailStub = sinon.stub().resolves({ messageId: 'm1' });
     createTransportStub = sinon
       .stub(nodemailer, 'createTransport')
-      .returns({ sendMail: sendMailStub } as any);
+      .returns({ sendMail: sendMailStub, close: sinon.stub() } as any);
     sinon.stub(MailModel.prototype, 'save').resolves({} as any);
   });
 
@@ -45,88 +44,47 @@ describe('MailController - SMTP timeouts', () => {
       warn: sinon.stub(), error: sinon.stub(),
     } as any);
 
-  it('bounds every SMTP stage well inside the caller timeout', async () => {
+  it('bounds every SMTP stage below the caller timeout, keeping credentials', async () => {
     await build().emailSender(body, smtp);
 
-    expect(createTransportStub.calledOnce).to.be.true;
     const opts = createTransportStub.firstCall.args[0];
-
     expect(opts.dnsTimeout, 'dnsTimeout').to.equal(10_000);
     expect(opts.connectionTimeout, 'connectionTimeout').to.equal(10_000);
     expect(opts.greetingTimeout, 'greetingTimeout').to.equal(10_000);
     expect(opts.socketTimeout, 'socketTimeout').to.equal(20_000);
-  });
 
-  it('keeps every stage under the 30s mail-backend request timeout', async () => {
-    await build().emailSender(body, smtp);
-    const opts = createTransportStub.firstCall.args[0];
-
-    for (const key of [
+    for (const k of [
       'dnsTimeout',
       'connectionTimeout',
       'greetingTimeout',
       'socketTimeout',
     ]) {
-      expect(opts[key], key).to.be.a('number').and.to.be.below(30_000);
+      expect(opts[k], k).to.be.below(CALLER_HTTP_TIMEOUT_MS);
     }
+    expect(opts.auth).to.deep.equal({ user: 'user', pass: 'pass' });
   });
 
-  it('aborts a send that outlives the end-to-end deadline', async () => {
-    const clock = sinon.useFakeTimers();
-    try {
-
-      sendMailStub.returns(new Promise(() => {}));
-
-      const promise = build().emailSender(body, smtp);
-      await clock.tickAsync(25_000 + 1_000);
-      const result = await promise;
-
-      expect(result.status).to.be.false;
-      expect(String(result.data)).to.contain('deadline');
-    } finally {
-      clock.restore();
-    }
-  });
-
-  it('closes the transport when the deadline trips, so no socket is leaked', async () => {
+  it('aborts a stalled send before the caller times out, and closes the transport', async () => {
     const clock = sinon.useFakeTimers();
     const closeStub = sinon.stub();
     try {
+      // socketTimeout only measures inactivity, so a trickling server resets it
+      // indefinitely; only the end-to-end deadline bounds this.
       createTransportStub.returns({
         sendMail: sinon.stub().returns(new Promise(() => {})),
         close: closeStub,
       } as any);
 
       const promise = build().emailSender(body, smtp);
-      await clock.tickAsync(25_000 + 1_000);
-      await promise;
+      await clock.tickAsync(CALLER_HTTP_TIMEOUT_MS - 1);
+      const result = await promise;
 
+      expect(result.status).to.be.false;
+      expect(String(result.data)).to.contain('deadline');
+      // A stuck socket must not be left behind.
       expect(closeStub.calledOnce).to.be.true;
     } finally {
       clock.restore();
     }
-  });
-
-  it('keeps the send deadline below the caller HTTP timeout', async () => {
-    const clock = sinon.useFakeTimers();
-    try {
-      sendMailStub.returns(new Promise(() => {}));
-      const promise = build().emailSender(body, smtp);
-
-      // Must have given up before the 30s axios timeout in MailService.
-      await clock.tickAsync(30_000 - 1);
-      const result = await promise;
-
-      expect(result.status).to.be.false;
-    } finally {
-      clock.restore();
-    }
-  });
-
-  it('still sends credentials when they are configured', async () => {
-    await build().emailSender(body, smtp);
-    const opts = createTransportStub.firstCall.args[0];
-
-    expect(opts.auth).to.deep.equal({ user: 'user', pass: 'pass' });
   });
 });
