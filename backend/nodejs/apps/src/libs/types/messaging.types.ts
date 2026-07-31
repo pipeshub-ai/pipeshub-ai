@@ -14,6 +14,7 @@ export enum BrokerTopic {
   HEALTH_CHECK = 'health-check',
   TOKEN_EVENTS = 'token-events',
   NOTIFICATION = 'notification',
+  MAIL_EVENTS = 'mail-events',
 }
 
 /**
@@ -30,6 +31,7 @@ export interface BrokerTopicPayloadMap {
   [BrokerTopic.HEALTH_CHECK]: { type: string; timestamp: number };
   [BrokerTopic.TOKEN_EVENTS]: Record<string, unknown>;
   [BrokerTopic.NOTIFICATION]: Record<string, unknown>;
+  [BrokerTopic.MAIL_EVENTS]: Record<string, unknown>;
 }
 
 export interface MessageBrokerConfig {

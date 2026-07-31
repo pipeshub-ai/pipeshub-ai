@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { MailServiceContainer } from '../../../../src/modules/mail/container/mailService.container'
+import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
 describe('mail/container/mailService.container', () => {
   afterEach(() => {
@@ -23,6 +24,30 @@ describe('MailServiceContainer - coverage', () => {
 
   beforeEach(() => {
     originalInstance = (MailServiceContainer as any).instance
+
+    // Stub message broker factory to prevent real Kafka/Redis connections
+    sinon.stub(messageBrokerFactory, 'resolveMessageBrokerConfig').returns({
+      type: 'kafka',
+      kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+    } as any)
+    sinon.stub(messageBrokerFactory, 'createMessageProducer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      publish: sinon.stub().resolves(),
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    } as any)
+    sinon.stub(messageBrokerFactory, 'createMailMessageConsumer').returns({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      subscribe: sinon.stub().resolves(),
+      consume: sinon.stub().resolves(),
+      pause: sinon.stub(),
+      resume: sinon.stub(),
+      healthCheck: sinon.stub().resolves(true),
+    } as any)
   })
 
   afterEach(() => {
