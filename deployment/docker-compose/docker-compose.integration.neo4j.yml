@@ -158,6 +158,8 @@ services:
         condition: service_started
       neo4j:
         condition: service_healthy
+      mailpit:
+        condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
@@ -201,6 +203,19 @@ services:
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
+
+  # Local SMTP sink for mail-dependent integration tests: CI runners cannot
+  mailpit:
+    image: axllent/mailpit:v1.30.6
+    restart: always
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   neo4j:
     image: neo4j:5.26.0
