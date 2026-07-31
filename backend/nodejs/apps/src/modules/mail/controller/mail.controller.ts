@@ -22,6 +22,7 @@ const SMTP_DNS_TIMEOUT_MS = 10_000;
 const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
 const SMTP_GREETING_TIMEOUT_MS = 10_000;
 const SMTP_SOCKET_TIMEOUT_MS = 20_000;
+const SMTP_SEND_DEADLINE_MS = 25_000;
 
 @injectable()
 export class MailController {
@@ -87,6 +88,38 @@ export class MailController {
     }
   }
 
+
+  private async sendWithDeadline(
+    transporter: nodemailer.Transporter,
+    message: Parameters<nodemailer.Transporter['sendMail']>[0],
+  ): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `SMTP send exceeded ${SMTP_SEND_DEADLINE_MS}ms deadline`,
+            ),
+          ),
+        SMTP_SEND_DEADLINE_MS,
+      );
+    });
+
+    try {
+      await Promise.race([transporter.sendMail(message), deadline]);
+    } catch (error) {
+      try {
+        transporter.close();
+      } catch {
+        // already torn down; nothing to release
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async emailSender(bodyData: MailBody, smtpConfig: SmtpConfig) {
     try {
       const fromEmailDomain = smtpConfig.fromEmail;
@@ -118,7 +151,7 @@ export class MailController {
           }),
       });
 
-      await transporter.sendMail({
+      await this.sendWithDeadline(transporter, {
         from: fromEmailDomain,
         to: bodyData.sendEmailTo,
         cc: bodyData.sendCcTo,

@@ -71,6 +71,58 @@ describe('MailController - SMTP timeouts', () => {
     }
   });
 
+  it('aborts a send that outlives the end-to-end deadline', async () => {
+    const clock = sinon.useFakeTimers();
+    try {
+
+      sendMailStub.returns(new Promise(() => {}));
+
+      const promise = build().emailSender(body, smtp);
+      await clock.tickAsync(25_000 + 1_000);
+      const result = await promise;
+
+      expect(result.status).to.be.false;
+      expect(String(result.data)).to.contain('deadline');
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('closes the transport when the deadline trips, so no socket is leaked', async () => {
+    const clock = sinon.useFakeTimers();
+    const closeStub = sinon.stub();
+    try {
+      createTransportStub.returns({
+        sendMail: sinon.stub().returns(new Promise(() => {})),
+        close: closeStub,
+      } as any);
+
+      const promise = build().emailSender(body, smtp);
+      await clock.tickAsync(25_000 + 1_000);
+      await promise;
+
+      expect(closeStub.calledOnce).to.be.true;
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('keeps the send deadline below the caller HTTP timeout', async () => {
+    const clock = sinon.useFakeTimers();
+    try {
+      sendMailStub.returns(new Promise(() => {}));
+      const promise = build().emailSender(body, smtp);
+
+      // Must have given up before the 30s axios timeout in MailService.
+      await clock.tickAsync(30_000 - 1);
+      const result = await promise;
+
+      expect(result.status).to.be.false;
+    } finally {
+      clock.restore();
+    }
+  });
+
   it('still sends credentials when they are configured', async () => {
     await build().emailSender(body, smtp);
     const opts = createTransportStub.firstCall.args[0];
