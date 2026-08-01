@@ -15,7 +15,10 @@ import { ConnectorsCollectionsPanel } from '@/chat/components/chat-panel/expansi
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
-import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
+import {
+  ModelSelectorPanel,
+  getReasoningEffortLabel,
+} from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
@@ -26,7 +29,7 @@ import {
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { MobileQueryModesSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-modes-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
-import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { useChatStore, ctxKeyFromAgent, isModelReasoningCapable } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
@@ -40,7 +43,7 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, DEFAULT_REASONING_EFFORT } from '@/chat/types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -275,6 +278,22 @@ export function ChatInput({
     },
     [setSelectedModelForCtx, modelCtxKey],
   );
+
+  // Reasoning effort indicator — mirrors ModelSelectorPanel's selector so the
+  // toolbar shows what's actually applied without opening the panel, the same
+  // way Claude's model picker shows "Sonnet 5 · High" inline.
+  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
+  useEffect(() => {
+    hydrateReasoningEffortForCtx(modelCtxKey);
+  }, [modelCtxKey, hydrateReasoningEffortForCtx]);
+
+  const activeModelSupportsReasoning = isModelReasoningCapable(modelCtxKey, displayModel);
+  const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
+  // No explicit override → the backend applies DEFAULT_REASONING_EFFORT for any
+  // reasoning-capable model, so reflect that resolved value rather than a vague "Default".
+  const reasoningEffortLabel = activeModelSupportsReasoning
+    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT)
+    : null;
 
   // Expansion panel view mode (inline vs overlay) from store
   const expansionViewMode = useChatStore((s) => s.expansionViewMode);
@@ -1936,12 +1955,20 @@ export function ChatInput({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
-                        maxWidth: '160px',
+                        maxWidth: reasoningEffortLabel ? '110px' : '160px',
                         opacity: displayModel ? 1 : 0.7,
                       }}
                     >
                       {displayModelLabel || t('chat.aiModelsTooltip', { defaultValue: 'AI model' })}
                     </Text>
+                    {reasoningEffortLabel && (
+                      <Text
+                        size="2"
+                        style={{ color: 'var(--slate-10)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                      >
+                        · {reasoningEffortLabel}
+                      </Text>
+                    )}
                   </Flex>
 
                   {/* Speech */}
@@ -2081,7 +2108,7 @@ export function ChatInput({
                           ? 'var(--olive-3)'
                           : 'transparent',
                       transition: 'background-color 0.12s ease',
-                      maxWidth: isMobile ? '32px' : '180px',
+                      maxWidth: isMobile ? '32px' : (reasoningEffortLabel ? '220px' : '180px'),
                       flexShrink: 0,
                     }}
                     onMouseEnter={() => setIsModelButtonHovered(true)}
@@ -2089,20 +2116,35 @@ export function ChatInput({
                   >
                     <MaterialIcon name="memory" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                     {!isMobile && (
-                      <Text
-                        size="1"
-                        weight="medium"
-                        style={{
-                          color: activeIconColor,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          maxWidth: '140px',
-                          opacity: displayModel ? 1 : 0.7,
-                        }}
-                      >
-                        {displayModelLabel}
-                      </Text>
+                      <Flex align="center" gap="1" style={{ overflow: 'hidden' }}>
+                        <Text
+                          size="1"
+                          weight="medium"
+                          style={{
+                            color: activeIconColor,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            maxWidth: reasoningEffortLabel ? '120px' : '140px',
+                            opacity: displayModel ? 1 : 0.7,
+                          }}
+                        >
+                          {displayModelLabel}
+                        </Text>
+                        {reasoningEffortLabel && (
+                          <Text
+                            size="1"
+                            weight="regular"
+                            style={{
+                              color: 'var(--slate-10)',
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0,
+                            }}
+                          >
+                            · {reasoningEffortLabel}
+                          </Text>
+                        )}
+                      </Flex>
                     )}
                   </Flex>
                 </Tooltip>

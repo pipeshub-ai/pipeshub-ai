@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   ConversationPagination,
   ModelInfo,
+  ReasoningEffort,
   SharedWithEntry,
   ConversationsListResponse,
 } from '@/chat/types';
@@ -167,6 +168,8 @@ export interface AgentDetail {
   can_delete: boolean;
   can_share: boolean;
   can_view: boolean;
+  /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
+  defaultReasoningEffort?: ReasoningEffort | null;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────

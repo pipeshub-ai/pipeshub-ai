@@ -17236,7 +17236,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "webSearch"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "webSearch", "defaultReasoningEffort"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

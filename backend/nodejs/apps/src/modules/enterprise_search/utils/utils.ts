@@ -58,6 +58,7 @@ export const extractModelInfo = (
     modelProvider: body.modelProvider || undefined,
     chatMode: body.chatMode || defaultChatMode,
     modelFriendlyName: modelFriendlyName,
+    reasoningEffort: body.reasoningEffort || undefined,
   };
 };
 
@@ -911,6 +912,7 @@ export const saveCompleteConversation = async (
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = modelInfo[field];
@@ -1138,6 +1140,7 @@ export const saveCompleteAgentConversation = async (
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = modelInfo[field];
@@ -2048,6 +2051,7 @@ export const handleRegenerationSuccess = async (
       'modelProvider',
       'chatMode',
       'modelFriendlyName',
+      'reasoningEffort',
     ];
     for (const field of fieldsToUpdate) {
       const value = modelInfo[field];

@@ -48,16 +48,31 @@ describe('AgentActivityTimeline — narration text', () => {
     expect(container.textContent).not.toContain('Still streaming this preamble...');
   });
 
-  it('shows a non-trailing narration part while streaming once a later part exists', () => {
+  it('shows a settled narration part while streaming even if a later part exists', () => {
     renderTimeline(
       [
-        { type: 'text', content: 'Let me check the test file first.' },
+        { type: 'text', content: 'Let me check the test file first.', settled: true },
         { type: 'tool_call', toolCallId: 'call-1', toolName: 'run_tests', status: 'running' },
       ],
       { isStreaming: true },
     );
 
     expect(screen.getByText('Let me check the test file first.')).toBeTruthy();
+  });
+
+  it('hides a not-yet-settled narration part while streaming, even if a later part exists', () => {
+    // Guards the duplicate-text bug: a reasoning/tool_call part appended
+    // after an unsettled text part must NOT make position-based logic
+    // think the text is "done" — only `settled: true` does.
+    const { container } = renderTimeline(
+      [
+        { type: 'text', content: 'Still mirrored in the answer buffer.' },
+        { type: 'reasoning', content: 'thinking...' },
+      ],
+      { isStreaming: true },
+    );
+
+    expect(container.textContent).not.toContain('Still mirrored in the answer buffer.');
   });
 
   it('renders every text part (including isFinal) when nested inside a sub-agent group', () => {

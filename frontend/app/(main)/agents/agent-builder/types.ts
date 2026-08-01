@@ -1,4 +1,5 @@
 import type { Node } from '@xyflow/react';
+import type { ReasoningEffort } from '@/chat/types';
 import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
@@ -82,6 +83,8 @@ export interface AgentFormPayload {
   toolsets?: ToolsetReference[];
   skills?: SkillReference[];
   webSearch?: AgentWebSearchAttachment | null;
+  /** Fallback applied when a chat request against this agent omits its own reasoningEffort. */
+  defaultReasoningEffort?: ReasoningEffort | null;
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */

@@ -360,6 +360,7 @@ export const ChatApi = {
       /** Universal agent mode: explicit tool subset (null = all, [] = none). */
       agentStreamTools?: string[];
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
+      reasoningEffort?: StreamChatRequest['reasoningEffort'];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -378,6 +379,9 @@ export const ChatApi = {
     }
     if (request.agentCapabilities !== undefined) {
       body.agentCapabilities = request.agentCapabilities;
+    }
+    if (request.reasoningEffort) {
+      body.reasoningEffort = request.reasoningEffort;
     }
 
     await runChatStream(endpoint, body, callbacks);
@@ -401,6 +405,7 @@ export const ChatApi = {
       tools?: string[];
       filters: { apps: string[]; kb: string[] };
       agentCapabilities?: AgentCapabilities;
+      reasoningEffort?: StreamChatRequest['reasoningEffort'];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -419,6 +424,9 @@ export const ChatApi = {
     }
     if (model.agentCapabilities !== undefined) {
       agentRegenBody.agentCapabilities = model.agentCapabilities;
+    }
+    if (model.reasoningEffort) {
+      agentRegenBody.reasoningEffort = model.reasoningEffort;
     }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);

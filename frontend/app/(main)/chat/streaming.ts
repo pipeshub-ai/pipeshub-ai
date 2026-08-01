@@ -16,7 +16,7 @@
 import { startTransition } from 'react';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { debugLog } from './debug-logger';
@@ -36,6 +36,7 @@ import {
   type SSEAskUserQuestionEvent,
   type PendingAskUserQuestion,
   type MessagePart,
+  DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -1030,6 +1031,10 @@ export async function streamRegenerateForSlot(
         : [...new Set(agentToolsSel.map(stripInstancePrefix))];
       const scopedCaps = useChatStore.getState().scopedAgentCapabilities[threadAgentId]
         ?? { internalSearch: true, webSearch: true };
+      const agentRegenReasoningEffortOverride = useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const agentRegenReasoningEffort =
+        agentRegenReasoningEffortOverride ??
+        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? DEFAULT_REASONING_EFFORT : undefined);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -1043,6 +1048,7 @@ export async function streamRegenerateForSlot(
           tools: regenTools,
           filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
           agentCapabilities: scopedCaps,
+          ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
         }
       );
     } else {
@@ -1058,6 +1064,11 @@ export async function streamRegenerateForSlot(
             (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
           )]
         : undefined;
+      const assistantRegenReasoningEffortOverride =
+        useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      const assistantRegenReasoningEffort =
+        assistantRegenReasoningEffortOverride ??
+        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? DEFAULT_REASONING_EFFORT : undefined);
       await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
         modelKey: resolvedModel.modelKey,
         modelName: resolvedModel.modelName,
@@ -1066,6 +1077,7 @@ export async function streamRegenerateForSlot(
         filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
+        ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
       });
     }
   } catch (error) {

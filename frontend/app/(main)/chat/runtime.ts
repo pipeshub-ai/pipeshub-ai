@@ -12,7 +12,7 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
@@ -28,6 +28,7 @@ import {
   type ConversationMessage,
   type PendingAskUserQuestion,
   type StreamChatRequest,
+  DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
   buildCitationMapsFromApi,
@@ -211,6 +212,13 @@ export function buildStreamChatRequestForSlot(
     modelName: '',
     modelFriendlyName: '',
   };
+  // No explicit user choice → still forward DEFAULT_REASONING_EFFORT
+  // explicitly for reasoning-capable models, matching the badge shown in the
+  // composer, rather than relying solely on the backend's own default.
+  const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
+  const reasoningEffort =
+    reasoningEffortOverride ??
+    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? DEFAULT_REASONING_EFFORT : null);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;
@@ -256,6 +264,7 @@ export function buildStreamChatRequestForSlot(
   const request: StreamChatRequest = {
     query,
     ...effectiveModel,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     ...buildStreamRequestModeFields(currentState.settings, isAgent),
     timezone: getClientTimezone(),
     currentTime: getClientCurrentTime(),

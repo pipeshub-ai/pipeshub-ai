@@ -26,6 +26,7 @@ export default defineConfig({
       'lib/socket/__tests__/notification-socket.test.ts',
       'app/(main)/chat/__tests__/agui-event-handler.test.ts',
       'app/(main)/chat/__tests__/agent-capabilities.test.ts',
+      'app/(main)/chat/__tests__/reasoning-effort.test.ts',
       'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',
       'app/(main)/chat/components/message-area/__tests__/expandable-user-query.test.tsx',
       'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
@@ -36,6 +37,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@/chat': path.resolve(__dirname, './app/(main)/chat'),
+      '@/knowledge-base': path.resolve(__dirname, './app/(main)/knowledge-base'),
+      '@/workspace': path.resolve(__dirname, './app/(main)/workspace'),
       '@': path.resolve(__dirname, '.'),
     },
   },

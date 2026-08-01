@@ -46,16 +46,21 @@ interface AgentActivityTimelineProps {
  * - The one part marked `isFinal` (the actual answer, mirrors Python's
  *   `TranscriptCollector.replace_final_text`) is never shown here —
  *   `AnswerContent` renders it.
- * - Every other root `text` part is narration and shown, UNLESS it's the
- *   last part in the array while still streaming (still being written —
- *   its content duplicates the live answer buffer).
+ * - Every other root `text` part is narration and shown once `settled`
+ *   (`agui-event-handler.ts`'s `LivePartsBuilder.settleLastRootText()`,
+ *   called the moment a tool call, reasoning block, or new text turn
+ *   proves the text wasn't the final answer). Until settled, the part is
+ *   still mirrored live in the answer buffer (`streamingContent`) — showing
+ *   it here too would duplicate `AnswerContent`. This intentionally does
+ *   NOT use array position: a reasoning/tool-call part appended after an
+ *   unsettled text part would otherwise make it look "not last" and thus
+ *   incorrectly visible before the buffer clears.
  */
 function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
-  const lastIndex = parts.length - 1;
-  return parts.filter((part, idx) => {
+  return parts.filter((part) => {
     if (part.type !== 'text') return true;
     if (part.isFinal) return false;
-    if (isStreaming && idx === lastIndex) return false;
+    if (isStreaming && !part.settled) return false;
     return true;
   });
 }

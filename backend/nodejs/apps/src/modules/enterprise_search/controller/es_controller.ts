@@ -880,6 +880,7 @@ export const streamChat =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: chatMode,
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
@@ -1479,6 +1480,7 @@ export const createConversation =
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
+          reasoningEffort: req.body.reasoningEffort || null,
           chatMode: req.body.chatMode || 'quick',
         },
       };
@@ -1803,6 +1805,7 @@ export const addMessage =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
+            reasoningEffort: req.body.reasoningEffort || null,
             chatMode: req.body.chatMode || 'quick',
           },
         };
@@ -2042,6 +2045,7 @@ export const addMessageStream =
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -2143,6 +2147,7 @@ export const addMessageStream =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: chatMode,
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
@@ -3615,6 +3620,7 @@ async function regenerateAnswersInternal(
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
+      reasoningEffort: req.body.reasoningEffort || null,
       chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
@@ -5830,6 +5836,7 @@ export const deleteAgent =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
@@ -6346,6 +6353,7 @@ export const createAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
@@ -6604,6 +6612,7 @@ export const createAgentConversation =
           'modelProvider',
           'chatMode',
           'modelFriendlyName',
+          'reasoningEffort',
         ];
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
@@ -6639,6 +6648,7 @@ export const createAgentConversation =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
+            reasoningEffort: req.body.reasoningEffort || null,
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
@@ -6904,6 +6914,7 @@ export const addMessageStreamToAgentConversation =
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
@@ -7006,6 +7017,7 @@ export const addMessageStreamToAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,

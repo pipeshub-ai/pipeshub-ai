@@ -80,6 +80,22 @@ class TestChatQueryModel:
         q = ChatQuery(query="q", attachments=att)
         assert q.attachments == att
 
+    @pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "max"])
+    def test_reasoning_effort_accepts_valid_values(self, effort):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q", reasoningEffort=effort)
+        assert q.reasoningEffort == effort
+
+    def test_reasoning_effort_defaults_to_none(self):
+        from app.api.routes.chatbot import ChatQuery
+        q = ChatQuery(query="q")
+        assert q.reasoningEffort is None
+
+    def test_reasoning_effort_rejects_invalid_value(self):
+        from app.api.routes.chatbot import ChatQuery
+        with pytest.raises(ValidationError, match="Invalid reasoningEffort"):
+            ChatQuery(query="q", reasoningEffort="extreme")
+
 
 
 
@@ -242,7 +258,7 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock())
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_generator_model_async")
@@ -258,7 +274,7 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock(), model_key="key-1")
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_generator_model_async")
@@ -276,7 +292,7 @@ class TestGetLlmForChat:
         llm, cfg, ai = await get_llm_for_chat(
             AsyncMock(), model_key="key-1", model_name="gpt-4o-mini"
         )
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o-mini")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o-mini", None)
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_generator_model_async")
@@ -296,7 +312,7 @@ class TestGetLlmForChat:
             AsyncMock(), model_key="key-1", model_name="nonexistent"
         )
         # Falls to the model_key-only branch, uses first model name
-        mock_gen.assert_called_once_with("openai", config, "gpt-4o")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", None)
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_generator_model_async")
@@ -320,7 +336,25 @@ class TestGetLlmForChat:
         mock_gen.return_value = MagicMock()
 
         llm, cfg, ai = await get_llm_for_chat(AsyncMock())
-        mock_gen.assert_called_once_with("openai", configs[0], "gpt-4o")
+        mock_gen.assert_called_once_with("openai", configs[0], "gpt-4o", None)
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.get_generator_model_async")
+    @patch("app.api.routes.chatbot.get_model_config")
+    async def test_reasoning_effort_forwarded_to_generator(self, mock_get_model_config, mock_gen):
+        """reasoning_effort passed to get_llm_for_chat must reach get_generator_model_async
+        as the 4th positional arg, regardless of model_key/model_name resolution path."""
+        from app.api.routes.chatbot import get_llm_for_chat
+        config = {
+            "modelKey": "key-1",
+            "configuration": {"model": "gpt-4o, gpt-4o-mini"},
+            "provider": "openai",
+        }
+        mock_get_model_config.return_value = (config, {"llm": [config]})
+        mock_gen.return_value = MagicMock()
+
+        await get_llm_for_chat(AsyncMock(), reasoning_effort="high")
+        mock_gen.assert_called_once_with("openai", config, "gpt-4o", "high")
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_model_config")
@@ -571,7 +605,7 @@ class TestGetLlmForChatAdditional:
             llm, cfg, ai = await get_llm_for_chat(
                 mock_cs, model_key="key-1", model_name="gpt-4o-mini"
             )
-            mock_gen.assert_called_once_with("openai", cfg, "gpt-4o-mini")
+            mock_gen.assert_called_once_with("openai", cfg, "gpt-4o-mini", None)
         assert llm is mock_gen.return_value
         assert cfg["modelKey"] == "key-1"
         assert ai == mock_cs.get_config.return_value

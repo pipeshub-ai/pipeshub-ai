@@ -266,4 +266,6 @@ export interface IAIModel {
   modelProvider: string;
   chatMode: string;
   modelFriendlyName?: string;
+  /** "none" | "low" | "medium" | "high" | "max" — forwarded to the Python LLM factory. */
+  reasoningEffort?: string;
 }

@@ -247,5 +247,10 @@ export function applyConversationModelInfoToStore(
     store.setSelectedModelForCtx(ctxKey, null);
   }
 
+  // Restore the effort the conversation was actually run with, so the
+  // selector reflects saved state rather than the (possibly stale) choice
+  // left over from whatever context the user was in before switching threads.
+  store.setReasoningEffortForCtx(ctxKey, modelInfo.reasoningEffort ?? null);
+
   void refreshSelectedModelFromCatalog(modelInfo, ctxKey);
 }
