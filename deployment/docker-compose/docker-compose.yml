@@ -45,7 +45,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
+          memory: ${APP_MEMORY_LIMIT:-12G}
     shm_size: 2gb
     # 7 services (node, frontend, 5 python) share one container's fd budget;
     # docker's 1024 default hits EMFILE on accept() during startup.
@@ -252,10 +253,9 @@ services:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
-    # Quickstart targets a 16 GB-class shared Docker host running MongoDB beside
-    # the app, Qdrant, graph DB, Redis, and optional broker services. WiredTiger
-    # otherwise reserves roughly half of host RAM; cap cache at 1 GB by default
-    # and keep the container limit at 2 GB to leave room for process overhead.
+    # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
+    # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
+    # caps, not concurrent reservations — they need not sum to host RAM.
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}

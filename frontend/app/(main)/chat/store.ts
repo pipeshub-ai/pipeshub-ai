@@ -596,7 +596,7 @@ const initialState = {
 
   settings: {
     mode: 'chat' as ChatMode,
-    queryMode: 'chat' as QueryMode,
+    queryMode: 'agent' as QueryMode,
     agentStrategy: 'quick' as AgentStrategy,
     filters: {
       apps: [] as string[],

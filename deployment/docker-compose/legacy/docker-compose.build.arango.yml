@@ -45,7 +45,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
+          memory: ${APP_MEMORY_LIMIT:-12G}
     shm_size: 2gb
     # 7 services (node, frontend, 5 python) share one container's fd budget;
     # docker's 1024 default hits EMFILE on accept() during startup.

@@ -308,13 +308,20 @@ class TestIndividualExtensionFilter:
 
 class TestHandleRecordUpdates:
     async def test_handle_deleted_record(self, connector):
+        existing = MagicMock(spec=FileRecord)
+        existing.id = "record-1"
+        existing.record_name = "deleted.txt"
+        existing.mime_type = "text/plain"
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
         update = MagicMock()
         update.is_deleted = True
         update.is_new = False
         update.is_updated = False
         update.external_record_id = "ext-1"
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once()
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="record-1"
+        )
 
     async def test_handle_new_record(self, connector):
         update = MagicMock()
@@ -361,15 +368,19 @@ class TestHandleRecordUpdates:
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_content_update.assert_called_once()
 
-    async def test_handle_error_swallowed(self, connector):
-        """Errors in handle_record_updates are swallowed."""
+    async def test_handle_error_propagates(self, connector):
+        existing = MagicMock(spec=FileRecord)
+        existing.id = "record-1"
+        existing.record_name = "deleted.txt"
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "ext-1"
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=Exception("db error")
         )
-        await connector._handle_record_updates(update)  # Should not raise
+        with pytest.raises(Exception, match="db error"):
+            await connector._handle_record_updates(update)
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +455,12 @@ class TestRunSync:
 # run_incremental_sync
 # ---------------------------------------------------------------------------
 class TestRunIncrementalSync:
-    async def test_delegates_to_run_sync(self, connector):
+    async def test_is_noop(self, connector):
+        connector.run_sync = AsyncMock()
         connector._sync_user_personal_drive = AsyncMock()
         await connector.run_incremental_sync()
-        connector._sync_user_personal_drive.assert_awaited_once()
+        connector.run_sync.assert_not_awaited()
+        connector._sync_user_personal_drive.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
