@@ -2,21 +2,27 @@
 Salesforce connector uses (app/connectors/sources/salesforce/connector.py
 is the reference implementation for this mapping):
 
-    Odoo                      PipesHub            Salesforce equivalent
-    ------------------------  ------------------  ---------------------
-    crm.lead                  DealRecord          Opportunity
-    res.partner (company)     RecordGroup         Account
-    res.partner (individual)  Person              Contact
-    crm.team                  AppUserGroup        Public Group / Queue
-    ir.attachment             FileRecord          ContentVersion
-    res.users                 AppUser             User
+    Odoo                          PipesHub        Salesforce equivalent
+    ----------------------------  --------------  ---------------------
+    crm.lead (type=opportunity)   DealRecord      Opportunity
+    crm.lead (type=lead)          Person + edge   Lead
+    res.partner (company)         RecordGroup     Account
+    res.partner (individual)      Person          Contact
+    crm.team                      AppUserGroup    Public Group / Queue
+    ir.attachment                 FileRecord      ContentVersion
+    res.users                     AppUser         User
 
-Leads are grouped under their customer company (the lead's partner_id, or
-that partner's parent company), mirroring how Salesforce groups
-Opportunities under their Account; leads with no resolvable company fall
-back to a single "Unassigned" group the same way Salesforce falls back to
-"UNASSIGNED-DEAL". Teams are *not* record groups — they are user groups,
-so team membership drives identity, not record containment.
+Only opportunities are documents. People — unconverted leads and contacts
+alike — are Person nodes, never records: an unconverted crm.lead carries an
+Org->Person LEAD edge holding its qualification data (company, stage,
+source), exactly as the Salesforce connector maps its Lead object.
+
+Opportunities are grouped under their customer company (partner_id, or that
+partner's parent company), mirroring how Salesforce groups Opportunities
+under their Account; those with no resolvable company fall back to a single
+"Unassigned" group the same way Salesforce falls back to "UNASSIGNED-DEAL".
+Teams are *not* record groups — they are user groups, so team membership
+drives identity, not record containment.
 
 Roles are intentionally not synced — res.groups/ir.rule gate model-level
 access, not individual records, so there's no clean "role -> these
@@ -45,7 +51,12 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -515,6 +526,8 @@ class OdooConnector(BaseConnector):
         type_passes: List[Optional[str]] = allowed_types if allowed_types else [None]
 
         batch_records: List[Tuple[DealRecord, List[Permission]]] = []
+        total_deals = 0
+        total_people = 0
 
         for lead_type_pass in type_passes:
             offset = 0
@@ -529,28 +542,39 @@ class OdooConnector(BaseConnector):
                 if not leads:
                     break
 
-                followers_by_lead, company_group_by_lead = await asyncio.gather(
-                    self._fetch_followers_by_lead([lead.id for lead in leads]),
-                    self._fetch_company_group_by_lead(leads),
-                )
+                # crm.lead carries both kinds of row: an unqualified "lead" is a
+                # person we haven't converted yet (Salesforce Lead -> Person),
+                # an "opportunity" is a real deal (Salesforce Opportunity -> DealRecord).
+                opportunities = [lead for lead in leads if lead.type == "opportunity"]
+                raw_leads = [lead for lead in leads if lead.type != "opportunity"]
 
-                for lead in leads:
-                    record, permissions, is_new = await self._process_lead(
-                        lead,
-                        followers_by_lead.get(lead.id, []),
-                        company_group_by_lead.get(lead.id),
+                if raw_leads:
+                    total_people += await self._upsert_lead_people(raw_leads)
+
+                if opportunities:
+                    followers_by_lead, company_group_by_lead = await asyncio.gather(
+                        self._fetch_followers_by_lead([o.id for o in opportunities]),
+                        self._fetch_company_group_by_lead(opportunities),
                     )
 
-                    if is_new:
-                        batch_records.append((record, permissions))
-                        if len(batch_records) >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            batch_records = []
-                    else:
-                        await self.data_entities_processor.on_record_content_update(record)
-                        await self.data_entities_processor.on_updated_record_permissions(
-                            record, permissions
+                    for lead in opportunities:
+                        record, permissions, is_new = await self._process_lead(
+                            lead,
+                            followers_by_lead.get(lead.id, []),
+                            company_group_by_lead.get(lead.id),
                         )
+                        total_deals += 1
+
+                        if is_new:
+                            batch_records.append((record, permissions))
+                            if len(batch_records) >= self.batch_size:
+                                await self.data_entities_processor.on_new_records(batch_records)
+                                batch_records = []
+                        else:
+                            await self.data_entities_processor.on_record_content_update(record)
+                            await self.data_entities_processor.on_updated_record_permissions(
+                                record, permissions
+                            )
 
                 offset += len(leads)
                 if len(leads) < self.batch_size:
@@ -562,7 +586,69 @@ class OdooConnector(BaseConnector):
         await self.record_sync_point.update_sync_point(
             sync_key, {"write_date": current_timestamp}
         )
-        self.logger.info("Finished syncing Odoo leads.")
+        self.logger.info(
+            f"Finished syncing {total_deals} Odoo opportunities (deal records) "
+            f"and {total_people} unconverted leads (Person nodes)."
+        )
+
+    async def _upsert_lead_people(self, leads: List[CrmLead]) -> int:
+        """An unconverted crm.lead is a prospect, not a document — it becomes a
+        Person plus an Org->Person LEAD edge holding the qualification data
+        (company, stage, source, ...), mirroring the Salesforce Lead mapping."""
+        people: List[Person] = []
+        edges: List[Dict[str, Any]] = []
+        org_id = self.data_entities_processor.org_id
+
+        for lead in leads:
+            person = self._build_lead_person(lead)
+            if person is None:
+                continue
+            people.append(person)
+            edges.append(
+                {
+                    "from_id": org_id,
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": person.id,
+                    "to_collection": CollectionNames.PEOPLE.value,
+                    "company": _str_or_none(lead.partner_name),
+                    "title": _str_or_none(lead.function),
+                    "status": _m2o_name(lead.stage_id),
+                    "rating": lead.priority,
+                    "leadSource": _m2o_name(lead.source_id),
+                    "externalId": f"crm.lead/{lead.id}",
+                    "startTime": _parse_odoo_datetime(lead.create_date),
+                    "endTime": _parse_odoo_datetime(lead.date_closed),
+                    "createdAtTimestamp": person.created_at,
+                    "updatedAtTimestamp": person.updated_at,
+                }
+            )
+
+        if not people:
+            return 0
+
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_upsert_people(people)
+            await tx_store.batch_create_edges(edges, collection=CollectionNames.LEAD.value)
+        return len(people)
+
+    def _build_lead_person(self, lead: CrmLead) -> Optional[Person]:
+        """Person nodes are keyed by email, so a lead without one can't be
+        deduplicated — skipped, same rule the Salesforce connector applies."""
+        email = _str_or_none(lead.email_from)
+        if not email:
+            return None
+        email = email.lower()
+        contact = _str_or_none(lead.contact_name) or ""
+        first_name, _, last_name = contact.partition(" ")
+        return Person(
+            id=str(uuid.uuid5(uuid.NAMESPACE_DNS, email)),
+            email=email,
+            first_name=first_name or None,
+            last_name=last_name or None,
+            phone=_str_or_none(lead.phone),
+            created_at=_parse_odoo_datetime(lead.create_date) or get_epoch_timestamp_in_ms(),
+            updated_at=_parse_odoo_datetime(lead.write_date) or get_epoch_timestamp_in_ms(),
+        )
 
     async def _fetch_followers_by_lead(
         self, lead_ids: List[int]
@@ -785,8 +871,14 @@ class OdooConnector(BaseConnector):
             )
 
             for attachment in attachments:
+                # Only opportunities are records; a file hanging off an
+                # unconverted lead has no parent record to belong to, so it is
+                # skipped (Salesforce likewise excludes Lead from file parents).
+                if attachment.res_id not in permissions_by_lead:
+                    continue
+
                 record, is_new = await self._process_attachment(attachment)
-                permissions = list(permissions_by_lead.get(attachment.res_id) or [])
+                permissions = list(permissions_by_lead[attachment.res_id])
                 if not permissions:
                     fallback = self._creator_owner_permission()
                     if fallback:
@@ -820,7 +912,12 @@ class OdooConnector(BaseConnector):
         self, lead_ids: List[int]
     ) -> Dict[int, List[Permission]]:
         """Owner+follower permissions for a page of parent leads, so an
-        attachment ends up visible to exactly whoever can see its lead."""
+        attachment ends up visible to exactly whoever can see its lead.
+
+        Only opportunities are included — an unconverted lead is a Person, not
+        a record, so nothing can be parented to it. Membership in the returned
+        map is what tells the caller a parent is a real record.
+        """
         if not self.data_source or not lead_ids:
             return {}
         unique_ids = sorted(set(lead_ids))
@@ -833,6 +930,7 @@ class OdooConnector(BaseConnector):
                 _m2o_id(lead.user_id), followers_by_lead.get(lead.id, [])
             )
             for lead in leads
+            if lead.type == "opportunity"
         }
 
     async def _process_attachment(
