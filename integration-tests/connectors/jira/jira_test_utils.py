@@ -16,13 +16,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
-from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
-from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.jira.jira import (
     JiraDataSource,  # type: ignore[import-not-found]
 )
 from connectors.jira.constants import (  # type: ignore[import-not-found]
-    JIRA_INDEXING_WAIT_SEC,
     JIRA_TEST_SETTLE_WAIT_SEC,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
@@ -738,90 +735,8 @@ async def check_issue_exists_bool(
     return resp.status == 200
 
 
-# Terminal indexing statuses (pipeline will not advance past these).
-_RECORD_INDEXING_TERMINAL: frozenset[str] = frozenset(
-    {
-        ProgressStatus.COMPLETED.value,
-        ProgressStatus.FAILED.value,
-        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-        ProgressStatus.EMPTY.value,
-        ProgressStatus.AUTO_INDEX_OFF.value,
-        ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
-    }
-)
-
-
-async def wait_until_record_indexing_completed(
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_record_id: str,
-    *,
-    timeout: int = JIRA_INDEXING_WAIT_SEC,
-    poll_interval: int = 5,
-    description: str = "record indexing COMPLETED",
-    pipeshub_client: Any | None = None,
-) -> Record:
-    """Poll the graph until the connector record reaches ``indexingStatus == COMPLETED``.
-
-    Reads ``Record.indexing_status`` via :meth:`GraphProviderProtocol.get_record_by_external_id`.
-    Requires a working indexing stack and models configured on the backend so the
-    pipeline can reach ``COMPLETED``.
-
-    If ``pipeshub_client`` is set and the record hits ``AUTO_INDEX_OFF`` once, calls
-    ``POST .../reindex`` for the graph record's internal ``id`` (same as Confluence ITs)
-    and continues polling so auto-index can run again.
-
-    Raises:
-        AssertionError: If a terminal non-COMPLETED status is observed.
-        TimeoutError: If COMPLETED is not reached within ``timeout`` seconds.
-    """
-    start = time.time()
-    deadline = start + timeout
-    attempt = 0
-    last_status: str | None = None
-    reindexed_after_auto_index_off = False
-
-    while time.time() < deadline:
-        attempt += 1
-        rec = await graph_provider.get_record_by_external_id(connector_id, external_record_id)
-        if rec is not None:
-            last_status = rec.indexing_status
-            if last_status == ProgressStatus.COMPLETED.value:
-                logger.info(
-                    "✅ %s COMPLETED (attempt %d, %.1fs)",
-                    description, attempt, time.time() - start,
-                )
-                return rec
-            if last_status in _RECORD_INDEXING_TERMINAL:
-                if (
-                    last_status == ProgressStatus.AUTO_INDEX_OFF.value
-                    and pipeshub_client is not None
-                    and not reindexed_after_auto_index_off
-                ):
-                    logger.info("🔄 %s — AUTO_INDEX_OFF, triggering reindex", description)
-                    pipeshub_client.reindex_record(rec.id)
-                    reindexed_after_auto_index_off = True
-                    await asyncio.sleep(8)
-                    continue
-                raise AssertionError(
-                    f"{description}: record {external_record_id!r} reached terminal "
-                    f"indexingStatus={last_status!r} (expected COMPLETED)"
-                )
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            break
-        sleep_time = min(poll_interval, remaining)
-        logger.info(
-            "⏳ %s — status=%s (attempt %d, %.0fs left)",
-            description, last_status or "pending", attempt, remaining,
-        )
-        await asyncio.sleep(sleep_time)
-
-    raise TimeoutError(
-        f"Timed out waiting for {description} on externalRecordId={external_record_id!r} "
-        f"after {timeout}s (last indexingStatus={last_status!r}, attempts={attempt})"
-    )
-
+# ``wait_until_record_indexing_completed`` now lives in helper/indexing_wait.py
+# and is shared with the Linear and Google Drive suites.
 
 # =============================================================================
 # Idempotency-aware Jira write/read retry (mirrors Linear _api_call_with_retry,

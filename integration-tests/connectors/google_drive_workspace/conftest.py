@@ -222,24 +222,32 @@ def _auth_config(admin_email: str, sa_json: str) -> dict[str, Any]:
     }
 
 
-def _manual_indexing_filters() -> dict[str, Any]:
-    """Disable auto-indexing — these ITs assert graph sync only."""
+def _indexing_filters(*, manual: bool) -> dict[str, Any]:
+    """``enable_manual_sync`` master switch, set explicitly either way."""
     return {
         "indexing": {
             "values": {
                 "enable_manual_sync": {
                     "operator": "is",
                     "type": "boolean",
-                    "value": True,
+                    "value": manual,
                 }
             }
         }
     }
 
 
-def _connector_filters(*, sync_values: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """Build filters with manual indexing on; optional sync ``values`` merged in."""
-    filters = _manual_indexing_filters()
+def _connector_filters(
+    *,
+    sync_values: Optional[dict[str, Any]] = None,
+    manual_indexing: bool = True,
+) -> dict[str, Any]:
+    """Build filters with manual indexing on; optional sync ``values`` merged in.
+
+    Pass ``manual_indexing=False`` when the suite needs the live indexing
+    pipeline to run (records reaching ``indexingStatus == COMPLETED``).
+    """
+    filters = _indexing_filters(manual=manual_indexing)
     if sync_values:
         filters["sync"] = {"values": sync_values}
     return filters
@@ -605,8 +613,9 @@ async def drive_workspace_blocks_connector(
 
     Uploads the five google-drive-it-files samples under ``seed`` (Office files
     converted to Docs/Sheets/Slides), syncs with ``folder_ids=[seed]``, and
-    waits until all five file records exist in the graph. Parsing/block capture
-    is done in-process by the tests — indexing stays manual.
+    waits until all five file records exist in the graph. Auto-indexing is left
+    on so the same five records also cover the live pipeline
+    (``TC-DRIVE-IDX-*``); the snapshot tests parse in-process regardless.
     """
     sa_json = os.environ[ENV_SA_JSON].strip()
     admin_email = os.environ[ENV_ADMIN_EMAIL].strip()
@@ -675,7 +684,8 @@ async def drive_workspace_blocks_connector(
                         "type": "list",
                         "value": [seed_folder_id],
                     }
-                }
+                },
+                manual_indexing=False,
             ),
         }
 

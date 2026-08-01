@@ -62,6 +62,8 @@ from connectors.linear.linear_test_utils import (  # noqa: E402
     count_linear_users_with_email,
     get_linear_issue_updated_ms,
     wait_until_linear_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
     wait_until_record_indexing_completed,
 )
 

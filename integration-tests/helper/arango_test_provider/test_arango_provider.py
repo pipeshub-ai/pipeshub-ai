@@ -450,7 +450,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
-                    RETURN g.name
+                    RETURN g.groupName
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "name": record_name})
         return result[0] if result else None

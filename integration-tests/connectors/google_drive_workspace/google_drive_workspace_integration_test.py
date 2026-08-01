@@ -52,8 +52,13 @@ Uses class-scoped connectors (see conftest):
   order 33 TC-DRIVE-BLOCKS-004 — OWASP Test PDF
   order 34 TC-DRIVE-BLOCKS-005 — CONTRIBUTING.md
 
+  order 35-39 TC-DRIVE-IDX-001..005 — same five samples reach indexingStatus
+                                      COMPLETED via the live pipeline
+
 Env (blocks): ``GOOGLE_DRIVE_BLOCKS_BOOTSTRAP=1`` writes fixtures/<kind>.expected.json.
 Docling must be reachable for PDF / Docs / Slides; Sheets uses the non-LLM Excel path.
+The blocks connector runs with auto-indexing ON so the IDX suite can share its five
+records; the snapshot tests parse in-process and are unaffected.
 """
 
 from __future__ import annotations
@@ -72,7 +77,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]  # noqa: E402
+from app.config.constants.arangodb import (  # type: ignore[import-not-found]  # noqa: E402
+    MimeTypes,
+    ProgressStatus,
+)
 from app.sources.external.google.drive.drive import (  # type: ignore[import-not-found]  # noqa: E402
     GoogleDriveDataSource,
 )
@@ -120,6 +128,9 @@ from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
+from helper.indexing_wait import (  # noqa: E402
+    wait_until_record_indexing_completed,
+)
 from pipeshub_client import PipeshubClient  # noqa: E402
 from validation.graph_edge_validator import (  # noqa: E402
     assert_graph_edges,
@@ -140,6 +151,7 @@ pytestmark = [
 ]
 
 _SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT", "300"))
+_INDEXING_WAIT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_INDEXING_WAIT", "300"))
 _USER_GRAPH_TIMEOUT_SEC = int(
     os.getenv("GOOGLE_DRIVE_WORKSPACE_USER_GRAPH_TIMEOUT", "120")
 )
@@ -2508,6 +2520,25 @@ _BLOCKS_CASES = [
     ),
 ]
 
+_INDEXING_CASES = [
+    pytest.param(
+        kind,
+        f"TC-DRIVE-IDX-{idx:03d}",
+        marks=pytest.mark.order(order),
+        id=f"TC-DRIVE-IDX-{idx:03d}",
+    )
+    for idx, (kind, order) in enumerate(
+        (
+            ("newsletter_doc", 35),
+            ("science_fair_slides", 36),
+            ("gantt_chart_sheets", 37),
+            ("owasp_pdf", 38),
+            ("contributing_md", 39),
+        ),
+        start=1,
+    )
+]
+
 
 def _kind_local_name(kind: str) -> str:
     for spec in DRIVE_BLOCKS_SAMPLE_SPECS:
@@ -2517,7 +2548,11 @@ def _kind_local_name(kind: str) -> str:
 
 
 class TestDriveWorkspaceBlocks:
-    """Stream synced Drive samples → Processor → deep-equal expected snapshots."""
+    """Parser snapshots + live indexing over the same five synced samples.
+
+    Both halves share one class-scoped connector; splitting them into separate
+    classes would tear that connector down and re-upload the samples.
+    """
 
     @pytest.mark.parametrize("kind,tc_id", _BLOCKS_CASES)
     async def test_tc_drive_blocks_streamed_expected(
@@ -2573,5 +2608,45 @@ class TestDriveWorkspaceBlocks:
         expected = load_expected(kind)
         assert actual == expected, (
             f"{tc_id}: parsed blocks do not match expected snapshot for {kind}"
+        )
+        logger.info("%s passed (%s)", tc_id, kind)
+
+    @pytest.mark.parametrize("kind,tc_id", _INDEXING_CASES)
+    async def test_tc_drive_idx_sample_indexing_completed(
+        self,
+        kind: str,
+        tc_id: str,
+        drive_workspace_blocks_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        """Assert the sample cleared the live indexing pipeline.
+
+        The snapshot test above parses in-process with ``IndexingPipeline``
+        patched out; this proves the record was published, consumed and embedded.
+        A contentless parse lands on ``EMPTY`` rather than ``COMPLETED``, so this
+        catches "parser silently returns nothing" for every sample mime without a
+        snapshot to maintain.
+        """
+        connector_id = drive_workspace_blocks_connector["connector_id"]
+        by_kind: dict[str, dict[str, str]] = drive_workspace_blocks_connector[
+            "blocks_by_kind"
+        ]
+        sample = by_kind.get(kind)
+        assert sample is not None, f"blocks fixture missing kind={kind!r}"
+        external_id = sample["id"]
+
+        rec = await wait_until_record_indexing_completed(
+            graph_provider,
+            connector_id,
+            external_id,
+            timeout=_INDEXING_WAIT_SEC,
+            description=f"{tc_id} {kind} ({sample['name']})",
+            pipeshub_client=pipeshub_client,
+        )
+        assert rec.indexing_status == ProgressStatus.COMPLETED.value
+        assert rec.virtual_record_id, (
+            f"{tc_id}: {kind} has no virtual_record_id after indexing COMPLETED — "
+            f"nothing was embedded"
         )
         logger.info("%s passed (%s)", tc_id, kind)
