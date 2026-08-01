@@ -93,11 +93,19 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
     return connector
 
 
-def _make_response(success=True, data=None, error=None):
+def _attachment_lookup(datasource, content_url):
+    """Attachment URLs are resolved per download, not read off the record."""
+    datasource.show_attachment = AsyncMock(
+        return_value=_make_response(data={"attachment": {"content_url": content_url}})
+    )
+
+
+def _make_response(success=True, data=None, error=None, status_code=None):
     resp = MagicMock()
     resp.success = success
     resp.data = data
     resp.error = error
+    resp.status_code = status_code
     return resp
 
 
@@ -158,6 +166,57 @@ class TestFetchPaginatedList:
         api = AsyncMock(return_value=_make_response(success=False))
         assert await zendesk_connector._fetch_paginated_list(api, "groups") == []
 
+    async def test_reports_incomplete_on_failed_page(self, zendesk_connector):
+        """Callers that rebuild state from the full list must not treat a truncated
+        one as authoritative."""
+        api = AsyncMock(return_value=_make_response(success=False, error="400"))
+
+        items, complete = await zendesk_connector._fetch_paginated_list_checked(
+            api, "group_memberships"
+        )
+
+        assert (items, complete) == ([], False)
+
+    async def test_caches_sideloaded_users(self, zendesk_connector):
+        """include= sideloads ride in the same payload; dropping them makes comment
+        headers render the raw author id."""
+        api = AsyncMock(return_value=_make_response(data={
+            "comments": [{"id": 1, "author_id": 9}],
+            "users": [{"id": 9, "name": "Sarah"}],
+        }))
+
+        await zendesk_connector._fetch_paginated_list(api, "comments")
+
+        assert zendesk_connector._user_id_to_data["9"]["name"] == "Sarah"
+
+    async def test_retries_a_rate_limited_page(self, zendesk_connector):
+        """Zendesk's incremental export allows 10 req/min, so 429s are routine. The
+        data source folds them into a ZendeskResponse instead of raising, so they
+        have to be re-raised for the shared retry helper to see them."""
+        api = AsyncMock(side_effect=[
+            _make_response(success=False, error="Too Many Requests", status_code=429),
+            _make_response(data={"groups": [{"id": 1}]}),
+        ])
+        api.__name__ = "list_groups"
+
+        result = await zendesk_connector._fetch_paginated_list(api, "groups")
+
+        assert api.await_count == 2
+        assert result == [{"id": 1}]
+
+    async def test_does_not_retry_an_auth_failure(self, zendesk_connector):
+        api = AsyncMock(return_value=_make_response(
+            success=False, error="Unauthorized", status_code=401,
+        ))
+        api.__name__ = "list_groups"
+
+        items, complete = await zendesk_connector._fetch_paginated_list_checked(
+            api, "groups"
+        )
+
+        assert api.await_count == 1
+        assert (items, complete) == ([], False)
+
 
 # ===========================================================================
 # Ticket transformation
@@ -199,6 +258,17 @@ class TestTicketToRecord:
 
     async def test_returns_none_without_id(self, zendesk_connector):
         assert await zendesk_connector._ticket_to_record({"subject": "no id"}) is None
+
+    async def test_shared_organization_grant_is_attached(self, zendesk_connector):
+        """Zendesk's shared-organization setting lets an org's members see each
+        other's tickets; without this grant only the requester can."""
+        result = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "Printer", "group_id": 7, "organization_id": 21,
+        })
+
+        _, permissions = result
+        group_ids = {p.external_id for p in permissions if p.entity_type == EntityType.GROUP}
+        assert group_ids == {"group_7", "org_21"}
 
     async def test_skips_unchanged_ticket(self, zendesk_connector, mock_tx_store):
         existing = MagicMock()
@@ -340,26 +410,30 @@ class TestAttachmentHostGuard:
         "https://foo.zendeskusercontent.com/x",
     ])
     def test_accepts_zendesk_hosts(self, zendesk_connector, url):
+        _ready(zendesk_connector)
         assert zendesk_connector._is_safe_zendesk_asset_url(url) is True
 
     @pytest.mark.parametrize("url", [
         "https://evil.com/steal",
         "https://zendesk.com.evil.com/steal",
         "https://notzendesk.com/x",
+        # Another tenant's subdomain must not qualify as ours.
+        "https://other-tenant.zendesk.com/attachments/1",
+        # Plaintext would expose the credential in transit.
+        "http://acme.zendesk.com/attachments/1",
     ])
     def test_rejects_foreign_hosts(self, zendesk_connector, url):
+        _ready(zendesk_connector)
         assert zendesk_connector._is_safe_zendesk_asset_url(url) is False
 
     async def test_download_refuses_untrusted_host(self, zendesk_connector):
         """Regression: credentials must never be sent to an API-supplied foreign host."""
-        datasource = MagicMock()
+        datasource = _ready(zendesk_connector)
         datasource.http = MagicMock()
         datasource.http.execute = AsyncMock()
-        zendesk_connector.data_source = datasource
-        zendesk_connector.external_client = MagicMock()
 
+        _attachment_lookup(datasource, "https://evil.com/payload")
         record = MagicMock()
-        record.weburl = "https://evil.com/payload"
         record.external_record_id = "ticket_1_comment_2_attachment_3"
 
         with pytest.raises(ValueError, match="untrusted host"):
@@ -367,11 +441,18 @@ class TestAttachmentHostGuard:
         datasource.http.execute.assert_not_awaited()
 
     async def test_download_raises_without_url(self, zendesk_connector):
-        zendesk_connector.data_source = MagicMock()
-        zendesk_connector.external_client = MagicMock()
+        datasource = _ready(zendesk_connector)
+        _attachment_lookup(datasource, None)
         record = MagicMock()
-        record.weburl = None
+        record.external_record_id = "ticket_1_comment_2_attachment_3"
         with pytest.raises(ValueError):
+            await zendesk_connector._process_file_for_streaming(record)
+
+    async def test_download_rejects_unparseable_record_id(self, zendesk_connector):
+        _ready(zendesk_connector)
+        record = MagicMock()
+        record.external_record_id = "not-an-attachment"
+        with pytest.raises(ValueError, match="Unrecognised"):
             await zendesk_connector._process_file_for_streaming(record)
 
 
@@ -383,41 +464,41 @@ class TestAttachmentHostGuard:
 class TestIncrementalCursor:
     async def test_fetch_users_stops_on_repeated_cursor(self, zendesk_connector):
         """Regression: a non-advancing cursor used to loop forever."""
-        datasource = MagicMock()
+        datasource = _ready(zendesk_connector)
         datasource.incremental_users = AsyncMock(return_value=_make_response(data={
             "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
             "after_cursor": "stuck",
             "end_of_stream": False,
         }))
-        users, _, complete = await zendesk_connector._fetch_users(datasource)
+        users, _, complete = await zendesk_connector._fetch_users()
         # First page consumed, second call detects the repeated cursor and stops.
         assert datasource.incremental_users.await_count == 2
         assert len(users) == 2
         assert complete is True
 
     async def test_fetch_users_reports_incomplete_on_failed_page(self, zendesk_connector):
-        datasource = MagicMock()
+        datasource = _ready(zendesk_connector)
         datasource.incremental_users = AsyncMock(
             return_value=_make_response(success=False, error="429 Too Many Requests")
         )
 
-        users, _, complete = await zendesk_connector._fetch_users(datasource)
+        users, _, complete = await zendesk_connector._fetch_users()
 
         assert users == []
         assert complete is False
 
     async def test_fetch_users_starts_from_epoch(self, zendesk_connector):
-        datasource = MagicMock()
+        datasource = _ready(zendesk_connector)
         datasource.incremental_users = AsyncMock(return_value=_make_response(data={
             "users": [], "end_of_stream": True,
         }))
-        await zendesk_connector._fetch_users(datasource)
+        await zendesk_connector._fetch_users()
         assert datasource.incremental_users.await_args.kwargs["start_time"] == (
             DEFAULT_INCREMENTAL_START_TIME
         )
 
     async def test_sync_tickets_persists_end_time(self, zendesk_connector):
-        datasource = MagicMock()
+        datasource = _ready(zendesk_connector)
         datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
             "tickets": [
                 {"id": 1, "subject": "a", "updated_at": "2026-01-01T00:00:00Z"},
@@ -428,7 +509,7 @@ class TestIncrementalCursor:
         zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
 
-        await zendesk_connector._sync_tickets(datasource)
+        await zendesk_connector._sync_tickets()
 
         args = zendesk_connector.records_sync_point.update_sync_point.await_args
         assert args.args[0] == SYNC_POINT_KEY
@@ -508,8 +589,9 @@ def _app_user(source_user_id="1", email="a@acme.com", name="A"):
 
 
 def _ready(connector):
-    """Mark the connector initialised so `_get_fresh_datasource` short-circuits."""
+    """Mark the connector initialised so `_get_fresh_datasource` succeeds."""
     connector.external_client = MagicMock()
+    connector.external_client.get_subdomain.return_value = "acme"
     connector.data_source = MagicMock()
     return connector.data_source
 
@@ -523,11 +605,10 @@ class TestRunSync:
     @staticmethod
     def _stub_stages(connector, user):
         connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
-        connector._ensure_creator_access = AsyncMock(return_value=None)
-        connector._fetch_groups = AsyncMock(return_value=([("g_rg", [])], [("g_ug", [])]))
-        connector._fetch_organizations = AsyncMock(
-            return_value=([("o_rg", [])], [("o_ug", [])])
+        connector._fetch_groups = AsyncMock(
+            return_value=([("g_rg", [])], [("g_ug", [])], True)
         )
+        connector._fetch_organizations = AsyncMock(return_value=[("o_ug", [])])
         connector._sync_tickets = AsyncMock(return_value=3)
         connector._sync_help_center_articles = AsyncMock(return_value=4)
 
@@ -576,24 +657,23 @@ class TestRunSync:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
-    async def test_creator_access_runs_after_users_before_records(
+    async def test_truncated_membership_export_skips_membership_sync(
         self, _filters, zendesk_connector, mock_data_entities_processor
     ):
+        """A 400 past Zendesk's 10,000-record offset cap truncates the membership
+        list; rebuilding groups from it revokes whoever fell off the end."""
         _ready(zendesk_connector)
         self._stub_stages(zendesk_connector, _app_user())
-
-        order: list[str] = []
-        mock_data_entities_processor.on_new_app_users.side_effect = (
-            lambda *a: order.append("users")
+        zendesk_connector._fetch_groups = AsyncMock(
+            return_value=([("g_rg", [])], [("g_ug", [])], False)
         )
-        zendesk_connector._ensure_creator_access.side_effect = (
-            lambda: order.append("creator")
-        )
-        zendesk_connector._sync_tickets.side_effect = lambda _ds: order.append("tickets") or 3
 
         await zendesk_connector.run_sync()
 
-        assert order == ["users", "creator", "tickets"]
+        assert all(
+            call.args[0] != [("g_ug", [])]
+            for call in mock_data_entities_processor.on_new_user_groups.await_args_list
+        )
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
@@ -602,9 +682,8 @@ class TestRunSync:
     ):
         _ready(zendesk_connector)
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
-        zendesk_connector._ensure_creator_access = AsyncMock(return_value=None)
-        zendesk_connector._fetch_groups = AsyncMock(return_value=([], []))
-        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], []))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
         zendesk_connector._sync_tickets = AsyncMock(return_value=0)
         zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
 
@@ -618,57 +697,6 @@ class TestRunSync:
         zendesk_connector.run_sync = AsyncMock()
         await zendesk_connector.run_incremental_sync()
         zendesk_connector.run_sync.assert_awaited_once()
-
-
-# ===========================================================================
-# Creator access
-# ===========================================================================
-
-
-class TestEnsureCreatorAccess:
-    async def test_returns_cached_permission_without_relookup(self, zendesk_connector):
-        sentinel = MagicMock()
-        zendesk_connector._connector_group_permission = sentinel
-        zendesk_connector.ensure_connector_group_permission = AsyncMock()
-
-        assert await zendesk_connector._ensure_creator_access() is sentinel
-        zendesk_connector.ensure_connector_group_permission.assert_not_awaited()
-
-    async def test_resolves_creator_email_from_store(
-        self, zendesk_connector, mock_tx_store
-    ):
-        zendesk_connector._connector_group_permission = None
-        zendesk_connector.creator_email = None
-        zendesk_connector.created_by = "user-42"
-        mock_tx_store.get_user_by_user_id = AsyncMock(
-            return_value={"email": "boss@acme.com"}
-        )
-        zendesk_connector.ensure_connector_group_permission = AsyncMock(
-            return_value=MagicMock()
-        )
-
-        await zendesk_connector._ensure_creator_access()
-
-        assert zendesk_connector.creator_email == "boss@acme.com"
-
-    async def test_survives_store_failure(self, zendesk_connector, mock_tx_store):
-        zendesk_connector._connector_group_permission = None
-        zendesk_connector.creator_email = None
-        zendesk_connector.created_by = "user-42"
-        mock_tx_store.get_user_by_user_id = AsyncMock(side_effect=Exception("boom"))
-        zendesk_connector.ensure_connector_group_permission = AsyncMock(
-            return_value=None
-        )
-
-        assert await zendesk_connector._ensure_creator_access() is None
-
-    async def test_warns_when_no_connector_group(self, zendesk_connector):
-        zendesk_connector._connector_group_permission = None
-        zendesk_connector.creator_email = "boss@acme.com"
-        zendesk_connector.ensure_connector_group_permission = AsyncMock(
-            return_value=None
-        )
-        assert await zendesk_connector._ensure_creator_access() is None
 
 
 # ===========================================================================
@@ -688,8 +716,8 @@ class TestFetchGroups:
         }))
         user = _app_user()
 
-        record_groups, user_groups = await zendesk_connector._fetch_groups(
-            datasource, {"1": user}
+        record_groups, user_groups, _ = await zendesk_connector._fetch_groups(
+            {"1": user}
         )
 
         assert len(record_groups) == 1
@@ -712,7 +740,7 @@ class TestFetchGroups:
             return_value=_make_response(data={"group_memberships": []})
         )
 
-        await zendesk_connector._fetch_groups(datasource, {})
+        await zendesk_connector._fetch_groups({})
 
         assert zendesk_connector._group_id_to_data["7"]["name"] == "Billing"
 
@@ -725,7 +753,7 @@ class TestFetchGroups:
             "group_memberships": [{"group_id": 7, "user_id": 999}],
         }))
 
-        _, user_groups = await zendesk_connector._fetch_groups(datasource, {})
+        _, user_groups, _ = await zendesk_connector._fetch_groups({})
 
         assert user_groups[0][1] == []
 
@@ -738,7 +766,7 @@ class TestFetchGroups:
             return_value=_make_response(data={"group_memberships": []})
         )
 
-        record_groups, _ = await zendesk_connector._fetch_groups(datasource, {})
+        record_groups, _, _ = await zendesk_connector._fetch_groups({})
 
         assert record_groups[0][0].name == "Group 7"
 
@@ -749,7 +777,10 @@ class TestFetchGroups:
 
 
 class TestFetchOrganizations:
-    async def test_builds_user_group_record_group_pair(self, zendesk_connector):
+    """Organizations are user groups only. They are not RecordGroups: nothing files
+    a record under one, so they would render permanently empty."""
+
+    async def test_builds_user_group(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.incremental_organizations = AsyncMock(
             return_value=_make_response(data={
@@ -759,13 +790,10 @@ class TestFetchOrganizations:
             })
         )
 
-        record_groups, user_groups = await zendesk_connector._fetch_organizations(datasource)
+        user_groups = await zendesk_connector._fetch_organizations()
 
-        record_group, _ = record_groups[0]
-        assert record_group.external_group_id == "org_21"
-        assert record_group.group_type == RecordGroupType.USER_GROUP
-        assert record_group.description == "Enterprise account"
         assert user_groups[0][0].source_user_group_id == "org_21"
+        assert user_groups[0][0].name == "Acme Corp"
 
     async def test_membership_derived_from_cached_users_not_extra_calls(
         self, zendesk_connector
@@ -782,25 +810,10 @@ class TestFetchOrganizations:
         zendesk_connector._user_id_to_data = {"1": {"organization_id": 21}}
         zendesk_connector._user_id_to_app_user = {"1": user}
 
-        _, user_groups = await zendesk_connector._fetch_organizations(datasource)
+        user_groups = await zendesk_connector._fetch_organizations()
 
         assert user_groups[0][1] == [user]
         assert datasource.incremental_organizations.await_count == 1
-
-    async def test_attaches_creator_permission_when_present(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        datasource.incremental_organizations = AsyncMock(
-            return_value=_make_response(data={
-                "organizations": [{"id": 21, "name": "Acme Corp"}],
-                "end_of_stream": True,
-            })
-        )
-        creator = MagicMock()
-        zendesk_connector._connector_group_permission = creator
-
-        record_groups, _ = await zendesk_connector._fetch_organizations(datasource)
-
-        assert creator in record_groups[0][1]
 
     async def test_stops_on_repeated_cursor(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -812,7 +825,7 @@ class TestFetchOrganizations:
             })
         )
 
-        await zendesk_connector._fetch_organizations(datasource)
+        await zendesk_connector._fetch_organizations()
 
         assert datasource.incremental_organizations.await_count == 2
 
@@ -822,9 +835,7 @@ class TestFetchOrganizations:
             return_value=_make_response(success=False, error="401 Unauthorized")
         )
 
-        record_groups, user_groups = await zendesk_connector._fetch_organizations(datasource)
-
-        assert (record_groups, user_groups) == ([], [])
+        assert await zendesk_connector._fetch_organizations() == []
 
     async def test_skips_org_without_id(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -835,9 +846,7 @@ class TestFetchOrganizations:
             })
         )
 
-        record_groups, _ = await zendesk_connector._fetch_organizations(datasource)
-
-        assert record_groups == []
+        assert await zendesk_connector._fetch_organizations() == []
 
 
 # ===========================================================================
@@ -856,7 +865,7 @@ class TestHelpCenterSync:
                           "html_url": "https://acme.zendesk.com/hc/s/31"}],
         }))
 
-        await zendesk_connector._sync_help_center_sections(datasource)
+        await zendesk_connector._sync_help_center_sections()
 
         record_groups = mock_data_entities_processor.on_new_record_groups.await_args.args[0]
         record_group, permissions = record_groups[0]
@@ -872,7 +881,7 @@ class TestHelpCenterSync:
             return_value=_make_response(data={"sections": [{"name": "Orphan"}]})
         )
 
-        await zendesk_connector._sync_help_center_sections(datasource)
+        await zendesk_connector._sync_help_center_sections()
 
         mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
 
@@ -897,7 +906,7 @@ class TestHelpCenterSync:
             lambda *a: order.append("articles")
         )
 
-        count = await zendesk_connector._sync_help_center_articles(datasource)
+        count = await zendesk_connector._sync_help_center_articles()
 
         assert count == 1
         assert order == ["sections", "articles"]
@@ -910,7 +919,7 @@ class TestHelpCenterSync:
             IndexingFilterKey.KNOWLEDGE_BASE.value: disabled
         }
 
-        assert await zendesk_connector._sync_help_center_articles(datasource) == 0
+        assert await zendesk_connector._sync_help_center_articles() == 0
         datasource.list_sections.assert_not_called()
 
 
@@ -998,13 +1007,32 @@ class TestStreamRecord:
         response.bytes.return_value = b"filebytes"
         datasource.http.execute = AsyncMock(return_value=response)
 
+        _attachment_lookup(datasource, "https://acme.zendesk.com/attachments/9")
         record = MagicMock()
-        record.weburl = "https://acme.zendesk.com/attachments/9"
-        record.external_record_id = "att-9"
+        record.external_record_id = "ticket_1_comment_2_attachment_9"
 
         assert await zendesk_connector._process_file_for_streaming(record) == b"filebytes"
         sent = datasource.http.execute.await_args.args[0]
         assert sent.headers["Authorization"] == "Basic secret"
+
+    async def test_cdn_download_withholds_api_credentials(self, zendesk_connector):
+        """CDN URLs are pre-signed and the host is shared across tenants — sending
+        the API token there leaks this tenant's credentials."""
+        datasource = _ready(zendesk_connector)
+        datasource.http = MagicMock()
+        datasource.http.headers = {"Authorization": "Basic secret"}
+        response = MagicMock()
+        response.status = 200
+        response.bytes.return_value = b"filebytes"
+        datasource.http.execute = AsyncMock(return_value=response)
+
+        _attachment_lookup(datasource, "https://p1.zdusercontent.com/attachment/9")
+        record = MagicMock()
+        record.external_record_id = "ticket_1_comment_2_attachment_9"
+
+        await zendesk_connector._process_file_for_streaming(record)
+
+        assert datasource.http.execute.await_args.args[0].headers == {}
 
     async def test_file_download_raises_on_error_status(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1014,9 +1042,9 @@ class TestStreamRecord:
         response.status = 404
         datasource.http.execute = AsyncMock(return_value=response)
 
+        _attachment_lookup(datasource, "https://acme.zendesk.com/attachments/9")
         record = MagicMock()
-        record.weburl = "https://acme.zendesk.com/attachments/9"
-        record.external_record_id = "att-9"
+        record.external_record_id = "ticket_1_comment_2_attachment_9"
 
         with pytest.raises(Exception, match="Failed to download"):
             await zendesk_connector._process_file_for_streaming(record)
@@ -1439,15 +1467,22 @@ class TestArticleStreaming:
 
         assert response.media_type == MimeTypes.BLOCKS.value
 
-    async def test_stream_record_dispatches_file(self, zendesk_connector):
+    async def test_stream_record_serves_file_with_its_own_mime_type(
+        self, zendesk_connector
+    ):
+        """Labelling attachment bytes as a BlocksContainer makes every download an
+        unopenable JSON blob."""
         _ready(zendesk_connector)
         record = MagicMock()
         record.record_type = RecordType.FILE
+        record.record_name = "trace.log"
+        record.mime_type = "text/plain"
+        record.external_record_id = "att-9"
         zendesk_connector._process_file_for_streaming = AsyncMock(return_value=b"bytes")
 
         response = await zendesk_connector.stream_record(record)
 
-        assert response.media_type == MimeTypes.BLOCKS.value
+        assert response.media_type == "text/plain"
 
 
 class TestStartTime:
