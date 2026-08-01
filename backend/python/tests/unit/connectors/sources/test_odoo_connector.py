@@ -22,6 +22,7 @@ from app.sources.external.odoo.odoo import (
     CrmLead,
     MailFollower,
     Partner,
+    ResUser,
 )
 
 
@@ -404,6 +405,26 @@ class TestProcessLead:
 # ===========================================================================
 # crm.lead split: opportunity -> DealRecord, lead -> Person
 # ===========================================================================
+
+
+class TestSyncUsers:
+    @pytest.mark.asyncio
+    async def test_non_email_login_is_not_used_as_an_email(self):
+        """Odoo's default admin login is a bare "admin". Permissions resolve by
+        email, so accepting it would grant to nobody and hide the record."""
+        c = _make_connector()
+        c.data_source.list_users = AsyncMock(
+            return_value=[
+                ResUser(id=7, name="Admin", email=False, login="admin", active=True),
+                ResUser(id=8, name="Alice", email=False, login="alice@acme.com", active=True),
+            ]
+        )
+
+        await c._sync_users()
+
+        assert c._user_email_by_id == {8: "alice@acme.com"}
+        synced = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.email for u in synced] == ["alice@acme.com"]
 
 
 class TestBuildLeadPerson:
@@ -808,13 +829,32 @@ class TestFetchCompanyGroupByLead:
     @pytest.mark.asyncio
     async def test_individual_partner_maps_to_parent_company(self):
         c = _make_connector()
+        # Two reads: the lead's partner, then that partner's parent.
         c.data_source.read_partners = AsyncMock(
-            return_value=[_partner(id=42, is_company=False, parent_id=[99, "Acme"])]
+            side_effect=[
+                [_partner(id=42, is_company=False, parent_id=[99, "Acme"])],
+                [_partner(id=99, is_company=True)],
+            ]
         )
 
         result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=[42, "Jane"])])
 
         assert result == {1: "res.partner/99"}
+
+    @pytest.mark.asyncio
+    async def test_individual_parent_is_not_used_as_a_company_group(self):
+        """Odoo allows contact->contact parents, but only companies get groups."""
+        c = _make_connector()
+        c.data_source.read_partners = AsyncMock(
+            side_effect=[
+                [_partner(id=42, is_company=False, parent_id=[43, "Boss"])],
+                [_partner(id=43, is_company=False)],
+            ]
+        )
+
+        result = await c._fetch_company_group_by_lead([_lead(id=1, partner_id=[42, "Jane"])])
+
+        assert result == {}
 
     @pytest.mark.asyncio
     async def test_individual_without_company_is_unmapped(self):
@@ -978,6 +1018,7 @@ class TestStreamRecordDispatch:
             external_record_id="ir.attachment/9",
             record_name="proposal.pdf",
             mime_type="application/pdf",
+            size_in_bytes=1024,
             id="r9",
         )
 
@@ -990,12 +1031,37 @@ class TestStreamRecordDispatch:
         assert body == b"PDF-BYTES"
 
     @pytest.mark.asyncio
+    async def test_oversized_attachment_is_refused_before_fetching(self):
+        from fastapi import HTTPException
+
+        c = _make_connector()
+        c.data_source.get_attachment_content = AsyncMock()
+        record = MagicMock(
+            external_record_id="ir.attachment/9",
+            record_name="huge.iso",
+            mime_type="application/octet-stream",
+            size_in_bytes=500 * 1024 * 1024,
+            id="r9",
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await c._stream_attachment(record)
+
+        assert exc.value.status_code == 413
+        c.data_source.get_attachment_content.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_raises_when_not_initialized(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         c.data_source = None
         record = MagicMock(external_record_id="crm.lead/1")
-        with pytest.raises(Exception):
+
+        with pytest.raises(HTTPException) as exc:
             await c.stream_record(record)
+
+        assert exc.value.status_code == 503
 
 
 class TestStreamLeadContent:

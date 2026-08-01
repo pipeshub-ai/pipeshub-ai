@@ -114,6 +114,11 @@ def _parse_odoo_datetime(value: Any) -> Optional[int]:
         return None
 
 
+# Ceiling for attachment streaming: content arrives base64-encoded and is then
+# decoded, so peak memory is roughly 2.3x this per concurrent request.
+_MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
+
+
 def _odoo_now() -> str:
     """Current time in the same format Odoo's write_date fields use, so it
     can be compared directly in a search_read domain."""
@@ -217,6 +222,9 @@ class OdooConnector(BaseConnector):
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+
+        self._sync_lock = asyncio.Lock()
+        self._background_tasks: set[asyncio.Task] = set()
 
     def _create_sync_points(self) -> None:
         self.record_sync_point = SyncPoint(
@@ -362,8 +370,11 @@ class OdooConnector(BaseConnector):
         self._user_email_by_id = {}
         self._user_email_by_partner_id = {}
         for user in users:
-            email = user.email if isinstance(user.email, str) else (user.login or None)
-            if not email:
+            email = user.email if isinstance(user.email, str) else user.login
+            # login is usually an email but can be a bare username ("admin").
+            # Permissions resolve by email, so a non-email grant matches nobody
+            # and silently hides the record — skip and let the creator fallback run.
+            if not email or "@" not in email:
                 continue
             self._user_email_by_id[user.id] = email
             partner_id = _m2o_id(user.partner_id)
@@ -648,10 +659,25 @@ class OdooConnector(BaseConnector):
             sorted(set(partner_id_by_lead.values()))
         )
         group_by_partner: Dict[int, str] = {}
+        parent_by_partner: Dict[int, int] = {}
         for partner in partners:
-            company_id = partner.id if partner.is_company else _m2o_id(partner.parent_id)
-            if company_id is not None:
-                group_by_partner[partner.id] = self._company_external_group_id(company_id)
+            if partner.is_company:
+                group_by_partner[partner.id] = self._company_external_group_id(partner.id)
+                continue
+            parent_id = _m2o_id(partner.parent_id)
+            if parent_id is not None:
+                parent_by_partner[partner.id] = parent_id
+
+        # A contact's parent can itself be an individual, and _sync_partners only
+        # creates groups for companies — so verify before pointing at one.
+        if parent_by_partner:
+            parents = await self.data_source.read_partners(
+                sorted(set(parent_by_partner.values()))
+            )
+            company_parents = {p.id for p in parents if p.is_company}
+            for partner_id, parent_id in parent_by_partner.items():
+                if parent_id in company_parents:
+                    group_by_partner[partner_id] = self._company_external_group_id(parent_id)
 
         return {
             lead_id: group_by_partner[partner_id]
@@ -1195,6 +1221,16 @@ class OdooConnector(BaseConnector):
         it base64-encoded over XML-RPC, so it is decoded before streaming."""
         assert self.data_source is not None  # guarded by stream_record()
         attachment_id = int(record.external_record_id.split("/")[-1])
+
+        # Odoo caps nothing; the base64 payload plus its decoded copy peak at
+        # ~2.3x the file size, so refuse before fetching rather than OOM.
+        size = record.size_in_bytes or 0
+        if size > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+                detail=f"Attachment exceeds {_MAX_ATTACHMENT_BYTES} bytes",
+            )
+
         encoded = await self.data_source.get_attachment_content(attachment_id)
         if encoded is None:
             raise HTTPException(
@@ -1217,7 +1253,21 @@ class OdooConnector(BaseConnector):
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Placeholder — Odoo has no native webhooks without a Studio automation."""
         self.logger.info("Odoo webhook received.")
-        asyncio.create_task(self.run_incremental_sync())
+        task = asyncio.create_task(self._sync_from_webhook())
+        # The loop only holds a weak reference; without this the task can be
+        # collected mid-flight and its exception lost.
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _sync_from_webhook(self) -> None:
+        # Serialized: concurrent runs share the email/stage maps and the sync
+        # cursor, so a slower run would overwrite a faster one's position and
+        # the window between them would never be re-scanned.
+        async with self._sync_lock:
+            try:
+                await self.run_incremental_sync()
+            except Exception:
+                self.logger.error("Webhook-triggered Odoo sync failed", exc_info=True)
 
     async def reindex_records(self, records: List[Record]) -> None:
         try:

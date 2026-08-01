@@ -541,8 +541,7 @@ function ConnectorItemComponent({
       return <MaterialIcon name="bug_report" size={iconSize} color={iconColor} style={iconStyle} />;
     }
     if (connectorType === 'odoo') {
-      // No brand icon yet — matches the generic fallback in ConnectorIcon.tsx.
-      return <MaterialIcon name="extension" size={iconSize} color={iconColor} style={iconStyle} />;
+      return <ConnectorIcon type="odoo" size={iconSize} color={iconColor} style={iconStyle} />;
     }
     return <MaterialIcon name="description" size={iconSize} color={iconColor} style={iconStyle} />;
   };
