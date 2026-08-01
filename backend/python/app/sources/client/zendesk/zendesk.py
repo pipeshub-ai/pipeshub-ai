@@ -17,6 +17,9 @@ class ZendeskResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Every call site already passes this; without the field Pydantic dropped it,
+    # leaving callers unable to tell a retryable 429 from a fatal 401.
+    status_code: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
