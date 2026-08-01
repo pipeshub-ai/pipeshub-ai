@@ -137,7 +137,10 @@ from helper.clients.search_client import SearchClient  # noqa: E402
 from helper.clients.teams_client import TeamsClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
 from helper.clients.users_client import UsersClient  # noqa: E402
-from sample_data import ensure_sample_data_files_root  # noqa: E402
+from sample_data import (  # noqa: E402
+    ensure_sample_data_files_root,
+    ensure_sample_data_google_drive_it_files_root,
+)
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
 _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
@@ -406,6 +409,12 @@ def kb_client(pipeshub_client: PipeshubClient) -> KBClient:
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
+
+
+@pytest.fixture(scope="session")
+def drive_blocks_sample_root() -> Path:
+    """Session-scoped path to google-drive-it-files sample data from GitHub."""
+    return ensure_sample_data_google_drive_it_files_root()
 
 
 @pytest.fixture(scope="session")

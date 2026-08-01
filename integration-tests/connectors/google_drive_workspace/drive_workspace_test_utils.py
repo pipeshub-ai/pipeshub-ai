@@ -965,15 +965,27 @@ async def upload_drive_local_file(
     parent_id: str,
     *,
     name: Optional[str] = None,
+    convert_to_mime: Optional[str] = None,
+    media_mime: Optional[str] = None,
 ) -> str:
-    """Upload a local file into Drive under *parent_id*; return the new file id."""
+    """Upload a local file into Drive under *parent_id*; return the new file id.
+
+    When *convert_to_mime* is a Google Workspace MIME (Docs/Sheets/Slides), the
+    upload converts Office binary to the native Google type via Drive API
+    (``file_metadata.mimeType`` = target, media MIME = source Office type).
+    """
     file_name = name or local_path.name
-    mime_type, _ = mimetypes.guess_type(str(local_path))
+    mime_type = media_mime
+    if not mime_type:
+        mime_type, _ = mimetypes.guess_type(str(local_path))
     if not mime_type:
         mime_type = "application/octet-stream"
     content = local_path.read_bytes()
+    file_metadata: dict[str, Any] = {"name": file_name, "parents": [parent_id]}
+    if convert_to_mime:
+        file_metadata["mimeType"] = convert_to_mime
     created = await drive.files_create_with_media(
-        file_metadata={"name": file_name, "parents": [parent_id]},
+        file_metadata=file_metadata,
         content=content,
         mime_type=mime_type,
         supportsAllDrives=True,
@@ -983,15 +995,108 @@ async def upload_drive_local_file(
         raise RuntimeError(
             f"files_create_with_media returned no id for {file_name!r}: {created}"
         )
+    result_mime = created.get("mimeType") or convert_to_mime or mime_type
     logger.info(
-        "Uploaded sample %s (%d bytes, %s) as Drive file %s under %s",
+        "Uploaded sample %s (%d bytes, media=%s → %s) as Drive file %s under %s",
         file_name,
         len(content),
         mime_type,
+        result_mime,
         file_id,
         parent_id,
     )
     return str(file_id)
+
+
+# Blocks-snapshot sample filenames (integration-test repo google-drive-it-files).
+DRIVE_BLOCKS_SAMPLE_SPECS: tuple[dict[str, str], ...] = (
+    {
+        "kind": "newsletter_doc",
+        "local_name": "Newsletter.docx",
+        "convert_to_mime": MimeTypes.GOOGLE_DOCS.value,
+        "media_mime": MimeTypes.DOCX.value,
+    },
+    {
+        "kind": "science_fair_slides",
+        "local_name": "Science fair.pptx",
+        "convert_to_mime": MimeTypes.GOOGLE_SLIDES.value,
+        "media_mime": MimeTypes.PPTX.value,
+    },
+    {
+        "kind": "gantt_chart_sheets",
+        "local_name": "Gantt chart.xlsx",
+        "convert_to_mime": MimeTypes.GOOGLE_SHEETS.value,
+        "media_mime": MimeTypes.XLSX.value,
+    },
+    {
+        "kind": "owasp_pdf",
+        "local_name": "OWASP Test PDF.pdf",
+        "media_mime": MimeTypes.PDF.value,
+    },
+    {
+        "kind": "contributing_md",
+        "local_name": "CONTRIBUTING.md",
+        "media_mime": MimeTypes.MARKDOWN.value,
+    },
+)
+
+
+async def create_drive_blocks_fixtures(
+    drive: GoogleDriveDataSource,
+) -> dict[str, Any]:
+    """Create ``blocks-root/seed/`` and return folder ids for the blocks IT."""
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"phit-blocks-root-{suffix}"
+    seed_name = f"phit-blocks-seed-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+    seed_id = await create_drive_folder(drive, seed_name, parent_id=root_id)
+    return {
+        "root_folder_id": root_id,
+        "root_folder_name": root_name,
+        "seed_folder_id": seed_id,
+        "seed_folder_name": seed_name,
+    }
+
+
+async def upload_drive_blocks_samples(
+    drive: GoogleDriveDataSource,
+    parent_id: str,
+    samples_root: Path,
+) -> list[dict[str, str]]:
+    """Upload the five google-drive-it-files samples; convert Office → Google natives.
+
+    Returns a list of ``{id, name, kind, local_name, target_mime}`` dicts.
+    """
+    uploaded: list[dict[str, str]] = []
+    for spec in DRIVE_BLOCKS_SAMPLE_SPECS:
+        local_name = spec["local_name"]
+        kind = spec["kind"]
+        local_path = samples_root / local_name
+        if not local_path.is_file():
+            raise RuntimeError(
+                f"Drive blocks sample missing: {local_path} (kind={kind})"
+            )
+        convert_to = spec.get("convert_to_mime")
+        file_id = await upload_drive_local_file(
+            drive,
+            local_path,
+            parent_id,
+            name=local_name,
+            convert_to_mime=convert_to,
+            media_mime=spec.get("media_mime"),
+        )
+        meta = await drive_files_get_workspace(drive, file_id)
+        target_mime = str(meta.get("mimeType") or convert_to or "")
+        uploaded.append(
+            {
+                "id": file_id,
+                "name": str(meta.get("name") or local_name),
+                "kind": kind,
+                "local_name": local_name,
+                "target_mime": target_mime,
+            }
+        )
+    return uploaded
 
 
 async def count_drive_directory_users(admin_client: Any) -> int:

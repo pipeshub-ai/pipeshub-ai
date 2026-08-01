@@ -1,6 +1,6 @@
 # pyright: ignore-file
 
-"""Google Drive Workspace – entity sync + folder_ids + extension filter ITs.
+"""Google Drive Workspace – entity sync + folder_ids + extension + blocks ITs.
 
 Uses class-scoped connectors (see conftest):
 
@@ -10,6 +10,8 @@ Uses class-scoped connectors (see conftest):
   entity teardown.
 * ``drive_workspace_ext_connector`` — ``folder_ids=[seed]`` + ``file_extensions``
   for ``TestDriveWorkspaceExtensionFilter``.
+* ``drive_workspace_blocks_connector`` — ``folder_ids=[seed]`` with five sample
+  files for ``TestDriveWorkspaceBlocks`` snapshot ITs.
 
   order 0  TC-DRIVE-SYNC-001 — full-sync baseline (records, RG links, edges, app metadata)
   order 1  TC-DRIVE-001      — users / USER_APP_RELATION
@@ -43,6 +45,15 @@ Uses class-scoped connectors (see conftest):
 
   order 27 TC-EXT-001 — file_extensions IN docs/sheets/txt; slides absent
   order 28 TC-EXT-002 — switch to NOT_IN docs; doc loses BELONGS_TO, slide gains it
+
+  order 30 TC-DRIVE-BLOCKS-001 — Newsletter (Docs) stream → Processor snapshot
+  order 31 TC-DRIVE-BLOCKS-002 — Science fair (Slides)
+  order 32 TC-DRIVE-BLOCKS-003 — Gantt chart (Sheets)
+  order 33 TC-DRIVE-BLOCKS-004 — OWASP Test PDF
+  order 34 TC-DRIVE-BLOCKS-005 — CONTRIBUTING.md
+
+Env (blocks): ``GOOGLE_DRIVE_BLOCKS_BOOTSTRAP=1`` writes fixtures/<kind>.expected.json.
+Docling must be reachable for PDF / Docs / Slides; Sheets uses the non-LLM Excel path.
 """
 
 from __future__ import annotations
@@ -65,10 +76,17 @@ from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-f
 from app.sources.external.google.drive.drive import (  # type: ignore[import-not-found]  # noqa: E402
     GoogleDriveDataSource,
 )
+from connectors.google_drive_workspace.drive_block_utils import (  # noqa: E402
+    bootstrap_expected,
+    load_expected,
+    normalize_blocks_container,
+    parse_drive_stream_via_processor,
+)
 from connectors.google_drive_workspace.drive_workspace_expected import (  # noqa: E402
     DriveExpected,
 )
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # noqa: E402
+    DRIVE_BLOCKS_SAMPLE_SPECS,
     ENV_ADMIN_EMAIL,
     ENV_SA_JSON,
     ENV_SECOND_USER,
@@ -2455,3 +2473,105 @@ class TestDriveWorkspaceExtensionFilter:
                 parent_external_record_id=seed_id,
             ),
         )
+
+
+_BLOCKS_CASES = [
+    pytest.param(
+        "newsletter_doc",
+        "TC-DRIVE-BLOCKS-001",
+        marks=pytest.mark.order(30),
+        id="TC-DRIVE-BLOCKS-001",
+    ),
+    pytest.param(
+        "science_fair_slides",
+        "TC-DRIVE-BLOCKS-002",
+        marks=pytest.mark.order(31),
+        id="TC-DRIVE-BLOCKS-002",
+    ),
+    pytest.param(
+        "gantt_chart_sheets",
+        "TC-DRIVE-BLOCKS-003",
+        marks=pytest.mark.order(32),
+        id="TC-DRIVE-BLOCKS-003",
+    ),
+    pytest.param(
+        "owasp_pdf",
+        "TC-DRIVE-BLOCKS-004",
+        marks=pytest.mark.order(33),
+        id="TC-DRIVE-BLOCKS-004",
+    ),
+    pytest.param(
+        "contributing_md",
+        "TC-DRIVE-BLOCKS-005",
+        marks=pytest.mark.order(34),
+        id="TC-DRIVE-BLOCKS-005",
+    ),
+]
+
+
+def _kind_local_name(kind: str) -> str:
+    for spec in DRIVE_BLOCKS_SAMPLE_SPECS:
+        if spec["kind"] == kind:
+            return spec["local_name"]
+    return kind
+
+
+class TestDriveWorkspaceBlocks:
+    """Stream synced Drive samples → Processor → deep-equal expected snapshots."""
+
+    @pytest.mark.parametrize("kind,tc_id", _BLOCKS_CASES)
+    async def test_tc_drive_blocks_streamed_expected(
+        self,
+        kind: str,
+        tc_id: str,
+        drive_workspace_blocks_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+        drive_blocks_stream_client: PipeshubClient,
+    ) -> None:
+        """Stream one synced sample, parse via production Processor, compare snapshot.
+
+        Validates Drive export/download → format-specific Processor path → typed
+        blocks — the same shape indexing produces. Streams as the Drive Workspace
+        test user (ACL owner), not the org-admin OAuth app. LLM table prose is
+        normalized to placeholders (structure-only compare). Regenerate with
+        ``GOOGLE_DRIVE_BLOCKS_BOOTSTRAP=1``.
+        """
+        connector_id = drive_workspace_blocks_connector["connector_id"]
+        by_kind: dict[str, dict[str, str]] = drive_workspace_blocks_connector[
+            "blocks_by_kind"
+        ]
+        sample = by_kind.get(kind)
+        assert sample is not None, f"blocks fixture missing kind={kind!r}"
+
+        external_id = sample["id"]
+        record = await graph_provider.get_record_by_external_id(
+            connector_id, external_id
+        )
+        assert record is not None, (
+            f"{tc_id}: sample {kind} ({external_id}) not synced"
+        )
+
+        resp = drive_blocks_stream_client.stream_record(record.id)
+        assert resp.status_code == 200, (
+            f"{tc_id}: stream_record HTTP {resp.status_code}"
+        )
+        assert resp.content, f"{tc_id}: empty stream body for {kind}"
+
+        record_mime = getattr(record, "mime_type", None) or sample.get("target_mime") or ""
+        record_name = getattr(record, "record_name", None) or sample.get("name") or (
+            _kind_local_name(kind)
+        )
+
+        parsed = await parse_drive_stream_via_processor(
+            resp.content,
+            record_mime,
+            record_name=record_name,
+        )
+        actual = normalize_blocks_container(parsed)
+        if os.getenv("GOOGLE_DRIVE_BLOCKS_BOOTSTRAP") == "1":
+            bootstrap_expected(kind, actual)
+        expected = load_expected(kind)
+        assert actual == expected, (
+            f"{tc_id}: parsed blocks do not match expected snapshot for {kind}"
+        )
+        logger.info("%s passed (%s)", tc_id, kind)
