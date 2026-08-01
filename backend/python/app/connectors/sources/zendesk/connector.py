@@ -130,9 +130,8 @@ RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
         ]),
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Zendesk",
-            # Zendesk's OAuth endpoints live on the customer's own subdomain, and the
-            # registry takes literal URLs — so the real ones are collected as fields
-            # below, the same way ServiceNow handles its per-instance URLs.
+            # Per-subdomain endpoints, but the registry takes literal URLs — the real
+            # ones are collected as fields, as ServiceNow does.
             authorize_url="https://example.zendesk.com/oauth/authorizations/new",
             token_url="https://example.zendesk.com/oauth/tokens",
             redirect_uri="connectors/oauth/callback/Zendesk",
@@ -288,13 +287,11 @@ class ZendeskConnector(BaseConnector):
             return False
 
     async def _get_fresh_datasource(self) -> ZendeskDataSource:
-        """Every method that calls the Zendesk API goes through here.
+        """Resolve the data source for every Zendesk API call.
 
-        The factory refuses to hand back a connector whose ``init`` failed, so an
-        uninitialised client at this point is a bug, not a state to recover from —
-        re-initialising here would hide it. Under OAuth this is also the one place
-        a token refresh has to happen, which is why callers re-resolve the data
-        source instead of holding one for the length of a sync.
+        Not re-initialising on failure: the factory never returns an uninitialised
+        connector, so reaching here uninitialised is a bug. Also the single place an
+        OAuth refresh belongs, hence callers re-resolve rather than hold one.
         """
         if not self.external_client or not self.data_source:
             raise RuntimeError("Zendesk data source is not initialized")
@@ -350,10 +347,8 @@ class ZendeskConnector(BaseConnector):
         )
 
     async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser], bool]:
-        # Group membership upserts need a complete user map, not only users changed
-        # since the record sync point. The third return value reports whether the
-        # export finished — on_new_user_groups rebuilds membership from scratch, so
-        # feeding it a truncated map revokes access for everyone it missed.
+        # Full map, not just changed users: on_new_user_groups rebuilds membership
+        # from scratch, so a truncated one revokes access. Third value flags that.
         datasource = await self._get_fresh_datasource()
         start_time = DEFAULT_INCREMENTAL_START_TIME
         users_data: List[Dict[str, Any]] = []
@@ -371,8 +366,7 @@ class ZendeskConnector(BaseConnector):
             payload = response.data
             users_data.extend(self._extract_list(payload, "users"))
             next_cursor = payload.get("after_cursor") or payload.get("cursor")
-            # A repeated cursor means the export is not advancing; without this the
-            # loop spins forever and users_data grows unbounded.
+            # A repeated cursor means the export is not advancing.
             if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
                 break
             cursor = next_cursor
@@ -382,9 +376,7 @@ class ZendeskConnector(BaseConnector):
         for user_data in users_data:
             user_id = user_data.get("id")
             email = user_data.get("email")
-            # Permissions resolve by email. A synthesised address matches no PipesHub
-            # user, so it only produces an AppUser nobody can be and a failed
-            # permission lookup per record that references them.
+            # Permissions resolve by email; a synthesised address matches nobody.
             if not user_id or not email:
                 continue
             full_name = user_data.get("name") or email
@@ -480,13 +472,9 @@ class ZendeskConnector(BaseConnector):
     async def _fetch_organizations(self) -> List[Tuple[AppUserGroup, List[AppUser]]]:
         """Sync Zendesk organizations as user groups.
 
-        Membership is derived from the ``organization_id`` already present on the users
-        fetched by ``_fetch_users`` — Zendesk has no bulk organization-membership
-        endpoint, and a per-organization call would be an N+1.
-
-        Organizations are deliberately not RecordGroups: nothing files a record under
-        one, so they would show up permanently empty. Shared-organization visibility
-        is expressed instead as a GROUP permission on the ticket itself.
+        Membership comes from the users already fetched — Zendesk has no bulk
+        organization-membership endpoint. Not RecordGroups: nothing files a record
+        under one, so they would render empty; tickets carry the org permission.
         """
         datasource = await self._get_fresh_datasource()
         orgs_data: List[Dict[str, Any]] = []
@@ -570,8 +558,7 @@ class ZendeskConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(records_with_permissions)
                 synced += len(records_with_permissions)
 
-            # The cursor export returns no end_time, so the next run resumes from
-            # the newest ticket this one saw.
+            # Cursor export returns no end_time; resume from the newest ticket seen.
             for ticket_data in tickets:
                 updated_ms = self._parse_datetime(ticket_data.get("updated_at"))
                 if updated_ms:
@@ -662,9 +649,7 @@ class ZendeskConnector(BaseConnector):
         if not self._is_indexing_enabled(IndexingFilterKey.KNOWLEDGE_BASE.value):
             return 0
 
-        # Sections must exist as RecordGroups before the articles that reference them:
-        # a record with no record group is unreachable from the App in the graph and
-        # is not counted by the connector stats traversal.
+        # Sections first: a record with no record group is unreachable from the App.
         await self._sync_help_center_sections()
 
         datasource = await self._get_fresh_datasource()
@@ -723,10 +708,8 @@ class ZendeskConnector(BaseConnector):
         if not article_id:
             return None
 
-        # user_segment_id is the whole article ACL (null = everyone, otherwise a
-        # restricted audience such as agents-only), and drafts are unpublished.
-        # Both are skipped rather than published, because expressing a segment
-        # needs roles and this connector syncs none yet.
+        # user_segment_id is the article's whole ACL. Restricted articles and drafts
+        # are skipped, not published — segments need roles this connector has no sync for.
         if article_data.get("draft"):
             return None
         if article_data.get("user_segment_id") is not None or article_data.get("user_segment_ids"):
@@ -771,8 +754,7 @@ class ZendeskConnector(BaseConnector):
             source_updated_at=updated_at,
             indexing_status=ProgressStatus.NOT_STARTED.value,
         )
-        # Everything restricted was filtered out above, so what remains is a
-        # published article with no segment — visible to the whole Help Center.
+        # Restricted articles were filtered out above, so ORG is the right grant.
         permissions = [
             Permission(
                 type=PermissionType.READ,
@@ -789,8 +771,7 @@ class ZendeskConnector(BaseConnector):
         convertTo: Optional[str] = None,
     ) -> StreamingResponse:
         if record.record_type == RecordType.FILE:
-            # Attachment bytes are not a BlocksContainer — serving them as one makes
-            # every download an unopenable JSON blob.
+            # Attachment bytes are not a BlocksContainer.
             content = await self._process_file_for_streaming(record)
 
             async def file_bytes() -> AsyncGenerator[bytes, None]:
@@ -820,10 +801,8 @@ class ZendeskConnector(BaseConnector):
             sort_order="asc",
             include="users",
         )
-        # public=False is an internal agent note the requester cannot see in Zendesk.
-        # This record grants the requester READ, so indexing the note hands it to the
-        # customer. Recovering agent-only content needs a second record whose ACL is
-        # the group alone.
+        # public=False is an internal agent note. This record grants the requester
+        # READ, so indexing one would hand it to the customer.
         comments = [c for c in comments if c.get("public", True)]
         block_groups: List[BlockGroup] = []
         for index, comment in enumerate(comments):
@@ -929,10 +908,8 @@ class ZendeskConnector(BaseConnector):
                 connector_name=Connectors.ZENDESK,
                 connector_id=self.connector_id,
                 mime_type=attachment.get("content_type") or MimeTypes.UNKNOWN.value,
-                # The ticket page, not content_url: unless the account enables secure
-                # downloads that URL is a bearer capability, and weburl is readable
-                # from record metadata regardless of the file's own permissions.
-                # _process_file_for_streaming re-fetches a fresh one at download time.
+                # Ticket page, not content_url: that URL is a bearer capability and
+                # weburl is readable from metadata. Re-fetched per download instead.
                 weburl=parent_record.weburl,
                 is_file=True,
                 extension=self._extension(file_name),
@@ -967,9 +944,7 @@ class ZendeskConnector(BaseConnector):
             raise ValueError(
                 f"Refusing to fetch Zendesk attachment from untrusted host: {urlparse(content_url).hostname}"
             )
-        # CDN attachment URLs are already signed and need no auth, and the CDN host
-        # carries no tenant — forwarding the API token there hands this tenant's
-        # credentials to a host shared with every other Zendesk customer.
+        # CDN URLs are pre-signed and the host is shared across tenants.
         headers = (
             datasource.http.headers.copy()
             if self._is_tenant_api_url(content_url)
@@ -983,9 +958,8 @@ class ZendeskConnector(BaseConnector):
     async def _resolve_attachment_url(self, record: Record) -> Optional[str]:
         """Ask Zendesk for the attachment's current content_url.
 
-        Fetched per download rather than stored, so the download capability never
-        sits in the graph next to metadata that is readable more widely than the
-        file itself.
+        Fetched per download so the capability never sits in the graph beside
+        metadata that is readable more widely than the file itself.
         """
         attachment_id = (record.external_record_id or "").rsplit("_attachment_", 1)[-1]
         if not attachment_id.isdigit():
@@ -1054,9 +1028,7 @@ class ZendeskConnector(BaseConnector):
         pass
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        # Republish index events only. Routing these through on_new_records would
-        # re-run permission handling and append an org-wide READ edge to records
-        # that are scoped to a single group.
+        # Index events only: on_new_records would re-run permission handling.
         if not record_results:
             return
         await self.data_entities_processor.reindex_existing_records(record_results)
@@ -1094,11 +1066,10 @@ class ZendeskConnector(BaseConnector):
         )
 
     async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
-        """Re-raise a retryable status as the exception ``call_with_retry`` retries on.
+        """Re-raise a retryable status as the exception ``call_with_retry`` acts on.
 
-        The data source folds every HTTP error into a ``ZendeskResponse`` rather than
-        raising, so a 429 is otherwise indistinguishable from a 401 and is never
-        retried. Non-retryable failures are left as responses for the caller to see.
+        The data source folds HTTP errors into a ``ZendeskResponse`` instead of
+        raising, so a 429 would otherwise never be retried.
         """
         response = await api_method(page=page, per_page=PAGE_SIZE, **kwargs)
         status = response.status_code
@@ -1120,10 +1091,9 @@ class ZendeskConnector(BaseConnector):
     ) -> Tuple[List[Dict[str, Any]], bool]:
         """Paginate an offset-based endpoint, reporting whether it ran to the end.
 
-        Callers that rebuild state from the full result — group membership above all,
-        which ``on_new_user_groups`` wipes and recreates — must not treat a truncated
-        list as authoritative. Zendesk also 400s past 10,000 records on offset
-        pagination, which lands here as a failed page rather than an exception.
+        Callers that rebuild state from the full result — group membership above all —
+        must not treat a truncated list as authoritative. Zendesk 400s past 10,000
+        records here rather than raising.
         """
         label = getattr(api_method, "__name__", key)
         page = 1
@@ -1143,8 +1113,7 @@ class ZendeskConnector(BaseConnector):
                 return results, False
             if not response.data:
                 break
-            # Sideloaded users/groups ride along in the same payload; without this
-            # they are parsed and dropped, and comment authors render as raw ids.
+            # Sideloads ride in the same payload; dropped, authors render as raw ids.
             self._cache_sideloads(response.data)
             items = self._extract_list(response.data, key)
             if not items:
@@ -1205,8 +1174,7 @@ class ZendeskConnector(BaseConnector):
                 type=PermissionType.READ,
                 entity_type=EntityType.GROUP,
             ))
-        # Zendesk's shared-organization setting lets an org's members see each
-        # other's tickets; the org user group carries that membership.
+        # Shared-organization visibility; the org user group carries the membership.
         if organization_id:
             permissions.append(Permission(
                 external_id=f"org_{organization_id}",
@@ -1320,11 +1288,8 @@ class ZendeskConnector(BaseConnector):
             return None
 
     def _is_tenant_api_url(self, url: str) -> bool:
-        """True only for this connector's own Zendesk host.
-
-        Any ``*.zendesk.com`` would otherwise qualify, so a content_url pointing at
-        another customer's subdomain would receive this tenant's API token.
-        """
+        """True only for this connector's own Zendesk host — any ``*.zendesk.com``
+        would otherwise receive this tenant's API token."""
         subdomain = self._subdomain()
         if not subdomain:
             return False
@@ -1338,8 +1303,7 @@ class ZendeskConnector(BaseConnector):
         if self._is_tenant_api_url(url):
             return True
         parsed = urlparse(url)
-        # Attachment bodies are served from a shared, pre-signed CDN whose hostname
-        # carries no tenant. Safe to fetch from, never safe to authenticate to.
+        # Shared pre-signed CDN: safe to fetch from, never to authenticate to.
         return parsed.scheme == "https" and (parsed.hostname or "").lower().endswith(
             (".zdusercontent.com", ".zendeskusercontent.com")
         )
