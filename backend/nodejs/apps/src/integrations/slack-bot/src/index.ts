@@ -2126,6 +2126,7 @@ async function processSlackMessage(
     let ignoreAnswerChunks = false;
     let askUserShown = false;
     let conversationPersisted = Boolean(conversation);
+    let conversationPersistPromise: Promise<void> = Promise.resolve();
     const activityBuilder = new SlackActivityBuilder();
     let pendingActivityUpdate = false;
     let answerFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2395,15 +2396,10 @@ async function processSlackMessage(
         return;
       }
       const dedupeKey = recordId || link;
-      if (
-        postedArtifactKeys.has(dedupeKey) ||
-        postedArtifactKeys.has(fileName) ||
-        postedArtifactKeys.has(link)
-      ) {
+      if (postedArtifactKeys.has(dedupeKey) || postedArtifactKeys.has(link)) {
         return;
       }
       postedArtifactKeys.add(dedupeKey);
-      postedArtifactKeys.add(fileName);
       postedArtifactKeys.add(link);
       const text = `*Artifact:* <${link}|${fileName}>`;
       queuedStreamAppend = queuedStreamAppend
@@ -2476,7 +2472,7 @@ async function processSlackMessage(
       onAskUserQuestion: handleAskUserQuestion,
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
-        void persistConversationId(conversationId);
+        conversationPersistPromise = persistConversationId(conversationId);
       },
       onComplete: (conv) => {
         completionConversation = conv as ConversationData["conversation"];
@@ -2749,6 +2745,7 @@ async function processSlackMessage(
       if (streamTs) {
         await deleteStreamMessages();
       }
+      await conversationPersistPromise;
       if (!conversationData && !conversationPersisted) {
         await sendOrUpdateNonStreamMessage(
           "Received an incomplete response from the backend. Please try again later.",
@@ -2930,15 +2927,10 @@ async function processSlackMessage(
         continue;
       }
       const dedupeKey = artifact.recordId || link;
-      if (
-        postedArtifactKeys.has(dedupeKey) ||
-        postedArtifactKeys.has(artifact.fileName) ||
-        postedArtifactKeys.has(link)
-      ) {
+      if (postedArtifactKeys.has(dedupeKey) || postedArtifactKeys.has(link)) {
         continue;
       }
       postedArtifactKeys.add(dedupeKey);
-      postedArtifactKeys.add(artifact.fileName);
       postedArtifactKeys.add(link);
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
