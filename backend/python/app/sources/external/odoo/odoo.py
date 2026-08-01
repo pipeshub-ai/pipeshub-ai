@@ -1,24 +1,6 @@
-"""Odoo DataSource — typed CRM module operations built on OdooClient.execute_kw.
-
-Scope: CRM only, read-only. Covers:
-  - crm.lead (leads/opportunities): full field set
-  - crm.stage / crm.team / crm.tag / crm.lost.reason
-  - res.partner (contacts) / res.users (salespersons)
-  - mail.activity (activities scheduled on a lead)
-  - mail.message (chatter notes/log — read; add_note()/create_activity() still write, they're not lead mutation)
-  - mail.followers (who's subscribed to a record's chatter — the only
-    per-record "who can actually see this" signal Odoo exposes; res.groups
-    and ir.rule gate model-level access, not individual records)
-  - utm.source / utm.medium / utm.campaign (marketing attribution)
-  - ir.attachment (metadata + on-demand content fetch)
-
-Other Odoo modules (Sales, Accounting, Inventory, ...) are still out of
-scope; add them as new methods here (or split into per-module files under
-this package if it grows the way app/sources/external/salesforce did).
-
-Errors are not swallowed — every call goes straight through OdooClient, which
-already raises ConnectionError/RuntimeError on failure. There's no separate
-success/error envelope to remember to check.
+"""Typed CRM operations on OdooClient.execute_kw. Read-only apart from
+add_note()/create_activity(). Other Odoo modules are out of scope — add them
+as methods here. Errors propagate; there's no success/error envelope.
 """
 
 from __future__ import annotations
@@ -32,12 +14,9 @@ from app.sources.client.odoo.odoo import OdooClient
 
 logger = logging.getLogger(__name__)
 
-# "mobile" is deliberately absent from the default field lists below: it
-# doesn't exist on crm.lead/res.partner on Odoo saas~19.4 (confirmed live via
-# fields_get — search_read raises ValueError on an unknown field name, unlike
-# a plain dict.get). The CrmLead/Partner models still declare it as optional
-# for older Odoo versions that do have it; pass it explicitly via `fields=`
-# if your instance supports it.
+# "mobile" is omitted below: it doesn't exist on crm.lead/res.partner in
+# saas~19.4 and search_read raises on unknown field names. Pass it via
+# `fields=` on instances that do have it.
 
 DEFAULT_LEAD_FIELDS = [
     "id", "name", "type", "partner_name", "email_from", "phone",
@@ -75,16 +54,9 @@ DEFAULT_ATTACHMENT_FIELDS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Pydantic models. extra="allow" because Odoo installs routinely add custom
-# fields via Studio/modules.
-#
-# Odoo many2one fields (stage_id, team_id, user_id, ...) come back over
-# XML-RPC as either [id, "Display Name"] or the literal False when unset —
-# typed as `Any` rather than a narrower union, so validation doesn't reject
-# either shape. Char fields Odoo may return as `False` when empty are typed
-# `str | bool | None`.
-# ---------------------------------------------------------------------------
+# extra="allow" because Odoo installs add custom fields via Studio. many2one
+# fields are `Any` ([id, name] or False); char fields that may come back as
+# False are `str | bool | None`.
 
 class CrmLead(BaseModel):
     model_config = ConfigDict(extra="allow")

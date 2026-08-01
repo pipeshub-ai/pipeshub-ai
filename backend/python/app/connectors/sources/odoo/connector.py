@@ -1,39 +1,13 @@
-"""Odoo connector — CRM sync, mapped onto the same graph entities the
-Salesforce connector uses (app/connectors/sources/salesforce/connector.py
-is the reference implementation for this mapping):
+"""Odoo CRM sync. Entity mapping mirrors the Salesforce connector:
 
-    Odoo                          PipesHub        Salesforce equivalent
-    ----------------------------  --------------  ---------------------
-    crm.lead (type=opportunity)   DealRecord      Opportunity
-    crm.lead (type=lead)          Person + edge   Lead
-    res.partner (company)         RecordGroup     Account
-    res.partner (individual)      Person          Contact
-    crm.team                      AppUserGroup    Public Group / Queue
-    ir.attachment                 FileRecord      ContentVersion
-    res.users                     AppUser         User
+    crm.lead (opportunity) -> DealRecord     res.partner (company)    -> RecordGroup
+    crm.lead (lead)        -> Person + edge  res.partner (individual) -> Person
+    crm.team               -> AppUserGroup   ir.attachment            -> FileRecord
 
-Only opportunities are documents. People — unconverted leads and contacts
-alike — are Person nodes, never records: an unconverted crm.lead carries an
-Org->Person LEAD edge holding its qualification data (company, stage,
-source), exactly as the Salesforce connector maps its Lead object.
-
-Opportunities are grouped under their customer company (partner_id, or that
-partner's parent company), mirroring how Salesforce groups Opportunities
-under their Account; those with no resolvable company fall back to a single
-"Unassigned" group the same way Salesforce falls back to "UNASSIGNED-DEAL".
-Teams are *not* record groups — they are user groups, so team membership
-drives identity, not record containment.
-
-Roles are intentionally not synced — res.groups/ir.rule gate model-level
-access, not individual records, so there's no clean "role -> these
-specific leads" list to sync.
-
-Permissions per lead: OWNER for the assigned salesperson (user_id) plus
-READER for every mail.followers subscriber on that lead — followers are
-Odoo's only genuine per-record "who's actually looped into this" signal.
-Attachments inherit the permissions of the lead they hang off. Team-based
-sharing (whole team sees the whole pipeline) is still an open decision —
-add it if followers alone prove too narrow.
+Only opportunities are records; people never are. Opportunities group under
+their customer company, falling back to "Unassigned". Permissions: OWNER =
+user_id, READER = mail.followers; attachments inherit their lead's. Roles
+aren't synced — res.groups gates models, not records.
 """
 
 from __future__ import annotations
@@ -302,8 +276,7 @@ class OdooConnector(BaseConnector):
             self.data_source = OdooDataSource(client)
             await self._load_creator_email()
             if not self.creator_email and self.created_by:
-                # Odoo is TEAM-scoped, so the base class's _load_creator_email()
-                # (which only resolves for PERSONAL scope) is a no-op here.
+                # Base _load_creator_email() only resolves for PERSONAL scope.
                 creator_user = await self.data_entities_processor.get_user_by_user_id(
                     self.created_by
                 )
@@ -357,8 +330,7 @@ class OdooConnector(BaseConnector):
             self.logger.info("Syncing sales teams...")
             await self._sync_teams()
 
-            # Before leads: company record groups are the container leads are
-            # filed under, so they must exist before a lead references one.
+            # Before leads: company groups must exist before a lead cites one.
             self.logger.info("Syncing partners (res.partner)...")
             await self._sync_partners(full_sync=full_sync)
 
@@ -379,9 +351,8 @@ class OdooConnector(BaseConnector):
     # -- Users -----------------------------------------------------------
 
     async def _sync_users(self) -> None:
-        """Odoo's user list is just internal salespersons — small enough
-        that a full refresh every run is simpler and cheap enough to skip
-        a separate incremental cursor for it."""
+        """Full refresh every run — the salesperson list is small enough that a
+        separate incremental cursor isn't worth it."""
         if not self.data_source:
             return
 
@@ -423,11 +394,9 @@ class OdooConnector(BaseConnector):
 
     # -- Teams (user groups) -----------------------------------------------
 
-    # Group leads are filed under when no customer company can be resolved,
-    # mirroring Salesforce's "UNASSIGNED-DEAL" account fallback.
+    # Fallback container when no customer company resolves.
     _UNASSIGNED_DEAL_EXTERNAL_GROUP_ID = "res.partner/__unassigned__"
-    # Single container for every synced attachment (Salesforce does the same
-    # with its "Salesforce Files" record group).
+    # Single container for every synced attachment.
     _FILES_EXTERNAL_GROUP_ID = "ir.attachment/__files__"
 
     @staticmethod
@@ -439,9 +408,7 @@ class OdooConnector(BaseConnector):
         return f"res.partner/{partner_id}"
 
     async def _sync_teams(self) -> None:
-        """Sales teams are user groups, not record groups — a team is a set
-        of salespeople, not a container of documents. Membership comes from
-        crm.team.member_ids resolved through the user email map."""
+        """A team is a set of salespeople, not a container of documents."""
         if not self.data_source:
             return
 
@@ -488,17 +455,13 @@ class OdooConnector(BaseConnector):
         if not values:
             return None
         types = list(values)
-        # If user picked both options, treat as "no filter" to avoid two
-        # separate Odoo calls.
+        # Both picked == no filter, avoiding two separate Odoo calls.
         if set(types) >= {"lead", "opportunity"}:
             return None
         return types
 
     def _get_modified_since_filter(self) -> Optional[str]:
-        """Fix #1: Read the configured 'modified' datetime filter and return
-        it as an Odoo-style naive-UTC string ("YYYY-MM-DD HH:MM:SS"), or
-        None if the user didn't configure one.
-        The filter uses IS_AFTER semantics — start_iso is the lower bound."""
+        """Configured 'modified' filter as an Odoo naive-UTC string (lower bound)."""
         f = self.sync_filters.get("modified")
         if f is None or f.is_empty():
             return None
@@ -542,9 +505,8 @@ class OdooConnector(BaseConnector):
                 if not leads:
                     break
 
-                # crm.lead carries both kinds of row: an unqualified "lead" is a
-                # person we haven't converted yet (Salesforce Lead -> Person),
-                # an "opportunity" is a real deal (Salesforce Opportunity -> DealRecord).
+                # crm.lead holds both: "lead" is an unconverted person,
+                # "opportunity" is a real deal.
                 opportunities = [lead for lead in leads if lead.type == "opportunity"]
                 raw_leads = [lead for lead in leads if lead.type != "opportunity"]
 
@@ -592,9 +554,8 @@ class OdooConnector(BaseConnector):
         )
 
     async def _upsert_lead_people(self, leads: List[CrmLead]) -> int:
-        """An unconverted crm.lead is a prospect, not a document — it becomes a
-        Person plus an Org->Person LEAD edge holding the qualification data
-        (company, stage, source, ...), mirroring the Salesforce Lead mapping."""
+        """A prospect is a Person, not a document; the LEAD edge holds its
+        qualification data (company, stage, source)."""
         people: List[Person] = []
         edges: List[Dict[str, Any]] = []
         org_id = self.data_entities_processor.org_id
@@ -670,13 +631,8 @@ class OdooConnector(BaseConnector):
     async def _fetch_company_group_by_lead(
         self, leads: List[CrmLead]
     ) -> Dict[int, str]:
-        """Resolve each lead's customer company to the record group it should
-        be filed under (Salesforce files an Opportunity under its Account).
-
-        A lead's partner_id may be an individual rather than a company, so the
-        partner's parent company wins when there is one. One bulk read per
-        page keeps this off the N+1 path.
-        """
+        """Lead -> the record group of its customer company. partner_id may be an
+        individual, so that partner's parent company wins. One read per page."""
         if not self.data_source:
             return {}
 
@@ -706,10 +662,8 @@ class OdooConnector(BaseConnector):
     # -- Partners (res.partner) --------------------------------------------
 
     async def _sync_partners(self, full_sync: bool = False) -> None:
-        """Split res.partner the way Salesforce splits Account vs Contact:
-        companies become RecordGroups (the container leads are filed under),
-        individuals become Person nodes. Uses its own write_date cursor so it
-        advances independently from leads."""
+        """Companies become RecordGroups (the container leads file under),
+        individuals become Person nodes. Own cursor, independent of leads."""
         if not self.data_source:
             return
 
@@ -725,8 +679,7 @@ class OdooConnector(BaseConnector):
         else:
             last_write_date = cursor_write_date or configured_since
 
-        # The fallback container for leads with no customer company has to
-        # exist no matter how few partners changed this run.
+        # Must exist however few partners changed this run.
         await self.data_entities_processor.on_new_record_groups([
             (
                 RecordGroup(
@@ -805,8 +758,7 @@ class OdooConnector(BaseConnector):
         email = email.lower()
         first_name, _, last_name = (partner.name or "").partition(" ")
         return Person(
-            # Deterministic id so the same email is one Person across
-            # connectors — matches _upsert_external_person in the processor.
+            # Deterministic id: one Person per email, across connectors.
             id=str(uuid.uuid5(uuid.NAMESPACE_DNS, email)),
             email=email,
             first_name=first_name or None,
@@ -819,10 +771,8 @@ class OdooConnector(BaseConnector):
     # -- Attachments (ir.attachment) ---------------------------------------
 
     async def _sync_attachments(self, full_sync: bool = False) -> None:
-        """Sync files attached to leads as FileRecords inside one shared
-        "Odoo Files" record group — the same shape the Salesforce connector
-        uses for ContentVersion. Each file points back at the lead it hangs
-        off and inherits that lead's permissions."""
+        """Lead attachments as FileRecords in one shared "Odoo Files" group, each
+        pointing back at its lead and inheriting that lead's permissions."""
         if not self.data_source:
             return
 
@@ -871,9 +821,7 @@ class OdooConnector(BaseConnector):
             )
 
             for attachment in attachments:
-                # Only opportunities are records; a file hanging off an
-                # unconverted lead has no parent record to belong to, so it is
-                # skipped (Salesforce likewise excludes Lead from file parents).
+                # An unconverted lead is no record, so a file on it has no parent.
                 if attachment.res_id not in permissions_by_lead:
                     continue
 
@@ -911,13 +859,9 @@ class OdooConnector(BaseConnector):
     async def _fetch_lead_permissions(
         self, lead_ids: List[int]
     ) -> Dict[int, List[Permission]]:
-        """Owner+follower permissions for a page of parent leads, so an
-        attachment ends up visible to exactly whoever can see its lead.
-
-        Only opportunities are included — an unconverted lead is a Person, not
-        a record, so nothing can be parented to it. Membership in the returned
-        map is what tells the caller a parent is a real record.
-        """
+        """Parent-lead permissions, so an attachment is visible to exactly whoever
+        can see its lead. Opportunities only — membership in the returned map
+        is how the caller knows a parent is a real record."""
         if not self.data_source or not lead_ids:
             return {}
         unique_ids = sorted(set(lead_ids))
@@ -982,11 +926,9 @@ class OdooConnector(BaseConnector):
         return record, is_new
 
     def _creator_owner_permission(self) -> Optional[Permission]:
-        """Fallback OWNER grant so records with no resolvable Odoo owner/
-        follower don't end up with zero permissions. Must key off
-        creator_email (an actual email), not created_by (an internal user
-        id) — permission resolution for EntityType.USER matches by email
-        only (see data_source_entities_processor._handle_record_permissions)."""
+        """Fallback OWNER grant so a record never ends up with zero permissions.
+        Must key off creator_email, not created_by — EntityType.USER
+        resolution matches by email only."""
         if not self.creator_email:
             return None
         return Permission(
@@ -1072,10 +1014,8 @@ class OdooConnector(BaseConnector):
             external_record_group_id=external_group_id,
             record_group_type=RecordGroupType.PROJECT if external_group_id else None,
             weburl=f"{self.base_url}/web#id={lead.id}&model=crm.lead&view_type=form",
-            # Must match the media_type stream_record() actually streams —
-            # the indexing pipeline gates on this before ever calling
-            # stream_record(); UNKNOWN silently drops every lead as
-            # FILE_TYPE_NOT_SUPPORTED without embedding anything.
+            # Must match what stream_record() streams: indexing gates on this
+            # first, and UNKNOWN silently drops the record as unsupported.
             mime_type=MimeTypes.PLAIN_TEXT.value,
             created_at=created_at_ms,
             updated_at=updated_at_ms,
@@ -1131,8 +1071,7 @@ class OdooConnector(BaseConnector):
                 detail="Record not found or access denied",
             )
 
-        # Activities/messages are enrichment, not core content — a transient
-        # failure fetching one shouldn't block indexing the lead's core fields.
+        # Enrichment, not core content — a transient failure must not block it.
         activities_result, messages_result = await asyncio.gather(
             self.data_source.list_activities(res_model="crm.lead", res_id=lead_id),
             self.data_source.list_messages(res_model="crm.lead", res_id=lead_id),
@@ -1276,9 +1215,7 @@ class OdooConnector(BaseConnector):
         )
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        """Odoo has no native webhooks without a custom Studio automation —
-        placeholder for future compatibility, same as other connectors that
-        lack push support."""
+        """Placeholder — Odoo has no native webhooks without a Studio automation."""
         self.logger.info("Odoo webhook received.")
         asyncio.create_task(self.run_incremental_sync())
 
@@ -1340,8 +1277,7 @@ class OdooConnector(BaseConnector):
                                 for f in followers
                                 if (pid := _m2o_id(f.partner_id)) is not None
                             ]
-                            # Resolve the company group too, or the lead would
-                            # be re-filed under "Unassigned" on every reindex.
+                            # Or the lead gets re-filed under "Unassigned".
                             company_group_by_lead = (
                                 await self._fetch_company_group_by_lead([lead])
                             )

@@ -1,7 +1,4 @@
-"""Odoo client implementation.
-
-This module provides authentication and raw XML-RPC access to an Odoo
-instance via the stdlib ``xmlrpc.client``.
+"""Authentication and raw XML-RPC access to an Odoo instance.
 
 Odoo External API docs: https://www.odoo.com/documentation/17.0/developer/reference/external_api.html
 """
@@ -22,12 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class OdooClient:
-    """Odoo client for XML-RPC authentication and raw calls.
-
-    xmlrpc.client is synchronous, so every network call is pushed to a
-    worker thread via ``asyncio.to_thread`` to keep this usable from async
-    connector code without blocking the event loop.
-    """
+    """XML-RPC authentication and raw calls. xmlrpc.client is synchronous, so
+    every call goes to a worker thread to keep the event loop free."""
 
     def __init__(
         self,
@@ -57,12 +50,8 @@ class OdooClient:
         logger.info(f"🔧 [OdooClient] Initialized for {username}@{self.url} (db={db})")
 
     async def connect(self) -> "OdooClient":
-        """Authenticate against Odoo and cache the resulting uid.
-
-        This is the actual auth check — Odoo's XML-RPC ``authenticate`` call
-        is a real login handshake, not just object construction, so a bad
-        db/username/api key fails right here instead of during the first sync.
-        """
+        """Authenticate and cache the uid. A real login handshake, so bad
+        credentials fail here rather than during the first sync."""
         if self._uid is not None:
             return self
 
@@ -93,11 +82,8 @@ class OdooClient:
         return self._uid is not None
 
     async def close(self) -> None:
-        """Drop the cached session.
-
-        XML-RPC over HTTP is stateless per-call (no pooled connection like
-        asyncpg) — this just forgets the uid so the next call re-authenticates.
-        """
+        """Forget the uid so the next call re-authenticates. XML-RPC over HTTP is
+        stateless per-call, so there's no pooled connection to release."""
         self._uid = None
         self._models = None
 
@@ -108,9 +94,7 @@ class OdooClient:
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
     ) -> Any:
-        """Generic Odoo model-method call — the one raw primitive every
-        higher-level DataSource operation (search_read, search_count, ...)
-        will be built on top of."""
+        """The one raw primitive every DataSource operation is built on."""
         if not self.is_connected():
             await self.connect()
 
@@ -171,9 +155,8 @@ class OdooConfig(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    """Authentication configuration for the Odoo connector, as stored in
-    the connector's config (matches the AuthField names declared on the
-    connector's @ConnectorBuilder: baseUrl, db, username, apiKey)."""
+    """Auth config as stored by the connector — field names match the
+    @ConnectorBuilder AuthFields (baseUrl, db, username, apiKey)."""
 
     url: str = Field(..., validation_alias=AliasChoices("baseUrl", "url"))
     db: str = Field(..., description="Odoo database name")
@@ -189,16 +172,7 @@ class OdooConnectorConfig(BaseModel):
 
 
 class OdooClientBuilder(IClient):
-    """Builder class for Odoo clients — same shape as every other
-    connector's ``*ClientBuilder(IClient)`` (see PostgreSQLClientBuilder).
-
-    Example usage:
-        config = OdooConfig(url="https://mycompany.odoo.com", db="mycompany",
-                             username="admin", api_key="xxxx")
-        client_builder = OdooClientBuilder.build_with_config(config)
-        client = client_builder.get_client()
-        await client.connect()
-    """
+    """Same shape as every other connector's ``*ClientBuilder(IClient)``."""
 
     def __init__(self, client: OdooClient) -> None:
         self._client = client
