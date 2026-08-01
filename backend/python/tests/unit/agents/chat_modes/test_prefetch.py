@@ -123,12 +123,16 @@ class TestSuccessfulPrefetch:
             captured_ref_mapper["mapper"] = mapper
             return [[{"type": "text", "text": "Relevant excerpt from r1"}]], mapper
 
+        graph_enrich = AsyncMock()
         with patch(
             "app.agents.chat_modes.prefetch.get_flattened_results",
             new=AsyncMock(return_value=flattened),
         ), patch(
             "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
             new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
+            new=graph_enrich,
         ), patch(
             "app.agents.chat_modes.prefetch.build_message_content_array",
             side_effect=_fake_build_message_content_array,
@@ -139,3 +143,4 @@ class TestSuccessfulPrefetch:
         assert "Relevant excerpt from r1" in result.formatted_context
         assert result.final_results == flattened
         assert result.citation_ref_mapper is captured_ref_mapper["mapper"]
+        graph_enrich.assert_awaited_once()

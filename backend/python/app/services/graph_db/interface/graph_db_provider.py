@@ -4405,38 +4405,55 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_record_locations(
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
+
+        Each entry is ``{"id": str, "type": "record"|"recordGroup"}``.
+        Reuses the same ``_get_permission_role_*`` fragments as
+        ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
+        Apps are not checked here — callers keep App trail segments via ACL.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_parent_adjacency(
         self,
         record_ids: list[str],
         org_id: str,
         *,
-        max_depth: int = 6,
+        max_depth: int = 20,
         transaction: str | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Batched immediate-parent lookup for a list of record IDs.
+    ) -> dict[str, Any]:
+        """Batched upward parent-adjacency for retrieved records (one round trip).
 
-        Resolves ONE level of ancestry per record in a single round trip so
-        the retrieval hot-path can annotate results with a breadcrumb without
-        incurring an N+1 per-record query.  Deeper traversal (full breadcrumb
-        trail) uses the existing ``get_knowledge_hub_breadcrumbs`` method.
+        Structure + names only — does **not** apply breadcrumb priority or ACL.
+        Every node is org-scoped (``orgId == org_id``; apps may omit orgId).
 
-        Priority order:
-          1. ``parentNodeId`` denormalized field on the record (attachments).
-          2. ``recordGroupId`` denormalized field on the record (project/space).
-          3. Parent Record via recordRelations PARENT_CHILD / ATTACHMENT.
-          4. Parent RecordGroup via belongsTo record→recordGroup.
-          5. Parent App via belongsTo record→app (KB records / no RecordGroup).
+        Name coalesce (navigate-aligned)::
 
-        Returns a dict keyed by record_id.  Each value is::
+            app:          name → appName → _key
+            record:       recordName → name → title → _key
+            recordGroup:  groupName → name → _key
+
+        Return shape::
 
             {
-              "path":     [str],        # [parentName] or [] if root/orphan
-              "parentId": str | None,   # nearest ancestor's node key
-              "truncated": False,       # always False (1-level impl)
+              "nodes": {
+                "<id>": {"id": str, "type": "app"|"recordGroup"|"record", "name": str},
+              },
+              "parents": {
+                "<child_id>": [
+                  {"parent_id": str, "parent_type": str, "via": "recordRelations"|"belongsTo"},
+                  ...
+                ],
+              },
             }
-
-        Records not found in the graph or with a non-matching orgId are
-        omitted from the result (callers should treat missing keys as
-        "no parent known").
         """
         pass

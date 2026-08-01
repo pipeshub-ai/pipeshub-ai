@@ -13167,87 +13167,202 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(traceback.format_exc())
             return []
 
-    async def get_record_locations(
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Batch KH permission_role check for record/recordGroup ancestor ids."""
+        if not nodes or not user_key or not self.client:
+            return set()
+
+        record_ids = [
+            str(n["id"])
+            for n in nodes
+            if n.get("id") and n.get("type") == "record"
+        ]
+        rg_ids = [
+            str(n["id"])
+            for n in nodes
+            if n.get("id") and n.get("type") == "recordGroup"
+        ]
+        if not record_ids and not rg_ids:
+            return set()
+
+        record_perm = self._get_permission_role_cypher("record", "record", "u")
+        rg_perm = self._get_permission_role_cypher("recordGroup", "rg", "u")
+
+        accessible: set[str] = set()
+        try:
+            if record_ids:
+                record_query = f"""
+                MATCH (u:User {{id: $user_key}})
+                UNWIND $record_ids AS rid
+                MATCH (record:Record {{id: rid, orgId: $org_id}})
+                WHERE record.isDeleted IS NULL OR record.isDeleted = false
+                {record_perm}
+                WITH rid, permission_role
+                WHERE permission_role IS NOT NULL AND permission_role <> ''
+                RETURN collect(DISTINCT rid) AS accessibleIds
+                """
+                rows = await self.client.execute_query(
+                    record_query,
+                    {
+                        "user_key": user_key,
+                        "org_id": org_id,
+                        "record_ids": record_ids,
+                    },
+                    txn_id=transaction,
+                )
+                if rows:
+                    accessible.update(
+                        str(k) for k in (rows[0].get("accessibleIds") or []) if k
+                    )
+
+            if rg_ids:
+                rg_query = f"""
+                MATCH (u:User {{id: $user_key}})
+                UNWIND $rg_ids AS rgid
+                MATCH (rg:RecordGroup {{id: rgid, orgId: $org_id}})
+                {rg_perm}
+                WITH rgid, permission_role
+                WHERE permission_role IS NOT NULL AND permission_role <> ''
+                RETURN collect(DISTINCT rgid) AS accessibleIds
+                """
+                rows = await self.client.execute_query(
+                    rg_query,
+                    {
+                        "user_key": user_key,
+                        "org_id": org_id,
+                        "rg_ids": rg_ids,
+                    },
+                    txn_id=transaction,
+                )
+                if rows:
+                    accessible.update(
+                        str(k) for k in (rows[0].get("accessibleIds") or []) if k
+                    )
+            return accessible
+        except Exception as exc:
+            self.logger.warning(
+                "filter_nodes_with_permission_role: Cypher failed — %s", exc
+            )
+            return set()
+
+    async def get_record_parent_adjacency(
         self,
         record_ids: list[str],
         org_id: str,
         *,
-        max_depth: int = 6,
+        max_depth: int = 20,
         transaction: str | None = None,
-    ) -> dict[str, dict]:
-        """Batched immediate-parent lookup for a list of record IDs — one Cypher round trip.
-
-        Resolves the nearest ancestor for each record:
-          1. ``parentNodeId`` denormalized field on the Record (attachments).
-          2. ``recordGroupId`` denormalized field on the Record (project/space).
-          3. A parent Record via a RECORD_RELATION (PARENT_CHILD/ATTACHMENT).
-          4. A RecordGroup via a directed BELONGS_TO edge (Record→RecordGroup).
-          5. An App via a directed BELONGS_TO edge (Record→App).
-
-        Returns ``{record_id: {path: [parentName], parentId: str|None, truncated: False}}``.
-        ``max_depth`` is accepted by the interface but only 1-level resolution is performed
-        here — deeper walks use ``get_knowledge_hub_breadcrumbs`` (single-node, N+1).
-        """
-        if not record_ids:
-            return {}
-        if not self.client:
-            return {}
+    ) -> dict[str, Any]:
+        """One-round-trip upward parent adjacency for Location trails."""
+        if not record_ids or not self.client:
+            return {"nodes": {}, "parents": {}}
+        depth = max(1, min(int(max_depth), 20))
         try:
-            query = """
-UNWIND $record_ids AS rid
-MATCH (r:Record {_key: rid, orgId: $org_id})
-OPTIONAL MATCH (fp:Record {_key: r.parentNodeId, orgId: $org_id})
-  WHERE r.parentNodeId IS NOT NULL
-OPTIONAL MATCH (frg:RecordGroup {_key: r.recordGroupId, orgId: $org_id})
-  WHERE fp IS NULL AND r.recordGroupId IS NOT NULL
-OPTIONAL MATCH (p:Record)-[e:RECORD_RELATION]->(r)
-  WHERE fp IS NULL AND frg IS NULL
-    AND e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-OPTIONAL MATCH (r)-[:BELONGS_TO]->(rg:RecordGroup)
-  WHERE fp IS NULL AND frg IS NULL AND p IS NULL
-OPTIONAL MATCH (r)-[:BELONGS_TO]->(a:App)
-  WHERE fp IS NULL AND frg IS NULL AND p IS NULL AND rg IS NULL
-WITH rid,
-     CASE WHEN fp IS NOT NULL THEN fp._key
-          WHEN frg IS NOT NULL THEN frg._key
-          WHEN p IS NOT NULL THEN p._key
-          WHEN rg IS NOT NULL THEN rg._key
-          ELSE a._key END AS parentId,
-     CASE WHEN fp IS NOT NULL
-          THEN coalesce(fp.recordName, fp.name, fp.title, fp._key)
-          WHEN frg IS NOT NULL
-          THEN coalesce(frg.groupName, frg.name, frg._key)
-          WHEN p IS NOT NULL
-          THEN coalesce(p.recordName, p.name, p.title, p._key)
-          WHEN rg IS NOT NULL
-          THEN coalesce(rg.groupName, rg.name, rg._key)
-          WHEN a IS NOT NULL
-          THEN coalesce(a.appName, a.name, a._key)
-          ELSE null END AS parentName
-RETURN rid AS recordId, parentId, parentName
-"""
-            rows: list[dict] = await self.client.execute_query(
-                query,
-                {"record_ids": record_ids, "org_id": org_id},
+            # Neo4j stores Arango _key as `id`. Two stages: record-ancestor
+            # chain, then BELONGS_TO chain — var-length *1..d yields every
+            # intermediate RG as the endpoint of a shorter match, so no third
+            # RG re-expansion stage is needed.
+            closure_query = f"""
+            UNWIND $record_ids AS rid
+            MATCH (start:Record {{id: rid, orgId: $org_id}})
+            OPTIONAL MATCH (parent:Record)-[rr:RECORD_RELATION*0..{depth}]->(start)
+            WHERE parent.orgId = $org_id
+              AND ALL(rel IN rr WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            WITH collect(DISTINCT start.id) + collect(DISTINCT parent.id) AS recIds
+            WITH [x IN recIds WHERE x IS NOT NULL] AS recIds
+            UNWIND recIds AS rid2
+            MATCH (r:Record {{id: rid2, orgId: $org_id}})
+            OPTIONAL MATCH (r)-[:BELONGS_TO*1..{depth}]->(c)
+            WHERE (c:RecordGroup AND c.orgId = $org_id) OR c:App
+            WITH collect(DISTINCT rid2) + collect(DISTINCT c.id) AS allKeys
+            UNWIND allKeys AS k
+            WITH k WHERE k IS NOT NULL
+            RETURN collect(DISTINCT k) AS allKeys
+            """
+            closure_rows = await self.client.execute_query(
+                closure_query,
+                {"record_ids": list(record_ids), "org_id": org_id},
                 txn_id=transaction,
             )
-            output: dict[str, dict] = {}
-            for row in rows:
-                rid = row.get("recordId")
-                if not rid:
+            all_keys: list[str] = []
+            if closure_rows:
+                all_keys = [str(k) for k in (closure_rows[0].get("allKeys") or []) if k]
+            for rid in record_ids:
+                if rid not in all_keys:
+                    all_keys.append(rid)
+
+            detail_query = """
+            UNWIND $ids AS nid
+            OPTIONAL MATCH (rec:Record {id: nid, orgId: $org_id})
+            OPTIONAL MATCH (rg:RecordGroup {id: nid, orgId: $org_id})
+            OPTIONAL MATCH (app:App {id: nid})
+            WHERE app.orgId IS NULL OR app.orgId = $org_id
+            WITH nid, rec, rg, app,
+                 CASE WHEN rec IS NOT NULL THEN rec
+                      WHEN rg IS NOT NULL THEN rg
+                      ELSE app END AS node
+            WHERE node IS NOT NULL
+            OPTIONAL MATCH (pRec:Record)-[rr:RECORD_RELATION]->(rec)
+            WHERE rec IS NOT NULL
+              AND rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+              AND pRec.orgId = $org_id
+            OPTIONAL MATCH (node)-[:BELONGS_TO]->(pRg:RecordGroup)
+            WHERE pRg.orgId = $org_id
+            OPTIONAL MATCH (node)-[:BELONGS_TO]->(pApp:App)
+            WHERE pApp.orgId IS NULL OR pApp.orgId = $org_id
+            RETURN nid AS id,
+                   CASE WHEN rec IS NOT NULL THEN 'record'
+                        WHEN rg IS NOT NULL THEN 'recordGroup'
+                        ELSE 'app' END AS type,
+                   CASE WHEN rec IS NOT NULL
+                        THEN coalesce(rec.recordName, rec.name, rec.title, rec.id)
+                        WHEN rg IS NOT NULL
+                        THEN coalesce(rg.groupName, rg.name, rg.id)
+                        ELSE coalesce(app.name, app.appName, app.id) END AS name,
+                   collect(DISTINCT CASE WHEN pRec IS NOT NULL
+                     THEN {parent_id: pRec.id, parent_type: 'record', via: 'recordRelations'}
+                     ELSE null END) AS rrParents,
+                   collect(DISTINCT CASE WHEN pRg IS NOT NULL
+                     THEN {parent_id: pRg.id, parent_type: 'recordGroup', via: 'belongsTo'}
+                     ELSE null END) AS rgParents,
+                   collect(DISTINCT CASE WHEN pApp IS NOT NULL
+                     THEN {parent_id: pApp.id, parent_type: 'app', via: 'belongsTo'}
+                     ELSE null END) AS appParents
+            """
+            detail_rows = await self.client.execute_query(
+                detail_query,
+                {"ids": all_keys, "org_id": org_id},
+                txn_id=transaction,
+            )
+            nodes: dict[str, Any] = {}
+            parents: dict[str, Any] = {}
+            for row in detail_rows or []:
+                row_id = row.get("id")
+                if not row_id:
                     continue
-                parent_id = row.get("parentId")
-                parent_name = row.get("parentName")
-                path = [parent_name] if parent_name else []
-                output[rid] = {
-                    "path": path,
-                    "parentId": parent_id,
-                    "truncated": False,
+                row_id = str(row_id)
+                nodes[row_id] = {
+                    "id": row_id,
+                    "type": row.get("type") or "record",
+                    "name": row.get("name") or row_id,
                 }
-            return output
+                parents[row_id] = [
+                    edge
+                    for bucket in ("rrParents", "rgParents", "appParents")
+                    for edge in row.get(bucket) or []
+                    if isinstance(edge, dict) and edge.get("parent_id")
+                ]
+            return {"nodes": nodes, "parents": parents}
         except Exception as exc:
-            self.logger.warning("get_record_locations: Cypher failed — %s", exc)
-            return {}
+            self.logger.warning("get_record_parent_adjacency: Cypher failed — %s", exc)
+            return {"nodes": {}, "parents": {}}
 
     async def get_user_app_ids(
         self,

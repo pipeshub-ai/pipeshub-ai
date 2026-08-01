@@ -1863,3 +1863,67 @@ class TestGetUsersByIds(UsersTestBase):
         assert body["error"]["code"] == "VALIDATION_ERROR", (
             f"[wrong type] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
+
+
+# ====================================================================
+# POST /api/v1/users/bulk/invite  and  /bulk/invite/upload
+# ====================================================================
+@pytest.mark.integration
+class TestBulkInvite(UsersTestBase):
+    """POST /api/v1/users/bulk/invite and /bulk/invite/upload.
+
+    The bulk-invite routes are gated by an smtpConfigCheck middleware, so the
+    class depends on the shared ``smtp_configured`` fixture (response-validation
+    conftest), which configures SMTP from the SMTP_* env and skips when it is
+    unset — so local runs without a mail server stay green (export the vars,
+    Mailpit is easiest, to exercise it).
+
+    Recipients use the reserved example.com domain so a real relay accepts the
+    submission without generating deliverable mail.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_smtp(self, smtp_configured: None) -> None:
+        """Gate every test in this class on the global SMTP setup fixture."""
+
+    @staticmethod
+    def _unique_email() -> str:
+        return f"bulk-invite-it-{uuid.uuid4().hex[:12]}@example.com"
+
+    def _csv(self, emails: list[str]) -> bytes:
+        return ("Email\n" + "\n".join(emails) + "\n").encode()
+
+    # ---- POST /bulk/invite (manual list, synchronous) ----
+    def test_bulk_invite_new_users_returns_200(self) -> None:
+        emails = [self._unique_email(), self._unique_email()]
+        resp = self.users.invite_bulk(emails)
+        assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_rejects_non_array_emails(self) -> None:
+        resp = self.users.post("/bulk/invite", json={"emails": "not-a-list"})
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_rejects_invalid_email(self) -> None:
+        resp = self.users.invite_bulk(["definitely not an email"])
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    # ---- POST /bulk/invite/upload (file, async → 202) ----
+    def test_bulk_invite_upload_csv_returns_202(self) -> None:
+        emails = [self._unique_email(), self._unique_email()]
+        resp = self.users.invite_bulk_upload(self._csv(emails), "invites.csv")
+        assert resp.status_code == 202, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_empty_file_returns_400(self) -> None:
+        resp = self.users.invite_bulk_upload(b"", "empty.csv")
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_rejects_wrong_file_type(self) -> None:
+        resp = self.users.invite_bulk_upload(
+            b"\x89PNG\r\n\x1a\n", "avatar.png", "image/png"
+        )
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+
+    def test_bulk_invite_upload_over_limit_returns_400(self) -> None:
+        emails = [f"user{i}@example.com" for i in range(1001)]
+        resp = self.users.invite_bulk_upload(self._csv(emails), "toomany.csv")
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
