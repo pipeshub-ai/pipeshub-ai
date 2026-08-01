@@ -130,7 +130,7 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 | Web Framework | FastAPI |
 | LLM Interface | LangChain (multi-provider model access) |
 | Embeddings | sentence-transformers / fastembed |
-| Document Parsing | Docling / default (pdfplumber, selectolax, markdown-it, openpyxl, csv) |
+| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
 | Document Conversion | LibreOffice, CairoSVG |
 | Data Analysis | pandas |
 
