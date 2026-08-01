@@ -14648,64 +14648,6 @@ class TestGetKnowledgeHubChildren:
         assert result == {"nodes": [], "total": 0}
 
 
-class TestGetKnowledgeHubDescendantsFlat:
-    """Unit tests for ArangoHTTPProvider.get_knowledge_hub_descendants_flat."""
-
-    @pytest.mark.asyncio
-    async def test_returns_flat_nodes_with_level(self, connected_provider):
-        """Verify the query is executed and results include level/parentId."""
-        mock_nodes = [
-            {"id": "child1", "name": "Child 1", "level": 1, "parentId": "parent1",
-             "sourceCreatedAt": 2000, "sourceModifiedAt": 3000,
-             "nodeType": "record", "hasChildren": False},
-            {"id": "grandchild1", "name": "Grandchild 1", "level": 2, "parentId": "child1",
-             "sourceCreatedAt": 1000, "sourceModifiedAt": 1500,
-             "nodeType": "folder", "hasChildren": True},
-        ]
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": mock_nodes, "total": 2}]
-        )
-
-        result = await connected_provider.get_knowledge_hub_descendants_flat(
-            parent_id="parent1", org_id="org-1", user_key="user-1", depth=2,
-        )
-
-        assert result["total"] == 2
-        assert len(result["nodes"]) == 2
-        assert result["nodes"][0]["level"] == 1
-        assert result["nodes"][1]["parentId"] == "child1"
-        connected_provider.http_client.execute_aql.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_time_range_passed_to_query(self, connected_provider):
-        """Verify time_range bind vars are included when provided."""
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0}]
-        )
-
-        await connected_provider.get_knowledge_hub_descendants_flat(
-            parent_id="p1", org_id="org-1", user_key="u1",
-            time_range={"source_created_after_ms": 5000},
-        )
-
-        call_args = connected_provider.http_client.execute_aql.call_args
-        bind_vars = call_args.kwargs.get("bind_vars", call_args.args[1] if len(call_args.args) > 1 else None)
-        assert bind_vars.get("sourceCreatedAfterMs") == 5000
-
-    @pytest.mark.asyncio
-    async def test_depth_clamped(self, connected_provider):
-        """depth > 3 is clamped to 3 by the provider."""
-        connected_provider.http_client.execute_aql = AsyncMock(
-            return_value=[{"nodes": [], "total": 0}]
-        )
-        await connected_provider.get_knowledge_hub_descendants_flat(
-            parent_id="p1", org_id="org-1", user_key="u1", depth=999,
-        )
-        call_args = connected_provider.http_client.execute_aql.call_args
-        bind_vars = call_args.kwargs.get("bind_vars", call_args.args[1] if len(call_args.args) > 1 else None)
-        assert bind_vars["depth"] == 3
-
-
 class TestKnowledgeHubSearchTwoPhase:
     @pytest.mark.asyncio
     async def test_search_two_phase_calls_hydration(self, connected_provider):

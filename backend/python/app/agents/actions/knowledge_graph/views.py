@@ -8,10 +8,11 @@ Design goals:
 - Small-model safe: one output grammar, Record ID always labelled.
 
 `navigate(depth=2|3)` fetches all descendants up to `depth` levels in a
-single query (`GraphNavigator`/`get_knowledge_hub_descendants_flat`) and
+single query (`GraphNavigator`/`KnowledgeHubService.get_nodes()`) and
 returns them as a flat list sorted by source creation date, each row
-carrying its own `level`. Rendered here as a flat listing with a
-`| Level N` marker for rows below the top level — no nesting/indentation.
+carrying its own `level` (backfilled via `get_node_depths_batch()`).
+Rendered here as a flat listing with a `| Level N` marker for rows below
+the top level — no nesting/indentation.
 """
 
 from __future__ import annotations

@@ -73,6 +73,9 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
         time_bits.append("modified")
     if time_bits:
         base += f" (time-filtered: {'/'.join(time_bits)})"
+    node_types = args.get("node_types")
+    if node_types:
+        base += f" (types: {', '.join(node_types)})"
     return base
 
 
@@ -234,14 +237,19 @@ class KnowledgeGraph:
         path="/tools/knowledgegraph/navigate",
         short_description="Browse the knowledge graph by node (App → RecordGroup → Record → children)",
         description=(
-            "Navigate the connected knowledge hierarchy — App (connector) → RecordGroup (project/space/drive) "
-            "→ Record (epic/story/page/file) → children — and see breadcrumbs, related links, and Record IDs.\n\n"
+            "Navigate the connected knowledge hierarchy and see breadcrumbs, related links, and Record IDs.\n\n"
+            "Hierarchy levels (each node's children are the next level down):\n"
+            "  Root → App (connector: Jira, Confluence, Drive, Slack, ...)\n"
+            "  App → RecordGroup (project, space, drive, channel, repository, ...)\n"
+            "  RecordGroup → Record/Folder (epic, page, file, ticket, message, ...)\n"
+            "  Record/Folder → child Records (story, subtask, sub-page, attachment, ...)\n\n"
             "Use this when a question depends on structure rather than wording: what is under this epic, "
             "which pages sit in this space, what is linked to this ticket. Search finds records by content; "
             "only this shows how they relate.\n\n"
             "Call with no arguments to see all connected apps.\n"
             "Pass node_id to open any node.\n"
-            "Pass name_filter to filter children by name (≥2 chars).\n\n"
+            "Pass name_filter to filter children by name (≥2 chars).\n"
+            "Pass node_types to filter children by type (app, recordGroup, record, folder).\n\n"
             "node_id is tolerant: passing a URL or issue key (PA-1787) resolves it automatically.\n\n"
             "Opening a record shows its own metadata — for a ticket that includes status, assignee, "
             "priority and dates — so a question about one record is often answered by this call alone. "
@@ -356,6 +364,19 @@ class KnowledgeGraph:
                 ),
                 required=False,
             ),
+            ToolParameter(
+                name="node_types",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Filter children by node type. Values: 'app' (connector), "
+                    "'recordGroup' (project/space/drive/channel), 'record', 'folder'. "
+                    "Omit to show all types. Use when you need only a specific level of "
+                    "the hierarchy — e.g. node_types=['record'] to skip record groups, "
+                    "or node_types=['recordGroup'] to see only projects/spaces under an app."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=_navigate_args_summary,
@@ -372,6 +393,7 @@ class KnowledgeGraph:
         created_before: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        node_types: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Walk the knowledge graph hierarchy."""
         if not self.state:
@@ -488,6 +510,7 @@ class KnowledgeGraph:
                 depth=depth,
                 created_at=created_at,
                 updated_at=updated_at,
+                node_types=node_types,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)

@@ -7534,6 +7534,76 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
             return None
 
+    async def get_typed_records_batch(
+        self,
+        record_ids: list[str],
+    ) -> dict[str, Record]:
+        """
+        Batch-fetch typed Record instances for the given record IDs.
+
+        Args:
+            record_ids: Internal record IDs
+
+        Returns:
+            dict[str, Record]: Mapping of record ID to typed Record instance.
+            IDs not found or failing typed construction are silently omitted.
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = """
+            UNWIND $record_ids AS rid
+            MATCH (record:Record {id: rid})
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+            RETURN rid AS id, record, typeDoc
+            """
+            results = await self.execute_query(query, bind_vars={"record_ids": record_ids})
+            typed: dict[str, Record] = {}
+            for row in results or []:
+                try:
+                    if not row.get("record"):
+                        continue
+                    record_dict = dict(row["record"])
+                    record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
+
+                    type_doc = dict(row["typeDoc"]) if row.get("typeDoc") else None
+                    if type_doc:
+                        type_doc = self._neo4j_to_arango_node(type_doc, "")
+
+                    typed[row["id"]] = self._create_typed_record_from_neo4j(record_dict, type_doc)
+                except Exception:
+                    continue
+            return typed
+        except Exception as e:
+            self.logger.error(f"❌ get_typed_records_batch failed: {str(e)}")
+            return {}
+
+    async def get_node_depths_batch(
+        self,
+        parent_id: str,
+        node_ids: list[str],
+        max_depth: int = 3,
+    ) -> dict[str, int]:
+        if not node_ids:
+            return {}
+        safe_depth = max(1, min(int(max_depth), 10))
+        try:
+            query = f"""
+            MATCH (parent:Record {{id: $parent_id}})
+            MATCH path = (parent)-[:RECORD_RELATION*1..{safe_depth}]->(descendant:Record)
+            WHERE ALL(rel IN relationships(path)
+                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            AND descendant.id IN $node_ids
+            RETURN descendant.id AS id, length(path) AS level
+            """
+            results = await self.execute_query(
+                query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
+            )
+            return {row["id"]: row["level"] for row in (results or [])}
+        except Exception as e:
+            self.logger.error(f"get_node_depths_batch failed: {e}")
+            return {}
+
     async def check_record_access_with_details(
         self,
         user_id: str,
@@ -12850,201 +12920,6 @@ class Neo4jProvider(IGraphDBProvider):
             return result[0]["result"]
         return {"nodes": [], "total": 0}
 
-    async def get_knowledge_hub_descendants_flat(
-        self,
-        parent_id: str,
-        org_id: str,
-        user_key: str,
-        *,
-        depth: int = 3,
-        skip: int = 0,
-        limit: int = 100,
-        connector_ids: list[str] | None = None,
-        record_group_ids: list[str] | None = None,
-        time_range: dict[str, int] | None = None,
-        sort_field: str = "sourceCreatedAtTimestamp",
-        sort_dir: str = "DESC",
-    ) -> dict[str, Any]:
-        """Flat list of all descendants of a record/folder up to *depth* levels.
-
-        Single Cypher variable-length path traversal over RECORD_RELATION edges
-        (PARENT_CHILD / ATTACHMENT) replaces the N+1 fan-out of per-node
-        ``get_knowledge_hub_children`` calls.
-        """
-        start = time.perf_counter()
-        try:
-            # Clamp depth: this value is interpolated directly into the Cypher
-            # range (`*1..{depth}`), which Neo4j does not allow to be parameterized.
-            safe_depth = max(1, min(int(depth), 3))
-
-            allowed_sort_fields = {
-                "sourceCreatedAtTimestamp",
-                "sourceLastModifiedTimestamp",
-                "createdAtTimestamp",
-                "updatedAtTimestamp",
-                "recordName",
-            }
-            safe_sort_field = (
-                sort_field if sort_field in allowed_sort_fields else "sourceCreatedAtTimestamp"
-            )
-            sort_direction = "ASC" if str(sort_dir).upper() == "ASC" else "DESC"
-
-            permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
-
-            parameters: dict[str, Any] = {
-                "parent_id": parent_id,
-                "org_id": org_id,
-                "user_key": user_key,
-                "skip": skip,
-                "limit": limit,
-            }
-
-            time_range_conditions = self._build_time_range_conditions(
-                time_range, parameters, record_var="record"
-            )
-
-            connector_filter = ""
-            if connector_ids:
-                parameters["connector_ids"] = connector_ids
-                connector_filter = "AND record.connectorId IN $connector_ids"
-
-            rg_filter = ""
-            if record_group_ids:
-                parameters["record_group_ids"] = record_group_ids
-                rg_filter = "AND record.externalGroupId IN $record_group_ids"
-
-            query = f"""
-            MATCH (parent:Record {{id: $parent_id}})
-            MATCH (u:User {{id: $user_key}})
-
-            CALL {{
-                WITH parent, u
-                MATCH path = (parent)-[:RECORD_RELATION*1..{safe_depth}]->(record:Record)
-                WHERE ALL(rel IN relationships(path)
-                          WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
-                AND record.isDeleted <> true
-                AND record.orgId = $org_id
-                {connector_filter}
-                {rg_filter}
-                {time_range_conditions}
-
-                WITH record, path, u
-                {permission_role_cypher}
-
-                WITH record, path, permission_role
-                WHERE permission_role IS NOT NULL AND permission_role <> ''
-
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file)
-
-                WITH record, path, permission_role, file,
-                     CASE WHEN file IS NOT NULL AND file.isFile = false THEN 'folder' ELSE 'record' END AS nodeType
-
-                OPTIONAL MATCH (record)-[ce:RECORD_RELATION]->(child:Record)
-                WHERE ce.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-                AND child.isDeleted <> true
-
-                WITH record, path, permission_role, file, nodeType,
-                     CASE WHEN child IS NOT NULL THEN true ELSE false END AS hasChildren
-
-                RETURN record, length(path) AS level,
-                       nodes(path)[-2].id AS parentId,
-                       permission_role AS userRole,
-                       file, nodeType, hasChildren
-            }}
-
-            WITH record, level, parentId, userRole, file, nodeType, hasChildren
-
-            RETURN {{
-                id: record.id,
-                name: record.recordName,
-                nodeType: nodeType,
-                level: level,
-                parentId: parentId,
-                origin: CASE WHEN record.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
-                connector: record.connectorName,
-                connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
-                externalGroupId: record.externalGroupId,
-                recordType: record.recordType,
-                recordGroupType: null,
-                indexingStatus: record.indexingStatus,
-                reason: record.reason,
-                createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
-                updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
-                sourceCreatedAt: record.sourceCreatedAtTimestamp,
-                sourceModifiedAt: record.sourceLastModifiedTimestamp,
-                sizeInBytes: coalesce(record.sizeInBytes, file.fileSizeInBytes),
-                mimeType: record.mimeType,
-                extension: file.extension,
-                webUrl: record.webUrl,
-                hasChildren: hasChildren,
-                previewRenderable: coalesce(record.previewRenderable, true),
-                userRole: userRole,
-                isInternal: coalesce(record.isInternal, false),
-                isPlaceholder: coalesce(record.isPlaceholder, false),
-                status: record.status,
-                priority: record.priority,
-                assignee: record.assignee,
-                labels: record.labels,
-                location: record.location
-            }} AS node, record AS rawRecord, file AS typeDoc
-
-            ORDER BY node.{safe_sort_field} {sort_direction}
-            SKIP $skip LIMIT $limit
-            """
-
-            raw_results = await self.client.execute_query(query, parameters=parameters)
-            nodes = []
-            typed_records: dict[str, Any] = {}
-            for r in (raw_results or []):
-                if not r.get("node"):
-                    continue
-                nodes.append(r["node"])
-                raw_record = r.get("rawRecord")
-                type_doc_raw = r.get("typeDoc")
-                if raw_record:
-                    try:
-                        record_dict = dict(raw_record)
-                        record_dict = self._neo4j_to_arango_node(
-                            record_dict, CollectionNames.RECORDS.value
-                        )
-                        type_doc_dict = None
-                        if type_doc_raw:
-                            type_doc_dict = dict(type_doc_raw)
-                            type_doc_dict = self._neo4j_to_arango_node(type_doc_dict, "")
-                        typed = self._create_typed_record_from_neo4j(record_dict, type_doc_dict)
-                        typed_records[r["node"]["id"]] = typed
-                    except (ValueError, Exception):
-                        pass
-
-            # Separate count query without permission checking for performance —
-            # may overcount slightly relative to the permission-filtered page above,
-            # since re-running the permission CALL per descendant here would be
-            # as expensive as the main traversal itself.
-            count_query = f"""
-            MATCH (parent:Record {{id: $parent_id}})
-            MATCH path = (parent)-[:RECORD_RELATION*1..{safe_depth}]->(record:Record)
-            WHERE ALL(rel IN relationships(path)
-                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
-            AND record.isDeleted <> true
-            AND record.orgId = $org_id
-            {connector_filter}
-            {rg_filter}
-            {time_range_conditions}
-            RETURN count(DISTINCT record) AS total
-            """
-            count_result = await self.client.execute_query(count_query, parameters=parameters)
-            total = count_result[0]["total"] if count_result else 0
-
-            elapsed = time.perf_counter() - start
-            self.logger.debug(
-                f"get_knowledge_hub_descendants_flat finished in {elapsed * 1000} ms"
-            )
-            return {"nodes": nodes, "total": total, "typed_records": typed_records}
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub descendants flat failed: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0, "typed_records": {}}
-
     async def get_knowledge_hub_search(
         self,
         org_id: str,
@@ -13067,11 +12942,12 @@ class Neo4jProvider(IGraphDBProvider):
         parent_id: str | None = None,
         parent_type: str | None = None,
         record_group_ids: list[str] | None = None,
+        depth: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
-        
+
         Uses three-phase query architecture for memory efficiency:
         - Phase 1a: Count total accessible nodes (cached by Neo4j)
         - Phase 1b: Get paginated node IDs with streaming (no collect() barrier)
@@ -13179,7 +13055,9 @@ class Neo4jProvider(IGraphDBProvider):
             params["user_accessible_app_ids"] = user_accessible_app_ids
 
             # Build children intersection cypher (only for kb/recordGroup/record/folder parents)
-            children_intersection_cypher = self._build_children_intersection_cypher(parent_id, parent_type)
+            children_intersection_cypher = self._build_children_intersection_cypher(
+                parent_id, parent_type, depth=depth
+            )
 
             # ========== PHASE 1A: COUNT QUERY (Cached by Neo4j) ==========
             phase1a_start = time.perf_counter()
@@ -15243,7 +15121,8 @@ class Neo4jProvider(IGraphDBProvider):
     def _build_children_intersection_cypher(
         self,
         parent_id: str | None,
-        parent_type: str | None
+        parent_type: str | None,
+        depth: int | None = None,
     ) -> str:
         """
         Generate Cypher subquery for children-first traversal and intersection.
@@ -15315,13 +15194,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         elif parent_type in ("record", "folder"):
             # For Record/Folder: traverse RECORD_RELATION to find child records
-            return """
+            max_depth = min(max(1, depth), 100) if depth is not None else 100
+            return f"""
             // ========== CHILDREN TRAVERSAL & INTERSECTION (record/folder parent) ==========
             // Get parent Record
-            MATCH (parent_record:Record {id: $parent_doc_id})
+            MATCH (parent_record:Record {{id: $parent_doc_id}})
 
             // Find all child Records via RECORD_RELATION (recursive)
-            OPTIONAL MATCH (parent_record)-[rr:RECORD_RELATION*1..100]->(child_record:Record)
+            OPTIONAL MATCH (parent_record)-[rr:RECORD_RELATION*1..{max_depth}]->(child_record:Record)
             WHERE child_record.orgId = $org_id
               AND ALL(rel IN rr WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
             WITH accessible_rgs, accessible_records, parent_record,

@@ -40,8 +40,7 @@ class NodeRow(NodeRef):
     source_modified_at: int | None = None
     # 1-based nesting depth from the navigated parent. 1 for a plain
     # depth=1 listing and for the top level of a depth>=2 flat-descendants
-    # listing; 2/3 for deeper rows returned by
-    # get_knowledge_hub_descendants_flat.
+    # listing; 2/3 for deeper rows, backfilled via get_node_depths_batch().
     level: int = 1
     context_summary: str | None = None
 

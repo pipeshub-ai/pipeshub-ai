@@ -109,52 +109,6 @@ def _linked_dict_to_row(d: dict[str, Any]) -> NodeRow:
     )
 
 
-def _build_context_summary(d: dict[str, Any]) -> str | None:
-    """Build a condensed one-line summary from type-specific record fields
-    projected by get_knowledge_hub_descendants_flat."""
-    parts: list[str] = []
-    if d.get("status"):
-        val = d["status"]
-        parts.append(f"Status: {val.get('value', val) if isinstance(val, dict) else val}")
-    if d.get("priority"):
-        val = d["priority"]
-        parts.append(f"Priority: {val.get('value', val) if isinstance(val, dict) else val}")
-    if d.get("assignee"):
-        parts.append(f"Assignee: {d['assignee']}")
-    if d.get("labels"):
-        labels = d["labels"]
-        if isinstance(labels, list) and labels:
-            parts.append(f"Labels: {', '.join(str(l) for l in labels)}")
-    if d.get("location"):
-        parts.append(f"Location: {d['location']}")
-    return ", ".join(parts) if parts else None
-
-
-def _descendant_dict_to_row(d: dict[str, Any]) -> NodeRow:
-    """Convert a flat descendant dict from get_knowledge_hub_descendants_flat
-    to a NodeRow."""
-    node_type = d.get("nodeType", "record")
-    sub_type = d.get("recordType") or d.get("connector")
-    detail_parts = []
-    if d.get("indexingStatus") and d["indexingStatus"] != "COMPLETED":
-        detail_parts.append(f"indexing: {d['indexingStatus']}")
-    return NodeRow(
-        id=d["id"],
-        name=d.get("name", ""),
-        node_type=node_type,
-        sub_type=sub_type,
-        is_record=node_type in ("record", "folder"),
-        has_children=d.get("hasChildren", False),
-        detail=" | ".join(detail_parts) if detail_parts else None,
-        web_url=d.get("webUrl"),
-        indexing_status=d.get("indexingStatus"),
-        source_created_at=d.get("sourceCreatedAt"),
-        source_modified_at=d.get("sourceModifiedAt"),
-        level=d.get("level", 1),
-        context_summary=_build_context_summary(d),
-    )
-
-
 def _condensed_summary(context_block: str) -> str | None:
     """Extract the `* Field: value` lines from a `Record.to_llm_context()`
     block into one comma-joined line — the type-specific metadata (status,
@@ -221,37 +175,16 @@ class GraphNavigator:
         # must not take the whole navigation down with it.
         return block if isinstance(block, str) else None
 
-    @staticmethod
-    def _build_time_range(
-        created_at: dict[str, int | None] | None,
-        updated_at: dict[str, int | None] | None,
-    ) -> dict[str, int] | None:
-        """Convert KH-style created_at/updated_at dicts to time_range dict."""
-        tr: dict[str, int] = {}
-        if created_at:
-            if created_at.get("gte") is not None:
-                tr["source_created_after_ms"] = created_at["gte"]
-            if created_at.get("lte") is not None:
-                tr["source_created_before_ms"] = created_at["lte"]
-        if updated_at:
-            if updated_at.get("gte") is not None:
-                tr["source_updated_after_ms"] = updated_at["gte"]
-            if updated_at.get("lte") is not None:
-                tr["source_updated_before_ms"] = updated_at["lte"]
-        return tr or None
-
     def _enrich_rows_from_typed_records(
         self,
         rows: list[NodeRow],
         typed_records: dict[str, Any],
     ) -> None:
-        """Enrich rows with condensed ``Record.to_llm_context()`` metadata
-        using pre-constructed typed Records returned by the traversal query.
+        """Enrich rows with condensed ``Record.to_llm_context()`` metadata.
 
-        No additional DB calls — the traversal already fetched the raw record
-        and type doc for each descendant and constructed typed Records in the
-        provider. Rows whose ID isn't in ``typed_records`` keep their
-        projected-field fallback summary (from ``_build_context_summary``).
+        Uses typed Records from the ``get_nodes()`` response to call
+        ``to_llm_context()`` and extract type-specific fields (status,
+        assignee, priority, etc.) into each row's ``context_summary``.
         """
         for row in rows:
             if not row.is_record or row.id not in typed_records:
@@ -277,24 +210,16 @@ class GraphNavigator:
         depth: int = 1,
         created_at: dict[str, int | None] | None = None,
         updated_at: dict[str, int | None] | None = None,
+        node_types: list[str] | None = None,
     ) -> NavigationView:
         """Build a NavigationView for the given node.
 
         node_id=None → root (list of connected apps).
-        depth > 1 (record/folder parents only, page 1 only) fetches all
-        descendants up to `depth` levels in a single query via
-        `get_knowledge_hub_descendants_flat`, returned as a flat list with
-        each row's `level` set — instead of walking one navigate() call per
-        level.
+        depth > 1 (record/folder parents) fetches descendants up to
+        `depth` levels via get_nodes(flattened=True, depth=...).
 
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
-        "lte": epoch_ms|None}` filters on the child's source
-        creation/modification timestamp — passed straight through to
-        `KnowledgeHubService.get_nodes()` at depth=1, whose
-        `_has_flattening_filters` already treats a non-empty dict here as a
-        signal to use the search/flattened path (which supports these
-        filters) instead of the plain browse path. Converted to a
-        `time_range` dict (see `_build_time_range`) for the depth>1 path.
+        "lte": epoch_ms|None}` filters on the child's source timestamps.
         """
         limit = min(max(1, limit), _MAX_LIMIT)
         page = max(1, page)
@@ -363,59 +288,54 @@ class GraphNavigator:
                     if bc.get("id") and bc.get("id") != node_id
                 ]
 
-        # For record/folder parents with depth > 1, use single-query traversal
-        effective_depth = depth if parent_type in ("record", "folder") else 1
+        # ── Fetch children via unified get_nodes() ────────────────────
+        response = await self._service.get_nodes(
+            user_id=self._user_id,
+            org_id=self._org_id,
+            parent_id=node_id,
+            parent_type=parent_type,
+            page=page,
+            limit=limit,
+            q=name_filter if name_filter else None,
+            connector_ids=connector_ids,
+            record_group_ids=record_group_ids,
+            created_at=created_at,
+            updated_at=updated_at,
+            flattened=True,
+            depth=depth if parent_type in ("record", "folder") else None,
+            include_typed_records=True,
+            node_types=node_types,
+        )
 
-        if effective_depth > 1 and page == 1:
-            response = await self._graph.get_knowledge_hub_descendants_flat(
-                parent_id=node_id,
-                org_id=self._org_id,
-                user_key=self._user_key,
-                depth=effective_depth,
-                skip=0,
-                limit=limit,
-                connector_ids=connector_ids,
-                record_group_ids=record_group_ids,
-                time_range=self._build_time_range(created_at, updated_at),
-                sort_field="sourceCreatedAtTimestamp",
-                sort_dir="DESC",
-            )
-            rows = [_descendant_dict_to_row(n) for n in response.get("nodes", [])]
-            total = response.get("total", len(rows))
-            pagination = PaginationInfo(
-                page=1, limit=limit, total=total,
-                has_next=total > limit, has_prev=False,
-            )
-            typed_records = response.get("typed_records", {})
-            self._enrich_rows_from_typed_records(rows, typed_records)
-        else:
-            response = await self._service.get_nodes(
-                user_id=self._user_id,
-                org_id=self._org_id,
-                parent_id=node_id,
-                parent_type=parent_type,
-                page=page,
-                limit=limit,
-                q=name_filter if name_filter else None,
-                connector_ids=connector_ids,
-                record_group_ids=record_group_ids,
-                created_at=created_at,
-                updated_at=updated_at,
-                # page 1 only: include breadcrumbs is handled above via get_knowledge_hub_breadcrumbs
-            )
+        rows: list[NodeRow] = [_node_item_to_row(item) for item in (response.items or [])]
 
-            rows: list[NodeRow] = [_node_item_to_row(item) for item in (response.items or [])]
-
-            pag_raw = response.pagination
-            pagination: PaginationInfo | None = None
-            if pag_raw:
-                pagination = PaginationInfo(
-                    page=pag_raw.page,
-                    limit=pag_raw.limit,
-                    total=pag_raw.totalItems,
-                    has_next=pag_raw.hasNext,
-                    has_prev=pag_raw.hasPrev,
+        # Populate row.level for depth>1 traversals so the LLM sees nesting
+        if depth > 1 and parent_type in ("record", "folder") and rows:
+            record_ids = [row.id for row in rows if row.is_record]
+            if record_ids:
+                depth_map = await self._graph.get_node_depths_batch(
+                    parent_id=node_id,
+                    node_ids=record_ids,
+                    max_depth=depth,
                 )
+                for row in rows:
+                    if row.id in depth_map:
+                        row.level = depth_map[row.id]
+
+        pag_raw = response.pagination
+        pagination: PaginationInfo | None = None
+        if pag_raw:
+            pagination = PaginationInfo(
+                page=pag_raw.page,
+                limit=pag_raw.limit,
+                total=pag_raw.totalItems,
+                has_next=pag_raw.hasNext,
+                has_prev=pag_raw.hasPrev,
+            )
+
+        # Enrich rows with typed record context
+        if response.typed_records:
+            self._enrich_rows_from_typed_records(rows, response.typed_records)
 
         # ── Linked records (page 1, record/folder nodes only) ──────────
         if page == 1 and node_id and parent_type in ("record", "folder"):

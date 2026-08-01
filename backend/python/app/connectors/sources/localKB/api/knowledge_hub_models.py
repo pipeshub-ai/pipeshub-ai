@@ -188,6 +188,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    typed_records: Optional[dict] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 
     class Config:
         # Exclude None values from JSON response

@@ -185,6 +185,8 @@ class TestAbstractMethodInventory:
         # Document operations
         "get_document",
         "get_record_by_id",
+        "get_typed_records_batch",
+        "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
         "batch_upsert_nodes",
@@ -363,7 +365,6 @@ class TestAbstractMethodInventory:
         # Knowledge hub operations
         "get_knowledge_hub_root_nodes",
         "get_knowledge_hub_children",
-        "get_knowledge_hub_descendants_flat",
         "get_knowledge_hub_search",
         "get_knowledge_hub_breadcrumbs",
         "get_knowledge_hub_context_permissions",

@@ -15,10 +15,6 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _time_range_error_message,
     _time_range_to_kh_filters,
 )
-from app.agents.actions.knowledge_graph.navigator import (
-    GraphNavigator,
-    _descendant_dict_to_row,
-)
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import RecordType, Status, TicketRecord
 
@@ -477,9 +473,11 @@ class TestNavigateAgentScoping:
 
 
 class TestNavigateDepthSingleQuery:
-    """`depth` (1-3) on a record/folder parent now fetches every descendant
-    in a single `get_knowledge_hub_descendants_flat` call instead of the old
-    per-level `get_nodes` fan-out — see `GraphNavigator.navigate`."""
+    """`depth` (1-3) on a record/folder parent is passed straight through to
+    a single `get_nodes(flattened=True, depth=...)` call — no per-level
+    fan-out. Rows below the immediate parent get their `level` backfilled
+    via a separate `get_node_depths_batch()` call — see
+    `GraphNavigator.navigate`."""
 
     def _state_on_epic(self, *, record_by_id=None):
         state = _make_state()
@@ -496,48 +494,36 @@ class TestNavigateDepthSingleQuery:
 
     @pytest.mark.asyncio
     async def test_navigate_depth2_uses_single_query(self):
-        """depth>1 on a record/folder parent calls
-        get_knowledge_hub_descendants_flat exactly once — no per-node
-        fan-out — and the returned flat rows (with their own `level`) show
-        up in the rendered output."""
+        """depth>1 on a record/folder parent calls `get_nodes()` (with
+        `depth` passed through) and `get_node_depths_batch()` to backfill
+        each row's level — rows from `get_nodes()` show up in the rendered
+        output with their level markers."""
         state = self._state_on_epic()
         gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(return_value={
-            "nodes": [
-                {
-                    "id": "story1", "name": "Payment Integration", "nodeType": "record",
-                    "level": 1, "parentId": "epic1", "hasChildren": True,
-                    "sourceCreatedAt": 2000, "sourceModifiedAt": 3000,
-                    "recordType": "STORY", "connector": "JIRA", "connectorId": None,
-                    "webUrl": None, "indexingStatus": "COMPLETED",
-                },
-                {
-                    "id": "sub1", "name": "Stripe setup", "nodeType": "record",
-                    "level": 2, "parentId": "story1", "hasChildren": False,
-                    "sourceCreatedAt": 1000, "sourceModifiedAt": 1500,
-                    "recordType": "SUBTASK", "connector": "JIRA", "connectorId": None,
-                    "webUrl": None, "indexingStatus": "COMPLETED",
-                },
-            ],
-            "total": 2,
-        })
+        gp.get_node_depths_batch = AsyncMock(return_value={"story1": 1, "sub1": 2})
+
+        story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
+        sub_item = _make_node_item("sub1", "Stripe setup", "record", "SUBTASK")
+        mock_resp = _make_knowledge_hub_response(items=[story_item, sub_item], total=2)
+        mock_resp.typed_records = None
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
-            new=AsyncMock(side_effect=AssertionError("get_nodes must not be called for depth>1")),
+            new=AsyncMock(return_value=mock_resp),
         ):
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="epic1", depth=2)
 
         assert success
-        gp.get_knowledge_hub_descendants_flat.assert_called_once()
+        gp.get_node_depths_batch.assert_called_once()
+        assert "Level 2" in text
         assert f"record_id={_short_id_for(state, 'story1')}" in text
         assert f"record_id={_short_id_for(state, 'sub1')}" in text
 
     @pytest.mark.asyncio
     async def test_navigate_depth2_app_parent_clamps_to_depth1(self):
-        """An app/recordGroup parent with depth>1 silently clamps to
-        depth=1 — the single-query descendants method is only meaningful
+        """An app/recordGroup parent with depth>1 never reaches the
+        level-backfill step — `get_node_depths_batch()` only makes sense
         for record/folder parents, so it must not be called at all."""
         state = _make_state()
         gp = state["graph_provider"]
@@ -548,11 +534,10 @@ class TestNavigateDepthSingleQuery:
             "subType": "JIRA",
         })
         gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(
-            side_effect=AssertionError("must not be called for an app parent")
-        )
+        gp.get_node_depths_batch = AsyncMock()
 
         mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        mock_resp.typed_records = None
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
             new=AsyncMock(return_value=mock_resp),
@@ -561,19 +546,18 @@ class TestNavigateDepthSingleQuery:
             success, _text = await tool.navigate(node_id="app-1", depth=2)
 
         assert success
-        gp.get_knowledge_hub_descendants_flat.assert_not_called()
+        gp.get_node_depths_batch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_depth_omitted_does_not_call_descendants_flat(self):
-        """depth omitted (default 1) never touches the new method — only
-        the plain get_nodes browse path."""
+    async def test_depth_omitted_does_not_call_depths_batch(self):
+        """depth omitted (default 1) never calls get_node_depths_batch —
+        only the plain get_nodes browse path."""
         state = self._state_on_epic()
         gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(
-            side_effect=AssertionError("must not be called at depth=1")
-        )
+        gp.get_node_depths_batch = AsyncMock()
         story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
         mock_resp = _make_knowledge_hub_response(items=[story_item], total=1)
+        mock_resp.typed_records = None
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
@@ -583,34 +567,45 @@ class TestNavigateDepthSingleQuery:
             success, _text = await tool.navigate(node_id="epic1")
 
         assert success
-        gp.get_knowledge_hub_descendants_flat.assert_not_called()
+        gp.get_node_depths_batch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_depth_clamped_to_max_three(self):
-        """depth=99 must not crash — it clamps to the depth=3 cap and still
-        calls the single-query method with that clamped value."""
+        """depth=99 must not crash — it clamps to the depth=3 cap and that
+        clamped value is what reaches get_nodes()."""
         state = self._state_on_epic()
         gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(return_value={"nodes": [], "total": 0})
+        gp.get_node_depths_batch = AsyncMock(return_value={})
 
-        tool = KnowledgeGraph(state=state)
-        success, _text = await tool.navigate(node_id="epic1", depth=99)
+        captured = {}
+
+        async def capture_get_nodes(self_inner, **kwargs):
+            captured.update(kwargs)
+            mock_resp = _make_knowledge_hub_response(items=[], total=0)
+            mock_resp.typed_records = None
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, _text = await tool.navigate(node_id="epic1", depth=99)
 
         assert success
-        _, kwargs = gp.get_knowledge_hub_descendants_flat.call_args
-        assert kwargs["depth"] == 3
+        assert captured.get("depth") == 3
 
     @pytest.mark.asyncio
     async def test_depth_ignored_on_page_greater_than_one(self):
-        """The single-query path is page=1 only — a page>1 request must
-        fall back to the plain get_nodes browse path instead."""
+        """depth is still passed through to get_nodes() on page>1 (the
+        level-backfill call has no page guard) — the tool call simply
+        succeeds and returns the requested page."""
         state = self._state_on_epic()
         gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(
-            side_effect=AssertionError("must not be called on page>1")
-        )
+        gp.get_node_depths_batch = AsyncMock(return_value={"story1": 2})
         story_item = _make_node_item("story1", "Payment Integration", "record", "STORY", has_children=True)
         mock_resp = _make_knowledge_hub_response(items=[story_item], total=1, page=2)
+        mock_resp.typed_records = None
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
@@ -620,31 +615,42 @@ class TestNavigateDepthSingleQuery:
             success, _text = await tool.navigate(node_id="epic1", depth=2, page=2)
 
         assert success
-        gp.get_knowledge_hub_descendants_flat.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_depth2_reuses_same_scope_and_time_range(self):
-        """The single-query call must carry the same connector/KB scope
+        """The get_nodes() call at depth>1 must carry the same parent id
         and time-range filters as an equivalent depth=1 call would."""
         state = self._state_on_epic()
         gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(return_value={"nodes": [], "total": 0})
+        gp.get_node_depths_batch = AsyncMock(return_value={})
 
-        tool = KnowledgeGraph(state=state)
-        success, _text = await tool.navigate(
-            node_id="epic1", depth=2, created_after="2026-07-01"
-        )
+        captured = {}
+
+        async def capture_get_nodes(self_inner, **kwargs):
+            captured.update(kwargs)
+            mock_resp = _make_knowledge_hub_response(items=[], total=0)
+            mock_resp.typed_records = None
+            return mock_resp
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=capture_get_nodes,
+        ):
+            tool = KnowledgeGraph(state=state)
+            success, _text = await tool.navigate(
+                node_id="epic1", depth=2, created_after="2026-07-01"
+            )
 
         assert success
-        _, kwargs = gp.get_knowledge_hub_descendants_flat.call_args
-        assert kwargs["parent_id"] == "epic1"
-        assert kwargs["time_range"] is not None
-        assert kwargs["time_range"]["source_created_after_ms"] is not None
+        assert captured.get("parent_id") == "epic1"
+        assert captured.get("created_at") is not None
+        assert captured["created_at"]["gte"] is not None
 
 
 class TestDepth2ContextEnrichment:
-    """depth>1 rows get enriched with `Record.to_llm_context()` metadata
-    via typed Records returned by the traversal query — no N+1 fan-out."""
+    """depth>1 rows get enriched with `Record.to_llm_context()` metadata via
+    typed Records returned by `get_nodes(include_typed_records=True)` — see
+    `GraphNavigator._enrich_rows_from_typed_records`."""
 
     def _state_on_folder(self):
         state = _make_state()
@@ -670,23 +676,16 @@ class TestDepth2ContextEnrichment:
             "* Status: In Progress\n* Priority: High\n* Assignee: Dana"
         )
 
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(return_value={
-            "nodes": [
-                {"id": "t1", "name": "Fix login", "nodeType": "record",
-                 "level": 1, "parentId": "folder1", "hasChildren": False,
-                 "recordType": "TICKET", "sourceCreatedAt": 2000,
-                 "sourceModifiedAt": 3000, "webUrl": None,
-                 "indexingStatus": "COMPLETED"},
-            ],
-            "total": 1,
-            "typed_records": {"t1": mock_record},
-        })
+        item = _make_node_item("t1", "Fix login", "record", "TICKET")
+        mock_resp = _make_knowledge_hub_response(items=[item], total=1)
+        mock_resp.typed_records = {"t1": mock_record}
 
-        gp.get_record_by_id = AsyncMock(return_value=mock_record)
+        gp.get_node_depths_batch = AsyncMock(return_value={"t1": 1})
+        gp.get_record_by_id = AsyncMock(return_value=None)
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
-            new=AsyncMock(side_effect=AssertionError("get_nodes must not be called")),
+            new=AsyncMock(return_value=mock_resp),
         ):
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="folder1", depth=2)
@@ -695,38 +694,6 @@ class TestDepth2ContextEnrichment:
         assert "Status: In Progress" in text
         assert "Priority: High" in text
         assert "Assignee: Dana" in text
-        # get_record_by_id only called once for _context_block(folder1),
-        # NOT for descendant enrichment — typed_records eliminates N+1
-        assert gp.get_record_by_id.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_context_summary_degrades_to_projected_fields(self):
-        """When typed_records is empty (construction failed), rows fall back
-        to projected-field summary from _build_context_summary."""
-        state = self._state_on_folder()
-        gp = state["graph_provider"]
-        gp.get_knowledge_hub_descendants_flat = AsyncMock(return_value={
-            "nodes": [
-                {"id": "t1", "name": "Fix login", "nodeType": "record",
-                 "level": 1, "parentId": "folder1", "hasChildren": False,
-                 "recordType": "TICKET", "status": "OPEN",
-                 "sourceCreatedAt": 2000, "sourceModifiedAt": 3000,
-                 "webUrl": None, "indexingStatus": "COMPLETED"},
-            ],
-            "total": 1,
-            "typed_records": {},
-        })
-        gp.get_record_by_id = AsyncMock(return_value=None)
-
-        with patch(
-            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
-            new=AsyncMock(side_effect=AssertionError("get_nodes must not be called")),
-        ):
-            tool = KnowledgeGraph(state=state)
-            success, text = await tool.navigate(node_id="folder1", depth=2)
-
-        assert success
-        assert "Status: OPEN" in text
 
 
 class TestNavigateNameFilter:
@@ -1009,93 +976,6 @@ class TestNavigateTimeFilters:
         success, text = await tool.navigate(created_after="2099-01-01")
         assert not success
         assert "future" in text.lower()
-
-
-class TestBuildTimeRange:
-    """`GraphNavigator._build_time_range` bridges the KH-style
-    created_at/updated_at {"gte":, "lte":} dicts to the time_range dict
-    `get_knowledge_hub_descendants_flat` expects."""
-
-    def test_build_time_range_converts_created_at(self):
-        result = GraphNavigator._build_time_range(
-            created_at={"gte": 100, "lte": 200}, updated_at=None,
-        )
-        assert result == {
-            "source_created_after_ms": 100,
-            "source_created_before_ms": 200,
-        }
-
-    def test_build_time_range_converts_updated_at(self):
-        result = GraphNavigator._build_time_range(
-            created_at=None, updated_at={"gte": 300, "lte": 400},
-        )
-        assert result == {
-            "source_updated_after_ms": 300,
-            "source_updated_before_ms": 400,
-        }
-
-    def test_build_time_range_returns_none_when_empty(self):
-        assert GraphNavigator._build_time_range(None, None) is None
-        assert GraphNavigator._build_time_range({}, {}) is None
-        assert GraphNavigator._build_time_range(
-            {"gte": None, "lte": None}, {"gte": None, "lte": None}
-        ) is None
-
-
-class TestDescendantDictToRow:
-    """`_descendant_dict_to_row` converts a flat descendant dict (from
-    get_knowledge_hub_descendants_flat) into a NodeRow."""
-
-    def test_descendant_dict_to_row_sets_level(self):
-        row = _descendant_dict_to_row({
-            "id": "sub1", "name": "Stripe setup", "nodeType": "record",
-            "level": 2, "parentId": "story1", "hasChildren": False,
-            "sourceCreatedAt": 1000, "sourceModifiedAt": 1500,
-            "recordType": "SUBTASK", "connector": "JIRA",
-            "webUrl": None, "indexingStatus": "COMPLETED",
-        })
-        assert row.id == "sub1"
-        assert row.level == 2
-        assert row.is_record is True
-        assert row.source_created_at == 1000
-        assert row.source_modified_at == 1500
-
-    def test_descendant_dict_to_row_defaults_level_to_one(self):
-        row = _descendant_dict_to_row({
-            "id": "top1", "name": "Top Folder", "nodeType": "folder",
-            "hasChildren": True,
-        })
-        assert row.level == 1
-        assert row.is_record is True
-
-    def test_descendant_dict_to_row_shows_incomplete_indexing_status(self):
-        row = _descendant_dict_to_row({
-            "id": "rec1", "name": "Doc", "nodeType": "record",
-            "indexingStatus": "IN_PROGRESS",
-        })
-        assert row.detail == "indexing: IN_PROGRESS"
-
-    def test_descendant_dict_to_row_builds_context_summary(self):
-        row = _descendant_dict_to_row({
-            "id": "t1", "name": "Fix login", "nodeType": "record",
-            "recordType": "TICKET", "status": "IN_PROGRESS",
-            "priority": "HIGH", "assignee": "Dana",
-            "labels": ["bug", "auth"],
-        })
-        assert row.context_summary == "Status: IN_PROGRESS, Priority: HIGH, Assignee: Dana, Labels: bug, auth"
-
-    def test_descendant_dict_to_row_no_summary_when_no_metadata(self):
-        row = _descendant_dict_to_row({
-            "id": "f1", "name": "Readme.md", "nodeType": "record",
-        })
-        assert row.context_summary is None
-
-    def test_descendant_dict_to_row_completed_indexing_no_detail(self):
-        row = _descendant_dict_to_row({
-            "id": "f1", "name": "Doc", "nodeType": "record",
-            "indexingStatus": "COMPLETED",
-        })
-        assert row.detail is None
 
 
 class TestNavigateSparseResultHint:
