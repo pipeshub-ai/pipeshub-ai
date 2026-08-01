@@ -352,6 +352,9 @@ class AnswerFinalizer:
         if not normalized.strip():
             log.warning("AnswerFinalizer: answer empty after normalization, using fallback")
             normalized = _EMPTY_ANSWER_FALLBACK
+            citations = []
+            confidence = "Low"
+            completion_data["answerMatchType"] = "Fallback Response"
             self._attach_parts(completion_data, final_text=normalized)
 
         # `TerminalAnswerStreamer` already streamed citations progressively,
