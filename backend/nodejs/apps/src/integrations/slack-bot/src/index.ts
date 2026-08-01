@@ -29,6 +29,7 @@ import {
   toolStatusLabel,
 } from "./utils/tool-display";
 import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
+import { rewriteCitationsForSlack, stripTinyRefCitationLinks } from "./utils/citations";
 
 import {
   type SlackBotConfig,
@@ -107,8 +108,9 @@ const STREAM_FAILURE_MESSAGE =
 const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
+/** Mid-stream: hide normalized record citation links (final message rewrites them). */
 const INLINE_RECORD_CITATION_LINK_PATTERN =
-  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)/g;
+  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?)\)/g;
 
 // User info cache to avoid redundant API calls
 interface CachedUserInfo {
@@ -1691,75 +1693,14 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${getFrontendBaseUrl()}${webUrl}`;
 }
 
-function parseCitationNumber(rawValue: unknown): number | null {
-  if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
-    return rawValue;
-  }
-
-  if (typeof rawValue !== "string") {
-    return null;
-  }
-
-  const parsed = Number.parseInt(rawValue, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
-}
-
 function rewriteInlineRecordCitationsForSlack(
   answerBody: string,
   citations?: CitationData[],
 ): string {
-  if (!answerBody) {
-    return "";
-  }
-
-  const citationNumberToFragmentWebUrl = new Map<number, string>();
-  for (const citation of citations || []) {
-    const citationNumber =
-      parseCitationNumber(citation.citationData.chunkIndex);
-    if (!citationNumber || citationNumberToFragmentWebUrl.has(citationNumber)) {
-      continue;
-    }
-
-    let citationWebUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
-    const recordType = citation.citationData.metadata.recordType;
-    const connector = citation.citationData.metadata.connector;
-    if (recordType === "FILE" && connector !== "WEB") {
-      citationWebUrl = (process.env.FRONTEND_PUBLIC_URL || "http://localhost:3000") + "/record/" + citation.citationData.metadata.recordId;
-    }
-    if (!citationWebUrl) {
-      continue;
-    }
-
-    citationNumberToFragmentWebUrl.set(citationNumber, citationWebUrl);
-  }
-  let citationCount = 1;
-  let webUrlToCitationNumber = new Map<string, number>();
-  
-  return answerBody.replace(
-    INLINE_RECORD_CITATION_LINK_PATTERN,
-    (_matchedCitationLink, citationNumberText: string) => {
-      const citationNumber = Number.parseInt(citationNumberText, 10);
-      if (!Number.isInteger(citationNumber) || citationNumber <= 0) {
-        return "";
-      }
-      const citationWebUrl = citationNumberToFragmentWebUrl.get(citationNumber);
-      let res = "";
-      if (citationWebUrl) {
-        let citationNumber = citationCount;
-        if (webUrlToCitationNumber.has(citationWebUrl)) {
-          citationNumber = webUrlToCitationNumber.get(citationWebUrl)!;
-        }
-        else {
-          webUrlToCitationNumber.set(citationWebUrl, citationCount);
-          citationCount++;
-        }
-        res = `[${citationNumber}](${citationWebUrl})`;
-      }
-      return res;
-    },
+  return rewriteCitationsForSlack(
+    answerBody,
+    citations,
+    getFrontendBaseUrl(),
   );
 }
 
@@ -2556,7 +2497,9 @@ async function processSlackMessage(
         return;
       }
 
-      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, '');
+      // Raw `[source](refN)` becomes broken `<refN|source>` in Slack mrkdwn.
+      text = stripTinyRefCitationLinks(text);
+      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, "");
       text = parseArtifactMarkers(text).text;
       if (text.length === 0) {
         return;
@@ -2739,7 +2682,12 @@ async function processSlackMessage(
         sseBuffer = remainder;
 
         for (const evt of events) {
-          aguiHandler(evt);
+          try {
+            aguiHandler(evt);
+          } catch (error) {
+            console.error("Error handling AG-UI stream event:", error);
+            continue;
+          }
           if (streamErrorMessage) {
             resolveOnce();
             return;

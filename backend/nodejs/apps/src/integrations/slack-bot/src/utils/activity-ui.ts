@@ -1,3 +1,5 @@
+import { markdownToSlackMrkdwn } from "./md_to_mrkdwn";
+
 const MAX_REASONING_CHARS = 600;
 const MAX_NARRATION_CHARS = 800;
 const MAX_ACTIVITY_TEXT_CHARS = 2900;
@@ -252,7 +254,8 @@ export class SlackActivityBuilder {
       if (!entry) break;
 
       if (entry.kind === "narration") {
-        sections.push(entry.text);
+        // Model narration is standard Markdown; activity posts use Slack mrkdwn.
+        sections.push(markdownToSlackMrkdwn(entry.text));
         i += 1;
         continue;
       }
@@ -264,7 +267,8 @@ export class SlackActivityBuilder {
             reasoning.length > MAX_REASONING_CHARS
               ? `${reasoning.slice(0, MAX_REASONING_CHARS).trimEnd()}…`
               : reasoning;
-          const italic = truncated
+          const converted = markdownToSlackMrkdwn(truncated);
+          const italic = converted
             .split("\n")
             .map((line) => (line.trim() ? `_${line.trim()}_` : ""))
             .filter(Boolean)
