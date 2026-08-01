@@ -38,6 +38,19 @@ export const FAIL_REASON_TYPE = {
 export type FailReasonType =
   (typeof FAIL_REASON_TYPE)[keyof typeof FAIL_REASON_TYPE];
 
+// Reasoning effort levels accepted from the client and forwarded to Python.
+// Shared between the Zod request validators and the Mongoose persistence
+// schemas so both stay in sync with the LLM factory's accepted values.
+export const REASONING_EFFORT_VALUES = [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'max',
+] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
+
 export const PIPESHUB_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',

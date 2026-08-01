@@ -265,10 +265,12 @@ class TestReasoningEffortKwargs:
             )
             assert result == {"reasoning_effort": "high"}, bad
 
-    def test_max_mapped_to_xhigh_for_xai(self):
+    def test_max_clamped_to_high_for_xai(self):
+        """xAI's Grok models don't document an 'xhigh' tier, so 'max' is
+        clamped to 'high' instead of reusing OpenAI's map (see _XAI_EFFORT_MAP)."""
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("max", config, provider="xai")
-        assert result == {"reasoning_effort": "xhigh"}
+        assert result == {"reasoning_effort": "high"}
 
     def test_azure_ai_openai_subpath_uses_responses_api(self):
         """Azure AI's OpenAI sub-path is called with provider=OPENAI.value

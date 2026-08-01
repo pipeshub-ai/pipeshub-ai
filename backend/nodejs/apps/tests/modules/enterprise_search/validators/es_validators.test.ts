@@ -37,6 +37,7 @@ import {
   getModelUsageRequestSchema,
   updateAgentSchema,
   listAgentsQuerySchema,
+  REASONING_EFFORT_VALUES,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -125,7 +126,7 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
-    for (const effort of ['none', 'low', 'medium', 'high', 'max']) {
+    for (const effort of REASONING_EFFORT_VALUES) {
       it(`should accept reasoningEffort '${effort}' (modelFieldsSchema)`, () => {
         const data = { body: { query: 'hello', reasoningEffort: effort } }
         const result = enterpriseSearchCreateSchema.safeParse(data)
@@ -1812,7 +1813,7 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    for (const effort of ['none', 'low', 'medium', 'high', 'max']) {
+    for (const effort of REASONING_EFFORT_VALUES) {
       it(`should accept defaultReasoningEffort '${effort}'`, () => {
         const result = createAgentSchema.safeParse({
           body: { name: 'Agent', models: [validModel], defaultReasoningEffort: effort },

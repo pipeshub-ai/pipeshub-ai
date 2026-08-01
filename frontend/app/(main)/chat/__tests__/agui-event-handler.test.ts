@@ -948,6 +948,14 @@ describe('createAGUIEventHandler — dedup guard against duplicate events', () =
     const textParts = lastParts.filter((part: { type: string }) => part.type === 'text');
     expect(textParts).toHaveLength(1);
     expect(textParts[0].content).toBe('hello again');
+
+    // The duplicate start must not reset the live answer buffer either —
+    // onChunk's `accumulated` should keep reflecting the full turn so far.
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: ' again',
+      accumulated: 'hello again',
+      citations: [],
+    });
   });
 
   it('ignores a duplicate TOOL_CALL_START carrying the same toolCallId', () => {

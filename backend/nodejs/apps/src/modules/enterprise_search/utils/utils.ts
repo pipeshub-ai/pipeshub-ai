@@ -41,6 +41,21 @@ const logger = new Logger({
 });
 
 /**
+ * Type-safe `target[field] = value` for a `keyof IAIModel` loop variable.
+ * Assigning directly through a widened `keyof IAIModel` union key loses the
+ * per-field type correlation (e.g. `reasoningEffort`'s literal union vs
+ * other fields' `string`), which TS rejects; tying `field` and `value` to
+ * the same generic `K` here restores that correlation.
+ */
+export function assignAiModelField<K extends keyof IAIModel>(
+  target: IAIModel,
+  field: K,
+  value: IAIModel[K],
+): void {
+  target[field] = value;
+}
+
+/**
  * Extract model information from request body
  */
 export const extractModelInfo = (
@@ -917,7 +932,7 @@ export const saveCompleteConversation = async (
       for (const field of fieldsToUpdate) {
         const value = modelInfo[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
     }
@@ -1145,7 +1160,7 @@ export const saveCompleteAgentConversation = async (
       for (const field of fieldsToUpdate) {
         const value = modelInfo[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
     }
@@ -2056,7 +2071,7 @@ export const handleRegenerationSuccess = async (
     for (const field of fieldsToUpdate) {
       const value = modelInfo[field];
       if (value !== undefined && value !== null) {
-        (existingConversation.modelInfo as IAIModel)[field] = value;
+        assignAiModelField(existingConversation.modelInfo as IAIModel, field, value);
       }
     }
   }

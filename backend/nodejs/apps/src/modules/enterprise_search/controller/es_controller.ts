@@ -57,6 +57,7 @@ import { Conversation } from '../schema/conversation.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
+  assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
   buildConversationResponse,
@@ -2050,7 +2051,7 @@ export const addMessageStream =
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
 
@@ -6617,7 +6618,7 @@ export const createAgentConversation =
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
           if (value !== undefined && value !== null) {
-            (conversation.modelInfo as IAIModel)[field] = value;
+            assignAiModelField(conversation.modelInfo as IAIModel, field, value);
           }
         }
 
@@ -6919,7 +6920,7 @@ export const addMessageStreamToAgentConversation =
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
 

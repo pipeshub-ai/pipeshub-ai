@@ -6,7 +6,10 @@ import {
   IMessageCitation,
   IFollowUpQuestion,
 } from '../types/conversation.interfaces';
-import { CONFIDENCE_LEVELS } from '../constants/constants';
+import {
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
 
 const toolCallItemSchema = new Schema(
   {
@@ -170,7 +173,7 @@ const messageSchema = new Schema<IMessage>(
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
-      reasoningEffort: { type: String },
+      reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
     },
     appliedFilters: {
       apps: [
@@ -244,7 +247,7 @@ const conversationSchema = new Schema<IConversation>(
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
-      reasoningEffort: { type: String },
+      reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
     },
     // Errors array to track errors during conversation
     conversationErrors: [

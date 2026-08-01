@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import type { ReasoningEffort } from '@/chat/types';
+import { REASONING_EFFORT_OPTIONS } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_KNOWLEDGE_FALLBACK_ICON,
@@ -26,14 +27,6 @@ const CHIP_ICON_FALLBACK: Record<ChipIconKind, string> = {
   toolset: AGENT_TOOLSET_FALLBACK_ICON,
   llm: AGENT_LLM_FALLBACK_ICON,
 };
-
-const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; labelKey: string; defaultLabel: string }[] = [
-  { value: 'none', labelKey: 'chat.reasoningEffort.none', defaultLabel: 'None' },
-  { value: 'low', labelKey: 'chat.reasoningEffort.low', defaultLabel: 'Low' },
-  { value: 'medium', labelKey: 'chat.reasoningEffort.medium', defaultLabel: 'Medium' },
-  { value: 'high', labelKey: 'chat.reasoningEffort.high', defaultLabel: 'High' },
-  { value: 'max', labelKey: 'chat.reasoningEffort.max', defaultLabel: 'Max' },
-];
 
 function CoreHandle({
   type,
@@ -819,7 +812,7 @@ function DefaultReasoningEffortSelector({
           {t('agentBuilder.defaultReasoningEffortLabel')}
         </Text>
       </Flex>
-      <Flex align="center" gap="2" wrap="wrap">
+      <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('agentBuilder.defaultReasoningEffortLabel')}>
         {REASONING_EFFORT_OPTIONS.map((option) => {
           const isActive = value === option.value;
           return (
@@ -827,7 +820,16 @@ function DefaultReasoningEffortSelector({
               key={option.value}
               align="center"
               justify="center"
+              role="radio"
+              aria-checked={isActive}
+              tabIndex={0}
               onClick={() => onSelect(isActive ? null : option.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(isActive ? null : option.value);
+                }
+              }}
               style={{
                 padding: '4px 12px',
                 borderRadius: 'var(--radius-6)',

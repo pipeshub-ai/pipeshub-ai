@@ -224,6 +224,7 @@ describe('buildStreamChatRequestForSlot — reasoningEffort forwarding', () => {
   });
 
   it('omits reasoningEffort when explicitly cleared to null and the model is not reasoning-capable', () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
     const slotId = useChatStore.getState().createSlot(null);
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, null);
     const request = buildStreamChatRequestForSlot(slotId, 'hello');

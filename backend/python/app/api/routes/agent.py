@@ -483,11 +483,13 @@ def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
     value = str(raw_value).strip()
     if not value:
         return None
-    if value not in REASONING_EFFORT_VALUES:
+    try:
+        validate_reasoning_effort(value)
+    except ValueError as exc:
         raise InvalidRequestError(
             f"Invalid defaultReasoningEffort '{value}'. "
             f"Must be one of: {', '.join(sorted(REASONING_EFFORT_VALUES))}."
-        )
+        ) from exc
     return value
 
 

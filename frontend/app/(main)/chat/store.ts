@@ -50,8 +50,6 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
   }
 }
 
-// ── localStorage helpers for per-context reasoning effort ───────────
-
 const LS_REASONING_EFFORT_KEY = 'pipeshub-reasoning-effort';
 const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
 

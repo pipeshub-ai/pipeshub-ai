@@ -292,7 +292,7 @@ function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorPro
       <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
         {t('chat.reasoningEffort.label', 'Reasoning Effort')}
       </Text>
-      <Flex align="center" gap="2" wrap="wrap">
+      <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('chat.reasoningEffort.label', 'Reasoning Effort')}>
         {REASONING_EFFORT_OPTIONS.map((option) => {
           const isActive = value === option.value || (!value && option.value === DEFAULT_REASONING_EFFORT);
           return (
@@ -300,7 +300,16 @@ function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorPro
               key={option.value}
               align="center"
               justify="center"
+              role="radio"
+              aria-checked={isActive}
+              tabIndex={0}
               onClick={() => onSelect(option.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(option.value);
+                }
+              }}
               style={{
                 padding: '4px var(--space-3)',
                 borderRadius: 'var(--radius-6)',

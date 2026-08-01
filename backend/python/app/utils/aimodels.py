@@ -529,6 +529,44 @@ _OPENAI_EFFORT_MAP: Dict[str, str] = {
     "max": "xhigh",
 }
 
+# xAI's Grok reasoning models (grok-4.3, grok-4.5) only document
+# none/low/medium/high for `reasoning_effort` — there is no 'max' or 'xhigh'
+# tier, so 'max' is clamped to 'high' instead of reusing OpenAI's map.
+# See https://docs.x.ai/developers/model-capabilities/text/reasoning.
+_XAI_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# MiniMax's OpenAI-compatible endpoint doesn't document a 'max' or 'xhigh'
+# reasoning tier (its M2/M3 docs only mention low/medium/high, or
+# minimal/low/medium/high/none for the newer Responses-style API), so 'max'
+# is clamped to 'high' rather than sending OpenAI's 'xhigh'.
+# See https://platform.minimax.io/docs/api-reference/text-openai-api.
+_MINIMAX_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Fireworks' `reasoning_effort` documents none/low/medium/high/max as the
+# OpenAI-compatible string values it accepts — 'max' is a real supported
+# tier there, unlike OpenAI where our platform's 'max' maps to 'xhigh', so
+# Fireworks is left as an identity mapping instead of reusing OpenAI's map.
+# See https://docs.fireworks.ai/api-reference/post-chatcompletions.
+_FIREWORKS_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
 _GEMINI_EFFORT_MAP: Dict[str, str] = {
     "none": "minimal",
     "low": "low",
@@ -570,6 +608,11 @@ _OLLAMA_EFFORT_MAP: Dict[str, bool | str] = {
     "max": "high",
 }
 
+# Providers that speak OpenAI's `reasoning_effort` string values as-is
+# (none/low/medium/high/xhigh). OpenRouter and LiteLLM proxy are passthrough
+# layers so they get the OpenAI value set; providers with their own
+# documented reasoning tiers (Fireworks, MiniMax, XAI) use dedicated maps
+# below instead, since they reject 'xhigh'.
 _OPENAI_FAMILY = frozenset({
     LLMProvider.OPENAI.value,
     LLMProvider.AZURE_OPENAI.value,
@@ -577,9 +620,6 @@ _OPENAI_FAMILY = frozenset({
     LLMProvider.OPENAI_COMPATIBLE.value,
     LLMProvider.LITELLM_PROXY.value,
     LLMProvider.OPENROUTER.value,
-    LLMProvider.MINIMAX.value,
-    LLMProvider.FIREWORKS.value,
-    LLMProvider.XAI.value,
 })
 
 _GEMINI_FAMILY = frozenset({
@@ -640,7 +680,11 @@ def _reasoning_effort_kwargs(
 
     Provider-specific translation is applied because each provider accepts
     different value sets:
-    - OpenAI/Azure: none, low, medium, high, xhigh (no 'max' on older models)
+    - OpenAI/Azure/OpenRouter/LiteLLM proxy: none, low, medium, high, xhigh
+      (no 'max' on older models)
+    - Fireworks: none, low, medium, high, max (no 'xhigh')
+    - MiniMax, XAI: none, low, medium, high (no 'max' or 'xhigh'; 'max' is
+      clamped to 'high')
     - Gemini: minimal, low, medium, high (no 'none' or 'max')
     - Anthropic: low, medium, high, xhigh, max (no 'none')
     - LM Studio: low, medium, high (no 'none' or 'max')
@@ -669,6 +713,12 @@ def _reasoning_effort_kwargs(
     effort = effort_input
     if provider in _OPENAI_FAMILY:
         effort = _OPENAI_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.FIREWORKS.value:
+        effort = _FIREWORKS_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.MINIMAX.value:
+        effort = _MINIMAX_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.XAI.value:
+        effort = _XAI_EFFORT_MAP.get(effort_input, effort_input)
     elif provider == LLMProvider.LM_STUDIO.value:
         effort = _LM_STUDIO_EFFORT_MAP.get(effort_input, effort_input)
     elif provider in _GEMINI_FAMILY:

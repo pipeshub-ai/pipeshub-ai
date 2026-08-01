@@ -3,7 +3,9 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE } from '../constants/constants';
+import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+
+export { REASONING_EFFORT_VALUES };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -79,9 +81,6 @@ const filtersSchema = z
     kb: z.array(appOrKbIdSchema).optional(),
   })
   .optional();
-
-/** Reasoning effort levels accepted from the client and forwarded to Python. */
-const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
 
 /** Model selection fields shared across search, message, regenerate, etc. */
 const modelFieldsSchema = {

@@ -509,8 +509,13 @@ describe('Enterprise Search Controller', () => {
 
       const mockStream = createMockStream()
       let capturedBody: any
+      let resolveStreamRequested!: () => void
+      const streamRequested = new Promise<void>((resolve) => {
+        resolveStreamRequested = resolve
+      })
       sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
         capturedBody = JSON.parse(this.body)
+        resolveStreamRequested()
         return Promise.resolve(mockStream) as any
       })
 
@@ -522,7 +527,7 @@ describe('Enterprise Search Controller', () => {
       res.flush = sinon.stub()
 
       void handler(req, res)
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await streamRequested
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
 

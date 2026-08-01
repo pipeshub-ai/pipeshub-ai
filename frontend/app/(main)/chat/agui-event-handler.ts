@@ -339,11 +339,13 @@ export function createAGUIEventHandler(
         // would have landed instead of another TEXT_MESSAGE_START if it were
         // the final answer) — settle it into the timeline and clear the
         // buffer in lockstep so it isn't shown in both places at once.
-        // Gated on `!hasSeenMessage` because a duplicate replay (same
-        // `messageId`) leaves the currently-open part's object reference
-        // untouched below (`handleTextStart` no-ops on it) — settling here
-        // would replace that object and orphan the reference `handleTextContent`
-        // still holds for it, silently dropping subsequent deltas.
+        // Both this settle-and-clear and the plain reset below are gated on
+        // `!hasSeenMessage` because a duplicate replay (same `messageId`)
+        // leaves the currently-open part's object reference untouched
+        // (`handleTextStart` no-ops on it), so `textBuffer` must also stay
+        // untouched — resetting it would make the next TEXT_MESSAGE_CONTENT
+        // report `accumulated` as just the new delta, dropping everything
+        // already streamed for this turn.
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         const messageId = typeof data?.messageId === 'string' ? data.messageId : undefined;
         const isNewRootTurn = partsBuilder.isRootRun(runId) && !partsBuilder.hasSeenMessage(messageId);
@@ -352,7 +354,7 @@ export function createAGUIEventHandler(
           state = { ...state, normalizedAnswer: '', rawLength: 0 };
           callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
         }
-        if (partsBuilder.isRootRun(runId)) {
+        if (isNewRootTurn) {
           textBuffer = '';
           rawTextReceived = 0;
         }
