@@ -316,6 +316,7 @@ export function MessageActions({
   return (
     <>
       <Flex
+        data-testid="message-actions"
         align="center"
         justify="between"
         style={{

@@ -55,10 +55,19 @@ test.describe('Workspace Prompts', () => {
   });
 
   test('reset to default works', async ({ page }) => {
-    const resetButton = page.locator('button').filter({ hasText: /Reset|Default/i });
-    if (await resetButton.first().isVisible()) {
-      await resetButton.first().click();
-      await page.waitForTimeout(1_000);
-    }
+    const textarea = page.locator('textarea').first();
+    await expect(textarea).toBeVisible({ timeout: 5_000 });
+
+    const resetButton = page.locator('button').filter({ hasText: /Reset to Default/i }).first();
+
+    // `disabled={!value}` in prompts/page.tsx — an org with no override starts
+    // empty, so the button only becomes clickable once the editor has content.
+    await textarea.fill('E2E reset probe');
+    await expect(resetButton).toBeEnabled();
+
+    // Clearing the editor IS the default (no org override); nothing is saved,
+    // so this leaves no state behind.
+    await resetButton.click();
+    await expect(textarea).toHaveValue('');
   });
 });
