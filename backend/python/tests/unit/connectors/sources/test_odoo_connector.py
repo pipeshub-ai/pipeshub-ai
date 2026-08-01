@@ -74,6 +74,7 @@ def _mock_transaction(connector: OdooConnector, existing_record: Optional[Any] =
     tx_store = MagicMock()
     tx_store.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx_store.batch_upsert_people = AsyncMock()
+    tx_store.batch_create_edges = AsyncMock()
 
     tx_ctx = MagicMock()
     tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -83,10 +84,12 @@ def _mock_transaction(connector: OdooConnector, existing_record: Optional[Any] =
 
 
 def _lead(**overrides: Any) -> CrmLead:
+    """An *opportunity* by default — that's the only crm.lead kind that
+    becomes a record. Pass type="lead" for the unconverted-prospect path."""
     defaults: dict[str, Any] = {
         "id": 1,
         "name": "Test Lead",
-        "type": "lead",
+        "type": "opportunity",
         "user_id": [7, "Alice"],
         "team_id": [3, "Sales"],
         "stage_id": [1, "New"],
@@ -399,6 +402,110 @@ class TestProcessLead:
 
 
 # ===========================================================================
+# crm.lead split: opportunity -> DealRecord, lead -> Person
+# ===========================================================================
+
+
+class TestBuildLeadPerson:
+    def test_unconverted_lead_becomes_person(self):
+        c = _make_connector()
+
+        person = c._build_lead_person(
+            _lead(type="lead", email_from="Prospect@Acme.com", contact_name="Jane Doe")
+        )
+
+        assert isinstance(person, Person)
+        assert person.email == "prospect@acme.com"
+        assert person.first_name == "Jane"
+        assert person.last_name == "Doe"
+
+    def test_lead_without_email_is_skipped(self):
+        c = _make_connector()
+
+        assert c._build_lead_person(_lead(type="lead", email_from=False)) is None
+
+    def test_lead_person_shares_id_with_same_email_contact(self):
+        """A prospect who is also a contact must collapse to one Person."""
+        c = _make_connector()
+
+        from_lead = c._build_lead_person(_lead(type="lead", email_from="x@acme.com"))
+        from_contact = c._build_person(_partner(email="x@acme.com"))
+
+        assert from_lead.id == from_contact.id
+
+
+class TestSyncLeadsSplitsByType:
+    def _prep(self, c, leads):
+        c.record_sync_point = MagicMock()
+        c.record_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.record_sync_point.update_sync_point = AsyncMock()
+        c.sync_filters = FilterCollection(filters=[])
+        c.data_source.list_leads = AsyncMock(side_effect=[leads, []])
+        c.data_source.list_followers = AsyncMock(return_value=[])
+        c.data_source.read_partners = AsyncMock(return_value=[])
+        return _mock_transaction(c, existing_record=None)
+
+    @pytest.mark.asyncio
+    async def test_opportunity_becomes_record_lead_becomes_person(self):
+        c = _make_connector()
+        c._stage_is_won = {}
+        tx_store = self._prep(
+            c,
+            [
+                _lead(id=1, type="opportunity"),
+                _lead(id=2, type="lead", email_from="prospect@acme.com"),
+            ],
+        )
+
+        await c._sync_leads(full_sync=True)
+
+        # Only the opportunity is persisted as a record.
+        sent = c.data_entities_processor.on_new_records.call_args[0][0]
+        assert len(sent) == 1
+        assert sent[0][0].external_record_id == "crm.lead/1"
+
+        # The unconverted lead is persisted as a Person, not a record.
+        tx_store.batch_upsert_people.assert_awaited_once()
+        people = tx_store.batch_upsert_people.call_args[0][0]
+        assert [p.email for p in people] == ["prospect@acme.com"]
+
+    @pytest.mark.asyncio
+    async def test_unconverted_lead_gets_lead_edge(self):
+        c = _make_connector()
+        c._stage_is_won = {}
+        tx_store = self._prep(
+            c,
+            [
+                _lead(
+                    id=2,
+                    type="lead",
+                    email_from="prospect@acme.com",
+                    partner_name="Acme Corp",
+                    stage_id=[1, "New"],
+                )
+            ],
+        )
+
+        await c._sync_leads(full_sync=True)
+
+        tx_store.batch_create_edges.assert_awaited_once()
+        edges = tx_store.batch_create_edges.call_args[0][0]
+        assert edges[0]["company"] == "Acme Corp"
+        assert edges[0]["status"] == "New"
+        assert edges[0]["externalId"] == "crm.lead/2"
+
+    @pytest.mark.asyncio
+    async def test_leads_only_page_creates_no_records(self):
+        c = _make_connector()
+        c._stage_is_won = {}
+        self._prep(c, [_lead(id=2, type="lead", email_from="p@acme.com")])
+
+        await c._sync_leads(full_sync=True)
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+
+# ===========================================================================
 # Partners: companies -> RecordGroup, individuals -> Person
 # ===========================================================================
 
@@ -622,12 +729,63 @@ class TestFetchLeadPermissions:
         assert {p.email for p in result[1]} == {"alice@example.com", "bob@example.com"}
 
     @pytest.mark.asyncio
+    async def test_unconverted_lead_parent_is_excluded(self):
+        """A file on an unconverted lead has no parent record to belong to."""
+        c = _make_connector()
+        c.data_source.read_leads = AsyncMock(return_value=[_lead(id=2, type="lead")])
+        c.data_source.list_followers = AsyncMock(return_value=[])
+
+        result = await c._fetch_lead_permissions([2])
+
+        assert result == {}
+
+    @pytest.mark.asyncio
     async def test_empty_ids_skips_calls(self):
         c = _make_connector()
         c.data_source.read_leads = AsyncMock()
 
         assert await c._fetch_lead_permissions([]) == {}
         c.data_source.read_leads.assert_not_called()
+
+
+class TestSyncAttachments:
+    @pytest.mark.asyncio
+    async def test_file_on_unconverted_lead_is_not_synced(self):
+        c = _make_connector()
+        c.attachment_sync_point = MagicMock()
+        c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.attachment_sync_point.update_sync_point = AsyncMock()
+        c.sync_filters = FilterCollection(filters=[])
+        c.data_source.list_attachments = AsyncMock(
+            side_effect=[[_attachment(id=9, res_id=2)], []]
+        )
+        # res_id=2 is an unconverted lead -> excluded from the permissions map
+        c.data_source.read_leads = AsyncMock(return_value=[_lead(id=2, type="lead")])
+        c.data_source.list_followers = AsyncMock(return_value=[])
+        _mock_transaction(c, existing_record=None)
+
+        await c._sync_attachments(full_sync=True)
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_on_opportunity_is_synced(self):
+        c = _make_connector()
+        c.attachment_sync_point = MagicMock()
+        c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.attachment_sync_point.update_sync_point = AsyncMock()
+        c.sync_filters = FilterCollection(filters=[])
+        c.data_source.list_attachments = AsyncMock(
+            side_effect=[[_attachment(id=9, res_id=1)], []]
+        )
+        c.data_source.read_leads = AsyncMock(return_value=[_lead(id=1)])
+        c.data_source.list_followers = AsyncMock(return_value=[])
+        _mock_transaction(c, existing_record=None)
+
+        await c._sync_attachments(full_sync=True)
+
+        sent = c.data_entities_processor.on_new_records.call_args[0][0]
+        assert sent[0][0].external_record_id == "ir.attachment/9"
 
 
 # ===========================================================================
