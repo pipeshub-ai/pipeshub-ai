@@ -1139,6 +1139,7 @@ class TestStreamRecord:
 
         record = MagicMock()
         record.record_type = RecordType.MESSAGE
+        record.is_placeholder = False
         record.external_record_id = "ext-1"
 
         with pytest.raises(HTTPException) as exc_info:

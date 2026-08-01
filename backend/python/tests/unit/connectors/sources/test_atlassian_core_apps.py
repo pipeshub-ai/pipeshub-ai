@@ -34,7 +34,7 @@ class TestAtlassianApps:
 
     def test_jira_cloud_personal_app(self):
         app = JiraCloudPersonalApp("conn-cloud-personal-1")
-        assert app.get_app_name() == Connectors.JIRA_PERSONAL
+        assert app.get_app_name() == Connectors.JIRA_CLOUD_PERSONAL
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
         assert app.get_connector_id() == "conn-cloud-personal-1"
 

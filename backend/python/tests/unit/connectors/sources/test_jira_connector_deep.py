@@ -629,6 +629,7 @@ class TestStreamRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.TICKET
+        record.is_placeholder = False
         record.external_record_id = "10001"
         c._process_issue_blockgroups_for_streaming = AsyncMock(return_value=b'{"blocks": []}')
 
@@ -641,6 +642,7 @@ class TestStreamRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
+        record.is_placeholder = False
         record.external_record_id = "attachment_12345"
         record.record_name = "report.pdf"
         record.mime_type = "application/pdf"
@@ -665,6 +667,7 @@ class TestStreamRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = "UNKNOWN"
+        record.is_placeholder = False
         record.external_record_id = "ext-1"
 
         with pytest.raises(HTTPException) as exc_info:
@@ -676,6 +679,7 @@ class TestStreamRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
+        record.is_placeholder = False
         record.external_record_id = "attachment_12345"
         record.record_name = "report.pdf"
 
@@ -766,6 +770,7 @@ class TestCheckAndFetchUpdatedRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.TICKET
+        record.is_placeholder = False
         record.id = "r1"
         c._check_and_fetch_updated_issue = AsyncMock(return_value=("issue", []))
         result = await c._check_and_fetch_updated_record(record)
@@ -776,6 +781,7 @@ class TestCheckAndFetchUpdatedRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
+        record.is_placeholder = False
         record.id = "r1"
         c._check_and_fetch_updated_attachment = AsyncMock(return_value=("att", []))
         result = await c._check_and_fetch_updated_record(record)
@@ -786,6 +792,7 @@ class TestCheckAndFetchUpdatedRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = "UNKNOWN"
+        record.is_placeholder = False
         record.id = "r1"
         result = await c._check_and_fetch_updated_record(record)
         assert result is None
@@ -795,6 +802,7 @@ class TestCheckAndFetchUpdatedRecord:
         c, *_ = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.TICKET
+        record.is_placeholder = False
         record.id = "r1"
         c._check_and_fetch_updated_issue = AsyncMock(side_effect=Exception("fail"))
         result = await c._check_and_fetch_updated_record(record)

@@ -128,6 +128,14 @@ USER_PAGE_SIZE: int = 50
 GROUP_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
 AUDIT_PAGE_SIZE: int = 500
+# Atlassian's documented cap for POST /rest/api/3/issue/bulkfetch.
+PLACEHOLDER_SWEEP_BATCH: int = 100
+# Jira's hierarchy tops out at ~5 levels (Sub-task → Story → Epic → Initiative → custom).
+PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
+# Namespaces a stub's revision so it can never equal the real issue's revision. _process_record
+# only persists an existing record when the revision changes, so an unprefixed (or absent)
+# revision would silently drop both the sweep's backfill and the later promotion to a real record.
+PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
 # Max size of an image inlined as base64 into the indexed markdown. Larger images (and any
 # non-image media) are represented as child FILE records instead, so a big file can't bloat
 # the block (base64 also inflates ~33%).
@@ -147,6 +155,15 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment",
     "issuelinks"
+]
+
+# Deliberately narrower than ISSUE_SEARCH_FIELDS: an ancestor stub carries no content, so
+# `description` and `attachment` would be fetched and thrown away, and `issuelinks` would
+# spawn link placeholders for issues nobody asked us to sync.
+ANCESTOR_STUB_FIELDS: list[str] = [
+    "summary", "status", "priority", "issuetype",
+    "project", "parent", "created", "updated",
+    "creator", "reporter", "assignee",
 ]
 
 
@@ -381,7 +398,8 @@ class JiraConnector(BaseConnector):
             client = await JiraClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
-                connector_instance_id=self.connector_id
+                connector_instance_id=self.connector_id,
+                connector_type=self.connector_name.value,
             )
             self.external_client = client
             self.data_source = JiraDataSource(client)
@@ -520,7 +538,14 @@ class JiraConnector(BaseConnector):
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             await self._handle_issue_deletions(last_sync_time)
 
-            # 8. Outcome: notify when any project failed issue sync (include keys)
+            # 8. Backfill placeholder ancestors that out-of-scope sync filters left
+            # unreconciled (metadata only; they remain non-indexed stubs).
+            await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
+
+            # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
@@ -562,6 +587,241 @@ class JiraConnector(BaseConnector):
                     recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
             raise
+
+    # ============================================================================
+    # Placeholder Sweep
+    # ============================================================================
+
+    async def _sweep_placeholder_records(
+        self,
+        synced_project_ids: set[str],
+        full_sync_project_ids: set[str] | None = None,
+    ) -> None:
+        """Backfill the full ancestor breadcrumb for placeholder stubs left unreconciled.
+
+        Time/created-time sync filters don't respect hierarchy: an in-scope child can be
+        synced while its parent (and higher ancestors) are filtered out, leaving stubs
+        keyed by the ancestors' issue ids with no name, status or weburl.
+
+        This is an ancestor-closure walk over child->parent pointers, implemented as a
+        frontier BFS with a ``visited`` set (dedup + cycle guard) and a boundary that stops
+        at ancestors already materialized as real records:
+
+          - seed the frontier from the stubs this sync left behind (one DB query);
+          - fetch each frontier level from source in one bulk call per 100 stubs, refreshing
+            metadata but keeping ``is_placeholder=True`` so out-of-scope ancestors are never
+            indexed or searchable;
+          - expand to each fetched issue's parent, skipping ones already visited or already
+            real in the graph, until the frontier drains.
+
+        Seeds are restricted to ticket stubs inside ``synced_project_ids``. A Jira parent is
+        always in its child's project, so a stub outside that set is a cross-project *link*
+        stub — fetching it would pull an issue the project filter deliberately excluded.
+
+        Of those, only two kinds need work, so an incremental sync that changed nothing does
+        no source calls and no writes:
+
+          - never backfilled (``external_revision_id is None``, as minted by
+            ``_create_placeholder_parent_record``) — it still carries the raw issue id as
+            its name;
+          - inside a project in ``full_sync_project_ids`` — a full sync deleted its
+            BELONGS_TO / PARENT_CHILD edges, so it must be re-submitted to restore them.
+
+        An already-backfilled stub is left alone, which means a rename at source is only
+        picked up when its project is full-synced or the ancestor enters scope. That is the
+        intended trade: a stub is a non-indexed breadcrumb, not worth a fetch every sync.
+
+        Reconciliation is keyed by external id and idempotent, so an interrupted sweep is
+        completed by the next sync's sweep.
+        """
+        if not synced_project_ids:
+            return
+
+        full_sync_project_ids = full_sync_project_ids or set()
+        visited: set[str] = set()
+        frontier: list[Record] = []
+        for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id):
+            if (
+                stub.record_type != RecordType.TICKET
+                or stub.external_record_group_id not in synced_project_ids
+                or stub.external_record_id in visited
+            ):
+                continue
+            needs_backfill = stub.external_revision_id is None
+            needs_edge_restore = stub.external_record_group_id in full_sync_project_ids
+            if not (needs_backfill or needs_edge_restore):
+                continue
+            visited.add(stub.external_record_id)
+            frontier.append(stub)
+
+        if not frontier:
+            return
+
+        # Jira's issue payload omits emailAddress, so resolve creator/reporter/assignee
+        # against the synced directory exactly as the reindex path does.
+        synced_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        user_by_account_id: dict[str, AppUser] = {
+            u.source_user_id: u for u in synced_users if u.source_user_id
+        }
+
+        depth = 0
+        while frontier:
+            depth += 1
+            self.logger.info(f"🧹 Placeholder sweep: backfilling {len(frontier)} ancestor stub(s)")
+            issues = await self._bulk_fetch_ancestor_level(frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            parent_refs: list[str] = []
+            for stub, issue in zip(frontier, issues):
+                if issue:
+                    record = self._build_ancestor_stub(issue, stub, user_by_account_id)
+                else:
+                    # Source fetch failed (deleted/inaccessible). Re-submit the persisted stub
+                    # anyway so its structural edges — record group (BELONGS_TO) and parent
+                    # (PARENT_CHILD) — which a full sync deletes are still restored.
+                    record = stub
+                record.is_placeholder = True
+                backfills.append((record, []))
+                if record.parent_external_record_id:
+                    parent_refs.append(record.parent_external_record_id)
+
+            # Creates/updates the stubs and, via _handle_parent_record, materializes the
+            # next level's parent stubs so we can pick them up below.
+            await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for parent_ext_id in parent_refs:
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=parent_ext_id,
+                )
+                if parent_record is None:
+                    continue  # stub should exist after on_new_records; skip defensively
+                if not parent_record.is_placeholder:
+                    continue  # boundary: ancestor already synced in scope — nothing to backfill
+                next_frontier.append(parent_record)
+
+            if depth >= PLACEHOLDER_SWEEP_MAX_DEPTH and next_frontier:
+                self.logger.error(
+                    f"Placeholder sweep hit the depth cap ({PLACEHOLDER_SWEEP_MAX_DEPTH}) with "
+                    f"{len(next_frontier)} stub(s) unresolved; aborting"
+                )
+                break
+            frontier = next_frontier
+
+    async def _bulk_fetch_ancestor_level(
+        self, frontier: list[Record]
+    ) -> list[dict[str, Any] | None]:
+        """Fetch one frontier level from source, returning results aligned with ``frontier``.
+
+        One ``bulkfetch`` call per 100 stubs instead of a fetch per stub: a 500-stub level
+        costs 5 requests rather than 500. Entries are ``None`` for ids Jira did not return
+        (deleted, or not visible to the connector account).
+        """
+        chunks = [
+            frontier[i:i + PLACEHOLDER_SWEEP_BATCH]
+            for i in range(0, len(frontier), PLACEHOLDER_SWEEP_BATCH)
+        ]
+
+        async def fetch_chunk(chunk: list[Record]) -> dict[str, dict[str, Any]]:
+            issue_ids = [stub.external_record_id for stub in chunk]
+            ctx = f"bulk-fetching {len(issue_ids)} placeholder ancestor(s)"
+            try:
+                response = await self._call_with_retry(
+                    lambda ds: ds.bulk_fetch_issues(
+                        issueIdsOrKeys=issue_ids,
+                        fields=ANCESTOR_STUB_FIELDS,
+                    ),
+                    ctx=ctx,
+                )
+            except Exception as e:
+                self.logger.warning(f"Placeholder sweep: {ctx} failed: {e}")
+                return {}
+
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"Placeholder sweep: {ctx} returned HTTP {response.status}")
+                return {}
+
+            payload = self._safe_json_parse(response, "placeholder ancestor bulk fetch")
+            if not payload:
+                return {}
+            return {
+                issue["id"]: issue
+                for issue in payload.get("issues") or []
+                if isinstance(issue, dict) and issue.get("id")
+            }
+
+        issue_by_id: dict[str, dict[str, Any]] = {}
+        for chunk_result in await self._map_bounded(chunks, fetch_chunk):
+            issue_by_id.update(chunk_result)
+
+        return [issue_by_id.get(stub.external_record_id) for stub in frontier]
+
+    def _build_ancestor_stub(
+        self,
+        issue: dict[str, Any],
+        stub: Record,
+        user_by_account_id: dict[str, AppUser],
+    ) -> Record:
+        """Refresh a stub's metadata from source, keeping it a stub.
+
+        Unlike Confluence — where contentless folder ancestors are backfilled as real
+        records — every Jira ancestor is an issue with indexable content, so all of them
+        stay ``is_placeholder=True``: name, status and hierarchy only, never searchable.
+
+        The revision is namespaced with ``PLACEHOLDER_REVISION_PREFIX`` rather than left
+        unset: ``_process_record`` writes an existing record only when the revision
+        differs, so an unset revision matches the stored stub's and this backfill would
+        never reach the graph. The prefix also guarantees the stub never collides with the
+        real issue's revision, so promotion persists even when the ancestor enters scope
+        without having changed at source (e.g. the user widens the modified-date filter).
+        """
+        issue_data = self._extract_issue_data(issue, user_by_account_id)
+        fields = issue.get("fields") or {}
+        project = fields.get("project") or {}
+        parent_external_id = issue_data["parent_external_id"]
+        issue_key = issue_data["issue_key"]
+        atlassian_domain = self.site_url or ""
+
+        return TicketRecord(
+            id=stub.id,
+            org_id=self.data_entities_processor.org_id,
+            priority=issue_data["priority"],
+            status=issue_data["status"],
+            type=issue_data["issue_type"],
+            creator_email=issue_data["creator_email"],
+            creator_name=issue_data["creator_name"],
+            reporter_email=issue_data["reporter_email"],
+            reporter_name=issue_data["reporter_name"],
+            assignee=issue_data["assignee_name"],
+            assignee_email=issue_data["assignee_email"],
+            external_record_id=stub.external_record_id,
+            external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
+            record_name=issue_data["issue_name"],
+            record_type=RecordType.TICKET,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            record_group_type=RecordGroupType.PROJECT,
+            external_record_group_id=project.get("id") or stub.external_record_group_id,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=RecordType.TICKET if parent_external_id else None,
+            version=stub.version,
+            mime_type=MimeTypes.UNKNOWN.value,
+            weburl=f"{atlassian_domain}/browse/{issue_key}" if atlassian_domain and issue_key else None,
+            source_created_at=issue_data["created_at"],
+            source_updated_at=issue_data["updated_at"],
+            created_at=issue_data["created_at"],
+            updated_at=issue_data["updated_at"],
+            inherit_permissions=True,
+            preview_renderable=False,
+            is_dependent_node=False,
+            parent_node_id=None,
+            is_placeholder=True,
+        )
 
     # ============================================================================
     # Filter Options
@@ -2415,6 +2675,7 @@ class JiraConnector(BaseConnector):
         new_count = 0
         updated_count = 0
         failed_project_keys: list[str] = []
+        full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
             try:
@@ -2424,6 +2685,8 @@ class JiraConnector(BaseConnector):
                 total_synced += project_stats["total_synced"]
                 new_count += project_stats["new_count"]
                 updated_count += project_stats["updated_count"]
+                if project_stats.get("is_new_project"):
+                    full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
                 # Per-project failures self-heal: the project checkpoint only advances on
                 # success, so the next sync resumes it. run_sync notifies with the keys.
@@ -2437,6 +2700,7 @@ class JiraConnector(BaseConnector):
             "updated_count": updated_count,
             "failed_count": len(failed_project_keys),
             "failed_project_keys": failed_project_keys,
+            "full_sync_project_ids": full_sync_project_ids,
         }
 
     async def _sync_project_issues(
@@ -2544,7 +2808,8 @@ class JiraConnector(BaseConnector):
         return {
             "total_synced": total_issues_processed,
             "new_count": stats["new_count"],
-            "updated_count": stats["updated_count"]
+            "updated_count": stats["updated_count"],
+            "is_new_project": is_new_project,
         }
 
     async def _fetch_issues_batched(
@@ -3019,15 +3284,11 @@ class JiraConnector(BaseConnector):
         record_id = existing_record.id if existing_record else str(uuid4())
         is_new = existing_record is None
 
-        # A placeholder is a stub created by _handle_parent_record when a child
-        # arrives before its parent. Promoting a placeholder to a real record is
-        # semantically "new", not "updated" — keep version 0 so the record is
-        # routed through on_new_records and counts stay correct.
-        is_placeholder = (
-            existing_record is not None
-            and getattr(existing_record, 'source_updated_at', None) in (0, None)
-            and getattr(existing_record, 'mime_type', None) == MimeTypes.UNKNOWN.value
-        )
+        # A placeholder is a stub created by _handle_parent_record when a child arrives
+        # before its parent, or refreshed by the sweep. Promoting one to a real record is
+        # semantically "new", not "updated" — keep version 0 so the record is routed
+        # through on_new_records and the indexer sees a newRecord event.
+        is_placeholder = existing_record is not None and existing_record.is_placeholder
 
         is_issue_changed = False
         if is_new or is_placeholder:
@@ -3867,9 +4128,10 @@ class JiraConnector(BaseConnector):
     ) -> Any:
         """Invoke a read-only Jira datasource call, retrying transient transport errors AND HTTP
         429 (honoring Retry-After via :meth:`_rate_limit_delay`). ``call`` receives a fresh
-        datasource and returns the response coroutine; it MUST be an idempotent GET so replay is
-        safe. Returns the final response (which may still be non-OK — e.g. a 429 that survived all
-        attempts, for the caller to handle); raises only when every attempt hit a transport error.
+        datasource and returns the response coroutine; it MUST be an idempotent read — a GET, or
+        a read-only POST such as ``bulkfetch`` — so replay is safe. Returns the final response
+        (which may still be non-OK — e.g. a 429 that survived all attempts, for the caller to
+        handle); raises only when every attempt hit a transport error.
         """
         last_exc: Exception | None = None
         for attempt in range(max_attempts):
@@ -4357,6 +4619,11 @@ class JiraConnector(BaseConnector):
         """
         Stream record content (issue, comment, or attachment).
         """
+        if record.is_placeholder:
+            raise ValueError(
+                f"Cannot stream placeholder record {record.external_record_id}: "
+                "it is a stub for an out-of-scope ancestor and has no content"
+            )
         try:
             if not self.data_source:
                 await self.init()
