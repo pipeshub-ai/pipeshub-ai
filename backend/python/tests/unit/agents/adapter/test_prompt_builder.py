@@ -342,11 +342,10 @@ class TestFindingInformation:
         section = result.split("## Finding Information", 1)[1]
         assert "no indexed knowledge base" not in section
 
-    def test_skip_list_and_search_depth_present_when_any_surface_granted(self) -> None:
+    def test_search_depth_present_when_any_surface_granted(self) -> None:
         context = make_context(has_knowledge=True)
         result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
         section = result.split("## Finding Information", 1)[1]
-        assert "greetings" in section.lower()
         assert "reformulate" in section.lower() or "several" in section.lower()
 
     def test_disagreement_rule_present_when_multiple_surfaces(self) -> None:

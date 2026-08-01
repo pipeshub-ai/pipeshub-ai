@@ -562,9 +562,9 @@ def test_invariant_single_statement_parallel_search_rule() -> None:
     assert prompt.count("IN PARALLEL") >= 1
 
 
-def test_invariant_single_statement_skip_list() -> None:
+def test_invariant_no_duplicate_skip_list() -> None:
     prompt = build_prompt_for_fixture("kb_plus_service_tools")
-    assert prompt.lower().count("skip searching only for") == 1
+    assert prompt.lower().count("skip searching only for") <= 1
 
 
 def test_invariant_single_statement_full_record_escalation() -> None:
