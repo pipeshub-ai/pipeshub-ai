@@ -2193,7 +2193,7 @@
       "lastChecked": "Última verificación: {{time}}",
       "loading": "Cargando estado de servicios…",
       "policyTitle": "Política de estado de servicios",
-      "policyDescription": "Los servicios de consulta y conector son críticos — la aplicación esperará a que estén disponibles antes de cargar. Los servicios de indexación y Docling no son bloqueantes y solo afectan el procesamiento en segundo plano.",
+      "policyDescription": "Los servicios de consulta y conector son críticos — la aplicación esperará a que estén disponibles antes de cargar. Los servicios de indexación, Docling, análisis y extracción no son bloqueantes y solo afectan el procesamiento en segundo plano.",
       "allHealthy": "Todos los servicios están funcionando",
       "someUnhealthy": "Algunos servicios no están funcionando",
       "fetchFailed": "Error al verificar el estado de los servicios",
@@ -2243,6 +2243,14 @@
         "docling": {
           "label": "Servicio Docling",
           "description": "Análisis avanzado de documentos y OCR"
+        },
+        "parsing": {
+          "label": "Servicio de análisis",
+          "description": "Convierte documentos en bloques estructurados para la indexación"
+        },
+        "extraction": {
+          "label": "Servicio de extracción",
+          "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
       }
     }

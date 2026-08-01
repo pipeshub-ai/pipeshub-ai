@@ -10,6 +10,22 @@ export type ConfidenceLevel = 'Very High' | 'High' | 'Medium' | 'Low';
 // Tab types for response view
 export type ResponseTab = 'answer' | 'sources' | 'citation';
 
+/**
+ * Platform-normalized reasoning effort levels. `null`/absent means "no
+ * explicit user choice" — the backend applies `DEFAULT_REASONING_EFFORT`
+ * ("high") for any reasoning-capable model rather than deferring to the
+ * provider's own default. `'none'` actively disables reasoning on models
+ * that support turning it off.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
+ * in `backend/python/app/utils/aimodels.py`) when the user hasn't explicitly
+ * picked one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
+ */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
+
 // Inline citation for display within answer text
 export interface InlineCitation {
   id: string;
@@ -48,6 +64,8 @@ export interface ModelInfo {
    */
   chatMode: string;
   modelFriendlyName?: string;
+  /** Restored from the conversation's saved modelInfo when loading a thread. */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -316,6 +334,12 @@ export interface ChatSettings {
    * Used for deduping fetches and for invalidating stale selections.
    */
   availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
+  /**
+   * Per-context reasoning effort override, keyed the same way as
+   * `selectedModels`. `null`/missing means "use the model's own default".
+   * Only meaningful when the selected model has `isReasoning: true`.
+   */
+  reasoningEffort: Record<string, ReasoningEffort | null>;
 }
 
 /**
@@ -647,10 +671,21 @@ export interface MessagePart {
    * child (sub-agent) text parts.
    */
   isFinal?: boolean;
-  /** Set when `TEXT_MESSAGE_END` closes this text part and the buffer is
-   * cleared from the answer area — the part is no longer duplicated in
-   * `streamingContent`, so `filterRootParts` should show it in the activity
-   * timeline as narration even while still streaming. */
+  /**
+   * Set on a root-level, non-`isFinal` `text` part once a later root event
+   * proves it was narration rather than the (still-pending) final answer —
+   * a tool call starting, a reasoning block starting, or a new text turn
+   * starting all imply "more work follows this turn" (see
+   * `agui-event-handler.ts`'s `LivePartsBuilder.settleLastRootText()`,
+   * called from each of those three event handlers). The live answer
+   * buffer (`streamingContent`) is cleared in the same event, so the text
+   * is no longer duplicated there — `filterRootParts` shows `settled` text
+   * in the activity timeline as narration even while still streaming, and
+   * hides any not-yet-`settled` text (still mirrored in the answer buffer).
+   * `TEXT_MESSAGE_END` alone does NOT settle the part — at that point it's
+   * still ambiguous whether narration (tool call/reasoning follows) or the
+   * final answer (`RUN_FINISHED` follows) is next.
+   */
   settled?: boolean;
 }
 
@@ -768,6 +803,11 @@ export interface StreamChatRequest {
   agentCapabilities?: AgentCapabilities;
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /**
+   * Only sent when the user has explicitly picked a non-default effort for a
+   * reasoning-capable model. Omitted → backend uses the model's own default.
+   */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /**

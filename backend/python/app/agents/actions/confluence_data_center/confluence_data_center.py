@@ -49,6 +49,11 @@ _ORDER_BY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# DC stable ids from ``ri:userkey`` / REST are hex userKeys (not Cloud accountIds).
+_USER_KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{16,}$")
+# Single-token username for ``GET /rest/api/user?username=...`` (fall back to fuzzy on miss).
+_USERNAME_PATTERN = re.compile(r"^[\w][\w.-]{0,254}$")
+
 
 # ---------------------------------------------------------------------------
 # Agent-activity summary labels — see the Cloud `confluence.py`'s equivalent
@@ -148,8 +153,14 @@ class GetSpaceInput(BaseModel):
 
 
 class SearchUsersInput(BaseModel):
-    """Schema for searching Data Center users by name / username / email"""
-    query: str = Field(description="Display name or name fragment to match (matches the user's full name)")
+    """Schema for searching Data Center users by name / username / userKey"""
+    query: str = Field(
+        description=(
+            "Display name fragment, username (e.g. 'jdoe'), OR a DC userKey hex id "
+            "from an ``ri:userkey`` mention. userKey/username use exact lookup; "
+            "names use fuzzy full-name search."
+        ),
+    )
     max_results: Optional[int] = Field(default=10, description="Max users to return (1-50). Default 10.")
 
 
@@ -388,6 +399,46 @@ class ConfluenceDataCenter:
         if email:
             out["email"] = email
         return out
+
+    def _exact_user_payload(self, user: Any) -> Optional[tuple[bool, str]]:
+        """Format a successful exact user lookup, or None if the body is unusable."""
+        entry = self._clean_user(user if isinstance(user, dict) else {})
+        if not entry:
+            return None
+        return True, json.dumps({
+            "message": "User found",
+            "data": {"results": [entry], "total": 1},
+        })
+
+    async def _resolve_user_exact(self, query: str) -> Optional[tuple[bool, str]]:
+        """Exact DC lookup by userKey (``?key=``) or username (``?username=``).
+
+        Returns a tool response tuple when an exact path was taken (hit or definitive
+        miss for userKey). Returns None to fall through to fuzzy name search
+        (e.g. username miss — ``John`` may be a display-name fragment).
+        """
+        if _USER_KEY_PATTERN.match(query):
+            response = await self.client.get_user_by_key(user_key=query, lookup_as="key")
+            if response.status == HttpStatusCode.SUCCESS.value:
+                packed = self._exact_user_payload(response.json())
+                if packed:
+                    return packed
+            return False, json.dumps({
+                "error": f"No Confluence user found for userKey {query!r}",
+                "guidance": (
+                    "Confirm the userKey from the page mention. For name search, "
+                    "pass a display-name fragment; for login id, pass the username."
+                ),
+            })
+
+        if _USERNAME_PATTERN.match(query) and " " not in query:
+            response = await self.client.get_user_v1(username=query)
+            if response.status == HttpStatusCode.SUCCESS.value:
+                packed = self._exact_user_payload(response.json())
+                if packed:
+                    return packed
+            # Miss: fall through — token may be a display-name fragment, not a username.
+        return None
 
     # ------------------------------------------------------------------
     # Tools — connection / identity
@@ -667,7 +718,7 @@ class ConfluenceDataCenter:
     @tool(
         path="/tools/confluence_data_center/get_page_content",
         short_description="Get a Confluence Data Center page's content by id",
-        description="Get a Confluence Data Center page's content (storage format) by id.",
+        description="Get a Confluence Data Center page's content (export_view) by id.",
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
         ],
@@ -678,7 +729,8 @@ class ConfluenceDataCenter:
     async def get_page_content(self, page_id: str) -> tuple[bool, str]:
         try:
             response = await self.client.get_page_content_v1(
-                page_id=page_id, expand="body.storage,version,space,history.lastUpdated",
+                page_id=page_id,
+                expand="body.export_view,version,space,history.lastUpdated",
             )
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -695,7 +747,9 @@ class ConfluenceDataCenter:
             return {}
         space = data.get("space") or {}
         version = data.get("version") or {}
-        body = (data.get("body") or {}).get("storage") or {}
+        body_block = data.get("body") or {}
+        # Prefer export_view (mentions/macros rendered); fall back to storage for edit responses.
+        body = body_block.get("export_view") or body_block.get("storage") or {}
         entry = {
             "id": data.get("id"),
             "title": data.get("title"),
@@ -1149,10 +1203,10 @@ class ConfluenceDataCenter:
 
     @tool(
         path="/tools/confluence_data_center/search_users",
-        short_description="Search Confluence Data Center users by display name",
-        description="Search Confluence Data Center users by display name (name fragment).",
+        short_description="Search Confluence Data Center users by name, username, or userKey",
+        description="Search Confluence Data Center users by display name, username, or userKey.",
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="Display name or name fragment to match (matches the user's full name)", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Display name, username, or userKey.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
@@ -1164,14 +1218,18 @@ class ConfluenceDataCenter:
             if not query or not query.strip():
                 return False, json.dumps({
                     "error": "Query parameter is required and cannot be empty.",
-                    "guidance": "Provide a display name or name fragment.",
+                    "guidance": "Provide a display name, username, or userKey.",
                 })
+            query = query.strip()
+            exact = await self._resolve_user_exact(query)
+            if exact is not None:
+                return exact
             # DC has no /search/user endpoint (Cloud-only, 404 on Server/DC); it does
             # support server-side user search via the general CQL search endpoint with
             # a `type=user AND user.fullname ~ "<query>*"` clause. Matches on the full
             # name only — the datasource escapes the term.
             cap = min(max_results or 10, 50)
-            response = await self.client.search_users_v1(query=query.strip(), limit=cap)
+            response = await self.client.search_users_v1(query=query, limit=cap)
             if response.status != HttpStatusCode.SUCCESS.value:
                 return self._handle_response(response, "Users fetched successfully", include_guidance=True)
             data = response.json()

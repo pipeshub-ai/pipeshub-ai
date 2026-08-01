@@ -50,6 +50,39 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
   }
 }
 
+const LS_REASONING_EFFORT_KEY = 'pipeshub-reasoning-effort';
+const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
+
+function lsGetReasoningEffort(ctxKey: string): import('./types').ReasoningEffort | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(`${LS_REASONING_EFFORT_KEY}:${ctxKey}`);
+    if (!raw) return null;
+    return (REASONING_EFFORT_VALUES as readonly string[]).includes(raw)
+      ? (raw as import('./types').ReasoningEffort)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function lsSetReasoningEffort(
+  ctxKey: string,
+  effort: import('./types').ReasoningEffort | null,
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = `${LS_REASONING_EFFORT_KEY}:${ctxKey}`;
+    if (effort === null) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, effort);
+    }
+  } catch {
+    // Storage unavailable — silently ignore
+  }
+}
+
 /**
  * File preview state for citation preview in chat.
  */
@@ -507,6 +540,18 @@ interface ChatState {
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
+  /**
+   * Set the reasoning effort override for a context (assistant or agent) and
+   * persist it to localStorage under `pipeshub-reasoning-effort:{ctxKey}`.
+   * `null` means "use the model's own default" — clears any explicit choice.
+   */
+  setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
+  /**
+   * Load a context's persisted reasoning effort from localStorage into the
+   * in-memory store, if it hasn't been loaded yet this session. Call once
+   * when a context's model selector mounts.
+   */
+  hydrateReasoningEffortForCtx: (ctxKey: string) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
   /**
@@ -606,6 +651,7 @@ const initialState = {
     selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
+    reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
@@ -1186,6 +1232,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => {
+    lsSetReasoningEffort(ctxKey, effort);
+    return {
+      settings: {
+        ...state.settings,
+        reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
+      },
+    };
+  }),
+
+  hydrateReasoningEffortForCtx: (ctxKey) => set((state) => {
+    if (state.settings.reasoningEffort[ctxKey] !== undefined) return state;
+    return {
+      settings: {
+        ...state.settings,
+        reasoningEffort: {
+          ...state.settings.reasoningEffort,
+          [ctxKey]: lsGetReasoningEffort(ctxKey),
+        },
+      },
+    };
+  }),
+
   setAgentCapabilities: (caps) => set((state) => {
     const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
     lsSetAgentCapabilities(next);
@@ -1257,6 +1326,25 @@ export function getEffectiveModel(
 ): import('./types').ModelOverride | null {
   const { selectedModels, defaultModels } = useChatStore.getState().settings;
   return selectedModels[ctxKey] ?? defaultModels[ctxKey] ?? null;
+}
+
+/**
+ * Whether `model` is flagged `isReasoning` in the model catalog fetched for
+ * `ctxKey`. Used to gate the client-side `DEFAULT_REASONING_EFFORT` fallback —
+ * sending an effort value for a non-reasoning model is harmless server-side
+ * (the LLM factory ignores it), but omitting it keeps outgoing payloads clean
+ * for models that don't support the concept at all.
+ */
+export function isModelReasoningCapable(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): boolean {
+  if (!model) return false;
+  const models = useChatStore.getState().settings.availableModels[ctxKey]?.models ?? [];
+  return Boolean(
+    models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName)
+      ?.isReasoning,
+  );
 }
 
 // ── Store-write diff subscriber (debug only) ────────────────────

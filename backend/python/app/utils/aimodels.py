@@ -6,6 +6,7 @@ import os
 import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from botocore.client import BaseClient
@@ -16,6 +17,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_REASONING_EFFORT,
     OPENROUTER_BASE_URL,
     AzureOpenAILLM,
 )
@@ -519,7 +521,226 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
 
     return True
 
-def get_generator_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> BaseChatModel:
+_OPENAI_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "xhigh",
+}
+
+# xAI's Grok reasoning models (grok-4.3, grok-4.5) only document
+# none/low/medium/high for `reasoning_effort` — there is no 'max' or 'xhigh'
+# tier, so 'max' is clamped to 'high' instead of reusing OpenAI's map.
+# See https://docs.x.ai/developers/model-capabilities/text/reasoning.
+_XAI_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# MiniMax's OpenAI-compatible endpoint doesn't document a 'max' or 'xhigh'
+# reasoning tier (its M2/M3 docs only mention low/medium/high, or
+# minimal/low/medium/high/none for the newer Responses-style API), so 'max'
+# is clamped to 'high' rather than sending OpenAI's 'xhigh'.
+# See https://platform.minimax.io/docs/api-reference/text-openai-api.
+_MINIMAX_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Fireworks' `reasoning_effort` documents none/low/medium/high/max as the
+# OpenAI-compatible string values it accepts — 'max' is a real supported
+# tier there, unlike OpenAI where our platform's 'max' maps to 'xhigh', so
+# Fireworks is left as an identity mapping instead of reusing OpenAI's map.
+# See https://docs.fireworks.ai/api-reference/post-chatcompletions.
+_FIREWORKS_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
+_GEMINI_EFFORT_MAP: Dict[str, str] = {
+    "none": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+_ANTHROPIC_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
+# LM Studio's OpenAI-compatible `/v1/chat/completions` only documents
+# low/medium/high for `reasoning_effort` (see lmstudio.ai/docs/developer/rest/chat
+# and lmstudio-ai/lmstudio-bug-tracker#1250) — unlike OpenAI itself it has no
+# 'none'/'xhigh' tier, so both ends of our platform range are clamped to the
+# nearest value LM Studio actually accepts rather than reusing the OpenAI map.
+_LM_STUDIO_EFFORT_MAP: Dict[str, str] = {
+    "none": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Ollama's `think` field (surfaced by langchain-ollama's `reasoning` constructor
+# kwarg) accepts `False` to disable thinking or one of "low"/"medium"/"high" to
+# tune it — no "none" string (use `False`) and no "max" tier yet, so we clamp
+# 'max' to 'high'. See https://docs.ollama.com/capabilities/thinking.
+_OLLAMA_EFFORT_MAP: Dict[str, bool | str] = {
+    "none": False,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Providers that speak OpenAI's `reasoning_effort` string values as-is
+# (none/low/medium/high/xhigh). OpenRouter and LiteLLM proxy are passthrough
+# layers so they get the OpenAI value set; providers with their own
+# documented reasoning tiers (Fireworks, MiniMax, XAI) use dedicated maps
+# below instead, since they reject 'xhigh'.
+_OPENAI_FAMILY = frozenset({
+    LLMProvider.OPENAI.value,
+    LLMProvider.AZURE_OPENAI.value,
+    LLMProvider.AZURE_AI.value,
+    LLMProvider.OPENAI_COMPATIBLE.value,
+    LLMProvider.LITELLM_PROXY.value,
+    LLMProvider.OPENROUTER.value,
+})
+
+_GEMINI_FAMILY = frozenset({
+    LLMProvider.GEMINI.value,
+    LLMProvider.VERTEX_AI.value,
+})
+
+# Direct OpenAI and Azure OpenAI reject `reasoning_effort` combined with
+# function tools on /v1/chat/completions for the entire gpt-5.x family
+# ("Function tools with reasoning_effort are not supported ... in
+# /v1/chat/completions. To use function tools, use /v1/responses ...").
+# These two providers must be routed through the Responses API instead.
+# Third-party OpenAI-compatible providers (OpenRouter, LiteLLM proxy,
+# Fireworks, MiniMax, XAI, LM Studio) don't expose /v1/responses, so they
+# keep using `reasoning_effort` as-is.
+_RESPONSES_API_PROVIDERS = frozenset({
+    LLMProvider.OPENAI.value,
+    LLMProvider.AZURE_OPENAI.value,
+})
+
+# OpenAI's own API is also reachable through the generic OpenAI-compatible
+# provider (endpoint set to https://api.openai.com/v1), which hits the same
+# Chat Completions restriction, so the decision is endpoint-aware and not
+# provider-only. Only OpenAI's official host is matched — a self-hosted or
+# proxy endpoint that merely speaks the OpenAI protocol has no /v1/responses.
+_OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
+
+
+def _targets_openai_responses_api(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    host = urlparse(base_url).hostname
+    return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
+
+
+def _reasoning_effort_kwargs(
+    reasoning_effort: str | None,
+    config: dict[str, Any],
+    *,
+    provider: str = "",
+    base_url: str | None = None,
+) -> Dict[str, Any]:
+    """Build the constructor kwarg for LangChain's standard ``reasoning_effort``
+    parameter (langchain-core>=1.5.2), gated on the model being flagged as
+    reasoning-capable in its configuration.
+
+    Returns an empty dict when the model isn't reasoning-capable — passing the
+    kwarg to a non-reasoning model integration raises ``UnsupportedParamsError``
+    in LangChain, so callers must never pass it unconditionally.
+
+    When ``reasoning_effort`` is absent (no explicit user choice and no agent
+    default), a reasoning-capable model defaults to ``DEFAULT_REASONING_EFFORT``
+    ("high") rather than silently omitting the parameter and letting each
+    provider fall back to its own default — those vary per provider/model and
+    are often a lower, cheaper tier than a user picking a "reasoning" model
+    would expect. An explicit ``"none"`` still disables reasoning, since that's
+    a real choice distinct from "unset".
+
+    Provider-specific translation is applied because each provider accepts
+    different value sets:
+    - OpenAI/Azure/OpenRouter/LiteLLM proxy: none, low, medium, high, xhigh
+      (no 'max' on older models)
+    - Fireworks: none, low, medium, high, max (no 'xhigh')
+    - MiniMax, XAI: none, low, medium, high (no 'max' or 'xhigh'; 'max' is
+      clamped to 'high')
+    - Gemini: minimal, low, medium, high (no 'none' or 'max')
+    - Anthropic: low, medium, high, xhigh, max (no 'none')
+    - LM Studio: low, medium, high (no 'none' or 'max')
+    - Ollama: False, low, medium, high (no 'none' string or 'max')
+
+    Models served by OpenAI itself (direct OpenAI, Azure OpenAI, or an
+    OpenAI-compatible entry pointed at ``api.openai.com``) additionally route
+    through the Responses API (``reasoning`` + ``use_responses_api=True``)
+    rather than the legacy ``reasoning_effort`` kwarg, because Chat Completions
+    rejects reasoning effort combined with bound tools for gpt-5.x models.
+
+    Ollama is a special case: LangChain's ``ChatOllama`` doesn't expose a
+    ``reasoning_effort`` constructor kwarg at all — it uses ``reasoning``
+    (bool | str), which maps onto Ollama's native ``think`` field rather than
+    the OpenAI-style ``reasoning_effort`` body parameter. Callers must read
+    the ``"reasoning"`` key from the returned dict for this provider instead.
+    """
+    if not config.get("isReasoning"):
+        return {}
+
+    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+
+    if provider == LLMProvider.OLLAMA.value:
+        return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
+
+    effort = effort_input
+    if provider in _OPENAI_FAMILY:
+        effort = _OPENAI_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.FIREWORKS.value:
+        effort = _FIREWORKS_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.MINIMAX.value:
+        effort = _MINIMAX_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.XAI.value:
+        effort = _XAI_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.LM_STUDIO.value:
+        effort = _LM_STUDIO_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider in _GEMINI_FAMILY:
+        effort = _GEMINI_EFFORT_MAP.get(effort_input, effort_input)
+    elif provider == LLMProvider.ANTHROPIC.value:
+        effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
+
+    if provider in _RESPONSES_API_PROVIDERS or _targets_openai_responses_api(base_url):
+        return {
+            "reasoning": {"effort": effort, "summary": "auto"},
+            "use_responses_api": True,
+        }
+
+    return {"reasoning_effort": effort}
+
+
+def get_generator_model(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
     if is_default and model_name is None:
@@ -532,6 +753,11 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
         if model_name not in model_names:
             raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+    logger.info(
+        f"Getting generator model: provider={provider}, model_name={model_name}, "
+        f"reasoning_effort={reasoning_effort}"
+    )
 
     DEFAULT_LLM_TIMEOUT = 360.0
     if provider == LLMProvider.ANTHROPIC.value:
@@ -547,6 +773,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         )
         if _anthropic_supports_sampling_params(model_name):
             anthropic_kwargs["temperature"] = 0.2
+        anthropic_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
@@ -633,31 +860,36 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             )
             if _anthropic_supports_sampling_params(model_name):
                 azure_claude_kwargs["temperature"] = temperature
+            azure_claude_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=LLMProvider.ANTHROPIC.value))
             return ChatAnthropic(**azure_claude_kwargs)
         else:
-            return ChatOpenAI(
-                    model=model_name,
-                    temperature=temperature,
-                    timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                    api_key=configuration.get("apiKey"),
-                    base_url=configuration.get("endpoint"),
-                    stream_usage=True,  # Enable token usage tracking for Opik
-                )
+            azure_ai_openai_kwargs: Dict[str, Any] = dict(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+                api_key=configuration.get("apiKey"),
+                base_url=configuration.get("endpoint"),
+                stream_usage=True,  # Enable token usage tracking for Opik
+            )
+            azure_ai_openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=LLMProvider.OPENAI.value))
+            return ChatOpenAI(**azure_ai_openai_kwargs)
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return AzureChatOpenAI(
-                api_key=configuration["apiKey"],
-                azure_endpoint=configuration["endpoint"],
-                api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                azure_deployment=configuration["deploymentName"],
-                stream_usage=True,
-            )
+        azure_openai_kwargs: Dict[str, Any] = dict(
+            api_key=configuration["apiKey"],
+            azure_endpoint=configuration["endpoint"],
+            api_version=AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            azure_deployment=configuration["deploymentName"],
+            stream_usage=True,
+        )
+        azure_openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return AzureChatOpenAI(**azure_openai_kwargs)
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
@@ -670,24 +902,28 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.FIREWORKS.value:
         from langchain_fireworks import ChatFireworks
 
-        return ChatFireworks(
-                model=model_name,
-                temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-            )
+        fireworks_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=0.2,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+        )
+        fireworks_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatFireworks(**fireworks_kwargs)
 
     elif provider == LLMProvider.GEMINI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
-                model=model_name,
-                temperature=0.2,
-                max_tokens=None,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                max_retries=2,
-                google_api_key=configuration["apiKey"],
-            )
+        gemini_llm_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=0.2,
+            max_tokens=None,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            max_retries=2,
+            google_api_key=configuration["apiKey"],
+        )
+        gemini_llm_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatGoogleGenerativeAI(**gemini_llm_kwargs)
 
     elif provider == LLMProvider.GROQ.value:
         from langchain_groq import ChatGroq
@@ -704,14 +940,16 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
 
         # MiniMax temperature must be in (0.0, 1.0]
         temperature = max(0.01, min(1.0, configuration.get("temperature", 0.2)))
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration["apiKey"],
-                base_url="https://api.minimax.io/v1",
-                stream_usage=True,
-            )
+        minimax_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url="https://api.minimax.io/v1",
+            stream_usage=True,
+        )
+        minimax_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatOpenAI(**minimax_kwargs)
 
     elif provider == LLMProvider.MISTRAL.value:
         from langchain_mistralai import ChatMistralAI
@@ -727,12 +965,16 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_ollama import ChatOllama
 
         context_length = config.get("contextLength")
+        # Non-reasoning models keep `reasoning=False` (the historical default)
+        # so <think> tags never leak into their output; reasoning-capable
+        # models get Ollama's native `think` level via `_reasoning_effort_kwargs`.
+        reasoning_kwarg = _reasoning_effort_kwargs(reasoning_effort, config, provider=provider)
         ollama_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=configuration.get("temperature", 0.2),
             timeout=DEFAULT_LLM_TIMEOUT,
             base_url=configuration.get('endpoint', os.getenv("OLLAMA_API_URL", "http://localhost:11434")),
-            reasoning=False,
+            reasoning=reasoning_kwarg.get("reasoning", False),
             # repeat_penalty=1.0 prevents Ollama's default >1.0 from corrupting
             # tool-call JSON (legitimate calls repeat tokens intentionally).
             repeat_penalty=1.0,
@@ -747,24 +989,28 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        openai_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+            stream_usage=True,  # Enable token usage tracking for Opik
+        )
+        openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatOpenAI(**openai_kwargs)
 
     elif provider == LLMProvider.XAI.value:
         from langchain_xai import ChatXAI
 
-        return ChatXAI(
-                model=model_name,
-                temperature=0.2,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-            )
+        xai_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=0.2,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+        )
+        xai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatXAI(**xai_kwargs)
 
     elif provider == LLMProvider.TOGETHER.value:
         from app.utils.custom_chat_model import ChatTogether
@@ -781,54 +1027,68 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai import ChatOpenAI
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
-                api_key=configuration["apiKey"],
-                base_url=configuration["endpoint"],
-                stream_usage=True,  # Enable token usage tracking for Opik
-            )
+        openai_compat_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
+            api_key=configuration["apiKey"],
+            base_url=configuration["endpoint"],
+            stream_usage=True,  # Enable token usage tracking for Opik
+        )
+        openai_compat_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+        ))
+        return ChatOpenAI(**openai_compat_kwargs)
 
     elif provider == LLMProvider.LM_STUDIO.value:
         from langchain_openai import ChatOpenAI
         is_reasoning_model = config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration.get("apiKey") or "lm-studio",
-                base_url=configuration["endpoint"],
-                stream_usage=True,
-            )
+        lm_studio_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration.get("apiKey") or "lm-studio",
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        lm_studio_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+        ))
+        return ChatOpenAI(**lm_studio_kwargs)
 
     elif provider == LLMProvider.LITELLM_PROXY.value:
         from langchain_openai import ChatOpenAI
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration.get("apiKey"),
-                base_url=configuration["endpoint"],
-                stream_usage=True,
-            )
+        litellm_proxy_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration.get("apiKey"),
+            base_url=configuration["endpoint"],
+            stream_usage=True,
+        )
+        litellm_proxy_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+        ))
+        return ChatOpenAI(**litellm_proxy_kwargs)
 
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
 
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration["apiKey"],
-                base_url=OPENROUTER_BASE_URL,
-                stream_usage=True,
-            )
+        openrouter_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            temperature=temperature,
+            timeout=DEFAULT_LLM_TIMEOUT,
+            api_key=configuration["apiKey"],
+            base_url=OPENROUTER_BASE_URL,
+            stream_usage=True,
+        )
+        openrouter_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatOpenAI(**openrouter_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -848,7 +1108,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         creds = _create_vertex_credentials(sa_json)
         is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
         temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
-        return ChatGoogleGenerativeAI(
+        vertex_llm_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,
             location=configuration.get("location") or "us-central1",
@@ -858,6 +1118,8 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
         )
+        vertex_llm_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        return ChatGoogleGenerativeAI(**vertex_llm_kwargs)
 
     raise ValueError(f"Unsupported provider type: {provider}")
 
@@ -866,6 +1128,7 @@ async def get_generator_model_async(
     provider: str,
     config: dict[str, Any],
     model_name: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Async-safe wrapper around :func:`get_generator_model`.
 
@@ -875,8 +1138,10 @@ async def get_generator_model_async(
     when no explicit keys are supplied, which would block the event loop.
     """
     if provider == LLMProvider.AWS_BEDROCK.value:
-        return await asyncio.to_thread(get_generator_model, provider, config, model_name)
-    return get_generator_model(provider, config, model_name)
+        return await asyncio.to_thread(
+            get_generator_model, provider, config, model_name, reasoning_effort
+        )
+    return get_generator_model(provider, config, model_name, reasoning_effort)
 
 
 # ---------------------------------------------------------------------------

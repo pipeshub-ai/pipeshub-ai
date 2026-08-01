@@ -357,35 +357,60 @@ class TestProcessPdfWithOcrEmptyTableRows:
 class TestEnhanceTablesDataNoneAndTableMetadata:
     @pytest.mark.asyncio
     async def test_table_group_data_none_set_to_dict(self):
-        """When table_group.data is None and response exists, data is set to {}."""
-        from app.models.blocks import BlockGroup, BlocksContainer, GroupType, TableMetadata
+        """Enrichment result propagates to table_group.data (summary + column_headers)."""
+        from app.models.blocks import (
+            Block,
+            BlockGroup,
+            BlockGroupChildren,
+            BlocksContainer,
+            BlockType,
+            DataFormat,
+            GroupType,
+            IndexRange,
+            TableMetadata,
+            TableRowMetadata,
+        )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
+
+        row_block = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.TXT,
+            data={"cells": ["1", "2"]},
+            table_row_metadata=TableRowMetadata(is_header=False),
+        )
 
         bg = BlockGroup(
             index=0,
             type=GroupType.TABLE,
             data={"table_markdown": "| a | b |\n| 1 | 2 |"},
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=0, end=0)],
+                block_group_ranges=[],
+            ),
             table_metadata=TableMetadata(column_names=[]),
         )
-        bc = BlocksContainer(blocks=[], block_groups=[bg])
+        bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Test summary"
-        mock_response.headers = ["col_a", "col_b"]
+        result = TableEnrichmentResult(
+            summary="Test summary",
+            headers=["col_a", "col_b"],
+            header_row_count=0,
+            descriptions=["Row 1 description"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
-        # Verify data was updated with summary and headers
         assert bg.data["table_summary"] == "Test summary"
         assert bg.data["column_headers"] == ["col_a", "col_b"]
-        # Line 715: column_names updated
-        assert bg.table_metadata.column_names == ["col_a", "col_b"]
+        assert row_block.data["row_natural_language_text"] == "Row 1 description"
 
 
 # ===================================================================
@@ -408,10 +433,11 @@ class TestEnhanceTablesOldFormatChildren:
             GroupType,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
 
-        # Create a table row block with cells that are NOT a list => row_dicts.append({})
+        # Create a table row block with cells that are NOT a list
         row_block = Block(
             index=0,
             type=BlockType.TABLE_ROW,
@@ -430,20 +456,19 @@ class TestEnhanceTablesOldFormatChildren:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a"]
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=["col_a"],
+            header_row_count=0,
+            descriptions=["Row 1 description"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row 1 description"], None),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
     @pytest.mark.asyncio
     async def test_old_format_with_list_cells(self):
@@ -458,6 +483,7 @@ class TestEnhanceTablesOldFormatChildren:
             GroupType,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
         proc = _make_processor()
 
@@ -479,20 +505,19 @@ class TestEnhanceTablesOldFormatChildren:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a", "col_b"]
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=["col_a", "col_b"],
+            header_row_count=0,
+            descriptions=["Row desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["Row desc"], None),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
 
 # ===================================================================
@@ -503,7 +528,13 @@ class TestEnhanceTablesOldFormatChildren:
 class TestEnhanceTablesRowDescriptionException:
     @pytest.mark.asyncio
     async def test_get_rows_text_exception_caught(self):
-        """Exception from get_rows_text is caught and logged as warning."""
+        """Exception from enrich_table_grid on the only table degrades the row text
+
+        rather than propagating, since enhance_tables_with_llm only raises when every
+        attempted table fails and fail_on_all_errors is left at its default True -
+        which is exactly this single-table case, so we pass fail_on_all_errors=False
+        to assert the per-table catch-and-degrade behavior instead.
+        """
         from app.models.blocks import (
             Block,
             BlockGroup,
@@ -515,6 +546,7 @@ class TestEnhanceTablesRowDescriptionException:
             IndexRange,
             TableRowMetadata,
         )
+        from app.utils.table_enrichment import enhance_tables_with_llm
 
         proc = _make_processor()
 
@@ -537,21 +569,20 @@ class TestEnhanceTablesRowDescriptionException:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = ["col_a", "col_b"]
-
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
-            new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
             side_effect=RuntimeError("LLM failed"),
         ):
-            # Should not raise -- exception is caught and logged
-            await proc._enhance_tables_with_llm(bc)
+            # Should not raise -- exception is caught and logged, row degrades to
+            # simple text instead.
+            stats = await enhance_tables_with_llm(
+                bc, proc.config_service, proc.logger, llm=MagicMock(), fail_on_all_errors=False
+            )
+
+        assert stats.attempted == 1
+        assert stats.failed == 1
+        assert row_block.data["row_natural_language_text"]
 
 
 # ===================================================================
@@ -1316,21 +1347,24 @@ class TestEnhanceTablesEmptyCellsDict:
         )
         bc = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "Summary"
-        mock_response.headers = []  # Empty headers
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
+        result = TableEnrichmentResult(
+            summary="Summary",
+            headers=[],  # Empty headers
+            header_row_count=0,
+            descriptions=["Row desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_get_rows_text:
-            await proc._enhance_tables_with_llm(bc)
+            return_value=result,
+        ):
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
-        mock_get_rows_text.assert_not_awaited()
+        assert bg.data["column_headers"] == []
+        assert row_block.data["row_natural_language_text"] == "Row desc"
 
 
 # ===================================================================
@@ -1692,20 +1726,21 @@ class TestProcessorCoverageBranchesTo95:
         bc.block_groups = [tg]
         bc.blocks = [row_block]
 
-        mock_response = Mg()
-        mock_response.summary = "s"
-        mock_response.headers = ["c"]
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
+
+        result = TableEnrichmentResult(
+            summary="s",
+            headers=["c"],
+            header_row_count=0,
+            descriptions=["desc"],
+        )
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
+            return_value=result,
         ):
-            await proc._enhance_tables_with_llm(bc)
+            await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
 
         assert row_block.data.get("row_natural_language_text") == "desc"
 

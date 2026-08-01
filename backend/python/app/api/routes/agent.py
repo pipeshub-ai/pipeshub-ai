@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
@@ -22,6 +22,7 @@ from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.ai_models import REASONING_EFFORT_VALUES, validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
@@ -113,6 +114,10 @@ class ChatQuery(BaseModel):
     chatMode: str | None = "auto"
     modelKey: str | None = None
     modelName: str | None = None
+    # "none" | "low" | "medium" | "high" | "max" — forwarded to the LLM factory's
+    # reasoning_effort param; absent/None means no explicit override (the LLM
+    # factory applies DEFAULT_REASONING_EFFORT for reasoning-capable models).
+    reasoningEffort: str | None = None
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
@@ -130,6 +135,8 @@ class ChatQuery(BaseModel):
     # expand: an agent without web search configured stays without it even
     # if agentCapabilities.webSearch=True.
     agentCapabilities: dict[str, Any] | None = None
+
+    _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
 
 # ============================================================================
@@ -462,6 +469,28 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
             model_entries.append(model)
 
     return model_entries, has_reasoning_model
+
+
+def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
+    """Validate the agent-level reasoning effort default.
+
+    Returns ``None`` for an absent/blank value (no default configured — the
+    per-request `reasoningEffort`, or DEFAULT_REASONING_EFFORT if neither is
+    set, applies). Raises for any non-empty value outside the platform enum.
+    """
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    try:
+        validate_reasoning_effort(value)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            f"Invalid defaultReasoningEffort '{value}'. "
+            f"Must be one of: {', '.join(sorted(REASONING_EFFORT_VALUES))}."
+        ) from exc
+    return value
 
 
 _SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
@@ -1408,8 +1437,7 @@ async def create_agent(request: Request) -> JSONResponse:
         # Parse and validate models
         raw_models = body.get("models", [])
         model_entries, has_reasoning_model = _parse_models(raw_models, logger)
-
-
+        default_reasoning_effort = _parse_default_reasoning_effort(body.get("defaultReasoningEffort"))
 
         if not model_entries:
             raise InvalidRequestError(
@@ -1445,6 +1473,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "models": model_entries,
             "tags": body.get("tags", []) or [],
             "webSearch": web_search_attachment,
+            "defaultReasoningEffort": default_reasoning_effort,
             "isActive": True,
             "isServiceAccount": is_service_account,
             "createdBy": user_key,
@@ -2035,6 +2064,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise InvalidRequestError(
                     "At least one reasoning model is required. Please add a reasoning model to your configuration."
                 )
+
+        if "defaultReasoningEffort" in body:
+            body["defaultReasoningEffort"] = _parse_default_reasoning_effort(
+                body.get("defaultReasoningEffort")
+            )
 
         # Check permissions first, then fetch full agent data
         perm = await services["graph_provider"].check_agent_permission(agent_id, user_key, org_key)
@@ -2897,12 +2931,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             if model_key:
                 logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
 
-        # Get LLM for chat
+        # Get LLM for chat. Explicit per-request effort wins; otherwise fall back
+        # to the agent's configured default (if any).
+        effective_reasoning_effort = chat_query.reasoningEffort or agent.get("defaultReasoningEffort")
         llm_result = (await get_llm_for_chat(
             services["config_service"],
             model_key,
             model_name,
-            chat_query.chatMode
+            chat_query.chatMode,
+            reasoning_effort=effective_reasoning_effort,
         ))
 
         if not llm_result:

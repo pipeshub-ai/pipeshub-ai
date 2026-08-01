@@ -555,16 +555,34 @@ class TestGetPageContent:
         tool = _build()
         tool.client.get_page_content_v1 = AsyncMock(return_value=_mock_response(200, {
             "id": "123", "title": "P", "type": "page", "space": {"key": "DS"},
-            "version": {"number": 3}, "body": {"storage": {"value": "<p>b</p>"}},
+            "version": {"number": 3},
+            "body": {"export_view": {"value": "<p>@Alice</p>"}},
             "_links": {"webui": "/display/DS/P"},
         }))
         with patch.object(tool, "_get_site_url", AsyncMock(return_value="https://c.co")):
             ok, payload = await tool.get_page_content("123")
         data = json.loads(payload)
         assert ok is True
-        assert data["data"]["body"] == "<p>b</p>"
+        assert data["data"]["body"] == "<p>@Alice</p>"
         assert data["data"]["version"] == 3
         assert data["data"]["url"] == "https://c.co/display/DS/P"
+        tool.client.get_page_content_v1.assert_awaited_once_with(
+            page_id="123",
+            expand="body.export_view,version,space,history.lastUpdated",
+        )
+
+    @pytest.mark.asyncio
+    async def test_simplify_prefers_export_view_over_storage(self):
+        tool = _build()
+        entry = tool._simplify_page({
+            "id": "1",
+            "title": "T",
+            "body": {
+                "storage": {"value": '<ri:user ri:account-id="x" />'},
+                "export_view": {"value": "<p>@Bob</p>"},
+            },
+        }, None)
+        assert entry["body"] == "<p>@Bob</p>"
 
     @pytest.mark.asyncio
     async def test_api_error(self):
@@ -1054,6 +1072,8 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_returns_matches_with_profile_url(self):
         tool = _build()
+        # Single-token queries try exact username first; miss falls through to fuzzy.
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(200, {
             "results": [
                 {"user": {"username": "darshan", "userKey": "k1", "displayName": "Darshan godase"},
@@ -1075,6 +1095,7 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_passes_trimmed_query_and_default_limit(self):
         tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(200, {"results": []}))
         await tool.search_users("  dar  ")
         kwargs = tool.client.search_users_v1.await_args.kwargs
@@ -1084,6 +1105,7 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_caps_limit_at_50(self):
         tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(200, {"results": []}))
         await tool.search_users("x", max_results=999)
         assert tool.client.search_users_v1.await_args.kwargs["limit"] == 50
@@ -1091,6 +1113,7 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_no_matches(self):
         tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(200, {"results": [], "_links": {"base": "http://x"}}))
         ok, payload = await tool.search_users("ghost")
         data = json.loads(payload)
@@ -1105,6 +1128,7 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_api_error(self):
         tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(500, {"message": "x"}))
         ok, _ = await tool.search_users("john")
         assert ok is False
@@ -1112,6 +1136,60 @@ class TestSearchUsers:
     @pytest.mark.asyncio
     async def test_exception(self):
         tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
         tool.client.search_users_v1 = AsyncMock(side_effect=RuntimeError("boom"))
         ok, _ = await tool.search_users("john")
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_user_key_uses_get_user_by_key(self):
+        user_key = "402880824ff933a4014ff9345d7c0002"
+        tool = _build()
+        tool.client.get_user_by_key = AsyncMock(return_value=_mock_response(200, {
+            "username": "oncall", "userKey": user_key, "displayName": "On Call",
+        }))
+        tool.client.search_users_v1 = AsyncMock()
+        ok, payload = await tool.search_users(user_key)
+        data = json.loads(payload)
+        assert ok is True
+        assert data["data"]["results"][0]["userKey"] == user_key
+        tool.client.get_user_by_key.assert_awaited_once_with(
+            user_key=user_key, lookup_as="key",
+        )
+        tool.client.search_users_v1.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_key_not_found(self):
+        user_key = "402880824ff933a4014ff9345d7c0002"
+        tool = _build()
+        tool.client.get_user_by_key = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
+        ok, payload = await tool.search_users(user_key)
+        assert ok is False
+        assert "userKey" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_username_exact_lookup(self):
+        tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(200, {
+            "username": "jdoe", "userKey": "k1", "displayName": "Jane Doe",
+        }))
+        tool.client.search_users_v1 = AsyncMock()
+        ok, payload = await tool.search_users("jdoe")
+        assert ok is True
+        assert json.loads(payload)["data"]["results"][0]["username"] == "jdoe"
+        tool.client.get_user_v1.assert_awaited_once_with(username="jdoe")
+        tool.client.search_users_v1.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_username_miss_falls_back_to_fuzzy(self):
+        tool = _build()
+        tool.client.get_user_v1 = AsyncMock(return_value=_mock_response(404, {"message": "x"}))
+        tool.client.search_users_v1 = AsyncMock(return_value=_mock_response(200, {
+            "results": [
+                {"user": {"username": "jsmith", "userKey": "k2", "displayName": "John"}},
+            ],
+        }))
+        ok, payload = await tool.search_users("John")
+        assert ok is True
+        assert json.loads(payload)["data"]["total"] == 1
+        tool.client.search_users_v1.assert_awaited_once()

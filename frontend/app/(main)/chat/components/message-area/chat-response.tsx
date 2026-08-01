@@ -13,7 +13,7 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard } from './ask-user-question-card';
-import { AgentActivityTimeline } from './agent-activity';
+import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
@@ -448,6 +448,35 @@ export const ChatResponse = React.memo(function ChatResponse({
   // Falls back to nothing for messages saved before this feature shipped.
   const effectiveParts = isStreaming ? streamingParts : persistedParts;
 
+  // A multi-step (ReAct) response has at least one tool call, reasoning
+  // block, or sub-agent delegation. Simple single-shot answers (no tools)
+  // keep today's behavior: text streams straight into `AnswerContent`.
+  const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
+  // Once the run's `RUN_FINISHED` marks a text part `isFinal`, that text IS
+  // the answer — never suppress `AnswerContent` for it, even though
+  // `isStreaming` stays true for the brief window until `onComplete`
+  // replaces the slot's messages.
+  const isFinalTextReached = useMemo(
+    () => effectiveParts?.some((p) => p.type === 'text' && p.isFinal) ?? false,
+    [effectiveParts],
+  );
+  // While a multi-step response is actively streaming and hasn't produced
+  // its final answer yet, the trailing text is a "candidate" that might
+  // turn out to be narration — render it live in the timeline instead
+  // (`AgentActivityTimeline`'s `LiveNarrationText`) so it never has to jump
+  // from the answer area into the timeline the moment it gets settled.
+  const suppressAnswerDuringMultiStep = isStreaming && multiStep && !isFinalTextReached;
+  // Drives both the "Answer" separator and the collapsible-summary wrapper
+  // around a completed activity timeline — computed with the exact same
+  // filtering the timeline itself applies, so it never disagrees with what
+  // actually renders (e.g. a transcript containing only the isFinal part
+  // and nothing else shows no separator).
+  const visibleActivityParts = useMemo(
+    () => (effectiveParts ? getVisibleRootParts(effectiveParts, isStreaming) : []),
+    [effectiveParts, isStreaming],
+  );
+  const hasVisibleActivity = visibleActivityParts.length > 0;
+
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
   const wrappedCallbacks = useMemo<CitationCallbacks | undefined>(() => {
@@ -473,16 +502,74 @@ export const ChatResponse = React.memo(function ChatResponse({
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
-                streamed live or rendered from the persisted transcript. */}
-            {effectiveParts && effectiveParts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
-              <AgentActivityTimeline parts={effectiveParts} isStreaming={isStreaming} citationMaps={effectiveCitationMaps} citationCallbacks={wrappedCallbacks} />
+                streamed live or rendered from the persisted transcript.
+                While streaming, the live status ("Thinking...", "Using
+                Jira Search...") renders as the LAST timeline entry instead
+                of a disconnected element below the answer — see
+                AgentActivityTimeline's `currentStatus` prop. Once the
+                response is complete, a multi-step transcript collapses
+                behind a one-line summary so the reader's eye lands on the
+                answer rather than the full ReAct trace on every reload.
+                Gated on `hasVisibleActivity` (not raw part count) — a
+                completed simple response's `effectiveParts` is just the one
+                `isFinal` text part, which the timeline itself filters out;
+                rendering `CollapsibleActivitySection` around that would show
+                an expand chevron over a summary ("Worked on this") that
+                reveals nothing on click. `isStreaming && multiStep` is
+                OR'd in so the timeline (and its status entry) stays
+                reachable while a multi-step run is active but hasn't
+                produced a visible part yet (e.g. right after
+                TEXT_MESSAGE_START, before the first token lands). */}
+            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              isStreaming ? (
+                <AgentActivityTimeline
+                  parts={effectiveParts}
+                  isStreaming
+                  // Only the multi-step timeline owns the status entry — until a
+                  // tool call/reasoning block proves this, the trailing part is
+                  // just a placeholder (e.g. an empty text part from
+                  // TEXT_MESSAGE_START) that gets filtered out of `visible`,
+                  // which would otherwise leave the timeline showing ONLY the
+                  // status while `StatusMessageComponent` below (gated on
+                  // `!multiStep`) shows the exact same status a second time.
+                  currentStatus={multiStep ? streamingStatusToShow : null}
+                  citationMaps={effectiveCitationMaps}
+                  citationCallbacks={wrappedCallbacks}
+                />
+              ) : (
+                <CollapsibleActivitySection parts={effectiveParts}>
+                  <AgentActivityTimeline
+                    parts={effectiveParts}
+                    isStreaming={false}
+                    citationMaps={effectiveCitationMaps}
+                    citationCallbacks={wrappedCallbacks}
+                  />
+                </CollapsibleActivitySection>
+              )
+            )}
+
+            {/* Separator marking the handoff from "here's the work" to
+                "here's the answer" — only when there's activity actually
+                visible above (not just a lone isFinal part that the
+                timeline itself filtered out) and content to show below. */}
+            {hasVisibleActivity && displayContent && !suppressAnswerDuringMultiStep && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <Box
+                style={{
+                  borderTop: '1px solid var(--slate-4)',
+                  marginTop: 'var(--space-1)',
+                  marginBottom: 'var(--space-3)',
+                }}
+              />
             )}
 
             {/* Show content - either streaming or final.
                 Suppressed when an ask_user_question card (streaming or persisted)
                 owns this row so partial/final answer chunks are not shown
-                above the question card. */}
-            {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+                above the question card, and while a multi-step response's
+                trailing text hasn't been proven to be the final answer yet
+                (it's rendered live in the timeline above instead — see
+                `suppressAnswerDuringMultiStep`). */}
+            {displayContent && !suppressAnswerDuringMultiStep && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <AnswerContent
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
@@ -490,11 +577,12 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* "Currently doing X…" status — rendered LAST, after the timeline
-                and any answer text already streamed, so it tracks the bottom
-                of the growing message (where the chat scroller keeps the view
-                pinned) instead of sitting stuck above newer content. */}
-            {isStreaming && streamingStatusToShow && (
+            {/* "Currently doing X…" status for SIMPLE (non-multi-step)
+                responses only — multi-step responses show the same status
+                as the last timeline entry instead (see above), rendered
+                LAST there for the same "tracks the bottom of the growing
+                message" reason this one is placed last here. */}
+            {isStreaming && streamingStatusToShow && !multiStep && (
               <StatusMessageComponent status={streamingStatusToShow} />
             )}
 

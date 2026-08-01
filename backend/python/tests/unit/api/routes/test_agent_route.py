@@ -181,6 +181,31 @@ class TestParseModels:
 
 
 # =============================================================================
+# _parse_default_reasoning_effort
+# =============================================================================
+
+
+class TestParseDefaultReasoningEffort:
+    def test_none_returns_none(self) -> None:
+        from app.api.routes.agent import _parse_default_reasoning_effort
+        assert _parse_default_reasoning_effort(None) is None
+
+    def test_blank_string_returns_none(self) -> None:
+        from app.api.routes.agent import _parse_default_reasoning_effort
+        assert _parse_default_reasoning_effort("   ") is None
+
+    @pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "max"])
+    def test_valid_values_pass_through(self, effort) -> None:
+        from app.api.routes.agent import _parse_default_reasoning_effort
+        assert _parse_default_reasoning_effort(effort) == effort
+
+    def test_invalid_value_raises(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_default_reasoning_effort
+        with pytest.raises(InvalidRequestError):
+            _parse_default_reasoning_effort("extreme")
+
+
+# =============================================================================
 # _parse_toolsets
 # =============================================================================
 
@@ -762,6 +787,83 @@ class TestChatStreamWithPlaceholder:
             mock_get_assistant.assert_not_called()
             services["graph_provider"].get_agent.assert_called_once()
             assert isinstance(result, StreamingResponse)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_agent_default_reasoning_effort(self) -> None:
+        """When the request omits reasoningEffort, the agent's configured
+        defaultReasoningEffort must be forwarded to get_llm_for_chat."""
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "my-agent",
+            "knowledge": [],
+            "toolsets": [],
+            "models": [],
+            "defaultReasoningEffort": "high",
+        })
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True, "can_share": True, "role": "editor"},
+        )
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"test"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})) as mock_get_llm:
+
+            await chat_stream(request, "real-agent-123")
+
+            assert mock_get_llm.call_args.kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_explicit_reasoning_effort_overrides_agent_default(self) -> None:
+        """A per-request reasoningEffort must win over the agent's configured default."""
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "my-agent",
+            "knowledge": [],
+            "toolsets": [],
+            "models": [],
+            "defaultReasoningEffort": "high",
+        })
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True, "can_share": True, "role": "editor"},
+        )
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"test","reasoningEffort":"low"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), {"isReasoning": True}, {})) as mock_get_llm:
+
+            await chat_stream(request, "real-agent-123")
+
+            assert mock_get_llm.call_args.kwargs["reasoning_effort"] == "low"
 class TestGetAssistantAgentHelper:
     """Tests for get_assistant_agent helper method."""
 
@@ -1412,3 +1514,61 @@ class TestAgentCreatedByMongoId:
         body_json = json.loads(response.body)
         assert body_json["agent"]["createdBy"] == mongo_user_id
         graph_provider.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_agent_persists_default_reasoning_effort(self) -> None:
+        from app.api.routes.agent import create_agent
+
+        graph_provider = AsyncMock()
+        graph_provider.begin_transaction = AsyncMock(return_value="txn-1")
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        graph_provider.commit_transaction = AsyncMock()
+
+        services = {"graph_provider": graph_provider, "logger": MagicMock()}
+        request = MagicMock()
+        body = (
+            '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}],'
+            '"defaultReasoningEffort":"high"}'
+        )
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ):
+            response = await create_agent(request)
+
+        body_json = json.loads(response.body)
+        assert body_json["agent"]["defaultReasoningEffort"] == "high"
+
+    @pytest.mark.asyncio
+    async def test_create_agent_rejects_invalid_default_reasoning_effort(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, create_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        request = MagicMock()
+        body = (
+            '{"name":"A1","models":[{"modelKey":"mk1","modelName":"mn1","isReasoning":true}],'
+            '"defaultReasoningEffort":"extreme"}'
+        )
+        request.body = AsyncMock(return_value=body.encode())
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch(
+                 "app.api.routes.agent._get_user_context",
+                 return_value={"userId": "u1", "orgId": "org-1"},
+             ), \
+             patch(
+                 "app.api.routes.agent._get_user_document",
+                 new_callable=AsyncMock,
+                 return_value={"email": "a@b.com", "_key": "k1"},
+             ), \
+             pytest.raises(InvalidRequestError):
+            await create_agent(request)

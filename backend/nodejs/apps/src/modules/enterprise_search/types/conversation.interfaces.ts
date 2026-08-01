@@ -1,5 +1,5 @@
 import { Document, Types, Model } from 'mongoose';
-import { ConfidenceLevel } from '../constants/constants';
+import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
 
 export interface IFollowUpQuestion {
@@ -266,4 +266,6 @@ export interface IAIModel {
   modelProvider: string;
   chatMode: string;
   modelFriendlyName?: string;
+  /** Forwarded to the Python LLM factory. */
+  reasoningEffort?: ReasoningEffort;
 }

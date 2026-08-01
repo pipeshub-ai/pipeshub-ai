@@ -1381,7 +1381,7 @@ function ChatContent() {
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          padding: isMobile ? '0 var(--space-4) var(--space-4)' : '0 var(--space-3)',
+          padding: isMobile ? '0 var(--space-4) var(--space-4)' : '0 var(--space-5)',
           zIndex: 20,
           pointerEvents: 'none',
         }}

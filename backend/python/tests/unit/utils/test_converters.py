@@ -349,15 +349,16 @@ class TestProcessContentInOrder:
         }
         doc = _make_doc(doc_dict)
 
-        mock_summary_response = MagicMock()
-        mock_summary_response.summary = "A summary"
-        mock_summary_response.headers = ["A", "B"]
+        from app.utils.table_enrichment import TableEnrichmentResult
 
-        mock_get_summary = AsyncMock(return_value=mock_summary_response)
-        mock_get_rows = AsyncMock(return_value=(["Row 1 text"], [{"row": 1}]))
+        mock_enrichment = TableEnrichmentResult(
+            summary="A summary", headers=["A", "B"], descriptions=["Row 1 text"]
+        )
+        mock_get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        mock_enrich_tables = AsyncMock(return_value=[mock_enrichment])
 
-        with patch("app.utils.converters.docling_doc_to_blocks.get_table_summary_n_headers", mock_get_summary), \
-             patch("app.utils.converters.docling_doc_to_blocks.get_rows_text", mock_get_rows):
+        with patch("app.utils.converters.docling_doc_to_blocks.get_llm_for_role", mock_get_llm), \
+             patch("app.utils.converters.docling_doc_to_blocks.enrich_tables", mock_enrich_tables):
 
             result = await converter._process_content_in_order(doc)
 
@@ -902,19 +903,20 @@ class TestTableBlockWithChildren:
         }
         doc = _make_doc_cov(doc_dict)
 
-        mock_summary_response = MagicMock()
-        mock_summary_response.summary = "Summary"
-        mock_summary_response.headers = ["A"]
+        from app.utils.table_enrichment import TableEnrichmentResult
 
-        mock_get_summary = AsyncMock(return_value=mock_summary_response)
-        mock_get_rows = AsyncMock(return_value=(["Row text"], [{"row": 1}]))
+        mock_enrichment = TableEnrichmentResult(
+            summary="Summary", headers=["A"], descriptions=["Row text"]
+        )
+        mock_get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        mock_enrich_tables = AsyncMock(return_value=[mock_enrichment])
 
         with patch(
-            "app.utils.converters.docling_doc_to_blocks.get_table_summary_n_headers",
-            mock_get_summary,
+            "app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+            mock_get_llm,
         ), patch(
-            "app.utils.converters.docling_doc_to_blocks.get_rows_text",
-            mock_get_rows,
+            "app.utils.converters.docling_doc_to_blocks.enrich_tables",
+            mock_enrich_tables,
         ):
             result = await converter._process_content_in_order(doc)
 

@@ -101,6 +101,12 @@ ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 # this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
 ENV OMP_NUM_THREADS=2
 
+# Several third-party deps (talon, pysbd, ...) ship regex string literals with
+# unescaped backslashes and hit Python 3.12+'s SyntaxWarning at import time.
+# We don't control their source, and new deps can hit this same issue, so
+# suppress the class globally rather than patching each import site.
+ENV PYTHONWARNINGS="ignore::SyntaxWarning"
+
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin

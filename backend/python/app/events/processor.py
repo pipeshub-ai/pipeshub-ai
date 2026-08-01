@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 from pathlib import Path
@@ -42,6 +43,8 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
+from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -444,34 +447,67 @@ class Processor:
                 # Signal parsing complete after all pages are parsed
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-                # Phase 2: Create blocks for all pages (involves LLM calls for tables)
+                # Phase 2: Create blocks for all pages (involves LLM calls for tables).
+                # Fan out create_blocks with a cap; cancel stragglers on the first failure
+                # so we keep today's fail-fast. Results stay in page order for the
+                # sequential index-offset merge below.
+                page_build_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGE_BUILDS)
+
+                async def _create_page_blocks(
+                    page_number: int, conv_res: Any
+                ) -> Optional[BlocksContainer]:
+                    async with page_build_semaphore:
+                        try:
+                            return await processor.create_blocks(
+                                conv_res, page_number=page_number
+                            )
+                        except Exception as e:
+                            self.logger.error(
+                                f"❌ Failed to create blocks for page {page_number}: {str(e)}"
+                            )
+                            raise
+
+                page_build_tasks = [
+                    asyncio.create_task(_create_page_blocks(page_number, conv_res))
+                    for page_number, conv_res in all_conv_results
+                ]
+                try:
+                    page_block_results = await asyncio.gather(*page_build_tasks)
+                except Exception:
+                    self.logger.error(
+                        "❌ Cancelling remaining page block builds due to failure"
+                    )
+                    for task in page_build_tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*page_build_tasks, return_exceptions=True)
+                    raise
+
                 all_blocks = []
                 all_block_groups = []
                 block_index_offset = 0
                 block_group_index_offset = 0
 
-                for page_number, conv_res in all_conv_results:
-                    try:
-                        page_block_containers = await processor.create_blocks(conv_res, page_number=page_number)
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to create blocks for page {page_number}: {str(e)}")
-                        raise
-
+                for page_block_containers in page_block_results:
                     if page_block_containers:
                         # Adjust block indices to be unique across all pages
                         for block in page_block_containers.blocks:
                             block.index = block.index + block_index_offset
                             if block.parent_index is not None:
-                                block.parent_index = block.parent_index + block_group_index_offset
+                                block.parent_index = (
+                                    block.parent_index + block_group_index_offset
+                                )
                             all_blocks.append(block)
 
                         for block_group in page_block_containers.block_groups:
-                            block_group.index = block_group.index + block_group_index_offset
+                            block_group.index = (
+                                block_group.index + block_group_index_offset
+                            )
                             if block_group.parent_index is not None:
-                                block_group.parent_index = block_group.parent_index + block_group_index_offset
-                            # Adjust children indices
+                                block_group.parent_index = (
+                                    block_group.parent_index + block_group_index_offset
+                                )
                             if block_group.children:
-                                # Adjust ranges by adding offsets
                                 for range_obj in block_group.children.block_ranges:
                                     range_obj.start += block_index_offset
                                     range_obj.end += block_index_offset
@@ -677,160 +713,6 @@ class Processor:
                 details={"error": str(e)},
             ) from e
 
-    async def _enhance_tables_with_llm(self, block_containers: BlocksContainer) -> None:
-        """
-        Enhance TABLE BlockGroups with LLM-generated summaries and row descriptions.
-
-        This method processes all TABLE BlockGroups in the container:
-        - Generates table summary and enhanced column headers using LLM
-        - Generates natural language descriptions for each row
-        - Updates BlockGroup and Block data with enhanced content
-
-        Args:
-            block_containers: The BlocksContainer to enhance in-place
-        """
-        from app.utils.indexing_helpers import (
-            get_rows_text,
-            get_table_summary_n_headers,
-        )
-
-        # Find all TABLE BlockGroups
-        table_groups = [
-            bg for bg in block_containers.block_groups
-            if bg.type == GroupType.TABLE
-        ]
-
-        if not table_groups:
-            self.logger.debug("No TABLE BlockGroups found, skipping LLM enhancement")
-            return
-
-        self.logger.info(f"🤖 Enhancing {len(table_groups)} tables with LLM summaries")
-
-        for table_group in table_groups:
-            try:
-                # Get table markdown from data
-                table_markdown = table_group.data.get("table_markdown") if table_group.data else None
-                if not table_markdown:
-                    self.logger.warning(f"No table_markdown found for table group {table_group.index}")
-                    continue
-
-                # Get LLM-enhanced summary and column headers
-                response = await get_table_summary_n_headers(self.config_service, table_markdown)
-
-                if response:
-                    table_summary = response.summary or ""
-                    column_headers = response.headers or []
-
-                    # Update BlockGroup with enhanced data
-                    table_group.description = table_summary
-                    if table_group.data is None:
-                        table_group.data = {}
-                    table_group.data["table_summary"] = table_summary
-                    table_group.data["column_headers"] = column_headers
-
-                    # Update TableMetadata if column headers are available
-                    if column_headers and table_group.table_metadata:
-                        table_group.table_metadata.column_names = column_headers
-
-                    self.logger.debug(f"Enhanced table {table_group.index} with summary: {table_summary[:100]}...")
-
-                    # Get all child row blocks for this table
-                    row_blocks = []
-                    row_dicts = []
-
-                    if table_group.children:
-                        # Handle new BlockGroupChildren format (range-based)
-                        if isinstance(table_group.children, BlockGroupChildren):
-                            # Iterate over block ranges and expand to individual indices
-                            for range_obj in table_group.children.block_ranges:
-                                for block_index in range(range_obj.start, range_obj.end + 1):
-                                    if 0 <= block_index < len(block_containers.blocks):
-                                        block = block_containers.blocks[block_index]
-                                        if block.type == BlockType.TABLE_ROW:
-                                            row_blocks.append(block)
-                                            # Extract row dict from block data
-                                            if block.data and "cells" in block.data:
-                                                # Create row dict mapping column headers to cell values
-                                                cells = block.data["cells"]
-                                                if isinstance(cells, list) and column_headers:
-                                                    row_dict = {
-                                                        col: cells[i] if i < len(cells) else ""
-                                                        for i, col in enumerate(column_headers)
-                                                    }
-                                                    row_dicts.append(row_dict)
-                                                else:
-                                                    row_dicts.append({})
-                        # Handle old format (list of BlockContainerIndex) for backward compatibility
-                        elif isinstance(table_group.children, list):
-                            for child_idx in table_group.children:
-                                if isinstance(child_idx, BlockContainerIndex) and child_idx.block_index is not None:
-                                    block_index = child_idx.block_index
-                                    if 0 <= block_index < len(block_containers.blocks):
-                                        block = block_containers.blocks[block_index]
-                                        if block.type == BlockType.TABLE_ROW:
-                                            row_blocks.append(block)
-                                            # Extract row dict from block data
-                                            if block.data and "cells" in block.data:
-                                                # Create row dict mapping column headers to cell values
-                                                cells = block.data["cells"]
-                                                if isinstance(cells, list) and column_headers:
-                                                    row_dict = {
-                                                        col: cells[i] if i < len(cells) else ""
-                                                        for i, col in enumerate(column_headers)
-                                                    }
-                                                    row_dicts.append(row_dict)
-                                                else:
-                                                    row_dicts.append({})
-
-                    # Generate LLM row descriptions (skip header rows)
-                    # Filter out header rows using is_header flag from table_row_metadata
-                    non_header_row_dicts = []
-                    non_header_row_indices = []  # Track original indices for updating blocks
-
-                    for i, (row_dict, row_block) in enumerate(zip(row_dicts, row_blocks)):
-                        # Check if this row is a header using the is_header flag from table_row_metadata
-                        is_header = (
-                            row_block
-                            and row_block.table_row_metadata
-                            and row_block.table_row_metadata.is_header
-                        )
-
-                        if not is_header:
-                            non_header_row_dicts.append(row_dict)
-                            non_header_row_indices.append(i)
-
-                    if any(non_header_row_dicts):
-                        try:
-                            # get_rows_text skips row 0 when column_headers is provided
-                            cols = column_headers or []
-                            grid = []
-                            if cols:
-                                grid.append([{"text": col} for col in cols])
-                            for row_dict in non_header_row_dicts:
-                                grid_row = [{"text": row_dict.get(col, "")} for col in cols]
-                                grid.append(grid_row)
-                            table_data = {"grid": grid}
-                            row_descriptions, _ = await get_rows_text(
-                                self.config_service, table_data, table_summary, column_headers
-                            )
-
-                            # Update row blocks with LLM descriptions (only non-header rows)
-                            for description_idx, original_idx in enumerate(non_header_row_indices):
-                                if description_idx < len(row_descriptions) and original_idx < len(row_blocks):
-                                    row_block = row_blocks[original_idx]
-                                    if row_block.data:
-                                        row_block.data["row_natural_language_text"] = row_descriptions[description_idx]
-
-                            self.logger.debug(f"Enhanced {len(row_descriptions)} rows with LLM descriptions")
-                        except Exception as e:
-                            self.logger.warning(f"Failed to generate row descriptions: {e}")
-                else:
-                    self.logger.warning(f"No LLM response for table {table_group.index}")
-
-            except Exception as e:
-                self.logger.error(f"Error enhancing table {table_group.index}: {e}")
-                # Continue with other tables even if one fails
-
     async def process_blocks(
         self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -877,7 +759,7 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             # Enhance TABLE BlockGroups with LLM summaries and row descriptions
-            await self._enhance_tables_with_llm(block_containers)
+            await enhance_tables_with_llm(block_containers, self.config_service, self.logger)
 
             # Get record from database
             record = await self.graph_provider.get_document(

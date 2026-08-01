@@ -378,18 +378,43 @@ test.describe('Chat — message actions: like / dislike', () => {
 const COPY_MD_LABEL = /markdown with citations/i;
 const COPY_TEXT_LABEL = /only text without citations/i;
 
+/**
+ * The user query above the answer renders its own copy button
+ * (`expandable-user-query.tsx`), which comes first in the DOM and is
+ * `opacity: 0; pointer-events: none` until the query is hovered. Playwright
+ * reports it as visible (opacity is not part of the visibility check), so an
+ * unscoped `.first()` selects that button and every click times out against
+ * its parent Flex. Scope to the assistant action bar instead.
+ */
+function assistantCopyButton(page: import('@playwright/test').Page) {
+  return page
+    .locator('[data-testid="message-actions"] button')
+    .filter({
+      has: page.locator('span.material-icons-outlined').filter({ hasText: 'content_copy' }),
+    })
+    .first();
+}
+
+/** Reads the clipboard, retrying while the async `writeText` settles. */
+async function clipboardText(page: import('@playwright/test').Page): Promise<string> {
+  let text = '';
+  await expect
+    .poll(
+      async () => {
+        text = await page.evaluate(() => navigator.clipboard.readText()).catch(() => '');
+        return text;
+      },
+      { timeout: 5_000 },
+    )
+    .not.toBe('');
+  return text;
+}
+
 test.describe('Chat — message actions: copy', () => {
   test('copy button is visible after assistant response', async ({ page }) => {
     await setupChatWithAnswer(page);
 
-    const copyBtn = page
-      .locator('button')
-      .filter({
-        has: page.locator('span.material-icons-outlined').filter({ hasText: 'content_copy' }),
-      })
-      .first();
-
-    await expect(copyBtn).toBeVisible({ timeout: 8_000 });
+    await expect(assistantCopyButton(page)).toBeVisible({ timeout: 8_000 });
   });
 
   test('clicking copy button opens the copy-options popover (plain / markdown)', async ({
@@ -397,19 +422,7 @@ test.describe('Chat — message actions: copy', () => {
   }) => {
     await setupChatWithAnswer(page);
 
-    const copyBtn = page
-      .locator('button')
-      .filter({
-        has: page.locator('span.material-icons-outlined').filter({ hasText: 'content_copy' }),
-      })
-      .first();
-
-    if (!(await copyBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
-
-    await copyBtn.click();
+    await assistantCopyButton(page).click();
 
     const copyOptionsPopover = page.locator('[role="dialog"], [data-radix-popper-content-wrapper]');
     await expect(copyOptionsPopover.first()).toBeVisible({ timeout: 5_000 });
@@ -422,67 +435,26 @@ test.describe('Chat — message actions: copy', () => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await setupChatWithAnswer(page);
 
-    const copyBtn = page
-      .locator('button')
-      .filter({
-        has: page.locator('span.material-icons-outlined').filter({ hasText: 'content_copy' }),
-      })
-      .first();
-
-    if (!(await copyBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
-
-    await copyBtn.click();
+    await assistantCopyButton(page).click();
 
     const copyTextOpt = page.getByText(COPY_TEXT_LABEL).first();
+    await expect(copyTextOpt).toBeVisible({ timeout: 5_000 });
+    await copyTextOpt.click();
 
-    if (await copyTextOpt.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await copyTextOpt.click();
-
-      const clipText = await page
-        .evaluate(() => navigator.clipboard.readText())
-        .catch(() => '');
-
-      if (clipText) {
-        // The copied text should contain the answer content (stripped of markdown)
-        expect(clipText.length).toBeGreaterThan(0);
-      }
-    }
+    expect(await clipboardText(page)).toContain(TEST_ANSWER);
   });
 
   test('copy as markdown writes markdown content to clipboard', async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await setupChatWithAnswer(page);
 
-    const copyBtn = page
-      .locator('button')
-      .filter({
-        has: page.locator('span.material-icons-outlined').filter({ hasText: 'content_copy' }),
-      })
-      .first();
-
-    if (!(await copyBtn.isVisible({ timeout: 5_000 }).catch(() => false))) {
-      test.skip();
-      return;
-    }
-
-    await copyBtn.click();
+    await assistantCopyButton(page).click();
 
     const copyMdOpt = page.getByText(COPY_MD_LABEL).first();
+    await expect(copyMdOpt).toBeVisible({ timeout: 5_000 });
+    await copyMdOpt.click();
 
-    if (await copyMdOpt.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await copyMdOpt.click();
-
-      const clipText = await page
-        .evaluate(() => navigator.clipboard.readText())
-        .catch(() => '');
-
-      if (clipText) {
-        expect(clipText.length).toBeGreaterThan(0);
-      }
-    }
+    expect(await clipboardText(page)).toContain(TEST_ANSWER);
   });
 });
 

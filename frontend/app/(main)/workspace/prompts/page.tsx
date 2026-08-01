@@ -28,6 +28,7 @@ interface PromptSectionCardProps {
   description: string;
   children: React.ReactNode;
   action?: React.ReactNode;
+  testId?: string;
 }
 
 function PromptSectionCard({
@@ -36,10 +37,12 @@ function PromptSectionCard({
   description,
   children,
   action,
+  testId,
 }: PromptSectionCardProps) {
   return (
     <Flex
       direction="column"
+      data-testid={testId}
       style={{
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
@@ -331,6 +334,7 @@ export default function PromptsPage() {
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard
             iconName="edit_note"
+            testId="prompt-section-internal-search"
             title="Internal Search"
             description="Applied when a user chats in Internal Search mode — the assistant answers only from your organization's connected knowledge base."
           >
@@ -349,6 +353,7 @@ export default function PromptsPage() {
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard
             iconName="travel_explore"
+            testId="prompt-section-web-search"
             title="Web Search"
             description="Applied when a user chats in Web Search mode — the assistant answers using live web search results from public sources."
           >
@@ -367,6 +372,7 @@ export default function PromptsPage() {
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard
             iconName="smart_toy"
+            testId="prompt-section-agent"
             title="Agent"
             description="Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both."
           >

@@ -14,8 +14,9 @@ from io import BytesIO
 
 import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
@@ -59,6 +60,10 @@ class ChatQuery(BaseModel):
     modelKey: str | None = None  # e.g., "uuid-of-the-model"
     modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: str | None = "internal_search"  # "quick", "analysis", "deep_research", "creative", "precise"
+    # "none" | "low" | "medium" | "high" | "max" — forwarded to the LLM factory's
+    # reasoning_effort param; absent/None means no explicit override (the LLM
+    # factory applies DEFAULT_REASONING_EFFORT for reasoning-capable models).
+    reasoningEffort: str | None = None
     mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
@@ -70,6 +75,8 @@ class ChatQuery(BaseModel):
     # Per-request capability toggles for agent mode (both paths).
     # When absent defaults to both enabled, preserving existing behavior.
     agentCapabilities: dict[str, Any] | None = None
+
+    _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
 
 class AttachmentUploadItem(BaseModel):
@@ -224,7 +231,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "internal_search") -> tuple[BaseChatModel, dict, dict]:
+async def get_llm_for_chat(
+    config_service: ConfigurationService,
+    model_key: str = None,
+    model_name: str = None,
+    chat_mode: str = "internal_search",
+    reasoning_effort: str | None = None,
+) -> tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
 
     Returns:
@@ -248,7 +261,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                llm = await get_generator_model_async(model_provider, llm_config, model_name)
+                llm = await get_generator_model_async(
+                    model_provider, llm_config, model_name, reasoning_effort
+                )
                 return llm, llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
@@ -257,7 +272,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
+            llm = await get_generator_model_async(
+                model_provider, llm_config, default_model_name, reasoning_effort
+            )
             return llm, llm_config, ai_models_config
 
         # Fallback to first available model
@@ -265,7 +282,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
+        llm = await get_generator_model_async(
+            model_provider, llm_config, default_model_name, reasoning_effort
+        )
         return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
@@ -764,6 +783,7 @@ async def _generate_chat_stream_via_agent_loop(
     try:
         llm, model_config, ai_models_config = await get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
+            reasoning_effort=query_info.reasoningEffort,
         )
         if llm is None:
             raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")

@@ -612,15 +612,13 @@ class TestPyMuPDFOpenCVProcessor:
         blocks = []
         block_groups = []
 
-        mock_response = MagicMock()
-        mock_response.summary = "Table summary"
-        mock_response.headers = ["A", "B"]
+        from app.utils.table_enrichment import TableEnrichmentResult
 
-        with patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_table_summary_n_headers",
-                    new_callable=AsyncMock, return_value=mock_response), \
-             patch("app.modules.parsers.pdf.pdfplumber_opencv_processor.get_rows_text",
-                    new_callable=AsyncMock, return_value=(["Row 1 text"], [["1", "2"]])):
-            bg = await proc._build_table_group(region, pd, blocks, block_groups)
+        enrichment = TableEnrichmentResult(
+            summary="Table summary", headers=["A", "B"], descriptions=["Row 1 text"]
+        )
+
+        bg = await proc._build_table_group(region, pd, blocks, block_groups, enrichment=enrichment)
 
         assert bg is not None
         assert bg.type.value == "table"

@@ -293,7 +293,8 @@ async def health_check() -> JSONResponse:
     registry: ParserRegistry = app.state.parser_registry
     return JSONResponse(
         content={
-            "status": "ok",
+            "status": "healthy",
+            "service": "parsing",
             "formats": list(registry.list_all_formats().keys()),
         }
     )

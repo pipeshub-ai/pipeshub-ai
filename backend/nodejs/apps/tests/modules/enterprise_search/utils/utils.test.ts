@@ -153,6 +153,16 @@ describe('Enterprise Search Utils', () => {
       const result = extractModelInfo({})
       expect(result.modelFriendlyName).to.be.undefined
     })
+
+    it('should return reasoningEffort from body when present', () => {
+      const result = extractModelInfo({ reasoningEffort: 'high' })
+      expect(result.reasoningEffort).to.equal('high')
+    })
+
+    it('should return undefined reasoningEffort when absent from body', () => {
+      const result = extractModelInfo({})
+      expect(result.reasoningEffort).to.be.undefined
+    })
   })
 
   // -----------------------------------------------------------------------

@@ -16,11 +16,11 @@ import pytest
 from app.utils.indexing_helpers import (
     format_rows_with_index,
     generate_simple_row_text,
-    get_rows_text,
     get_table_summary_n_headers,
     image_bytes_to_base64,
     TableSummary,
 )
+from app.utils.table_enrichment import get_rows_text
 
 
 # ===========================================================================
@@ -383,13 +383,8 @@ class TestGetRowsText:
     """get_rows_text: grid parsing, header handling, and LLM row descriptions."""
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_with_column_headers_and_parsed_response(
-        self, mock_get_llm, mock_invoke
-    ):
-        mock_get_llm.return_value = (MagicMock(), None)
-
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_with_column_headers_and_parsed_response(self, mock_invoke):
         parsed = MagicMock()
         parsed.descriptions = ["Row 1 is about X", "Row 2 is about Y"]
         mock_invoke.return_value = parsed
@@ -410,10 +405,8 @@ class TestGetRowsText:
         assert len(rows) == 2
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_without_column_headers(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_without_column_headers(self, mock_invoke):
         mock_invoke.return_value = None
 
         table_data = {
@@ -431,10 +424,8 @@ class TestGetRowsText:
         assert "Alice" in descriptions[0]
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_with_dict_cells(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_with_dict_cells(self, mock_invoke):
         mock_invoke.return_value = None
 
         table_data = {
@@ -467,10 +458,8 @@ class TestGetRowsText:
         assert rows == []
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_parsed_response_empty_descriptions(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_parsed_response_empty_descriptions(self, mock_invoke):
         parsed = MagicMock()
         parsed.descriptions = []
         mock_invoke.return_value = parsed
@@ -483,9 +472,9 @@ class TestGetRowsText:
         assert len(descriptions) == 2
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_exception_propagates_get_rows_text(self, mock_get_llm):
-        mock_get_llm.side_effect = Exception("LLM error")
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_exception_propagates_get_rows_text(self, mock_invoke):
+        mock_invoke.side_effect = Exception("LLM error")
 
         table_data = {"grid": [["A"], ["B"]]}
 
@@ -493,10 +482,8 @@ class TestGetRowsText:
             await get_rows_text(MagicMock(), table_data, "summary", ["Col"])
 
     @pytest.mark.asyncio
-    @patch("app.utils.indexing_helpers.invoke_with_structured_output_and_reflection")
-    @patch("app.utils.indexing_helpers.get_llm_for_role", new_callable=AsyncMock)
-    async def test_more_columns_than_headers(self, mock_get_llm, mock_invoke):
-        mock_get_llm.return_value = (MagicMock(), None)
+    @patch("app.utils.table_enrichment.invoke_with_structured_output_and_reflection")
+    async def test_more_columns_than_headers(self, mock_invoke):
         mock_invoke.return_value = None
 
         table_data = {

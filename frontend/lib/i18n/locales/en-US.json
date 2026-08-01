@@ -2358,7 +2358,7 @@
       "lastChecked": "Last checked: {{time}}",
       "loading": "Loading services status…",
       "policyTitle": "Service Health Policy",
-      "policyDescription": "Query and Connector services are critical — the application will wait for them before loading. Indexing and Docling services are non-blocking and only affect background processing.",
+      "policyDescription": "Query and Connector services are critical — the application will wait for them before loading. Indexing, Docling, Parsing, and Extraction services are non-blocking and only affect background processing.",
       "allHealthy": "All services are healthy",
       "someUnhealthy": "Some services are unhealthy",
       "fetchFailed": "Failed to check services health",
@@ -2408,6 +2408,14 @@
         "docling": {
           "label": "Docling Service",
           "description": "Advanced document parsing and OCR"
+        },
+        "parsing": {
+          "label": "Parsing Service",
+          "description": "Parses documents into structured blocks for indexing"
+        },
+        "extraction": {
+          "label": "Extraction Service",
+          "description": "LLM-based document classification and metadata extraction"
         }
       }
     }

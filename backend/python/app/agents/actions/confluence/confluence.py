@@ -60,6 +60,14 @@ _ORDER_BY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Atlassian Cloud accountIds look like ``712020:17167aa8-8ec1-49cc-ab55-6ab1bcb019fb``.
+# ``user.fullname ~`` will not resolve these — use exact accountId lookup instead.
+_ACCOUNT_ID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]+:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    re.IGNORECASE,
+)
+
 # Pydantic schemas for Confluence tools
 class CreatePageInput(BaseModel):
     """Schema for creating Confluence pages"""
@@ -354,17 +362,13 @@ class SearchContentInput(BaseModel):
 
 
 class SearchUsersInput(BaseModel):
-    """Schema for searching Confluence users by name or email.
-
-    A single query string is matched against both display name (fuzzy / partial)
-    AND the user index (which can carry email or username depending on the
-    Atlassian site's privacy settings). The caller doesn't have to detect
-    "is this an email?" — both clauses always run.
-    """
+    """Schema for searching Confluence users by name, email, or accountId."""
     query: str = Field(
         description=(
-            "User's display name (full or partial — `'John'`, `'John Doe'`) OR "
-            "an email address (`'john@x.com'`). Both lookups run for every input. "
+            "User's display name (full or partial — `'John'`, `'John Doe'`), "
+            "an email address (`'john@x.com'`), OR an Atlassian accountId "
+            "(`'712020:17167aa8-...'` from an `<ri:user>` mention). "
+            "AccountIds are resolved with an exact lookup; names use fuzzy search. "
             "Cloud privacy settings may suppress email matches; if no users come "
             "back for an email, fall back to asking the user for a display name."
         ),
@@ -695,6 +699,61 @@ class Confluence:
                 space_key = display_url[len("/spaces/"):].strip("/").split("/")[0]
 
         return space_key, space_name
+
+    @staticmethod
+    def _looks_like_account_id(value: str) -> bool:
+        """True when ``value`` is an Atlassian Cloud accountId (prefix:uuid)."""
+        return bool(_ACCOUNT_ID_PATTERN.match((value or "").strip()))
+
+    async def _resolve_user_by_account_id(self, account_id: str) -> tuple[bool, str]:
+        """Exact user lookup by accountId via ``GET /wiki/rest/api/user``."""
+        response = await self.client.get_user_by_key(
+            user_key=account_id,
+            lookup_as="accountId",
+        )
+        if response.status not in (
+            HttpStatusCode.SUCCESS.value,
+            HttpStatusCode.CREATED.value,
+        ):
+            error_text = response.text() if hasattr(response, "text") else str(response)
+            return False, json.dumps({
+                "error": f"No Confluence user found for accountId {account_id!r}",
+                "details": error_text,
+                "guidance": (
+                    "Confirm the accountId is correct and the user has Confluence "
+                    "product access. For name/email search, pass a display name instead."
+                ),
+            })
+        try:
+            user_obj = response.json()
+        except Exception:
+            return False, json.dumps({"error": "Failed to parse user lookup response"})
+        if not isinstance(user_obj, dict) or not user_obj.get("accountId"):
+            return False, json.dumps({
+                "error": f"No Confluence user found for accountId {account_id!r}",
+                "guidance": "Confirm the accountId is correct.",
+            })
+        cleaned: dict[str, Any] = {
+            "accountId": user_obj.get("accountId"),
+            "displayName": (
+                user_obj.get("displayName")
+                or user_obj.get("publicName")
+                or ""
+            ),
+            "rank": 0,
+        }
+        email = user_obj.get("email") or ""
+        if email:
+            cleaned["email"] = email
+        account_status = user_obj.get("accountStatus")
+        if account_status:
+            cleaned["accountStatus"] = account_status
+        return True, json.dumps({
+            "query": account_id,
+            "total": 1,
+            "results": [cleaned],
+            "message": "User found",
+        })
 
     @tool(
         path="/tools/confluence/create_page",
@@ -2068,12 +2127,13 @@ class Confluence:
 
     @tool(
         path="/tools/confluence/search_users",
-        short_description="Search Confluence users by name or email",
+        short_description="Search Confluence users by name, email, or accountId",
         description=(
-            "Search Confluence users by display name OR email — handles whichever the user gives, "
-            "you don't need to detect the format. Returns each match's accountId, which is what you "
-            "wrap in double quotes (`'\"<accountId>\"'`) and pass as search_content's `contributor`, "
-            "`creator`, `mention`, or `last_modifier` slot when filtering another user's activity.\n"
+            "Search Confluence users by display name, email, or accountId — handles whichever "
+            "the user gives, you don't need to detect the format. Returns each match's accountId, "
+            "which is what you wrap in double quotes (`'\"<accountId>\"'`) and pass as "
+            "search_content's `contributor`, `creator`, `mention`, or `last_modifier` slot when "
+            "filtering another user's activity.\n"
             "\n"
             "DO NOT call this for self-queries — pass the literal `currentUser()` to search_content "
             "directly; no lookup needed.\n"
@@ -2088,7 +2148,7 @@ class Confluence:
             "returns the same accountId that Confluence uses."
         ),
         parameters=[
-            ToolParameter(name="query", type=ParameterType.STRING, description="User's display name (full or partial) OR an email address. Both lookups run for every input.", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Display name, email, or accountId.", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False, default=10),
         ],
         tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
@@ -2100,16 +2160,15 @@ class Confluence:
         query: str,
         max_results: Optional[int] = 10,
     ) -> tuple[bool, str]:
-        """Search Confluence users by display name or email.
+        """Search Confluence users by display name, email, or accountId.
 
-        Builds CQL ``type=user AND (user.fullname ~ "<query>*" OR user ~ "<query>")``.
-        Both clauses always run — name fragments match the first, usernames /
-        accountIds (and emails when the index has them) match the second. The
-        ranker below picks the best match across both clauses.
+        AccountIds use ``GET /wiki/rest/api/user?accountId=...``. Names/emails use
+        CQL ``type=user AND user.fullname ~ "<query>*"`` on ``/search/user``.
 
         Args:
-            query: Display name fragment, full name, or email.
-            max_results: Max users to return (1-50). Default 10.
+            query: Display name fragment, full name, email, or accountId.
+            max_results: Max users to return (1-50). Default 10. Ignored for
+                exact accountId lookup (always 0 or 1).
 
         Returns:
             Tuple of (success, json_response). On 0 matches returns False with a
@@ -2122,10 +2181,13 @@ class Confluence:
             if not query or not query.strip():
                 return False, json.dumps({
                     "error": "Query is required",
-                    "guidance": "Pass a display name or email fragment.",
+                    "guidance": "Pass a display name, email, or accountId.",
                 })
 
             query_clean = query.strip()
+            if self._looks_like_account_id(query_clean):
+                return await self._resolve_user_by_account_id(query_clean)
+
             # CQL string-literal escaping comes from the centralised helper in
             # the datasource module so all builders stay consistent.
             escaped = _escape_cql_literal(query_clean)

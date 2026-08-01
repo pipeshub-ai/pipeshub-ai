@@ -844,6 +844,11 @@ agent_schema = {
                 "default": [],
             },
             "webSearch": {"type": ["string", "null"]},
+            # Falls back to this when a chat request omits its own reasoningEffort.
+            "defaultReasoningEffort": {
+                "type": ["string", "null"],
+                "enum": ["none", "low", "medium", "high", "max", None],
+            },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
             "createdBy": {"type": "string"},

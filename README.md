@@ -117,19 +117,22 @@ Prefer a fully managed PipesHub without running your own infrastructure? PipesHu
 
 ### Backend
 
-| Technology | Description |
-|-----------|-------------|
-| FastAPI | High-performance Python web framework |
-| LangChain | Framework for LLM pipelines |
-| Qdrant | Vector similarity search engine |
-| Neo4j / ArangoDB | Graph database |
-| Kafka / Redis Streams | Distributed event streaming platform |
-| Redis | Caching |
-| Redis / etcd3 | Distributed key-value configuration store |
-| Celery | Distributed task queue system |
-| Docling | Document parsing and extraction toolkit |
-| pdfplumber | PDF processing library |
-| pandas | Data analysis and manipulation |
+| Category | Technologies |
+|----------|--------------|
+| GraphDB | Neo4j / ArangoDB |
+| VectorDB | Qdrant / OpenSearch / Redis |
+| Document Store | MongoDB |
+| Blob Storage | Local filesystem / S3 / Azure Blob |
+| Message Broker | Kafka / Redis Streams |
+| Cache | Redis |
+| KV Store | Redis / etcd |
+| Task Queue | Celery |
+| Web Framework | FastAPI |
+| LLM Interface | LangChain (multi-provider model access) |
+| Embeddings | sentence-transformers / fastembed |
+| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
+| Document Conversion | LibreOffice, CairoSVG |
+| Data Analysis | pandas |
 
 ## 🚀 Deployment Guide
 

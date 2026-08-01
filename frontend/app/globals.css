@@ -670,6 +670,47 @@ li > blockquote {
 }
 
 /* ========================
+   Agent activity timeline — live typing cursor + entry animation
+   Used by LiveNarrationText / StatusTimelineEntry (agent-activity.tsx) for
+   the still-unsettled trailing text of a multi-step (ReAct) response.
+   ======================== */
+
+@keyframes cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--accent-9);
+  vertical-align: text-bottom;
+  animation: cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes activity-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.agent-activity-enter {
+  animation: activity-fade-in 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-cursor {
+    animation: none;
+    opacity: 1;
+  }
+
+  .agent-activity-enter {
+    animation: none;
+  }
+}
+
+/* ========================
    Sidebar title typing animation
    Plays once when a new conversation title is revealed after generation.
    ======================== */

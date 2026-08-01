@@ -207,7 +207,8 @@ export function createHealthRouter(
     }
   });
 
-  // Combined services health check (Python query + connector + indexing + docling + embedding services)
+  // Combined services health check (Python query + connector + indexing + docling + embedding,
+  // plus parsing + extraction when USE_PARSING_SERVICE=true)
   router.get('/services', async (_req, res, _next) => {
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
@@ -217,14 +218,25 @@ export function createHealthRouter(
       const doclingHealthUrl = `${doclingBackend}/health`;
       const embeddingBackend = (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(/\/v1\/?$/, '');
       const embeddingHealthUrl = `${embeddingBackend}/health`;
+      const parsingServicesEnabled = (process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true';
+      const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
+      const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
-      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await Promise.allSettled([
+      const baseSettled = Promise.allSettled([
         axios.get(aiHealthUrl, { timeout: 3000 }),
         axios.get(connectorHealthUrl, { timeout: 3000 }),
         axios.get(indexingHealthUrl, { timeout: 3000 }),
         axios.get(doclingHealthUrl, { timeout: 3000 }),
         axios.get(embeddingHealthUrl, { timeout: 3000 }),
       ]);
+      const parsingSettled = parsingServicesEnabled
+        ? Promise.allSettled([
+            axios.get(`${parsingBackend}/health`, { timeout: 3000 }),
+            axios.get(`${extractionBackend}/health`, { timeout: 3000 }),
+          ])
+        : null;
+
+      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await baseSettled;
 
       const isServiceHealthy = (res: PromiseSettledResult<any>) =>
         res.status === 'fulfilled' &&
@@ -240,29 +252,41 @@ export function createHealthRouter(
       // Critical services: query + connector (required for core functionality)
       const overallHealthy = aiOk && connectorOk;
 
+      const services: Record<string, string> = {
+        query: aiOk ? 'healthy' : 'unhealthy',
+        connector: connectorOk ? 'healthy' : 'unhealthy',
+        indexing: indexingOk ? 'healthy' : 'unhealthy',
+        docling: doclingOk ? 'healthy' : 'unhealthy',
+        embedding: embeddingOk ? 'healthy' : 'unhealthy',
+      };
+      if (parsingSettled) {
+        const [parsingResp, extractionResp] = await parsingSettled;
+        services.parsing = isServiceHealthy(parsingResp) ? 'healthy' : 'unhealthy';
+        services.extraction = isServiceHealthy(extractionResp) ? 'healthy' : 'unhealthy';
+      }
+
       res.status(200).json({
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: aiOk ? 'healthy' : 'unhealthy',
-          connector: connectorOk ? 'healthy' : 'unhealthy',
-          indexing: indexingOk ? 'healthy' : 'unhealthy',
-          docling: doclingOk ? 'healthy' : 'unhealthy',
-          embedding: embeddingOk ? 'healthy' : 'unhealthy',
-        },
+        services,
       });
     } catch (error: any) {
       logger.error('Combined services health check failed', error?.message ?? error);
+      const services: Record<string, string> = {
+        query: 'unknown',
+        connector: 'unknown',
+        indexing: 'unknown',
+        docling: 'unknown',
+        embedding: 'unknown',
+      };
+      if ((process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true') {
+        services.parsing = 'unknown';
+        services.extraction = 'unknown';
+      }
       res.status(200).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: 'unknown',
-          connector: 'unknown',
-          indexing: 'unknown',
-          docling: 'unknown',
-          embedding: 'unknown',
-        },
+        services,
       });
     }
   });

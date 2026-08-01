@@ -6,7 +6,10 @@ import {
   IFollowUpQuestion,
   IAgentConversation,
 } from '../../enterprise_search/types/conversation.interfaces';
-import { CONFIDENCE_LEVELS } from '../../enterprise_search/constants/constants';
+import {
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../../enterprise_search/constants/constants';
 
 const followUpQuestionSchema = new Schema<IFollowUpQuestion>(
   {
@@ -171,6 +174,7 @@ const messageSchema = new Schema<IMessage>(
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
       modelFriendlyName: { type: String },
+      reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
     },
     appliedFilters: {
       apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
@@ -227,6 +231,7 @@ const agentConversationSchema = new Schema({
     modelProvider: { type: String },
     chatMode: { type: String, default: 'quick' },
     modelFriendlyName: { type: String },
+    reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
   },
   // Errors array to track errors during conversation
   conversationErrors: [

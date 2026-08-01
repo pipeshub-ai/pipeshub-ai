@@ -55,10 +55,25 @@ test.describe('Workspace Prompts', () => {
   });
 
   test('reset to default works', async ({ page }) => {
-    const resetButton = page.locator('button').filter({ hasText: /Reset|Default/i });
-    if (await resetButton.first().isVisible()) {
-      await resetButton.first().click();
-      await page.waitForTimeout(1_000);
-    }
+    // Three identical editors render on this page, so both locators are scoped
+    // to one section — otherwise the textarea and the button could resolve to
+    // different modes and the assertion would pass for the wrong reason.
+    const section = page.getByTestId('prompt-section-internal-search');
+    const textarea = section.locator('textarea');
+    const resetButton = section.getByRole('button', { name: 'Reset to Default', exact: true });
+
+    await expect(textarea).toHaveCount(1);
+    await expect(resetButton).toHaveCount(1);
+    await expect(textarea).toBeVisible({ timeout: 5_000 });
+
+    // `disabled={!value}` in prompts/page.tsx — an org with no override starts
+    // empty, so the button only becomes clickable once the editor has content.
+    await textarea.fill('E2E reset probe');
+    await expect(resetButton).toBeEnabled();
+
+    // Clearing the editor IS the default (no org override); nothing is saved,
+    // so this leaves no state behind.
+    await resetButton.click();
+    await expect(textarea).toHaveValue('');
   });
 });

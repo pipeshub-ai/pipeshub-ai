@@ -787,6 +787,153 @@ describe('createAGUIEventHandler — root-run guards (child events do not leak i
   });
 });
 
+describe('createAGUIEventHandler — settling narration text (duplicate-text fix)', () => {
+  it('settles narration text and clears the answer buffer when REASONING_MESSAGE_START follows TEXT_MESSAGE_END on root run', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Let me check that.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    spies.onChunk.mockClear();
+
+    handle(frame('REASONING_MESSAGE_START', { runId: 'root' }));
+
+    // Buffer cleared — AnswerContent no longer mirrors the narration.
+    expect(spies.onChunk).toHaveBeenCalledWith({ chunk: '', accumulated: '', citations: [] });
+    // The text part is settled — filterRootParts can now show it in the timeline.
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const textPart = lastParts.find((part: { type: string }) => part.type === 'text');
+    expect(textPart).toMatchObject({ content: 'Let me check that.', settled: true });
+  });
+
+  it('settles narration text and clears the answer buffer when TOOL_CALL_START follows TEXT_MESSAGE_END on root run', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Searching Jira.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'jira_search' }));
+
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const textPart = lastParts.find((part: { type: string }) => part.type === 'text');
+    expect(textPart).toMatchObject({ content: 'Searching Jira.', settled: true });
+  });
+
+  it('settles narration text and clears the answer buffer when a new root text turn starts', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'First turn.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    spies.onChunk.mockClear();
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm2' }));
+
+    // Buffer cleared before the new turn's own deltas arrive.
+    expect(spies.onChunk).toHaveBeenCalledWith({ chunk: '', accumulated: '', citations: [] });
+    const partsAfterStart = spies.onParts.mock.calls.at(-1)?.[0];
+    const firstTextPart = partsAfterStart.find(
+      (part: { content?: string }) => part.content === 'First turn.',
+    );
+    expect(firstTextPart).toMatchObject({ settled: true });
+  });
+
+  it('does not settle the text part for a duplicate TEXT_MESSAGE_START (same messageId)', () => {
+    // Guards against a regression: settling on a duplicate replay would
+    // replace the open part's object reference and orphan the reference
+    // `handleTextContent` holds for it, silently dropping later deltas
+    // (see the sibling dedup-guard test for that content-accumulation check).
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'hello' }));
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: ' again' }));
+
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const textParts = lastParts.filter((part: { type: string }) => part.type === 'text');
+    expect(textParts).toHaveLength(1);
+    expect(textParts[0]).toMatchObject({ content: 'hello again' });
+    expect(textParts[0].settled).toBeUndefined();
+  });
+
+  it('does not settle a child (sub-agent) text turn when a reasoning block starts on root', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('RUN_STARTED', { runId: 'root' }));
+    handle(frame('STEP_STARTED', { runId: 'root', stepName: 'sub_agent:explorer' }));
+    handle(frame('RUN_STARTED', { runId: 'child-1', parentRunId: 'root' }));
+    handle(frame('TEXT_MESSAGE_START', { runId: 'child-1', messageId: 'c1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'child-1', delta: 'delegate narration' }));
+
+    handle(frame('REASONING_MESSAGE_START', { runId: 'root' }));
+
+    // The root answer buffer was never touched by the child's text, so no
+    // clearing onChunk should fire here.
+    expect(spies.onChunk).not.toHaveBeenCalled();
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const subAgentPart = lastParts.find((part: { type: string }) => part.type === 'sub_agent');
+    const childText = subAgentPart.parts.find((part: { type: string }) => part.type === 'text');
+    expect(childText.settled).toBeUndefined();
+  });
+
+  it('is idempotent across multiple tool calls in the same turn (2nd TOOL_CALL_START is a no-op on the buffer)', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'Checking two systems.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'jira_search' }));
+    spies.onChunk.mockClear();
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-2', toolCallName: 'confluence_search' }));
+
+    // Buffer was already empty by the 2nd tool call — no extra clearing chunk.
+    expect(spies.onChunk).not.toHaveBeenCalled();
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const textPart = lastParts.find((part: { type: string }) => part.type === 'text');
+    expect(textPart).toMatchObject({ settled: true });
+  });
+
+  it('emits onParts after REASONING_MESSAGE_END so the closed reasoning block is not stale', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('REASONING_MESSAGE_START', { runId: 'root' }));
+    handle(frame('REASONING_MESSAGE_CONTENT', { runId: 'root', delta: 'thinking...' }));
+    spies.onParts.mockClear();
+
+    handle(frame('REASONING_MESSAGE_END', { runId: 'root' }));
+
+    expect(spies.onParts).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the final answer text unsettled so it renders via AnswerContent, not the timeline', () => {
+    // No tool call/reasoning/new turn follows — RUN_FINISHED marks it
+    // isFinal instead, which filterRootParts hides from the timeline
+    // regardless of `settled`.
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: 'm1' }));
+    handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', delta: 'The final answer.' }));
+    handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: 'm1' }));
+    handle(frame('RUN_FINISHED', { runId: 'root', result: { conversation: {} } }));
+
+    const lastParts = spies.onParts.mock.calls.at(-1)?.[0];
+    const textPart = lastParts.find((part: { type: string }) => part.type === 'text');
+    expect(textPart).toMatchObject({ content: 'The final answer.', isFinal: true });
+    expect(textPart.settled).toBeUndefined();
+  });
+});
+
 describe('createAGUIEventHandler — dedup guard against duplicate events', () => {
   it('ignores a duplicate TEXT_MESSAGE_START carrying the same messageId', () => {
     const { callbacks, spies } = makeCallbacks();
@@ -801,6 +948,14 @@ describe('createAGUIEventHandler — dedup guard against duplicate events', () =
     const textParts = lastParts.filter((part: { type: string }) => part.type === 'text');
     expect(textParts).toHaveLength(1);
     expect(textParts[0].content).toBe('hello again');
+
+    // The duplicate start must not reset the live answer buffer either —
+    // onChunk's `accumulated` should keep reflecting the full turn so far.
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: ' again',
+      accumulated: 'hello again',
+      citations: [],
+    });
   });
 
   it('ignores a duplicate TOOL_CALL_START carrying the same toolCallId', () => {

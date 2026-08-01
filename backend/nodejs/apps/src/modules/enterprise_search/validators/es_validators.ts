@@ -3,7 +3,9 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE } from '../constants/constants';
+import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+
+export { REASONING_EFFORT_VALUES };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -94,6 +96,7 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model friendly name is required' })
     .optional(),
+  reasoningEffort: z.enum(REASONING_EFFORT_VALUES).optional(),
 };
 
 /** Execution-context fields shared by every stream/regenerate body schema. */
@@ -493,6 +496,10 @@ const createAgentBodySchema = z
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    /** Agent-level fallback applied when a chat request omits its own reasoningEffort. */
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -523,6 +530,9 @@ const updateAgentBodySchema = z
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const updateAgentSchema = z.object({

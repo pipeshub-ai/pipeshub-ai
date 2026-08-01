@@ -37,6 +37,7 @@ import {
   getModelUsageRequestSchema,
   updateAgentSchema,
   listAgentsQuerySchema,
+  REASONING_EFFORT_VALUES,
 } from '../../../../src/modules/enterprise_search/validators/es_validators'
 
 describe('enterprise_search/validators/es_validators', () => {
@@ -123,6 +124,26 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { body: { query: 'hello', chatMode: 'agent' } }
       const result = enterpriseSearchCreateSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    for (const effort of REASONING_EFFORT_VALUES) {
+      it(`should accept reasoningEffort '${effort}' (modelFieldsSchema)`, () => {
+        const data = { body: { query: 'hello', reasoningEffort: effort } }
+        const result = enterpriseSearchCreateSchema.safeParse(data)
+        expect(result.success).to.be.true
+      })
+    }
+
+    it('should accept omitted reasoningEffort', () => {
+      const data = { body: { query: 'hello' } }
+      const result = enterpriseSearchCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject an invalid reasoningEffort value', () => {
+      const data = { body: { query: 'hello', reasoningEffort: 'ultra' } }
+      const result = enterpriseSearchCreateSchema.safeParse(data)
+      expect(result.success).to.be.false
     })
 
     it('should reject attachment entries missing recordId', () => {
@@ -1791,6 +1812,36 @@ describe('enterprise_search/validators/es_validators', () => {
       })
       expect(result.success).to.be.false
     })
+
+    for (const effort of REASONING_EFFORT_VALUES) {
+      it(`should accept defaultReasoningEffort '${effort}'`, () => {
+        const result = createAgentSchema.safeParse({
+          body: { name: 'Agent', models: [validModel], defaultReasoningEffort: effort },
+        })
+        expect(result.success).to.be.true
+      })
+    }
+
+    it('should accept omitted defaultReasoningEffort', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel] },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept defaultReasoningEffort null', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], defaultReasoningEffort: null },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject invalid defaultReasoningEffort', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent', models: [validModel], defaultReasoningEffort: 'extreme' },
+      })
+      expect(result.success).to.be.false
+    })
   })
 
   // ---------------------------------------------------------------------------
@@ -1908,6 +1959,30 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: { name: 'a'.repeat(201) },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept a valid defaultReasoningEffort update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { defaultReasoningEffort: 'medium' },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept clearing defaultReasoningEffort with null', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { defaultReasoningEffort: null },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject an invalid defaultReasoningEffort update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { defaultReasoningEffort: 'ultra' },
       })
       expect(result.success).to.be.false
     })

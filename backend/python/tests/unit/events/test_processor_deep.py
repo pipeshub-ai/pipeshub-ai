@@ -1158,7 +1158,8 @@ class TestEnhanceTablesWithLlm:
         bc = MagicMock(spec=BlocksContainer)
         bc.block_groups = [table_bg]
 
-        await proc._enhance_tables_with_llm(bc)
+        from app.utils.table_enrichment import enhance_tables_with_llm
+        await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
         # No error raised
 
 

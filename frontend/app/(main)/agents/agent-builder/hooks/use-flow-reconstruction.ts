@@ -745,6 +745,7 @@ export function useAgentBuilderReconstruction(): {
             systemPrompt: agent.systemPrompt || t('agentBuilder.defaultSystemPrompt'),
             instructions: agent.instructions ?? '',
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
+            defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
             routing: 'auto',
             allowMultipleLLMs: true,
           },

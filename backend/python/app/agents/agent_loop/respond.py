@@ -83,6 +83,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
+
 
 def _tool_names_from_state(state: dict[str, Any]) -> dict[str, Any]:
     """`_tool_names_and_results_from_state` minus the full `tool_results`
@@ -255,7 +257,7 @@ class AnswerFinalizer:
     ) -> dict[str, Any]:
         if not agent_output or not agent_output.strip():
             log.warning("AnswerFinalizer: empty response, using fallback")
-            answer_text = "I wasn't able to generate a response. Please try rephrasing."
+            answer_text = _EMPTY_ANSWER_FALLBACK
             fallback_response = {
                 "answer": answer_text,
                 "citations": [],
@@ -342,6 +344,18 @@ class AnswerFinalizer:
                     if part.get("isFinal") and part.get("type") == "text":
                         part["content"] = normalized
                         break
+
+        # A model whose whole answer is the confidence trailer it was told to
+        # append clears the raw check above, then strips to nothing here — and
+        # Node rejects an empty answer outright (`buildAIResponseMessage`),
+        # failing the conversation instead of finishing the run.
+        if not normalized.strip():
+            log.warning("AnswerFinalizer: answer empty after normalization, using fallback")
+            normalized = _EMPTY_ANSWER_FALLBACK
+            citations = []
+            confidence = "Low"
+            completion_data["answerMatchType"] = "Fallback Response"
+            self._attach_parts(completion_data, final_text=normalized)
 
         # `TerminalAnswerStreamer` already streamed citations progressively,
         # but the finalized text differs (confidence stripped, task markers

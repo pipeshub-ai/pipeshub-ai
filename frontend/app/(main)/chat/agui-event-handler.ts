@@ -104,6 +104,27 @@ class LivePartsBuilder {
     }
   }
 
+  /** Marks the most recent root `text` part as `settled` — i.e. proven to be
+   * narration (not the final answer) and safe for `filterRootParts` to show
+   * in the activity timeline instead of the live answer buffer. Callers
+   * reach this the moment a subsequent root event proves "more work
+   * follows" for the turn that just streamed: a tool call, a reasoning
+   * block, or a new text turn starting. Returns `true` iff it found and
+   * newly settled a part, so callers know whether the live answer buffer
+   * mirroring that text needs clearing too — no-ops (returns `false`) if
+   * the last text part is already `settled`/`isFinal` or there isn't one,
+   * making repeat calls (e.g. a 2nd tool call in the same turn) safe. */
+  settleLastRootText(): boolean {
+    for (let i = this.parts.length - 1; i >= 0; i -= 1) {
+      const part = this.parts[i];
+      if (part.type !== 'text') continue;
+      if (part.isFinal || part.settled) return false;
+      this.parts[i] = { ...part, settled: true };
+      return true;
+    }
+    return false;
+  }
+
   handleStepStarted(data: AGUIEventEnvelope): void {
     const stepName = typeof data.stepName === 'string' ? data.stepName : '';
     const parentRunId = typeof data.runId === 'string' ? data.runId : undefined;
@@ -186,6 +207,16 @@ class LivePartsBuilder {
     if (typeof data.resultSummary === 'string') {
       part.resultSummary = data.resultSummary;
     }
+  }
+
+  /** Read-only peek at the dedup set `handleTextStart` below consults —
+   * lets the event handler tell a genuinely new root text turn apart from
+   * a duplicate replay (same `messageId`) BEFORE calling `handleTextStart`,
+   * so it only settles/clears the previous turn's buffer when a new part
+   * is actually about to be pushed (a duplicate leaves the previously open
+   * part's object reference untouched, which settling would break). */
+  hasSeenMessage(messageId: string | undefined): boolean {
+    return typeof messageId === 'string' && this.seenIds.has(messageId);
   }
 
   handleTextStart(data: AGUIEventEnvelope): void {
@@ -302,9 +333,28 @@ export function createAGUIEventHandler(
 
       case 'TEXT_MESSAGE_START': {
         // New model turn abandons any unfinished preamble — matches
-        // TerminalAnswerStreamer's own per-turn buffer reset (plan 1e).
+        // TerminalAnswerStreamer's own per-turn buffer reset (plan 1e). If
+        // the previous root turn's text is still live in the answer buffer,
+        // a genuinely NEW turn starting proves it was narration (RUN_FINISHED
+        // would have landed instead of another TEXT_MESSAGE_START if it were
+        // the final answer) — settle it into the timeline and clear the
+        // buffer in lockstep so it isn't shown in both places at once.
+        // Both this settle-and-clear and the plain reset below are gated on
+        // `!hasSeenMessage` because a duplicate replay (same `messageId`)
+        // leaves the currently-open part's object reference untouched
+        // (`handleTextStart` no-ops on it), so `textBuffer` must also stay
+        // untouched — resetting it would make the next TEXT_MESSAGE_CONTENT
+        // report `accumulated` as just the new delta, dropping everything
+        // already streamed for this turn.
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
-        if (partsBuilder.isRootRun(runId)) {
+        const messageId = typeof data?.messageId === 'string' ? data.messageId : undefined;
+        const isNewRootTurn = partsBuilder.isRootRun(runId) && !partsBuilder.hasSeenMessage(messageId);
+        if (isNewRootTurn && textBuffer) {
+          partsBuilder.settleLastRootText();
+          state = { ...state, normalizedAnswer: '', rawLength: 0 };
+          callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+        }
+        if (isNewRootTurn) {
           textBuffer = '';
           rawTextReceived = 0;
         }
@@ -343,10 +393,24 @@ export function createAGUIEventHandler(
         break;
       }
 
-      case 'REASONING_MESSAGE_START':
+      case 'REASONING_MESSAGE_START': {
+        // A reasoning block starting proves the text turn that just streamed
+        // was narration, not the final answer (mirrors the TOOL_CALL_START
+        // handling below) — settle it into the timeline and clear the live
+        // answer buffer so it isn't shown in both places while the model
+        // reasons before its next turn.
+        const runId = typeof data?.runId === 'string' ? data.runId : undefined;
+        if (textBuffer && partsBuilder.isRootRun(runId)) {
+          partsBuilder.settleLastRootText();
+          textBuffer = '';
+          rawTextReceived = 0;
+          state = { ...state, normalizedAnswer: '', rawLength: 0 };
+          callbacks.onChunk?.({ chunk: '', accumulated: '', citations: state.citations });
+        }
         if (data) partsBuilder.handleReasoningStart(data);
         emitParts();
         break;
+      }
 
       case 'REASONING_MESSAGE_CONTENT': {
         const delta = typeof data?.delta === 'string' ? data.delta : '';
@@ -361,6 +425,7 @@ export function createAGUIEventHandler(
 
       case 'REASONING_MESSAGE_END':
         if (data) partsBuilder.handleReasoningEnd(data);
+        emitParts();
         break;
 
       case 'REASONING_END':
@@ -382,6 +447,7 @@ export function createAGUIEventHandler(
         // (their own agent's answer buffer is untouched by a delegate).
         const runId = typeof data?.runId === 'string' ? data.runId : undefined;
         if (textBuffer && partsBuilder.isRootRun(runId)) {
+          partsBuilder.settleLastRootText();
           textBuffer = '';
           rawTextReceived = 0;
           state = { ...state, normalizedAnswer: '', rawLength: 0 };

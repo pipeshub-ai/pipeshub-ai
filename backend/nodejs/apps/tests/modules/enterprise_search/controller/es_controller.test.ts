@@ -307,6 +307,80 @@ describe('Enterprise Search Controller', () => {
       }
     })
 
+    it('should include reasoningEffort in the AI payload when provided', async () => {
+      const handler = createConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      mockDoc.save.resolves(mockDoc)
+      mockDoc.toObject.returns({
+        _id: mockDoc._id,
+        title: 'hello',
+        messages: [
+          { messageType: 'user_query', content: 'hello', citations: [] },
+          { messageType: 'bot_response', content: 'world', citations: [] },
+        ],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        capturedBody = JSON.parse(this.body)
+        return Promise.resolve({
+          statusCode: 200,
+          data: { answer: 'world', citations: [], followUpQuestions: [] },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        body: { query: 'hello', reasoningEffort: 'high' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2), email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody.reasoningEffort).to.equal('high')
+    })
+
+    it('should default reasoningEffort to null in the AI payload when omitted', async () => {
+      const handler = createConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      mockDoc.save.resolves(mockDoc)
+      mockDoc.toObject.returns({
+        _id: mockDoc._id,
+        title: 'hello',
+        messages: [
+          { messageType: 'user_query', content: 'hello', citations: [] },
+          { messageType: 'bot_response', content: 'world', citations: [] },
+        ],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        capturedBody = JSON.parse(this.body)
+        return Promise.resolve({
+          statusCode: 200,
+          data: { answer: 'world', citations: [], followUpQuestions: [] },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2), email: 'test@test.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody.reasoningEffort).to.be.null
+    })
+
     it('should call next with error when AI service fails', async () => {
       const handler = createConversation(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
@@ -424,6 +498,40 @@ describe('Enterprise Search Controller', () => {
 
       // Stream ended - res.end should be called
       expect(res.end.called).to.be.true
+    })
+
+    it('should include reasoningEffort in the AI payload when provided', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      let capturedBody: any
+      let resolveStreamRequested!: () => void
+      const streamRequested = new Promise<void>((resolve) => {
+        resolveStreamRequested = resolve
+      })
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+        capturedBody = JSON.parse(this.body)
+        resolveStreamRequested()
+        return Promise.resolve(mockStream) as any
+      })
+
+      const req = createMockRequest({
+        body: { query: 'hello', reasoningEffort: 'medium' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await streamRequested
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(capturedBody.reasoningEffort).to.equal('medium')
     })
 
     it('should handle stream error and write error event', async () => {
@@ -2758,6 +2866,37 @@ describe('Enterprise Search Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(201)).to.be.true
       }
+    })
+
+    it('should include reasoningEffort in the AI payload when provided', async () => {
+      const handler = createAgentConversation(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'test' }],
+      })
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+
+      let capturedBody: any
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        capturedBody = JSON.parse(this.body)
+        return Promise.resolve({
+          statusCode: 200,
+          data: { answer: 'agent response', citations: [], followUpQuestions: [] },
+        } as any)
+      })
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'test question', reasoningEffort: 'low' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(capturedBody.reasoningEffort).to.equal('low')
     })
 
     it('should call next when AI service fails', async () => {
