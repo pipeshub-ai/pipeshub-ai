@@ -699,6 +699,17 @@ li > blockquote {
   animation: activity-fade-in 200ms ease-out;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .typing-cursor {
+    animation: none;
+    opacity: 1;
+  }
+
+  .agent-activity-enter {
+    animation: none;
+  }
+}
+
 /* ========================
    Sidebar title typing animation
    Plays once when a new conversation title is revealed after generation.

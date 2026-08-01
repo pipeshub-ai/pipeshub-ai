@@ -509,8 +509,18 @@ export const ChatResponse = React.memo(function ChatResponse({
                 AgentActivityTimeline's `currentStatus` prop. Once the
                 response is complete, a multi-step transcript collapses
                 behind a one-line summary so the reader's eye lands on the
-                answer rather than the full ReAct trace on every reload. */}
-            {effectiveParts && effectiveParts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+                answer rather than the full ReAct trace on every reload.
+                Gated on `hasVisibleActivity` (not raw part count) — a
+                completed simple response's `effectiveParts` is just the one
+                `isFinal` text part, which the timeline itself filters out;
+                rendering `CollapsibleActivitySection` around that would show
+                an expand chevron over a summary ("Worked on this") that
+                reveals nothing on click. `isStreaming && multiStep` is
+                OR'd in so the timeline (and its status entry) stays
+                reachable while a multi-step run is active but hasn't
+                produced a visible part yet (e.g. right after
+                TEXT_MESSAGE_START, before the first token lands). */}
+            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               isStreaming ? (
                 <AgentActivityTimeline
                   parts={effectiveParts}

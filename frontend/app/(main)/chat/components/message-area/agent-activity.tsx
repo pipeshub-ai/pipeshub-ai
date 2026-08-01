@@ -133,6 +133,17 @@ function groupConsecutiveToolCalls(parts: MessagePart[]): RenderItem[] {
  * row, so the connected line never threads through an empty placeholder
  * (`ThinkingBlock`/`NarrationText`/`LiveNarrationText` would otherwise
  * return `null` from inside an already-committed row). */
+/** Enter/Space activates a `role="button"` element the same way a native
+ * `<button>` would — every expand/collapse header in this file is a
+ * clickable `Flex` (not a real `<button>`, for layout/style reasons), so
+ * none of them get free keyboard activation from the browser. */
+function handleToggleKeyDown(e: React.KeyboardEvent, toggle: () => void): void {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    toggle();
+  }
+}
+
 function hasRenderableContent(item: RenderItem): boolean {
   if (item.kind === 'toolGroup') return true;
   const { part } = item;
@@ -308,10 +319,9 @@ function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks 
       // Unsettled + still streaming: this text is being written right now
       // (a multi-step response's live "candidate" turn) — render it with a
       // typing cursor instead of the plain `NarrationText` treatment used
-      // for already-settled narration. Rendered even with empty content
-      // (right after `TEXT_MESSAGE_START`, before the first delta arrives)
-      // so the cursor appears immediately instead of the entry popping in
-      // once the first token lands.
+      // for already-settled narration. Blank content renders nothing —
+      // `hasRenderableContent` filters the part out of the timeline and
+      // `StatusTimelineEntry` signals progress until the first delta lands.
       const isLive = isStreaming && !part.settled && !part.isFinal;
       if (isLive) {
         return <LiveNarrationText content={part.content ?? ''} citationMaps={citationMaps} citationCallbacks={citationCallbacks} />;
@@ -441,7 +451,10 @@ export function ThinkingBlock({ content }: { content: string }) {
         align="center"
         gap="2"
         role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
         style={{
           padding: 'var(--space-2) var(--space-3)',
           cursor: 'pointer',
@@ -557,7 +570,10 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
         align="center"
         gap="2"
         role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
         style={{
           padding: 'var(--space-2) var(--space-3)',
           cursor: 'pointer',
@@ -697,7 +713,10 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
         align="center"
         gap="2"
         role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
         style={{
           padding: 'var(--space-2) var(--space-3)',
           cursor: 'pointer',
@@ -764,7 +783,10 @@ export function SubAgentGroup({ part, citationMaps, citationCallbacks }: { part:
         align="center"
         gap="2"
         role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={() => setExpanded((prev) => !prev)}
+        onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
         style={{
           padding: 'var(--space-2) var(--space-3)',
           cursor: 'pointer',
@@ -822,7 +844,10 @@ export function CollapsibleActivitySection({ parts, children }: { parts: Message
         align="center"
         gap="1"
         role="button"
+        tabIndex={0}
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed((prev) => !prev)}
+        onKeyDown={(e) => handleToggleKeyDown(e, () => setCollapsed((prev) => !prev))}
         style={{
           cursor: 'pointer',
           userSelect: 'none',
