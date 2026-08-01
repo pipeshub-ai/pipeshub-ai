@@ -409,7 +409,6 @@ _FILE_SKIP = frozenset({
     "is_dependent_node",
     "parent_node_id",
     "record_group_type",
-    # FileRecord.from_arango_record never reads File.md5Checksum back onto md5_hash.
     "md5_hash",
 })
 
@@ -470,7 +469,7 @@ class TestDriveWorkspaceEntitySync:
         )
         assert child_actual is not None
         assert str(child_actual.external_record_group_id) == str(my_drive_root_id)
-        child_actual.inherit_permissions = True
+        assert child_actual.inherit_permissions is True
         await assert_graph_edges(
             graph_provider,
             build_record_edge_expectations(child_actual, connector_id),
@@ -951,7 +950,7 @@ class TestDriveWorkspaceEntitySync:
             connector_id, move_file_id
         )
         assert typed is not None
-        typed.inherit_permissions = True
+        assert typed.inherit_permissions is True
         await assert_graph_edges(
             graph_provider,
             build_record_edge_expectations(typed, connector_id),
@@ -1210,19 +1209,6 @@ class TestDriveWorkspaceEntitySync:
                         connector_id, external_id, b_root_id
                     ), f"{label} should still BELONGS_TO B My Drive {b_root_id}"
 
-                # Product does not yet remove Shared-with-Me BELONGS_TO on unshare.
-                # Keep the assert ready; enable when fixed (or drop if intentional).
-                # assert not await graph_provider.record_belongs_to_external_group(
-                #     connector_id, external_id, a_swm_id
-                # ), (
-                #     f"{label}: SWM BELONGS_TO {a_swm_id} should be removed after unshare"
-                # )
-                logger.debug(
-                    "TC-DRIVE-008: SWM BELONGS_TO check skipped for %s (%s)",
-                    label,
-                    a_swm_id,
-                )
-
             logger.info(
                 "TC-DRIVE-008 passed: A permission removed for folder=%s file=%s",
                 share_folder_id,
@@ -1392,20 +1378,6 @@ class TestDriveWorkspaceEntitySync:
                 connector_id, folder_id, sd_id
             ), f"{folder_name} should still BELONGS_TO Shared Drive {sd_id}"
 
-            # Product does not yet remove Shared-with-Me BELONGS_TO on unshare.
-            # Keep the assert ready; enable when fixed (or drop if intentional).
-            # assert not await graph_provider.record_belongs_to_external_group(
-            #     connector_id, folder_id, b_swm_id
-            # ), (
-            #     f"{folder_name}: SWM BELONGS_TO {b_swm_id} should be removed after unshare"
-            # )
-
-            logger.info(
-                "TC-DRIVE-009 passed: SD=%s folder=%s shared→unshared with %s",
-                sd_id,
-                folder_id,
-                second_email,
-            )
         finally:
             if sd_id:
                 await delete_shared_drive(

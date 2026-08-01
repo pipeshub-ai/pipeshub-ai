@@ -243,7 +243,11 @@ def cleanup_credentials(
         finally:
             client.close()
     except Exception:  # noqa: BLE001
-        logger.warning("Failed to clean up credentials for user %s", user_id)
+        logger.warning(
+            "Failed to clean up credentials for user %s; a temporary password may remain",
+            user_id,
+            exc_info=True,
+        )
 
 
 def login_with_test_password(base_url: str, email: str, timeout: int) -> str:

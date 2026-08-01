@@ -667,7 +667,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     LET path_parts = (
                         FOR v, e, p IN 0..5 OUTBOUND g {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                            RETURN NOT_NULL(v.name, '')
+                            RETURN NOT_NULL(v.groupName, '')
                     )
                     LET filtered_parts = (FOR part IN path_parts FILTER part != '' RETURN part)
                     RETURN LENGTH(filtered_parts) > 0 ? CONCAT_SEPARATOR('/', filtered_parts) : null

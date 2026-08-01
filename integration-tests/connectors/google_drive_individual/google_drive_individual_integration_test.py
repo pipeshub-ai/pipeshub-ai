@@ -302,7 +302,7 @@ async def _wait_record_belongs_to(
         belongs = await graph_provider.record_belongs_to_external_group(
             connector_id, external_id, external_group_id
         )
-        return belongs is should_belong
+        return bool(belongs) is should_belong
 
     await wait_until_graph_condition(
         connector_id,

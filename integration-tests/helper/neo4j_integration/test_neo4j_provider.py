@@ -553,7 +553,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
             OPTIONAL MATCH path = (g)-[:BELONGS_TO*0..5]->(root:RecordGroup)
             WITH r, g, root, nodes(path) AS ns
-            WITH r, [x IN ns | coalesce(x.name, '')] AS parts
+            WITH r, [x IN ns | coalesce(x.groupName, '')] AS parts
             WITH r, reduce(s = '', p IN [p IN parts WHERE p <> ''] | 
                 CASE WHEN s = '' THEN p ELSE s + '/' + p END
             ) AS parent_path

@@ -1265,19 +1265,25 @@ class GoogleDriveTeamConnector(BaseConnector):
         file_id: str,
         user_email: str,
     ) -> bool:
-        """Return True if ``files.get`` succeeds for this user.
+        """Return True if ``files.get`` succeeds and the file is not trashed.
 
         Personal incremental sync uses ``includeItemsFromAllDrives=False``, so
         Shared Drive items that were just shared with the user often arrive as
         ``{removed: true, fileId}`` with no ``file`` body — the same shape as a
         real delete/unshare. Probe access before stripping graph permissions.
+
+        ``changes.list(includeRemoved=True)`` also reports trashing as
+        ``removed=true``, but ``files.get`` still returns 200 for a trashed file
+        the user can view — so we must check ``trashed`` explicitly.
         """
         try:
-            await drive_data_source.files_get(
+            file_meta = await drive_data_source.files_get(
                 fileId=file_id,
                 supportsAllDrives=True,
-                fields="id",
+                fields="id,trashed",
             )
+            if file_meta.get("trashed"):
+                return False
             return True
         except HttpError as http_error:
             status = http_error.resp.status if http_error.resp is not None else None
