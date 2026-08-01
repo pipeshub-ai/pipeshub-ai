@@ -85,11 +85,12 @@ async def _describe_batch(
     summary: str,
     llm
 ) -> List[str]:
-    table_data = {
-        "grid": [headers] + rows,
-    }
-    descriptions, _ = await get_rows_text(llm, table_data, summary,headers)
-    return descriptions
+    # get_rows_text skips row 0 only when headers is truthy — never prepend [].
+    grid = [list(headers), *rows] if headers else list(rows)
+    descriptions, _ = await get_rows_text(llm, {"grid": grid}, summary, list(headers))
+    if len(descriptions) < len(rows):
+        descriptions = list(descriptions) + _simple_texts(rows[len(descriptions) :], headers)
+    return descriptions[: len(rows)]
 
 def _header_context(known_headers: Optional[List[str]]) -> str:
     if known_headers is None:
@@ -180,9 +181,10 @@ async def enrich_table_grid(
         header_rows = 1 if parsed.header_row_count == 1 and len(rows) > 1 else 0
         headers = list(parsed.headers or [])
 
-    # The combined call describes every row it was sent, header row included; drop it
-    # so descriptions align with the data rows.
-    first_descriptions = list(parsed.descriptions)[header_rows:]
+    # On the unknown-header path the LLM was sent the header row and described it;
+    # drop that leading description so they align with the data rows. On the known
+    # path the header was never sent, so descriptions are already data-only.
+    first_descriptions = list(parsed.descriptions)[0 if known else header_rows :]
     data_rows = rows[header_rows:]
 
     if not describe_rows:
