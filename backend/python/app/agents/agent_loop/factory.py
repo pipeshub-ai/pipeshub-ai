@@ -254,18 +254,25 @@ class PipesHubAgentFactory:
             code_exec_enabled, context.org_id, context.conversation_id,
         )
 
-        # `skip_apps={"coding_sandbox"}` drops the legacy
-        # execute_python/execute_typescript tools once agent_loop_lib's own
-        # run_code is registered below, so the model never sees two
-        # competing code-execution tools. database_sandbox tools are always
-        # kept — agent_loop_lib has no equivalent ephemeral SQL sandbox.
+        # `coding_sandbox` (legacy execute_python/execute_typescript) and
+        # `database_sandbox` are ALWAYS skipped, regardless of
+        # `code_exec_enabled`: when enabled, agent_loop_lib's own run_code
+        # is registered below as the sole code-execution tool, so the model
+        # never sees two competing code-execution tools; when disabled,
+        # skipping `coding_sandbox` here is what actually makes the
+        # ENABLE_CODE_EXECUTION flag disable code execution — `coding_sandbox`
+        # is `.as_internal()` (see coding_sandbox.py), so it bypasses the
+        # "configured on this agent" gate in tool_loader.py and would
+        # otherwise load unconditionally even with the flag off.
+        # database_sandbox is dropped outright — its functionality is
+        # subsumed by the coding sandbox's SQL capabilities.
         #
         # When knowledge is active, `knowledgegraph` covers both search and
         # file listing — skip the legacy `retrieval` and `knowledgehub` apps so
         # the model sees a single set of knowledge tools, not two competing
         # duplicates.  Old conversation history that mentions the retired names
         # still resolves through _tool_naming.py's INTERNAL_SEARCH_TOOL_NAMES.
-        skip_apps: set[str] = {"coding_sandbox"} if code_exec_enabled else set()
+        skip_apps: set[str] = {"coding_sandbox", "database_sandbox"}
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         tool_registry = await PipesHubToolLoader().load(

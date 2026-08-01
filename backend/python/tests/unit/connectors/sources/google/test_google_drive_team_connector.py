@@ -55,6 +55,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -77,6 +78,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -154,6 +156,9 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
         dep.delete_permission_from_record = AsyncMock()
+        dep.on_records_deleted_cascade = AsyncMock(return_value={"deleted_records": []})
+        dep.get_placeholder_records = AsyncMock(return_value=[])
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()
@@ -3958,3 +3963,583 @@ class TestCreateConnector:
             )
             assert connector is not None
             MockDSEP.return_value.initialize.assert_called_once()
+
+
+# ===========================================================================
+# Tests: folder-scope filter
+# ===========================================================================
+
+
+def _make_http_error(status=404):
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    return HttpError(resp, b"error")
+
+
+class TestPassFolderFilter:
+
+    def test_no_tracked_folders_passes_everything(self):
+        meta = _make_file_metadata(file_id="f1", parents=["untracked"])
+        assert pass_folder_filter(meta, None) is True
+        assert pass_folder_filter(meta, set()) is True
+
+    def test_item_whose_own_id_is_tracked_passes(self):
+        meta = _make_file_metadata(
+            file_id="folder-a", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value, parents=["outside"]
+        )
+        assert pass_folder_filter(meta, {"folder-a"}) is True
+
+    def test_item_whose_parent_is_tracked_passes(self):
+        meta = _make_file_metadata(file_id="f1", parents=["folder-a"])
+        assert pass_folder_filter(meta, {"folder-a"}) is True
+
+    def test_item_outside_scope_is_filtered(self):
+        meta = _make_file_metadata(file_id="f1", parents=["other-folder"])
+        assert pass_folder_filter(meta, {"folder-a"}) is False
+
+    def test_folder_outside_scope_is_filtered(self):
+        """Unlike date/extension filters, folders get no free pass."""
+        meta = _make_file_metadata(
+            file_id="folder-b", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value, parents=["outside"]
+        )
+        assert pass_folder_filter(meta, {"folder-a"}) is False
+
+    def test_item_without_parents_is_filtered(self):
+        meta = _make_file_metadata(file_id="f1")
+        assert pass_folder_filter(meta, {"folder-a"}) is False
+
+
+def _make_folder(folder_id, can_list_children=True):
+    """A files.list entry as returned under DRIVE_FOLDER_EXPANSION_LIST_FIELDS."""
+    return {
+        "id": folder_id,
+        "capabilities": {"canListChildren": can_list_children},
+    }
+
+
+def _make_expanding_data_source(children_by_parent, listable=None, drive_ids=None):
+    """
+    Data source whose files_list answers an 'in parents' query from a
+    {parent_id: [child folder ids]} map, and whose files_get probe reports
+    canListChildren from `listable` (defaulting to True for anything visible).
+    `drive_ids` maps folder id → shared-drive id for corpora=drive listing.
+    """
+    listable = {} if listable is None else listable
+    drive_ids = {} if drive_ids is None else drive_ids
+
+    async def files_get(fileId, **_kwargs):
+        result = {
+            "id": fileId,
+            "capabilities": {"canListChildren": listable.get(fileId, True)},
+        }
+        if fileId in drive_ids:
+            result["driveId"] = drive_ids[fileId]
+        return result
+
+    async def files_list(**params):
+        parents = re.findall(r"'([^']+)' in parents", params["q"])
+        files = [
+            _make_folder(child_id, can_list_children=listable.get(child_id, True))
+            for parent_id in parents
+            for child_id in children_by_parent.get(parent_id, [])
+        ]
+        return {"files": files}
+
+    ds = AsyncMock()
+    ds.files_get = AsyncMock(side_effect=files_get)
+    ds.files_list = AsyncMock(side_effect=files_list)
+    return ds
+
+
+class TestExpandFolderScope:
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_no_seeds_configured(self):
+        conn = _make_connector()
+        ds = AsyncMock()
+        await conn._expand_folder_scope(ds)
+        assert conn._tracked_folder_ids == set()
+        ds.files_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_expands_seed_visible_to_this_user(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        ds = _make_expanding_data_source({"seed-1": ["child-1"]})
+
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+        assert conn._expanded_folder_ids == {"seed-1", "child-1"}
+        assert conn._blocked_folder_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_my_drive_seed_lists_without_corpora_all_drives(self):
+        """My Drive / shared-with-me seeds must use default corpora=user (880fb5c).
+        corpora=allDrives can incompleteSearch and drop restricted children."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        ds = _make_expanding_data_source({"seed-1": ["hidden"]}, listable={"hidden": False})
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "hidden"}
+        assert conn._blocked_folder_ids == {"hidden"}
+        ds.files_list.assert_called()
+        assert "corpora" not in ds.files_list.await_args.kwargs
+        assert ds.files_list.await_args.kwargs["supportsAllDrives"] is True
+        assert ds.files_list.await_args.kwargs["includeItemsFromAllDrives"] is True
+
+    @pytest.mark.asyncio
+    async def test_shared_drive_seed_lists_with_corpora_drive(self):
+        """Shared-drive seeds need corpora=drive + driveId, not corpora=allDrives."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"shared-seed"}
+        conn._tracked_folder_ids = {"shared-seed"}
+
+        ds = _make_expanding_data_source(
+            {"shared-seed": ["nested"]}, drive_ids={"shared-seed": "drive-abc"}
+        )
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"shared-seed", "nested"}
+        ds.files_list.assert_called()
+        assert ds.files_list.await_args.kwargs["corpora"] == "drive"
+        assert ds.files_list.await_args.kwargs["driveId"] == "drive-abc"
+
+    @pytest.mark.asyncio
+    async def test_seed_invisible_to_user_is_deferred_then_expanded_by_next_user(self):
+        """An unreadable folder yields an empty child list just like an empty one, so a
+        failed probe must leave the seed unexpanded rather than banking an empty subtree."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        blind_ds = AsyncMock()
+        blind_ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+        blind_ds.files_list = AsyncMock()
+
+        await conn._expand_folder_scope(blind_ds)
+
+        assert conn._tracked_folder_ids == {"seed-1"}
+        assert conn._expanded_folder_ids == set()
+        assert conn._pending_folder_expansions() == {"seed-1"}
+        blind_ds.files_list.assert_not_called()
+
+        seeing_ds = _make_expanding_data_source({"seed-1": ["child-1"]})
+        await conn._expand_folder_scope(seeing_ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+        assert conn._pending_folder_expansions() == set()
+
+    @pytest.mark.asyncio
+    async def test_already_expanded_folder_is_not_walked_again(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._expanded_folder_ids = {"seed-1", "child-1"}
+        conn._tracked_folder_ids = {"seed-1", "child-1"}
+
+        ds = AsyncMock()
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+        ds.files_get.assert_not_called()
+        ds.files_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unlistable_subfolder_blocks_instead_of_banking_empty_subtree(self):
+        """A folder the user can see but not list returns zero children; descending into
+        it would silently drop its subtree, so it is deferred to a user who can list it."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        tree = {"seed-1": ["hidden"], "hidden": ["deep-1"], "deep-1": ["deep-2"]}
+        blind_ds = _make_expanding_data_source(tree, listable={"hidden": False})
+
+        await conn._expand_folder_scope(blind_ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "hidden"}
+        assert conn._blocked_folder_ids == {"hidden"}
+        assert conn._expanded_folder_ids == {"seed-1"}
+        assert conn._pending_folder_expansions() == {"hidden"}
+
+        owner_ds = _make_expanding_data_source(tree)
+        await conn._expand_folder_scope(owner_ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "hidden", "deep-1", "deep-2"}
+        assert conn._blocked_folder_ids == set()
+        assert conn._pending_folder_expansions() == set()
+
+    @pytest.mark.asyncio
+    async def test_seed_visible_but_unlistable_is_blocked_not_expanded(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        ds = _make_expanding_data_source(
+            {"seed-1": ["child-1"]}, listable={"seed-1": False}
+        )
+
+        await conn._expand_folder_scope(ds)
+
+        assert conn._blocked_folder_ids == {"seed-1"}
+        assert conn._expanded_folder_ids == set()
+        ds.files_list.assert_not_called()
+
+
+class TestResolveFolderScopeAcrossUsers:
+
+    @pytest.mark.asyncio
+    async def test_stops_once_nothing_is_left_to_expand(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        ds = _make_expanding_data_source({"seed-1": ["child-1"]})
+        conn._build_user_drive_data_source = AsyncMock(return_value=ds)
+
+        users = [_make_app_user(f"u{i}@x.com") for i in range(3)]
+        await conn._resolve_folder_scope_across_users(users)
+
+        assert conn._build_user_drive_data_source.call_count == 1
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+
+    @pytest.mark.asyncio
+    async def test_later_user_resolves_what_the_first_could_not(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        blind_ds = AsyncMock()
+        blind_ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+        seeing_ds = _make_expanding_data_source({"seed-1": ["child-1"]})
+        conn._build_user_drive_data_source = AsyncMock(
+            side_effect=[blind_ds, seeing_ds]
+        )
+
+        users = [_make_app_user("blind@x.com"), _make_app_user("owner@x.com")]
+        await conn._resolve_folder_scope_across_users(users)
+
+        assert conn._build_user_drive_data_source.call_count == 2
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+
+    @pytest.mark.asyncio
+    async def test_user_whose_client_fails_is_skipped(self):
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        seeing_ds = _make_expanding_data_source({"seed-1": ["child-1"]})
+        conn._build_user_drive_data_source = AsyncMock(
+            side_effect=[Exception("impersonation denied"), seeing_ds]
+        )
+
+        users = [_make_app_user("broken@x.com"), _make_app_user("owner@x.com")]
+        await conn._resolve_folder_scope_across_users(users)
+
+        assert conn._tracked_folder_ids == {"seed-1", "child-1"}
+
+    @pytest.mark.asyncio
+    async def test_folder_blocked_for_every_user_warns_without_raising(self):
+        conn = _make_connector()
+        conn.logger = MagicMock()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        conn._build_user_drive_data_source = AsyncMock(
+            side_effect=lambda _user: _make_expanding_data_source(
+                {"seed-1": ["hidden"], "hidden": ["deep-1"]},
+                listable={"hidden": False},
+            )
+        )
+
+        users = [_make_app_user(f"u{i}@x.com") for i in range(2)]
+        await conn._resolve_folder_scope_across_users(users)
+
+        assert conn._build_user_drive_data_source.call_count == 2
+        assert conn._blocked_folder_ids == {"hidden"}
+        assert "deep-1" not in conn._tracked_folder_ids
+        warned = " ".join(str(call) for call in conn.logger.warning.call_args_list)
+        assert "hidden" in warned
+
+
+class TestFolderScopeReconciliation:
+
+    @pytest.mark.asyncio
+    async def test_in_scope_item_is_returned_unchanged(self):
+        conn = _make_connector()
+        meta = _make_file_metadata(file_id="f1", parents=["folder-a"])
+
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == [meta]
+
+    @pytest.mark.asyncio
+    async def test_folder_exiting_scope_deletes_subtree(self):
+        existing = _make_existing_record(
+            record_id="rec-folder", external_record_id="folder-b", parent_external_record_id="folder-a"
+        )
+        existing.mime_type = MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(
+            return_value={"deleted_records": ["rec-folder", "rec-child"]}
+        )
+
+        meta = _make_file_metadata(
+            file_id="folder-b",
+            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            parents=["moved-outside"],
+        )
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == []
+        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-folder"], conn.connector_id
+        )
+        conn.data_entities_processor.on_record_deleted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_exiting_scope_uses_single_record_delete(self):
+        existing = _make_existing_record(
+            record_id="rec-1", external_record_id="f1", parent_external_record_id="folder-a"
+        )
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="f1", parents=["moved-outside"])
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == []
+        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-1")
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_untracked_item_out_of_scope_deletes_nothing(self):
+        conn = _make_connector(existing_record=None)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="f1", parents=["never-in-scope"])
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == []
+        conn.data_entities_processor.on_record_deleted.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_item_out_of_scope_whose_record_was_also_out_of_scope_is_kept(self):
+        """The record's stored parent is outside the tracked set, so it never was in
+        scope and must not be deleted."""
+        existing = _make_existing_record(
+            record_id="rec-1", external_record_id="f1", parent_external_record_id="elsewhere"
+        )
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="f1", parents=["elsewhere"])
+        await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        conn.data_entities_processor.on_record_deleted.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_entering_scope_pulls_descendants(self):
+        """changes_list reports the moved folder but nothing inside it, so the subtree
+        has to be fetched explicitly."""
+        conn = _make_connector(existing_record=None)
+        ds = AsyncMock()
+        ds.files_list = AsyncMock(return_value={
+            "files": [
+                {"id": "child-file", "mimeType": "text/plain", "parents": ["folder-b"]},
+                {"id": "already-in-page", "mimeType": "text/plain", "parents": ["folder-b"]},
+            ]
+        })
+
+        meta = _make_file_metadata(
+            file_id="folder-b",
+            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            parents=["folder-a"],
+        )
+        items = await conn._apply_folder_scope_to_change(
+            meta, {"folder-a", "folder-b"}, {"already-in-page"}, ds
+        )
+
+        assert [i["id"] for i in items] == ["folder-b", "child-file"]
+
+    @pytest.mark.asyncio
+    async def test_seed_folder_does_not_trigger_descendant_fetch(self):
+        """A seed is in scope on every run; its children arrive through the normal
+        full/incremental path."""
+        conn = _make_connector(existing_record=None)
+        conn._folder_seed_ids = {"folder-a"}
+        ds = AsyncMock()
+
+        meta = _make_file_metadata(
+            file_id="folder-a",
+            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            parents=["root"],
+        )
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), ds)
+
+        assert items == [meta]
+        ds.files_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_folder_filter_skips_scope_checks(self):
+        conn = _make_connector(existing_record=None)
+        ds = AsyncMock()
+
+        meta = _make_file_metadata(
+            file_id="folder-b", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value, parents=["anything"]
+        )
+        items = await conn._apply_folder_scope_to_change(meta, None, set(), ds)
+
+        assert items == [meta]
+        ds.files_list.assert_not_called()
+
+
+class TestSweepPlaceholderRecords:
+
+    @pytest.mark.asyncio
+    async def test_only_sweeps_drives_this_user_synced(self):
+        conn = _make_connector()
+        mine = _make_existing_record(
+            record_id="rec-a", external_record_id="anc-a", external_record_group_id="my-drive"
+        )
+        theirs = _make_existing_record(
+            record_id="rec-b", external_record_id="anc-b", external_record_group_id="other-drive"
+        )
+        conn.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[mine, theirs]
+        )
+        conn._sweep_placeholders_for_drive = AsyncMock()
+
+        await conn._sweep_placeholder_records(
+            user_id="u1",
+            user_email="u@example.com",
+            drive_data_source=AsyncMock(),
+            personal_drive_id="my-drive",
+            synced_drive_ids={"my-drive"},
+        )
+
+        conn._sweep_placeholders_for_drive.assert_awaited_once()
+        kwargs = conn._sweep_placeholders_for_drive.await_args.kwargs
+        assert kwargs["drive_id"] == "my-drive"
+        assert kwargs["is_shared_drive"] is False
+        assert kwargs["seeds"] == [mine]
+
+    @pytest.mark.asyncio
+    async def test_shared_drive_stubs_are_swept_as_shared(self):
+        conn = _make_connector()
+        stub = _make_existing_record(
+            record_id="rec-a", external_record_id="anc-a", external_record_group_id="shared-1"
+        )
+        conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+        conn._sweep_placeholders_for_drive = AsyncMock()
+
+        await conn._sweep_placeholder_records(
+            user_id="u1",
+            user_email="u@example.com",
+            drive_data_source=AsyncMock(),
+            personal_drive_id="my-drive",
+            synced_drive_ids={"my-drive", "shared-1"},
+        )
+
+        assert conn._sweep_placeholders_for_drive.await_args.kwargs["is_shared_drive"] is True
+
+    @pytest.mark.asyncio
+    async def test_no_placeholders_is_a_noop(self):
+        conn = _make_connector()
+        conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
+        conn._sweep_placeholders_for_drive = AsyncMock()
+
+        await conn._sweep_placeholder_records(
+            user_id="u1",
+            user_email="u@example.com",
+            drive_data_source=AsyncMock(),
+            personal_drive_id="my-drive",
+            synced_drive_ids={"my-drive"},
+        )
+
+        conn._sweep_placeholders_for_drive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_backfills_ancestor_and_walks_to_its_parent(self):
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b",
+            external_record_id="B",
+            external_record_group_id="my-drive",
+            parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(return_value={
+            "id": "B",
+            "name": "Folder B",
+            "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+            "parents": ["A"],
+        })
+
+        backfilled_record = MagicMock()
+        backfilled_record.parent_external_record_id = "A"
+        backfilled_record.parent_record_type = RecordType.FILE
+
+        async def _fake_generator(*args, **kwargs):
+            assert kwargs["bypass_folder_filter"] is True
+            yield (backfilled_record, [], MagicMock())
+
+        conn._process_drive_items_generator = _fake_generator
+
+        parent_a = _make_existing_record(record_id="rec-a", external_record_id="A")
+        parent_a.is_placeholder = False  # boundary: already a real record
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_a)
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1",
+            user_email="u@example.com",
+            drive_data_source=ds,
+            drive_id="my-drive",
+            is_shared_drive=False,
+            seeds=[stub_b],
+        )
+
+        submitted = conn.data_entities_processor.on_new_records.await_args.args[0]
+        assert submitted == [(backfilled_record, [])]
+        assert backfilled_record.is_placeholder is False
+
+    @pytest.mark.asyncio
+    async def test_unreadable_ancestor_is_resubmitted_as_a_stub(self):
+        """Re-submitting restores the record-group and parent edges a full sync drops,
+        without promoting the stub to a real record."""
+        conn = _make_connector()
+        stub = _make_existing_record(
+            record_id="rec-b",
+            external_record_id="B",
+            external_record_group_id="my-drive",
+            parent_external_record_id=None,
+        )
+        stub.is_placeholder = True
+        stub.parent_record_type = None
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(403))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1",
+            user_email="u@example.com",
+            drive_data_source=ds,
+            drive_id="my-drive",
+            is_shared_drive=False,
+            seeds=[stub],
+        )
+
+        submitted = conn.data_entities_processor.on_new_records.await_args.args[0]
+        assert submitted == [(stub, [])]
+        assert stub.is_placeholder is True
