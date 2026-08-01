@@ -80,6 +80,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 SYNC_POINT_KEY = "zendesk_incremental"
 DEFAULT_INCREMENTAL_START_TIME = 1
 PAGE_SIZE = 100
+INCREMENTAL_SAFETY_LAG_SECONDS = 60
 
 
 @ConnectorBuilder("Zendesk")\
@@ -248,10 +249,15 @@ class ZendeskConnector(BaseConnector):
             self.logger,
         )
 
-        users, user_email_map = await self._fetch_users(datasource)
+        users, user_email_map, users_complete = await self._fetch_users(datasource)
         if users:
             await self.data_entities_processor.on_new_app_users(users)
         self.logger.info(f"Zendesk: synced {len(users)} users")
+        if not users_complete:
+            self.logger.error(
+                "Zendesk: user export was truncated — skipping group and organization "
+                "membership sync this run so partial data cannot revoke existing access"
+            )
 
         # Must run after on_new_app_users so the creator's USER_APP_RELATION edge is
         # written alongside the Zendesk-sourced ones, and before any record is
@@ -259,14 +265,14 @@ class ZendeskConnector(BaseConnector):
         await self._ensure_creator_access()
 
         group_record_groups, group_user_groups = await self._fetch_groups(datasource, user_email_map)
-        if group_user_groups:
+        if group_user_groups and users_complete:
             await self.data_entities_processor.on_new_user_groups(group_user_groups)
         if group_record_groups:
             await self.data_entities_processor.on_new_record_groups(group_record_groups)
         self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
         org_record_groups, org_user_groups = await self._fetch_organizations(datasource)
-        if org_user_groups:
+        if org_user_groups and users_complete:
             await self.data_entities_processor.on_new_user_groups(org_user_groups)
         if org_record_groups:
             await self.data_entities_processor.on_new_record_groups(org_record_groups)
@@ -313,17 +319,23 @@ class ZendeskConnector(BaseConnector):
             )
         return permission
 
-    async def _fetch_users(self, datasource: ZendeskDataSource) -> Tuple[List[AppUser], Dict[str, AppUser]]:
+    async def _fetch_users(
+        self, datasource: ZendeskDataSource
+    ) -> Tuple[List[AppUser], Dict[str, AppUser], bool]:
         # Group membership upserts need a complete user map, not only users changed
-        # since the record sync point.
+        # since the record sync point. The third return value reports whether the
+        # export finished — on_new_user_groups rebuilds membership from scratch, so
+        # feeding it a truncated map revokes access for everyone it missed.
         start_time = DEFAULT_INCREMENTAL_START_TIME
         users_data: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
+        complete = True
 
         while True:
             response = await datasource.incremental_users(start_time=start_time, cursor=cursor)
             if not response.success:
                 self.logger.error(f"Zendesk incremental_users failed: {response.error}")
+                complete = False
                 break
             if not response.data:
                 break
@@ -359,7 +371,7 @@ class ZendeskConnector(BaseConnector):
             self._user_id_to_data[str(user_id)] = user_data
             self._user_id_to_app_user[str(user_id)] = app_user
 
-        return users, user_email_map
+        return users, user_email_map, complete
 
     async def _fetch_groups(
         self,
@@ -542,12 +554,20 @@ class ZendeskConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(records_with_permissions)
                 synced += len(records_with_permissions)
 
-            max_end_time = max(max_end_time, int(payload.get("end_time") or start_time))
+            # The cursor export returns no end_time, so the next run resumes from
+            # the newest ticket this one saw.
+            for ticket_data in tickets:
+                updated_ms = self._parse_datetime(ticket_data.get("updated_at"))
+                if updated_ms:
+                    max_end_time = max(max_end_time, updated_ms // 1000)
+
             next_cursor = payload.get("after_cursor") or payload.get("cursor")
             if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
                 break
             cursor = next_cursor
 
+        now_seconds = get_epoch_timestamp_in_ms() // 1000
+        max_end_time = min(max_end_time, now_seconds - INCREMENTAL_SAFETY_LAG_SECONDS)
         await self.records_sync_point.update_sync_point(
             SYNC_POINT_KEY,
             {"lastEndTime": max_end_time, "updatedAt": get_epoch_timestamp_in_ms()},
@@ -681,6 +701,15 @@ class ZendeskConnector(BaseConnector):
         if not article_id:
             return None
 
+        # user_segment_id is the whole article ACL (null = everyone, otherwise a
+        # restricted audience such as agents-only), and drafts are unpublished.
+        # Both are skipped rather than published, because expressing a segment
+        # needs roles and this connector syncs none yet.
+        if article_data.get("draft"):
+            return None
+        if article_data.get("user_segment_id") is not None or article_data.get("user_segment_ids"):
+            return None
+
         created_at = self._parse_datetime(article_data.get("created_at"))
         updated_at = self._parse_datetime(article_data.get("updated_at"))
         if not self._is_allowed_by_date_filters(created_at, updated_at):
@@ -756,6 +785,7 @@ class ZendeskConnector(BaseConnector):
             sort_order="asc",
             include="users",
         )
+        comments = [c for c in comments if c.get("public", True)]
         block_groups: List[BlockGroup] = []
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
@@ -825,6 +855,8 @@ class ZendeskConnector(BaseConnector):
     ) -> List[ChildRecord]:
         if not self._is_indexing_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS.value):
             return []
+        if not comment.get("public", True):
+            return []
         attachments = comment.get("attachments") or []
         child_records: List[ChildRecord] = []
         records_with_permissions: List[Tuple[Record, List[Permission]]] = []
@@ -869,7 +901,10 @@ class ZendeskConnector(BaseConnector):
             if parent_record.external_record_group_id and parent_record.external_record_group_id.startswith("group_"):
                 parent_group_id = parent_record.external_record_group_id.removeprefix("group_")
             if existing_record is None:
-                records_with_permissions.append((file_record, self._record_permissions(parent_group_id, {})))
+                requester = {"email": getattr(parent_record, "reporter_email", None)}
+                records_with_permissions.append(
+                    (file_record, self._record_permissions(parent_group_id, requester))
+                )
             child_records.append(ChildRecord(
                 child_type=ChildType.RECORD,
                 child_id=record_id,
@@ -1063,11 +1098,11 @@ class ZendeskConnector(BaseConnector):
                 entity_type=EntityType.USER,
             ))
         if not permissions:
-            permissions.append(Permission(
-                type=PermissionType.READ,
-                entity_type=EntityType.ORG,
-                external_id=self.data_entities_processor.org_id,
-            ))
+            self.logger.warning(
+                "Zendesk: no permissions resolved for a record (group_id=%s) — "
+                "it will not be visible to anyone",
+                group_id,
+            )
         return permissions
 
     def _is_group_allowed_by_filter(self, group_id: str) -> bool:
