@@ -18,6 +18,41 @@ from app.sources.client.iclient import IClient
 logger = logging.getLogger(__name__)
 
 
+class _TimeoutTransport(xmlrpc.client.Transport):
+    """xmlrpc.client sets no socket timeout, so a hung Odoo blocks the worker
+    thread forever — asyncio.wait_for only cancels the waiter, not the thread.
+    A leaked thread keeps the shared connection and the next call then raises
+    CannotSendRequest."""
+
+    def __init__(self, timeout: int) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host: Any) -> Any:
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
+class _TimeoutSafeTransport(xmlrpc.client.SafeTransport):
+    """HTTPS counterpart of _TimeoutTransport."""
+
+    def __init__(self, timeout: int) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host: Any) -> Any:
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
+def _make_transport(url: str, timeout: int) -> xmlrpc.client.Transport:
+    if url.lower().startswith("https://"):
+        return _TimeoutSafeTransport(timeout)
+    return _TimeoutTransport(timeout)
+
+
 class OdooClient:
     """XML-RPC authentication and raw calls. xmlrpc.client is synchronous, so
     every call goes to a worker thread to keep the event loop free."""
@@ -47,7 +82,7 @@ class OdooClient:
         # through this lock instead.
         self._call_lock = asyncio.Lock()
 
-        logger.info(f"🔧 [OdooClient] Initialized for {username}@{self.url} (db={db})")
+        logger.info(f"🔧 [OdooClient] Initialized for {self.url} (db={db})")
 
     async def connect(self) -> "OdooClient":
         """Authenticate and cache the uid. A real login handshake, so bad
@@ -60,7 +95,11 @@ class OdooClient:
                 return self
 
             try:
-                common = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/common", allow_none=True)
+                common = xmlrpc.client.ServerProxy(
+                    f"{self.url}/xmlrpc/2/common",
+                    allow_none=True,
+                    transport=_make_transport(self.url, self.timeout),
+                )
                 uid = await asyncio.wait_for(
                     asyncio.to_thread(common.authenticate, self.db, self.username, self.api_key, {}),
                     timeout=self.timeout,
@@ -69,8 +108,12 @@ class OdooClient:
                     raise ConnectionError("Odoo rejected the credentials (authenticate returned no uid)")
 
                 self._uid = uid
-                self._models = xmlrpc.client.ServerProxy(f"{self.url}/xmlrpc/2/object", allow_none=True)
-                logger.info(f"🔧 [OdooClient] Authenticated as uid={uid} ({self.username}@{self.url})")
+                self._models = xmlrpc.client.ServerProxy(
+                    f"{self.url}/xmlrpc/2/object",
+                    allow_none=True,
+                    transport=_make_transport(self.url, self.timeout),
+                )
+                logger.info(f"🔧 [OdooClient] Authenticated as uid={uid} ({self.url})")
                 return self
 
             except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError, OSError, asyncio.TimeoutError) as e:
@@ -205,11 +248,14 @@ class OdooClientBuilder(IClient):
                 api_key=config.auth.api_key,
                 timeout=config.timeout,
             )
-            logger.info(f"🔧 [OdooClientBuilder] Built client for {config.auth.username}@{config.auth.url}")
+            logger.info(f"🔧 [OdooClientBuilder] Built client for {config.auth.url}")
             return cls(client=client)
 
         except ValidationError as e:
-            logger.error(f"Invalid Odoo connector configuration: {e}")
+            logger.error(
+                "Invalid Odoo connector configuration: %s",
+                e.errors(include_input=False),
+            )
             raise ValueError("Invalid Odoo connector configuration") from e
         except Exception as e:
             logger.error(f"Failed to build Odoo client from services: {e}")
