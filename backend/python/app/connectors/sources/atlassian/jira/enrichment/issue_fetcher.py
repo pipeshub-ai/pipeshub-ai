@@ -47,7 +47,11 @@ def resolve_is_cloud_api(
                 connector_name = Connectors(connector_name)
             except ValueError:
                 connector_name = None
-        if connector_name in (Connectors.JIRA, Connectors.JIRA_PERSONAL):
+        if connector_name in (
+            Connectors.JIRA,
+            Connectors.JIRA_PERSONAL,
+            Connectors.JIRA_CLOUD_PERSONAL,
+        ):
             return True
         if connector_name in (Connectors.JIRA_DATA_CENTER, Connectors.JIRA_DATA_CENTER_PERSONAL):
             return False

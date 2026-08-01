@@ -30,6 +30,8 @@ from app.models.entities import (
     AppUserGroup,
     FileRecord,
     ItemType,
+    MimeTypes,
+    OriginTypes,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -58,6 +60,8 @@ def _make_mock_deps():
         MagicMock(email="user@example.com"),
     ])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -279,6 +283,7 @@ class TestSyncAllProjectIssues:
             "updated_count": 0,
             "failed_count": 0,
             "failed_project_keys": [],
+            "full_sync_project_ids": set(),
         }
 
 
@@ -480,6 +485,7 @@ class TestBuildIssueRecords:
         existing = MagicMock()
         existing.id = "existing-id"
         existing.version = 1
+        existing.is_placeholder = False
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
         tx_store = AsyncMock()
@@ -504,6 +510,7 @@ class TestBuildIssueRecords:
         existing = MagicMock()
         existing.id = "existing-id"
         existing.version = 2
+        existing.is_placeholder = False
         existing.source_updated_at = connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000")
 
         tx_store = AsyncMock()
@@ -1286,3 +1293,257 @@ class TestFetchProjectPermissionScheme:
         # (returning [] would overwrite the ACL and hide the project from everyone).
         perms = await connector._fetch_project_permission_scheme("PROJ")
         assert perms is None
+
+
+# ===========================================================================
+# Placeholder sweep
+# ===========================================================================
+
+
+def _stub_record(external_id, project_id="p-1", parent_id=None):
+    """An unreconciled placeholder as it comes back from the graph store."""
+    return TicketRecord(
+        id=f"rec-{external_id}",
+        org_id="org-jira-1",
+        record_name=external_id,
+        record_type=RecordType.TICKET,
+        external_record_id=external_id,
+        version=0,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.JIRA,
+        connector_id="conn-jira-1",
+        mime_type=MimeTypes.UNKNOWN.value,
+        record_group_type=RecordGroupType.PROJECT,
+        external_record_group_id=project_id,
+        parent_external_record_id=parent_id,
+        parent_record_type=RecordType.TICKET if parent_id else None,
+        source_created_at=0,
+        source_updated_at=0,
+        is_placeholder=True,
+    )
+
+
+def _bulk_issue(issue_id, key, parent_id=None):
+    return {
+        "id": issue_id,
+        "key": key,
+        "fields": {
+            "summary": f"Summary {key}",
+            "status": {"name": "Open"},
+            "priority": {"name": "High"},
+            "issuetype": {"name": "Epic"},
+            "project": {"id": "p-1", "key": "PROJ"},
+            "created": "2024-01-01T00:00:00.000+0000",
+            "updated": "2024-06-15T10:00:00.000+0000",
+            "creator": {"accountId": "acc-1", "displayName": "Creator"},
+            "reporter": {"accountId": "acc-1", "displayName": "Reporter"},
+            "assignee": None,
+            "parent": {"id": parent_id} if parent_id else None,
+        },
+    }
+
+
+def _sweep_connector(bulk_pages):
+    """Connector whose bulkfetch returns one page per call."""
+    connector = _make_connector()
+    connector.site_url = "https://co.atlassian.net"
+    ds = MagicMock()
+    ds.bulk_fetch_issues = AsyncMock(
+        side_effect=[_resp(200, page) for page in bulk_pages]
+    )
+    connector._get_fresh_datasource = AsyncMock(return_value=ds)
+    return connector, ds
+
+
+class TestPlaceholderSweep:
+
+    @pytest.mark.asyncio
+    async def test_walks_ancestors_and_keeps_them_stubs(self):
+        # Epic 2001 is an unreconciled stub; its parent (Initiative 3001) is only
+        # discovered once the epic is fetched, so the sweep must run a second level.
+        connector, ds = _sweep_connector([
+            {"issues": [_bulk_issue("2001", "PROJ-2", parent_id="3001")]},
+            {"issues": [_bulk_issue("3001", "PROJ-3")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001")]
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_stub_record("3001")
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        assert ds.bulk_fetch_issues.await_count == 2
+        submitted = [
+            rec
+            for call in connector.data_entities_processor.on_new_records.await_args_list
+            for rec, _perms in call.args[0]
+        ]
+        assert [r.external_record_id for r in submitted] == ["2001", "3001"]
+        assert [r.record_name for r in submitted] == [
+            "[PROJ-2] Summary PROJ-2",
+            "[PROJ-3] Summary PROJ-3",
+        ]
+        # Out-of-scope ancestors must never become indexable.
+        assert all(r.is_placeholder for r in submitted)
+        # A namespaced revision: _process_record persists an existing record only when the
+        # revision differs, and it must never collide with the real issue's revision.
+        assert all(
+            r.external_revision_id.startswith("placeholder:") for r in submitted
+        )
+        assert submitted[0].parent_external_record_id == "3001"
+
+    @pytest.mark.asyncio
+    async def test_skips_stubs_outside_synced_projects(self):
+        # A stub in a project the filter excluded is a cross-project link stub —
+        # fetching it would pull an issue the user chose not to sync.
+        connector, ds = _sweep_connector([])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("9001", project_id="p-other")]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        ds.bulk_fetch_issues.assert_not_awaited()
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resubmits_stub_when_source_fetch_fails(self):
+        # Deleted or inaccessible ancestor: the stub is re-submitted so the structural
+        # edges a full sync deleted are restored, and it stays a stub.
+        stub = _stub_record("2001")
+        connector, _ds = _sweep_connector([
+            {"issues": [], "issueErrors": [{"issueId": "2001"}]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[stub]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        submitted = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert len(submitted) == 1
+        assert submitted[0][0] is stub
+        assert submitted[0][0].is_placeholder is True
+
+    @pytest.mark.asyncio
+    async def test_stops_at_ancestor_already_synced_in_scope(self):
+        real_parent = _stub_record("3001")
+        real_parent.is_placeholder = False
+        connector, ds = _sweep_connector([
+            {"issues": [_bulk_issue("2001", "PROJ-2", parent_id="3001")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001")]
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=real_parent
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        assert ds.bulk_fetch_issues.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_batches_frontier_into_bulk_calls(self):
+        connector, ds = _sweep_connector([{"issues": []}, {"issues": []}])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record(str(4000 + i)) for i in range(150)]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        # 150 stubs cost 2 bulkfetch calls (100 + 50), not 150 single fetches.
+        assert ds.bulk_fetch_issues.await_count == 2
+        sizes = sorted(
+            len(call.kwargs["issueIdsOrKeys"])
+            for call in ds.bulk_fetch_issues.await_args_list
+        )
+        assert sizes == [50, 100]
+
+
+    @pytest.mark.asyncio
+    async def test_stub_revision_never_collides_with_the_real_issue(self):
+        """The stub and the real record must differ, or _process_record skips the write
+        that promotes the ancestor out of placeholder state."""
+        connector, _ds = _sweep_connector([
+            {"issues": [_bulk_issue("2001", "PROJ-2")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001")]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        stub = connector.data_entities_processor.on_new_records.await_args.args[0][0][0]
+        real_revision = str(connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000"))
+        assert stub.external_revision_id != real_revision
+        assert real_revision in stub.external_revision_id
+
+    @pytest.mark.asyncio
+    async def test_skips_already_backfilled_stub_on_incremental_sync(self):
+        # A stub the sweep has already filled in carries a "placeholder:" revision. Re-running
+        # it every sync costs a bulkfetch plus an edge delete/recreate for no change.
+        stub = _stub_record("2001")
+        stub.external_revision_id = "placeholder:1718000000000"
+        connector, ds = _sweep_connector([])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[stub]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        ds.bulk_fetch_issues.assert_not_awaited()
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resweeps_backfilled_stub_when_its_project_was_full_synced(self):
+        # A full sync deletes BELONGS_TO / PARENT_CHILD, so the stub must be re-submitted
+        # even though its metadata is already current.
+        stub = _stub_record("2001")
+        stub.external_revision_id = "placeholder:1718000000000"
+        connector, ds = _sweep_connector([
+            {"issues": [_bulk_issue("2001", "PROJ-2")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[stub]
+        )
+
+        await connector._sweep_placeholder_records({"p-1"}, {"p-1"})
+
+        assert ds.bulk_fetch_issues.await_count == 1
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+
+class TestPlaceholderPromotion:
+
+    @pytest.mark.asyncio
+    async def test_placeholder_is_rebuilt_as_new_record(self):
+        # Promoting a stub is semantically "new": version 0 so it is routed through
+        # on_new_records and the indexer sees a newRecord event.
+        connector = _make_connector()
+        connector.site_url = "https://co.atlassian.net"
+        connector.indexing_filters = None
+        stub = _stub_record("1001")
+        stub.version = 4
+
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=stub
+        )
+        connector._handle_attachment_deletions_from_changelog = AsyncMock()
+        connector._fetch_issue_attachments = AsyncMock(return_value=[])
+
+        records, _ = await connector._build_issue_records(
+            [_issue_dict()], "p-1", [], AsyncMock()
+        )
+
+        assert len(records) == 1
+        assert records[0][0].version == 0
+        assert records[0][0].is_placeholder is False
+
+    @pytest.mark.asyncio
+    async def test_stream_record_refuses_placeholder(self):
+        connector = _make_connector()
+        with pytest.raises(ValueError, match="placeholder"):
+            await connector.stream_record(_stub_record("2001"))

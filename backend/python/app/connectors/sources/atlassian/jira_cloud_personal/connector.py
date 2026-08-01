@@ -97,7 +97,7 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
                         is_secret=True,
                     ),
                 ],
-                icon_path=IconPaths.connector_icon(Connectors.JIRA_PERSONAL.value),
+                icon_path=IconPaths.connector_icon(Connectors.JIRA_CLOUD_PERSONAL.value),
                 app_group="Atlassian",
                 app_description="OAuth application for accessing Jira Cloud as a single user",
                 app_categories=["IT Service Management", "Storage"],
@@ -147,7 +147,7 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
     )
     .configure(
         lambda builder: builder.with_icon(
-            IconPaths.connector_icon(Connectors.JIRA_PERSONAL.value)
+            IconPaths.connector_icon(Connectors.JIRA_CLOUD_PERSONAL.value)
         )
         .with_realtime_support(False)
         .add_documentation_link(
@@ -327,6 +327,13 @@ class JiraCloudPersonalConnector(JiraConnector):
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
+
+            # Backfill placeholder ancestors that out-of-scope sync filters left
+            # unreconciled (metadata only; they remain non-indexed stubs).
+            await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
 
             # Notify the creator when any project failed issue sync (include keys).
             failed_keys = sync_stats.get("failed_project_keys") or []

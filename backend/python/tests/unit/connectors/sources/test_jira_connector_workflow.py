@@ -63,6 +63,7 @@ def _make_mock_deps():
         MagicMock(email="active@example.com"),
     ])
     data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
 
     data_store_provider = MagicMock()
     mock_tx_store = AsyncMock()

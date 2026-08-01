@@ -1320,6 +1320,7 @@ class TicketRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),

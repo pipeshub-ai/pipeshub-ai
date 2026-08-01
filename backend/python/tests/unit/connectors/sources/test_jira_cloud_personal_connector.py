@@ -72,7 +72,7 @@ def _make_connector(
 class TestJiraCloudPersonalAppIdentity:
     def test_app_class_returns_personal_enum(self) -> None:
         app = JiraCloudPersonalApp("cid-x")
-        assert app.get_app_name() == Connectors.JIRA_PERSONAL
+        assert app.get_app_name() == Connectors.JIRA_CLOUD_PERSONAL
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
 
     def test_connector_overrides_app_and_name_after_super_init(self) -> None:
@@ -82,7 +82,7 @@ class TestJiraCloudPersonalAppIdentity:
         # construction (which now goes through self.connector_name in the
         # refactored parent) gets stamped with JIRA_PERSONAL instead of JIRA.
         assert isinstance(conn.app, JiraCloudPersonalApp)
-        assert conn.connector_name == Connectors.JIRA_PERSONAL
+        assert conn.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         # The pre-refactor regression: parent's __init__ used to hardcode
         # ``self.connector_name = Connectors.JIRA`` after super(). Confirm the
         # personal override wins.
@@ -127,7 +127,7 @@ class TestEnsureConnectorGroupPermission:
 
         assert isinstance(group, AppUserGroup)
         assert group.name == "ConnectorGroup"
-        assert group.app_name == Connectors.JIRA_PERSONAL
+        assert group.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert group.connector_id == "cid-42"
         assert group.source_user_group_id == "internal-cid-42"
         assert group.org_id == "org-personal-cloud-1"
@@ -138,7 +138,7 @@ class TestEnsureConnectorGroupPermission:
         # Member lookup in on_new_user_groups is by email; the email is the
         # only field that has to be correct.
         assert member.email == "owner@example.com"
-        assert member.app_name == Connectors.JIRA_PERSONAL
+        assert member.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert member.connector_id == "cid-42"
         assert member.is_active is True
 
@@ -228,7 +228,7 @@ class TestFetchProjectsEmitsGroupPermission:
         assert rg_alpha.external_group_id == "10001"
         assert rg_alpha.short_name == "ALPHA"
         assert rg_alpha.group_type == RecordGroupType.PROJECT
-        assert rg_alpha.connector_name == Connectors.JIRA_PERSONAL
+        assert rg_alpha.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         assert rg_alpha.web_url == "https://a.atlassian.net/ALPHA"
 
         # Workspace permission resolution must remain untouched.
@@ -657,4 +657,4 @@ class TestPersonalCreateConnector:
 
         assert isinstance(instance, JiraCloudPersonalConnector)
         assert instance.connector_id == "cid-create"
-        assert instance.connector_name == Connectors.JIRA_PERSONAL
+        assert instance.connector_name == Connectors.JIRA_CLOUD_PERSONAL
