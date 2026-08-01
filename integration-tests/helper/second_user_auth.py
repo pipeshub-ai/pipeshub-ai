@@ -379,7 +379,7 @@ def pipeshub_client_as_user(
                     timeout=timeout,
                 )
             except Exception:  # noqa: BLE001
-                logger.warning("Failed to delete OAuth app %s for %s", app_id, email)
+                logger.warning("Failed to delete OAuth app %s", app_id)
 
         cleanup_credentials(org_id, user_id, seeded=seed)
         if cleanup_user:
