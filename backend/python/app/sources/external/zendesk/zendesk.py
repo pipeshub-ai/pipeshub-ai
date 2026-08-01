@@ -9435,11 +9435,18 @@ class ZendeskDataSource:
             _headers = dict(headers or {})
             _params = {}
             _data = {}
-            url = f"{self.base_url}/incremental/tickets.json"
+            # Ponytail: generated datasource patch; regenerating zendesk.py will drop
+            # the cursor endpoint. tickets.json is the time-based export — it pages
+            # with next_page/end_time and never returns after_cursor, so a cursor
+            # loop against it silently stops after the first 1000 records.
+            url = f"{self.base_url}/incremental/tickets/cursor.json"
 
-            _params["start_time"] = start_time
+            # start_time seeds the first request only; afterwards the cursor
+            # carries the position and Zendesk rejects the pair.
             if cursor is not None:
                 _params["cursor"] = cursor
+            else:
+                _params["start_time"] = start_time
             if include is not None:
                 _params["include"] = include
 
@@ -9486,11 +9493,14 @@ class ZendeskDataSource:
             _headers = dict(headers or {})
             _params = {}
             _data = {}
-            url = f"{self.base_url}/incremental/users.json"
+            # Ponytail: generated datasource patch; see incremental_tickets — the
+            # time-based export never returns after_cursor, capping this at one page.
+            url = f"{self.base_url}/incremental/users/cursor.json"
 
-            _params["start_time"] = start_time
             if cursor is not None:
                 _params["cursor"] = cursor
+            else:
+                _params["start_time"] = start_time
 
             request = HTTPRequest(
                 method="GET",
@@ -9535,11 +9545,14 @@ class ZendeskDataSource:
             _headers = dict(headers or {})
             _params = {}
             _data = {}
-            url = f"{self.base_url}/incremental/organizations.json"
+            # Ponytail: generated datasource patch; see incremental_tickets — the
+            # time-based export never returns after_cursor, capping this at one page.
+            url = f"{self.base_url}/incremental/organizations/cursor.json"
 
-            _params["start_time"] = start_time
             if cursor is not None:
                 _params["cursor"] = cursor
+            else:
+                _params["start_time"] = start_time
 
             request = HTTPRequest(
                 method="GET",
