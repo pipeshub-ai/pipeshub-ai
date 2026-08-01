@@ -166,12 +166,13 @@ class TestFetchFullRecordTool:
 
         assert output.success is True
         assert "not available" in output.data.lower()
-        # TEMPORARY token-savings experiment: _FetchFullRecordTool.execute()
-        # shortens ids in "not_available_ids" too — the raw full id no
-        # longer appears verbatim, but the shortener's mapping resolves it.
+        # "rec-missing" was never surfaced elsewhere (no prior Record ID:
+        # occurrence), so shorten_if_known() must NOT mint a new label for
+        # it — it passes through unchanged instead of polluting the
+        # shortener's namespace with an id the model never saw.
+        assert "rec-missing" in output.data
         shortener = context.tool_state["record_id_shortener"]
-        assert "rec-missing" not in output.data
-        assert shortener.resolve(shortener.get_or_create_short_id("rec-missing")) == "rec-missing"
+        assert "rec-missing" not in shortener._full_to_short
 
     async def test_execute_skips_resolution_when_flag_off(self) -> None:
         """Flag off (default) — no shortener is created, and whatever
@@ -266,3 +267,20 @@ class TestFetchFullRecordTool:
             output = await tool.execute(record_ids=["missing"])
 
         assert output.success is False
+
+
+def test_not_available_ids_do_not_mint_new_short_labels():
+    """not_available_ids should use shorten_if_known, not get_or_create_short_id.
+    Unknown IDs must pass through unchanged — no namespace pollution."""
+    from app.utils.chat_helpers import RecordIdShortener
+
+    shortener = RecordIdShortener()
+    shortener.get_or_create_short_id("rec-known")  # R1 — already seen
+
+    # Simulate what citations.py does with not_available_ids
+    not_available = ["rec-known", "rec-never-seen"]
+    result = [shortener.shorten_if_known(rid) for rid in not_available]
+
+    assert result == ["R1", "rec-never-seen"]
+    # Confirm "rec-never-seen" was NOT added to the shortener's mappings
+    assert shortener.get_or_create_short_id("rec-new") == "R2"  # counter at 2, not 3

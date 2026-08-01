@@ -3645,6 +3645,34 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_knowledge_hub_descendants_flat(
+        self,
+        parent_id: str,
+        org_id: str,
+        user_key: str,
+        *,
+        depth: int = 3,
+        skip: int = 0,
+        limit: int = 100,
+        connector_ids: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
+        time_range: dict[str, int] | None = None,
+        sort_field: str = "sourceCreatedAtTimestamp",
+        sort_dir: str = "DESC",
+    ) -> dict[str, Any]:
+        """Flat list of all descendants of a record/folder up to *depth* levels.
+
+        Traverses ``recordRelations`` edges (PARENT_CHILD / ATTACHMENT).
+        Returns ``{"nodes": [...], "total": int, "typed_records": {id: Record}}``
+        sorted by *sort_field*. Each node includes ``level`` (1-based depth
+        from parent) and ``parentId`` (the immediate parent's record key).
+        ``typed_records`` maps record IDs to fully constructed typed ``Record``
+        instances (built from the same traversal's raw record + type doc data),
+        ready for ``to_llm_context()`` calls without additional DB queries.
+        """
+        pass
+
+    @abstractmethod
     async def get_knowledge_hub_search(
         self,
         org_id: str,

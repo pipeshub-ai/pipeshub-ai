@@ -32,31 +32,18 @@ class NodeRow(NodeRef):
     detail: str | None      # e.g. size, indexing status, relationship type
     web_url: str | None = None
     indexing_status: str | None = None
-    # Populated only when navigate() was called with depth >= 2: this row's
-    # own children, fetched and rendered inline instead of requiring a
-    # separate navigate() call. None at depth=1 (default) — distinct from an
-    # empty list, which means "fetched, but this node has no children".
-    children: list["NodeRow"] | None = None
-    # One-line condensed metadata (e.g. "Status: In Progress, Assignee: Dana")
-    # for a record row rendered at depth >= 2, where the full
-    # `Record.to_llm_context()` block would be too expensive to inline for
-    # every node in the subtree. None at depth=1, where the *current* node
-    # already gets the full block via `NavigationView.context_block`.
-    context_summary: str | None = None
-    # True when this row's own `children` list was cut short by the
-    # per-level cap at depth >= 2 (more children exist than were fetched) —
-    # lets the renderer point the model at navigate(id) for the rest.
-    children_truncated: bool = False
-    # Total number of children this row has, when known from the same
-    # provider call that fetched `children` (depth >= 2 only) — lets the
-    # renderer say "+2 more" instead of just "more exist".
-    children_total: int | None = None
     # Source-system timestamps (epoch ms), when known — e.g. when a file was
     # created/modified in Google Drive, not when PipesHub indexed it. None
     # when the underlying NodeItem/dict didn't carry one (e.g. related-record
     # rows from get_linked_records, which don't project timestamps).
     source_created_at: int | None = None
     source_modified_at: int | None = None
+    # 1-based nesting depth from the navigated parent. 1 for a plain
+    # depth=1 listing and for the top level of a depth>=2 flat-descendants
+    # listing; 2/3 for deeper rows returned by
+    # get_knowledge_hub_descendants_flat.
+    level: int = 1
+    context_summary: str | None = None
 
 
 class PaginationInfo(BaseModel):

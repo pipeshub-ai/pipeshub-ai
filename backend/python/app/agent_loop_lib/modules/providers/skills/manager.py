@@ -64,7 +64,7 @@ class SkillManagerConfig(BaseModel):
     extra_skills_dirs: list[str] = Field(default_factory=list)  # read-only roots
     auto_approve: bool = False                        # auto-approve learning-loop candidates
     write_approval: bool = False                      # require governance approval for all writes
-    learning_enabled: bool = True
+    learning_enabled: bool = False
     max_candidates: int = 50
     catalog_render_limit: int = 40                     # above this, prompt shows categories + skill_search hint
 

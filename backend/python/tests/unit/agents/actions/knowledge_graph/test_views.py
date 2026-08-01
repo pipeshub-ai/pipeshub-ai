@@ -44,6 +44,8 @@ def _row(
     detail: str | None = None,
     source_created_at: int | None = None,
     source_modified_at: int | None = None,
+    level: int = 1,
+    context_summary: str | None = None,
 ) -> NodeRow:
     return NodeRow(
         id=id,
@@ -55,6 +57,8 @@ def _row(
         detail=detail,
         source_created_at=source_created_at,
         source_modified_at=source_modified_at,
+        level=level,
+        context_summary=context_summary,
     )
 
 
@@ -233,19 +237,40 @@ class TestTruncation:
         assert "truncated" in text.lower()
 
 
-class TestNestedChildrenRendering:
-    """`navigate(depth=2|3)` populates `NodeRow.children` — see
-    `views._render_children_lines`/`_render_children_block`."""
+class TestFlatDepthRendering:
+    """`navigate(depth=2|3)` on a record/folder parent now fetches every
+    descendant in a single query and returns them as a flat list — each
+    row carries its own `level`, rendered inline as `| Level N` instead of
+    nested/indented (see `GraphNavigator.navigate`, `views._row_line`)."""
 
-    def test_depth2_children_rendered_indented_with_summary(self):
-        child = _row("sub1", "Stripe setup", "record", "SUBTASK")
-        story = _row("story1", "Payment Integration", "record", "STORY", has_children=True)
-        story.children = [child]
-        story.context_summary = "Status: Done, Assignee: Bob"
+    def test_depth2_flat_rendering_shows_level(self):
+        rows = [
+            _row("c1", "Child 1", "record", "STORY", level=1,
+                 source_created_at=1722200000000),
+            _row("gc1", "Grandchild 1", "record", "SUBTASK", level=2,
+                 source_created_at=1722100000000),
+        ]
         view = NavigationView(
-            current=_ref("epic1", "SaaS Launch Product", "record", "EPIC"),
+            current=_ref("p1", "Parent", "folder"),
             breadcrumbs=[],
-            rows=[story],
+            rows=rows,
+            related=[],
+            pagination=_pag(total=2),
+            web_url=None,
+            indexing_status=None,
+            connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "Level 2" in text
+        assert "Grandchild 1" in text
+        assert "Child 1" in text
+
+    def test_depth1_rendering_no_level_shown(self):
+        rows = [_row("c1", "Child 1", "record", "STORY")]
+        view = NavigationView(
+            current=_ref("p1", "Parent", "folder"),
+            breadcrumbs=[],
+            rows=rows,
             related=[],
             pagination=_pag(total=1),
             web_url=None,
@@ -253,48 +278,9 @@ class TestNestedChildrenRendering:
             connector=None,
         )
         text = render_navigation_view(view, page=1)
-        lines = text.splitlines()
-        top_line = next(l for l in lines if "story1" in l)
-        nested_line = next(l for l in lines if "sub1" in l)
+        assert "Level" not in text
 
-        assert "Status: Done, Assignee: Bob" in top_line
-        # Suppressed: children are inlined right below, no need for the flag
-        assert "has children" not in top_line
-        assert nested_line.startswith("  -")
-        assert "record_id=sub1" in nested_line
-
-    def test_depth3_grandchildren_rendered_two_levels_indented(self):
-        grandchild = _row("gc1", "Stripe webhook", "record", "TASK")
-        subtask = _row("sub1", "Stripe setup", "record", "SUBTASK", has_children=True)
-        subtask.children = [grandchild]
-        story = _row("story1", "Payment Integration", "record", "STORY", has_children=True)
-        story.children = [subtask]
-        view = NavigationView(
-            current=None, breadcrumbs=[], rows=[story], related=[],
-            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
-        )
-        text = render_navigation_view(view, page=1)
-        lines = text.splitlines()
-        grandchild_line = next(l for l in lines if "gc1" in l)
-        assert grandchild_line.startswith("    -")  # two levels of indent
-
-    def test_children_truncated_shows_more_hint(self):
-        child = _row("sub1", "Stripe setup", "record", "SUBTASK")
-        story = _row("story1", "Payment Integration", "record", "STORY", has_children=True)
-        story.children = [child]
-        story.children_truncated = True
-        story.children_total = 5
-        view = NavigationView(
-            current=None, breadcrumbs=[], rows=[story], related=[],
-            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
-        )
-        text = render_navigation_view(view, page=1)
-        assert "+4 more" in text
-        assert 'navigate(node_id="story1")' in text
-
-    def test_depth1_output_unaffected_when_children_is_none(self):
-        """Default (`children=None`) rows render byte-identical to before
-        this feature: no nested lines, "has children" flag intact."""
+    def test_has_children_flag_shown_regardless_of_level(self):
         row = _row("rec1", "PA-1700 Billing Epic", "record", "TICKET", has_children=True)
         view = NavigationView(
             current=_ref("rg1", "Payments Project", "recordGroup", "PROJECT"),
@@ -306,73 +292,28 @@ class TestNestedChildrenRendering:
         assert "has children" in text
 
 
-class TestNestedChildrenByteBudgetFallback:
-    """A too-large depth>=2/3 listing drops the deepest level first rather
-    than hard-truncating mid-line — see `render_navigation_view`'s
-    progressive `_render_children_block` retry."""
-
-    def test_drops_grandchildren_before_hard_truncating(self):
-        rows = []
-        # 60 grandchildren/child (not 30) — with _MAX_RESPONSE_BYTES raised
-        # to 12_000 (see navigate()'s raised default/max `limit`), the
-        # fully-nested render of 30/child now fits under budget outright,
-        # so this needs enough volume to still force the drop-grandchildren
-        # fallback tier this test exists to exercise.
-        for i in range(3):
-            grandchildren = [
-                _row(f"g{i}_{j}", f"Grandchild long name {'x' * 60} {j}", "record", "TASK")
-                for j in range(60)
-            ]
-            child = _row(f"c{i}", f"Child {i}", "record", "STORY", has_children=True)
-            child.children = grandchildren
-            row = _row(f"r{i}", f"Row {i}", "record", "EPIC", has_children=True)
-            row.children = [child]
-            rows.append(row)
-
+class TestContextSummaryRendering:
+    def test_context_summary_rendered_when_present(self):
+        row = _row("t1", "Fix login", "record", "TICKET", level=2,
+                    context_summary="Status: IN_PROGRESS, Priority: HIGH, Assignee: Dana")
         view = NavigationView(
-            current=None, breadcrumbs=[], rows=rows, related=[],
-            pagination=_pag(total=3), web_url=None, indexing_status=None, connector=None,
+            current=_ref("p1", "Parent", "folder"),
+            breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector="JIRA",
         )
         text = render_navigation_view(view, page=1)
+        assert "Status: IN_PROGRESS, Priority: HIGH, Assignee: Dana" in text
 
-        assert len(text.encode("utf-8")) <= 12_300
-        assert "omitted to fit response size" in text
-        # Level-2 children still shown...
-        assert "c0" in text
-        # ...but grandchildren dropped, not silently truncated mid-line
-        assert "g0_0" not in text
-        assert "truncated" not in text.lower()
-
-    def test_collapses_top_level_when_even_level2_is_too_big(self):
-        """When even the level-2-only render doesn't fit, fall back all
-        the way to a flat listing (children not rendered at all, `has
-        children` flag forced back on)."""
-        rows = []
-        for i in range(80):
-            child = _row(
-                f"c{i}", f"Child with a fairly long name {'x' * 40} {i}", "record", "STORY",
-            )
-            row = _row(
-                f"r{i}", f"Row with a fairly long name too {'x' * 40} {i}", "record", "EPIC",
-                has_children=True,
-            )
-            row.children = [child]
-            rows.append(row)
-
+    def test_no_context_summary_when_none(self):
+        row = _row("f1", "Readme.md", "record", "FILE", level=2)
         view = NavigationView(
-            current=None, breadcrumbs=[], rows=rows, related=[],
-            pagination=_pag(total=80), web_url=None, indexing_status=None, connector=None,
+            current=_ref("p1", "Parent", "folder"),
+            breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
         )
         text = render_navigation_view(view, page=1)
-
-        # Top rows still identifiable and correctly flagged as containers...
-        assert "record_id=r0" in text
-        assert "has children" in text
-        # ...but nested rendering fell all the way back to a flat listing:
-        # no child rows inlined, and no grandchild-omission note (nothing
-        # was rendered to omit in the first place).
-        assert "record_id=c0" not in text
-        assert "omitted to fit response size" not in text
+        assert "Status:" not in text
+        assert "Priority:" not in text
 
 
 class TestRowTimestampRendering:

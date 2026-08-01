@@ -54,6 +54,16 @@ def _no_dynamic_tools() -> None:
     to one place if `_build_dynamic_tools()`'s defaults ever change."""
 
 
+def test_skill_manager_config_learning_disabled_by_default():
+    from app.agent_loop_lib.modules.providers.skills.manager import SkillManagerConfig
+
+    config = SkillManagerConfig()
+    assert config.learning_enabled is False, (
+        "SkillManagerConfig must default learning_enabled=False to match "
+        "manager_factory.py's _env_bool('PIPESHUB_SKILLS_LEARNING_ENABLED', False)"
+    )
+
+
 class TestCreate:
     async def test_returns_agent_and_runtime(self) -> None:
         context = make_context(llm=FakeChatModel())

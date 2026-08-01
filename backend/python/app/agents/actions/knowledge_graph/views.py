@@ -7,12 +7,11 @@ Design goals:
 - Token-efficient: no repetition, caps on every collection.
 - Small-model safe: one output grammar, Record ID always labelled.
 
-`navigate(depth=2|3)` inlines 1-2 extra levels of children under each row
-(see `NodeRow.children` and `navigator.GraphNavigator._expand_depth`) —
-rendered here as an indented nested listing via `_render_children_lines`,
-with condensed per-row metadata (`NodeRow.context_summary`) so the model
-sees a hierarchy overview (e.g. an epic, its stories, and their statuses)
-without a separate navigate() call per level.
+`navigate(depth=2|3)` fetches all descendants up to `depth` levels in a
+single query (`GraphNavigator`/`get_knowledge_hub_descendants_flat`) and
+returns them as a flat list sorted by source creation date, each row
+carrying its own `level`. Rendered here as a flat listing with a
+`| Level N` marker for rows below the top level — no nesting/indentation.
 """
 
 from __future__ import annotations
@@ -77,106 +76,28 @@ def _row_line(
     row: NodeRow,
     shortener: "RecordIdShortener | None" = None,
     indent: int = 0,
-    *,
-    collapse_children: bool = False,
 ) -> str:
-    """Render one listing row, indented `indent` levels for nested
-    depth>=2 children (see `_render_children_lines`).
+    """Render one listing row.
 
-    `context_summary` (condensed status/assignee/priority/... — see
-    `navigator._attach_context_summaries`) is only ever set at depth >= 2;
-    at depth=1 rows never carry it and this is a no-op, same output as
-    before this parameter existed.
-
-    `collapse_children`: the byte-budget fallback in
-    `render_navigation_view` re-renders a too-large depth>=2 listing
-    without descending into any row's `children` at all — but the row
-    itself still HAS children, so the "has children" flag must be forced
-    back on (normally suppressed once `row.children` is populated) or the
-    fallback would silently claim a container is a leaf.
+    A depth>=2 flat-descendants listing (see `GraphNavigator.navigate`)
+    carries `row.level` > 1 for rows below the immediate parent — shown
+    inline as `| Level N` since rows are no longer nested/indented.
     """
     id_label = row.display_id_label.lower().replace(" ", "_")  # record_id or node_id
     parts = [f"[{row.node_type}/{row.sub_type or '?'}]", _trunc(row.name)]
     parts.append(f"| {id_label}={_short(row.id, shortener)}")
+    if row.level > 1:
+        parts.append(f"| Level {row.level}")
     created_label = _compact_date(row.source_created_at)
     if created_label:
         parts.append(f"| created: {created_label}")
-    if row.context_summary:
-        parts.append(f"| {row.context_summary}")
     if row.detail:
         parts.append(f"| {row.detail}")
-    # Suppressed once children are actually inlined (row.children is not
-    # None) — the flag would otherwise repeat information the nested
-    # listing right below the row already shows. Forced back on when the
-    # caller collapsed rendering for the byte-budget fallback.
-    if row.has_children and (row.children is None or collapse_children):
+    if row.context_summary:
+        parts.append(f"| {row.context_summary}")
+    if row.has_children:
         parts.append("| has children")
     return "  " * indent + "- " + " ".join(parts)
-
-
-def _render_children_lines(
-    row: NodeRow,
-    shortener: "RecordIdShortener | None" = None,
-    indent: int = 1,
-    max_nested_depth: int | None = None,
-) -> list[str]:
-    """Recursively render `row`'s own nested children (populated by
-    depth >= 2 — see `navigator.GraphNavigator._expand_depth`), indented
-    one level under their parent. A `children_truncated` row (more
-    children exist than the depth-expansion's per-parent cap fetched)
-    gets a one-line "+N more" hint pointing back at a plain navigate()
-    call for the rest, instead of silently dropping them.
-
-    `max_nested_depth` caps how many further nested levels get rendered
-    below `row.children` itself (`None` = unlimited, `0` = render
-    `row.children` but not their own grandchildren) — used by
-    `render_navigation_view`'s byte-budget fallback to drop the deepest
-    level of a too-large listing first, rather than hard-truncating mid
-    line. A level dropped this way still says so explicitly rather than
-    disappearing silently.
-    """
-    if row.children is None:
-        return []
-    lines: list[str] = []
-    render_deeper = max_nested_depth is None or max_nested_depth > 0
-    next_max = None if max_nested_depth is None else max_nested_depth - 1
-    for child in row.children:
-        lines.append(_row_line(child, shortener, indent=indent, collapse_children=not render_deeper))
-        if render_deeper:
-            lines.extend(_render_children_lines(child, shortener, indent=indent + 1, max_nested_depth=next_max))
-        elif child.children:
-            lines.append(
-                "  " * (indent + 1)
-                + "(nested children omitted to fit response size — "
-                f'navigate(node_id="{_short(child.id, shortener)}", depth=2) to see them)'
-            )
-    if row.children_truncated:
-        remaining = max((row.children_total or 0) - len(row.children), 0)
-        more = f"+{remaining} more" if remaining else "more"
-        lines.append(
-            "  " * indent
-            + f'{more} children (navigate(node_id="{_short(row.id, shortener)}") for full list)'
-        )
-    return lines
-
-
-def _render_children_block(
-    rows: list[NodeRow],
-    shortener: "RecordIdShortener | None" = None,
-    max_nested_depth: int | None = None,
-) -> list[str]:
-    """Every top-level row plus its nested children, at a given rendering
-    depth (see `_render_children_lines`). `max_nested_depth=-1` collapses
-    ALL nesting — including `rows` themselves showing `| has children`
-    instead of their inlined listing — the last fallback tier before the
-    unconditional hard byte-truncation in `render_navigation_view`."""
-    collapse_top = max_nested_depth == -1
-    lines: list[str] = []
-    for row in rows:
-        lines.append(_row_line(row, shortener, collapse_children=collapse_top))
-        if not collapse_top:
-            lines.extend(_render_children_lines(row, shortener, indent=1, max_nested_depth=max_nested_depth))
-    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -253,22 +174,8 @@ def render_navigation_view(
             lines.append(f"\nChildren {shown_start}-{shown_end}{total_label}:")
         else:
             lines.append("\nChildren:")
-        # Depth>=2 listings can carry a lot more data than a flat one —
-        # try full nesting first, then drop the deepest level, then all
-        # nesting, picking the first tier that fits the byte budget
-        # alongside everything rendered so far (header/breadcrumbs/etc).
-        # Only reached when depth>=2 actually populated `.children`;
-        # depth=1 output is identical to before (single, unconditional
-        # `_render_children_block(rows, max_nested_depth=None)` pass).
-        budget_remaining = _MAX_RESPONSE_BYTES - len("\n".join(lines).encode("utf-8"))
-        children_lines = _render_children_block(view.rows, shortener, max_nested_depth=None)
-        if len("\n".join(children_lines).encode("utf-8")) > budget_remaining:
-            for candidate_depth in (0, -1):
-                candidate_lines = _render_children_block(view.rows, shortener, max_nested_depth=candidate_depth)
-                if len("\n".join(candidate_lines).encode("utf-8")) <= budget_remaining or candidate_depth == -1:
-                    children_lines = candidate_lines
-                    break
-        lines.extend(children_lines)
+        for row in view.rows:
+            lines.append(_row_line(row, shortener))
     elif view.current:
         lines.append("\n(no children)")
     else:

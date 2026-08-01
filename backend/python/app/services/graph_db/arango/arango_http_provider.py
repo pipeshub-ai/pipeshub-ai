@@ -13605,6 +13605,167 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
         return result[0] if result else {"nodes": [], "total": 0}
 
+    async def get_knowledge_hub_descendants_flat(
+        self,
+        parent_id: str,
+        org_id: str,
+        user_key: str,
+        *,
+        depth: int = 3,
+        skip: int = 0,
+        limit: int = 100,
+        connector_ids: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
+        time_range: dict[str, int] | None = None,
+        sort_field: str = "sourceCreatedAtTimestamp",
+        sort_dir: str = "DESC",
+    ) -> dict[str, Any]:
+        """Flat list of all descendants of a record/folder up to *depth* levels.
+
+        Single BFS traversal over ``recordRelations`` (PARENT_CHILD / ATTACHMENT)
+        replaces the N+1 fan-out of per-node ``get_knowledge_hub_children`` calls.
+        """
+        start = time.perf_counter()
+        parent_doc_id = f"records/{parent_id}"
+        safe_depth = max(1, min(int(depth), 3))
+        permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+        projected_created = self._knowledge_hub_record_projected_created_at_expr("record")
+        projected_updated = self._knowledge_hub_record_projected_updated_at_expr("record")
+
+        # AQL SORT direction is a grammar keyword (ASC/DESC), not an expression —
+        # it cannot be bound via @sort_dir, so it must be validated and interpolated.
+        sort_direction = "ASC" if str(sort_dir).upper() == "ASC" else "DESC"
+
+        bind_vars: dict[str, Any] = {
+            "parent_doc_id": parent_doc_id,
+            "org_id": org_id,
+            "user_key": user_key,
+            "depth": safe_depth,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+        }
+
+        time_filter_clause = self._append_source_created_time_filters("", time_range, bind_vars)
+
+        connector_filter = ""
+        if connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            connector_filter = "FILTER record.connectorId IN @connector_ids"
+
+        rg_filter = ""
+        if record_group_ids:
+            bind_vars["record_group_ids"] = record_group_ids
+            rg_filter = "FILTER record.externalGroupId IN @record_group_ids"
+
+        query = f"""
+        LET parent_record = DOCUMENT(@parent_doc_id)
+        FILTER parent_record != null
+
+        LET u = DOCUMENT("users", @user_key)
+        FILTER u != null
+
+        LET raw_descendants = (
+            FOR record, e, p IN 1..@depth OUTBOUND parent_record {CollectionNames.RECORD_RELATIONS.value}
+                OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                FILTER e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                FILTER record.isDeleted != true
+                FILTER record.orgId == @org_id
+                {connector_filter}
+                {rg_filter}
+                {time_filter_clause}
+
+                {permission_role_aql}
+                LET normalized_role = IS_ARRAY(permission_role)
+                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                    : permission_role
+                FILTER normalized_role != null AND normalized_role != ""
+
+                LET file_info = FIRST(
+                    FOR fe IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER fe._from == record._id
+                        LET f = DOCUMENT(fe._to)
+                        RETURN f
+                )
+                LET is_folder = file_info != null AND file_info.isFile == false
+
+                LET has_children = (LENGTH(
+                    FOR ce IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER ce._from == record._id
+                        AND ce.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        LET c = DOCUMENT(ce._to)
+                        FILTER c != null AND c.isDeleted != true
+                        LIMIT 1
+                        RETURN 1
+                ) > 0)
+
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+
+                RETURN {{
+                    id: record._key,
+                    name: record.recordName,
+                    nodeType: is_folder ? "folder" : "record",
+                    level: LENGTH(p.edges),
+                    parentId: p.vertices[LENGTH(p.vertices) - 2]._key,
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                    connector: record.connectorName,
+                    connectorId: record.connectorName != "KB" ? record.connectorId : null,
+                    externalGroupId: record.externalGroupId,
+                    recordType: record.recordType,
+                    recordGroupType: null,
+                    indexingStatus: record.indexingStatus,
+                    reason: record.reason,
+                    createdAt: {projected_created},
+                    updatedAt: {projected_updated},
+                    sourceCreatedAt: record.sourceCreatedAtTimestamp,
+                    sourceModifiedAt: record.sourceLastModifiedTimestamp,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info != null ? file_info.fileSizeInBytes : null),
+                    mimeType: record.mimeType,
+                    extension: file_info != null ? file_info.extension : null,
+                    webUrl: record.webUrl,
+                    hasChildren: has_children,
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false,
+                    status: record.status,
+                    priority: record.priority,
+                    assignee: record.assignee,
+                    labels: record.labels,
+                    location: record.location,
+                    _raw_record: record,
+                    _type_doc: file_info
+                }}
+        )
+
+        LET sorted = (FOR d IN raw_descendants SORT d[@sort_field] {sort_direction} RETURN d)
+        LET total_count = LENGTH(sorted)
+        LET paginated = SLICE(sorted, @skip, @limit)
+
+        RETURN {{ nodes: paginated, total: total_count }}
+        """
+
+        results = await self.execute_query(query, bind_vars=bind_vars)
+        elapsed = time.perf_counter() - start
+        self.logger.debug(f"get_knowledge_hub_descendants_flat finished in {elapsed * 1000} ms")
+        if not results or len(results) == 0:
+            return {"nodes": [], "total": 0, "typed_records": {}}
+
+        result = results[0]
+        nodes = result.get("nodes", [])
+        typed_records: dict[str, Any] = {}
+        for node in nodes:
+            raw_record = node.pop("_raw_record", None)
+            type_doc = node.pop("_type_doc", None)
+            if raw_record:
+                try:
+                    typed = self._create_typed_record_from_arango(raw_record, type_doc)
+                    typed_records[node["id"]] = typed
+                except (ValueError, Exception):
+                    pass
+        return {"nodes": nodes, "total": result.get("total", 0), "typed_records": typed_records}
+
     # Max depth for INHERIT_PERMISSIONS traversals in knowledge hub search.
     _KNOWLEDGE_HUB_INHERIT_MAX_DEPTH = 20
 

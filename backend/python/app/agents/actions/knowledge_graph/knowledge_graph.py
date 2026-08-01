@@ -143,26 +143,17 @@ def _normalize_identifiers(raw: Any) -> list[str]:
 
 
 def _flatten_row_ids(rows: Any) -> list[str]:
-    """Every row id in `rows` plus, recursively, every id in their own
-    `children` (populated only by depth >= 2 — see `navigator.py`'s
-    `_expand_depth`). Depth=1 rows never carry `children`, so this is
-    equivalent to a flat `[row.id for row in rows]` for existing callers."""
-    ids: list[str] = []
-    for row in rows:
-        if row.is_record and row.id:
-            ids.append(row.id)
-        if row.children:
-            ids.extend(_flatten_row_ids(row.children))
-    return ids
+    """Every record/folder id in `rows`."""
+    return [row.id for row in rows if row.is_record and row.id]
 
 
 def _record_ids_in_view(view: NavigationView) -> list[str]:
     """Every fetchable Record ID this navigation showed the model.
 
     Only record/folder nodes — an app or recordGroup node id cannot be read
-    by `knowledgegraph__fetch_record`. Includes nested depth>=2 children so
-    a hierarchy-overview call makes every id it displayed fetchable, not
-    just the top-level rows.
+    by `knowledgegraph__fetch_record`. `view.rows` already includes every
+    descendant a depth>=2 call surfaced (flat, not nested), so no separate
+    recursion is needed here.
     """
     ids = _flatten_row_ids((*view.rows, *view.related))
     if view.current and view.current.is_record and view.current.id:
@@ -256,14 +247,15 @@ class KnowledgeGraph:
             "priority and dates — so a question about one record is often answered by this call alone. "
             "For its content, pass the Record ID to knowledgegraph__fetch_record.\n\n"
             "Pass depth=2 or depth=3 to see multiple levels in ONE call instead of navigating one level "
-            "at a time — e.g. an epic's stories AND their subtasks, each with condensed status/assignee. "
+            "at a time — e.g. an epic's stories AND their subtasks. Results are returned as a flat list "
+            "sorted by creation date (latest first), with each row showing its level in the hierarchy. "
             "Use this whenever the question needs an overview of a hierarchy rather than a single node "
             "(status of a whole initiative, what a project contains end to end).\n\n"
             "Output always shows:\n"
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
-            "  Children listing with record_id= or node_id= for each item, indented one level per "
-            "extra depth requested, with a created: date when known\n"
+            "  Children listing with record_id= or node_id= for each item, with a created: date "
+            "when known\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
@@ -309,12 +301,11 @@ class KnowledgeGraph:
                 type=ParameterType.INTEGER,
                 description=(
                     "How many levels of children to return in this one call (1-3, default 1). "
-                    "depth=2 also fetches each child's own children (e.g. an epic's stories AND "
-                    "their subtasks); depth=3 goes one level deeper. Each deeper level shows fewer "
-                    "items per parent and condensed metadata (status/assignee/priority) instead of "
-                    "full detail, to stay within the response size limit. Only applies on page=1. "
-                    "Use depth=2/3 for hierarchy-overview questions instead of calling navigate() "
-                    "once per level."
+                    "depth=2 also fetches each child's own children; depth=3 goes one level "
+                    "deeper. Results are returned as a flat list sorted by creation date "
+                    "(latest first), with each row showing its level. Only applies on page=1 "
+                    "and for record/folder parents. Use depth=2/3 for hierarchy-overview "
+                    "questions instead of calling navigate() once per level."
                 ),
                 required=False,
                 default=1,

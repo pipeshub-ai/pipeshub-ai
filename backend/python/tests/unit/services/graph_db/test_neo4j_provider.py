@@ -4214,3 +4214,220 @@ class TestGetAppPermissionRoleCypher:
         # Check it's in the CASE priority chain
         assert 'WHEN team_kb_role IS NOT NULL THEN team_kb_role' in cypher
 
+
+class TestBuildTimeRangeConditions:
+    """Test Neo4jProvider._build_time_range_conditions static method."""
+
+    @staticmethod
+    def _call(time_range, parameters=None, record_var="r"):
+        if parameters is None:
+            parameters = {}
+        clause = Neo4jProvider._build_time_range_conditions(time_range, parameters, record_var)
+        return clause, parameters
+
+    def test_returns_empty_when_no_time_range(self):
+        clause, params = self._call(None)
+        assert clause == ""
+        assert params == {}
+
+    def test_returns_empty_when_empty_dict(self):
+        clause, params = self._call({})
+        assert clause == ""
+        assert params == {}
+
+    def test_source_created_after(self):
+        clause, params = self._call({"source_created_after_ms": 1000})
+        assert "r.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs" in clause
+        assert params["sourceCreatedAfterMs"] == 1000
+
+    def test_source_created_before(self):
+        clause, params = self._call({"source_created_before_ms": 2000})
+        assert "r.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs" in clause
+        assert params["sourceCreatedBeforeMs"] == 2000
+
+    def test_source_updated_after(self):
+        clause, params = self._call({"source_updated_after_ms": 3000})
+        assert "r.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs" in clause
+        assert params["sourceUpdatedAfterMs"] == 3000
+
+    def test_source_updated_before(self):
+        clause, params = self._call({"source_updated_before_ms": 4000})
+        assert "r.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs" in clause
+        assert params["sourceUpdatedBeforeMs"] == 4000
+
+    def test_multiple_bounds_combined(self):
+        clause, params = self._call({
+            "source_created_after_ms": 1000,
+            "source_updated_before_ms": 5000,
+        })
+        assert "r.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs" in clause
+        assert "r.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs" in clause
+        assert params["sourceCreatedAfterMs"] == 1000
+        assert params["sourceUpdatedBeforeMs"] == 5000
+
+    def test_all_four_keys(self):
+        params = {}
+        tr = {
+            "source_created_after_ms": 100,
+            "source_created_before_ms": 200,
+            "source_updated_after_ms": 300,
+            "source_updated_before_ms": 400,
+        }
+        clause, params = self._call(tr, params)
+        assert params["sourceCreatedAfterMs"] == 100
+        assert params["sourceCreatedBeforeMs"] == 200
+        assert params["sourceUpdatedAfterMs"] == 300
+        assert params["sourceUpdatedBeforeMs"] == 400
+        lines = [line.strip() for line in clause.strip().split("\n")]
+        assert len(lines) == 4
+
+    def test_custom_record_var(self):
+        clause, params = self._call({"source_created_after_ms": 1000}, record_var="record")
+        assert "record.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs" in clause
+
+    def test_clause_starts_with_and(self):
+        clause, _ = self._call({"source_created_after_ms": 1000})
+        assert clause.lstrip().startswith("AND ")
+
+    def test_each_condition_starts_with_and(self):
+        clause, _ = self._call({
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+        })
+        for line in clause.strip().split("\n"):
+            assert line.strip().startswith("AND "), f"Condition must start with AND: {line}"
+
+    def test_mutates_parameters_in_place(self):
+        """Caller-supplied parameters dict must be updated in place, not replaced."""
+        params = {"userId": "u1"}
+        self._call({"source_created_after_ms": 1000}, params)
+        assert params["userId"] == "u1"
+        assert params["sourceCreatedAfterMs"] == 1000
+
+
+class TestTimeRangeThreading:
+    """Verify time_range is threaded through get_accessible_virtual_record_ids without warning."""
+
+    @pytest.mark.asyncio
+    async def test_time_range_no_longer_logs_warning(self, neo4j_provider: Neo4jProvider):
+        """After implementation, time_range should be applied, not warned about."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1", "userId": "u1"})
+        neo4j_provider.get_user_apps = AsyncMock(return_value=[])
+        neo4j_provider.logger = MagicMock()
+
+        await neo4j_provider.get_accessible_virtual_record_ids(
+            user_id="u1",
+            org_id="org1",
+            time_range={"source_created_after_ms": 1000},
+        )
+
+        for call in neo4j_provider.logger.warning.call_args_list:
+            assert "not yet supported" not in str(call), (
+                "Warning about unsupported time_range should have been removed"
+            )
+
+    @pytest.mark.asyncio
+    async def test_time_range_passed_to_kb_and_connector_dispatch(self, neo4j_provider: Neo4jProvider):
+        """No filters scenario (Scenario 3) must forward time_range to both dispatch helpers."""
+        neo4j_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "u1", "userId": "u1"}
+        )
+        neo4j_provider.get_user_apps = AsyncMock(
+            return_value=[{"id": "conn-1", "type": "DRIVE"}]
+        )
+        neo4j_provider.logger = MagicMock()
+
+        time_range = {"source_created_after_ms": 1000}
+
+        with patch.object(
+            neo4j_provider, "_get_virtual_ids_for_connector", new_callable=AsyncMock, return_value={}
+        ) as mock_conn, patch.object(
+            neo4j_provider, "_get_kb_virtual_ids", new_callable=AsyncMock, return_value={}
+        ) as mock_kb:
+            await neo4j_provider.get_accessible_virtual_record_ids(
+                user_id="u1", org_id="org1", time_range=time_range,
+            )
+
+        mock_conn.assert_called_once()
+        assert mock_conn.call_args.kwargs.get("time_range") == time_range
+        mock_kb.assert_called_once()
+        assert mock_kb.call_args.kwargs.get("time_range") == time_range
+
+
+class TestGetKnowledgeHubDescendantsFlatNeo4j:
+    """Verify Neo4j descendants query is executed with correct parameters."""
+
+    @pytest.mark.asyncio
+    async def test_executes_cypher_with_depth(self, neo4j_provider: Neo4jProvider):
+        """Verify Cypher query is called with correct depth and returns nodes/total."""
+        node = {
+            "id": "c1", "name": "Child", "level": 1, "parentId": "p1",
+            "nodeType": "record", "hasChildren": False,
+            "sourceCreatedAt": 1000, "sourceModifiedAt": 2000,
+        }
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"node": node}],
+                [{"total": 1}],
+            ]
+        )
+
+        result = await neo4j_provider.get_knowledge_hub_descendants_flat(
+            parent_id="p1", org_id="org-1", user_key="u1", depth=2,
+        )
+
+        assert result["nodes"] == [node]
+        assert result["total"] == 1
+        assert neo4j_provider.client.execute_query.await_count == 2
+        first_query = neo4j_provider.client.execute_query.await_args_list[0].args[0]
+        assert "*1..2" in first_query
+
+    @pytest.mark.asyncio
+    async def test_time_range_included_in_cypher(self, neo4j_provider: Neo4jProvider):
+        """Verify time_range conditions appear in the query parameters."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.get_knowledge_hub_descendants_flat(
+            parent_id="p1", org_id="org-1", user_key="u1",
+            time_range={"source_created_after_ms": 5000},
+        )
+
+        call_args = neo4j_provider.client.execute_query.await_args_list[0]
+        params = call_args.kwargs.get("parameters")
+        assert params.get("sourceCreatedAfterMs") == 5000
+
+    @pytest.mark.asyncio
+    async def test_depth_is_clamped_to_upper_bound(self, neo4j_provider: Neo4jProvider):
+        """Depth is interpolated into the Cypher range literal, so it must be clamped."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.get_knowledge_hub_descendants_flat(
+            parent_id="p1", org_id="org-1", user_key="u1", depth=999,
+        )
+
+        first_query = neo4j_provider.client.execute_query.await_args_list[0].args[0]
+        assert "*1..3" in first_query
+
+    @pytest.mark.asyncio
+    async def test_invalid_sort_field_falls_back_to_default(self, neo4j_provider: Neo4jProvider):
+        """Unknown sort_field values must not be interpolated verbatim into ORDER BY."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.get_knowledge_hub_descendants_flat(
+            parent_id="p1", org_id="org-1", user_key="u1",
+            sort_field="record.id) // DROP",
+        )
+
+        first_query = neo4j_provider.client.execute_query.await_args_list[0].args[0]
+        assert "ORDER BY node.sourceCreatedAtTimestamp" in first_query
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_exception(self, neo4j_provider: Neo4jProvider):
+        """Query failures must degrade gracefully instead of propagating."""
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
+
+        result = await neo4j_provider.get_knowledge_hub_descendants_flat(
+            parent_id="p1", org_id="org-1", user_key="u1",
+        )
+
+        assert result == {"nodes": [], "total": 0, "typed_records": {}}

@@ -293,6 +293,10 @@ class RecordIdShortener:
         self._short_to_full[short] = full_id
         return short
 
+    def shorten_if_known(self, full_id: str) -> str:
+        """Return the short label if already mapped, otherwise the full ID unchanged."""
+        return self._full_to_short.get(full_id, full_id)
+
     def resolve(self, short_or_full_id: str) -> str:
         """Full id for a known short id; unrecognized input (a full id the
         model copied verbatim from a path that predates shortening) passes

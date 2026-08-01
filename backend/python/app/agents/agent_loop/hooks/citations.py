@@ -339,7 +339,7 @@ class _FetchFullRecordTool(Tool):
             if not_available:
                 if record_id_shortener is not None:
                     not_available = [
-                        record_id_shortener.get_or_create_short_id(rid) for rid in not_available
+                        record_id_shortener.shorten_if_known(rid) for rid in not_available
                     ]
                 ids_str = ", ".join(f"'{rid}'" for rid in not_available)
                 text += f"\n\nNote: The following record(s) are not available: {ids_str}"

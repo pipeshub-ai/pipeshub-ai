@@ -4181,12 +4181,43 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user app ids: {str(e)}")
             raise
 
+    @staticmethod
+    def _build_time_range_conditions(
+        time_range: dict[str, int] | None,
+        parameters: dict,
+        record_var: str = "r",
+    ) -> str:
+        """Build Cypher time-range conditions for source creation/modification timestamps.
+
+        Mirrors ArangoHttpProvider._append_source_created_time_filters(), but emits
+        Cypher `AND <record_var>.prop >= $param` clauses instead of AQL `FILTER`.
+        Mutates `parameters` in place with the bind values and returns the clause
+        string (newline-joined `AND ...` conditions, or "" when no bounds apply).
+        """
+        if not time_range:
+            return ""
+        conditions: list[str] = []
+        if "source_created_after_ms" in time_range:
+            parameters["sourceCreatedAfterMs"] = time_range["source_created_after_ms"]
+            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs")
+        if "source_created_before_ms" in time_range:
+            parameters["sourceCreatedBeforeMs"] = time_range["source_created_before_ms"]
+            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs")
+        if "source_updated_after_ms" in time_range:
+            parameters["sourceUpdatedAfterMs"] = time_range["source_updated_after_ms"]
+            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs")
+        if "source_updated_before_ms" in time_range:
+            parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
+            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs")
+        return "\n".join(conditions)
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
         org_id: str,
         connector_id: str,
-        metadata_filters: dict[str, list[str]] | None = None
+        metadata_filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
@@ -4196,6 +4227,8 @@ class Neo4jProvider(IGraphDBProvider):
             org_id: Organization ID
             connector_id: Specific connector/app ID to query
             metadata_filters: Optional metadata filters (departments, categories, etc.)
+            time_range: Optional source created/modified time bounds in epoch ms — see
+                `_build_time_range_conditions` for the accepted keys.
 
         Returns:
             Dict mapping virtualRecordId -> recordId for accessible records in this connector
@@ -4266,6 +4299,17 @@ class Neo4jProvider(IGraphDBProvider):
             if metadata_conditions:
                 metadata_filter_clause = " AND " + " AND ".join(metadata_conditions)
 
+            # Prepare parameters (populated further below, and mutated by time-range conditions)
+            parameters = {
+                "userId": user_id,
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "completedStatus": ProgressStatus.COMPLETED.value
+            }
+
+            # Append time-range conditions
+            time_range_filter_clause = self._build_time_range_conditions(time_range, parameters)
+
             # Build the comprehensive Cypher query for this connector
             query = f"""
             MATCH (userDoc:User {{userId: $userId}})
@@ -4277,7 +4321,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records1
             }}
 
@@ -4287,7 +4331,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records2
             }}
 
@@ -4297,7 +4341,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records3
             }}
 
@@ -4307,7 +4351,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records4
             }}
 
@@ -4319,7 +4363,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records5
             }}
 
@@ -4333,7 +4377,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records6
             }}
 
@@ -4345,7 +4389,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records7
             }}
 
@@ -4356,7 +4400,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.id = anyone.file_key
                   AND r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records8
             }}
 
@@ -4367,14 +4411,6 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
             RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
-
-            # Prepare parameters
-            parameters = {
-                "userId": user_id,
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "completedStatus": ProgressStatus.COMPLETED.value
-            }
 
             # Add metadata filter parameters
             if metadata_filters:
@@ -4420,7 +4456,8 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         kb_ids: list[str] | None = None,
-        metadata_filters: dict[str, list[str]] | None = None
+        metadata_filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
@@ -4430,6 +4467,8 @@ class Neo4jProvider(IGraphDBProvider):
             org_id: Organization ID
             kb_ids: Optional list of KB IDs to filter by
             metadata_filters: Optional metadata filters
+            time_range: Optional source created/modified time bounds in epoch ms — see
+                `_build_time_range_conditions` for the accepted keys.
 
         Returns:
             Dict mapping virtualRecordId -> recordId for accessible KB records
@@ -4505,6 +4544,19 @@ class Neo4jProvider(IGraphDBProvider):
             if kb_ids:
                 kb_filter_clause = " WHERE kb.id IN $kb_ids"
 
+            # Prepare parameters (populated further below, and mutated by time-range conditions)
+            parameters = {
+                "userId": user_id,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value
+            }
+
+            if kb_ids:
+                parameters["kb_ids"] = kb_ids
+
+            # Append time-range conditions
+            time_range_filter_clause = self._build_time_range_conditions(time_range, parameters)
+
             # Build the KB query
             query = f"""
             MATCH (userDoc:User {{userId: $userId}})
@@ -4517,7 +4569,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
             }}
 
@@ -4531,7 +4583,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
-                  {metadata_filter_clause}
+                  {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
             }}
 
@@ -4542,16 +4594,6 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
             RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
-
-            # Prepare parameters
-            parameters = {
-                "userId": user_id,
-                "orgId": org_id,
-                "completedStatus": ProgressStatus.COMPLETED.value
-            }
-
-            if kb_ids:
-                parameters["kb_ids"] = kb_ids
 
             # Add metadata filter parameters
             if metadata_filters:
@@ -4621,18 +4663,13 @@ class Neo4jProvider(IGraphDBProvider):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
-            time_range (dict[str, int] | None): Optional source-creation bounds (epoch ms).
-                Not yet implemented for Neo4j; when provided, results are not filtered by time.
+            time_range (dict[str, int] | None): Optional source created/modified time bounds
+                in epoch ms — see `_build_time_range_conditions` for the accepted keys.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
-        if time_range:
-            self.logger.warning(
-                "time_range filtering on sourceCreatedAtTimestamp is not yet supported for Neo4j; "
-                "ignoring time_range and returning unfiltered accessible records"
-            )
         self.logger.info(
             f"Getting accessible virtual record IDs for user {user_id} in org {org_id} with filters {filters}"
         )
@@ -4703,13 +4740,13 @@ class Neo4jProvider(IGraphDBProvider):
 
                 for connector_id in connectors_to_query:
                     tasks.append(self._get_virtual_ids_for_connector(
-                        user_id, org_id, connector_id, metadata_filters
+                        user_id, org_id, connector_id, metadata_filters, time_range=time_range
                     ))
 
                 # Query only filtered KBs
                 self.logger.debug(f"Querying {len(kb_ids)} filtered KBs")
                 tasks.append(self._get_kb_virtual_ids(
-                    user_id, org_id, kb_ids, metadata_filters
+                    user_id, org_id, kb_ids, metadata_filters, time_range=time_range
                 ))
 
             # Scenario 2: C=false, KB=true (only KB filter)
@@ -4719,7 +4756,7 @@ class Neo4jProvider(IGraphDBProvider):
                 # Query only filtered KBs (skip connector queries)
                 self.logger.debug(f"Querying {len(kb_ids)} filtered KBs only")
                 tasks.append(self._get_kb_virtual_ids(
-                    user_id, org_id, kb_ids, metadata_filters
+                    user_id, org_id, kb_ids, metadata_filters, time_range=time_range
                 ))
 
             # Scenario 3: C=false, KB=false (no filters)
@@ -4730,13 +4767,13 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.debug(f"Querying all {len(connector_app_ids_set)} accessible connectors")
                 for connector_id in connector_app_ids_set:
                     tasks.append(self._get_virtual_ids_for_connector(
-                        user_id, org_id, connector_id, metadata_filters
+                        user_id, org_id, connector_id, metadata_filters, time_range=time_range
                     ))
 
                 # Query all KBs
                 self.logger.debug("Querying all KBs")
                 tasks.append(self._get_kb_virtual_ids(
-                    user_id, org_id, None, metadata_filters
+                    user_id, org_id, None, metadata_filters, time_range=time_range
                 ))
 
             # Scenario 4: C=true, KB=false (only connector filter)
@@ -4753,7 +4790,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 for connector_id in connectors_to_query:
                     tasks.append(self._get_virtual_ids_for_connector(
-                        user_id, org_id, connector_id, metadata_filters
+                        user_id, org_id, connector_id, metadata_filters, time_range=time_range
                     ))
 
             # Step 5: Execute all tasks in parallel
@@ -12812,6 +12849,201 @@ class Neo4jProvider(IGraphDBProvider):
         if result and result[0].get("result"):
             return result[0]["result"]
         return {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_descendants_flat(
+        self,
+        parent_id: str,
+        org_id: str,
+        user_key: str,
+        *,
+        depth: int = 3,
+        skip: int = 0,
+        limit: int = 100,
+        connector_ids: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
+        time_range: dict[str, int] | None = None,
+        sort_field: str = "sourceCreatedAtTimestamp",
+        sort_dir: str = "DESC",
+    ) -> dict[str, Any]:
+        """Flat list of all descendants of a record/folder up to *depth* levels.
+
+        Single Cypher variable-length path traversal over RECORD_RELATION edges
+        (PARENT_CHILD / ATTACHMENT) replaces the N+1 fan-out of per-node
+        ``get_knowledge_hub_children`` calls.
+        """
+        start = time.perf_counter()
+        try:
+            # Clamp depth: this value is interpolated directly into the Cypher
+            # range (`*1..{depth}`), which Neo4j does not allow to be parameterized.
+            safe_depth = max(1, min(int(depth), 3))
+
+            allowed_sort_fields = {
+                "sourceCreatedAtTimestamp",
+                "sourceLastModifiedTimestamp",
+                "createdAtTimestamp",
+                "updatedAtTimestamp",
+                "recordName",
+            }
+            safe_sort_field = (
+                sort_field if sort_field in allowed_sort_fields else "sourceCreatedAtTimestamp"
+            )
+            sort_direction = "ASC" if str(sort_dir).upper() == "ASC" else "DESC"
+
+            permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
+
+            parameters: dict[str, Any] = {
+                "parent_id": parent_id,
+                "org_id": org_id,
+                "user_key": user_key,
+                "skip": skip,
+                "limit": limit,
+            }
+
+            time_range_conditions = self._build_time_range_conditions(
+                time_range, parameters, record_var="record"
+            )
+
+            connector_filter = ""
+            if connector_ids:
+                parameters["connector_ids"] = connector_ids
+                connector_filter = "AND record.connectorId IN $connector_ids"
+
+            rg_filter = ""
+            if record_group_ids:
+                parameters["record_group_ids"] = record_group_ids
+                rg_filter = "AND record.externalGroupId IN $record_group_ids"
+
+            query = f"""
+            MATCH (parent:Record {{id: $parent_id}})
+            MATCH (u:User {{id: $user_key}})
+
+            CALL {{
+                WITH parent, u
+                MATCH path = (parent)-[:RECORD_RELATION*1..{safe_depth}]->(record:Record)
+                WHERE ALL(rel IN relationships(path)
+                          WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                AND record.isDeleted <> true
+                AND record.orgId = $org_id
+                {connector_filter}
+                {rg_filter}
+                {time_range_conditions}
+
+                WITH record, path, u
+                {permission_role_cypher}
+
+                WITH record, path, permission_role
+                WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file)
+
+                WITH record, path, permission_role, file,
+                     CASE WHEN file IS NOT NULL AND file.isFile = false THEN 'folder' ELSE 'record' END AS nodeType
+
+                OPTIONAL MATCH (record)-[ce:RECORD_RELATION]->(child:Record)
+                WHERE ce.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                AND child.isDeleted <> true
+
+                WITH record, path, permission_role, file, nodeType,
+                     CASE WHEN child IS NOT NULL THEN true ELSE false END AS hasChildren
+
+                RETURN record, length(path) AS level,
+                       nodes(path)[-2].id AS parentId,
+                       permission_role AS userRole,
+                       file, nodeType, hasChildren
+            }}
+
+            WITH record, level, parentId, userRole, file, nodeType, hasChildren
+
+            RETURN {{
+                id: record.id,
+                name: record.recordName,
+                nodeType: nodeType,
+                level: level,
+                parentId: parentId,
+                origin: CASE WHEN record.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
+                connector: record.connectorName,
+                connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
+                externalGroupId: record.externalGroupId,
+                recordType: record.recordType,
+                recordGroupType: null,
+                indexingStatus: record.indexingStatus,
+                reason: record.reason,
+                createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
+                updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
+                sourceCreatedAt: record.sourceCreatedAtTimestamp,
+                sourceModifiedAt: record.sourceLastModifiedTimestamp,
+                sizeInBytes: coalesce(record.sizeInBytes, file.fileSizeInBytes),
+                mimeType: record.mimeType,
+                extension: file.extension,
+                webUrl: record.webUrl,
+                hasChildren: hasChildren,
+                previewRenderable: coalesce(record.previewRenderable, true),
+                userRole: userRole,
+                isInternal: coalesce(record.isInternal, false),
+                isPlaceholder: coalesce(record.isPlaceholder, false),
+                status: record.status,
+                priority: record.priority,
+                assignee: record.assignee,
+                labels: record.labels,
+                location: record.location
+            }} AS node, record AS rawRecord, file AS typeDoc
+
+            ORDER BY node.{safe_sort_field} {sort_direction}
+            SKIP $skip LIMIT $limit
+            """
+
+            raw_results = await self.client.execute_query(query, parameters=parameters)
+            nodes = []
+            typed_records: dict[str, Any] = {}
+            for r in (raw_results or []):
+                if not r.get("node"):
+                    continue
+                nodes.append(r["node"])
+                raw_record = r.get("rawRecord")
+                type_doc_raw = r.get("typeDoc")
+                if raw_record:
+                    try:
+                        record_dict = dict(raw_record)
+                        record_dict = self._neo4j_to_arango_node(
+                            record_dict, CollectionNames.RECORDS.value
+                        )
+                        type_doc_dict = None
+                        if type_doc_raw:
+                            type_doc_dict = dict(type_doc_raw)
+                            type_doc_dict = self._neo4j_to_arango_node(type_doc_dict, "")
+                        typed = self._create_typed_record_from_neo4j(record_dict, type_doc_dict)
+                        typed_records[r["node"]["id"]] = typed
+                    except (ValueError, Exception):
+                        pass
+
+            # Separate count query without permission checking for performance —
+            # may overcount slightly relative to the permission-filtered page above,
+            # since re-running the permission CALL per descendant here would be
+            # as expensive as the main traversal itself.
+            count_query = f"""
+            MATCH (parent:Record {{id: $parent_id}})
+            MATCH path = (parent)-[:RECORD_RELATION*1..{safe_depth}]->(record:Record)
+            WHERE ALL(rel IN relationships(path)
+                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            AND record.isDeleted <> true
+            AND record.orgId = $org_id
+            {connector_filter}
+            {rg_filter}
+            {time_range_conditions}
+            RETURN count(DISTINCT record) AS total
+            """
+            count_result = await self.client.execute_query(count_query, parameters=parameters)
+            total = count_result[0]["total"] if count_result else 0
+
+            elapsed = time.perf_counter() - start
+            self.logger.debug(
+                f"get_knowledge_hub_descendants_flat finished in {elapsed * 1000} ms"
+            )
+            return {"nodes": nodes, "total": total, "typed_records": typed_records}
+        except Exception as e:
+            self.logger.error(f"❌ Get knowledge hub descendants flat failed: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            return {"nodes": [], "total": 0, "typed_records": {}}
 
     async def get_knowledge_hub_search(
         self,

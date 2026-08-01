@@ -6515,3 +6515,23 @@ class TestCreateRecordInstanceFromDictMessage:
     def test_org_id_propagated(self):
         from app.utils.chat_helpers import create_record_instance_from_dict
         assert create_record_instance_from_dict(_ch_record_dict(org_id="org-99"), _ch_graph_doc()).org_id == "org-99"
+
+
+class TestRecordIdShortenerShortenIfKnown:
+    def test_shorten_if_known_returns_short_label_for_mapped_id(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        s.get_or_create_short_id("rec-abc-123")  # creates R1
+        assert s.shorten_if_known("rec-abc-123") == "R1"
+
+    def test_shorten_if_known_returns_full_id_for_unmapped_id(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        assert s.shorten_if_known("rec-never-seen") == "rec-never-seen"
+
+    def test_shorten_if_known_does_not_mint_new_label(self):
+        from app.utils.chat_helpers import RecordIdShortener
+        s = RecordIdShortener()
+        s.shorten_if_known("rec-unknown")
+        # Counter should still be 0 — no label minted
+        assert s.get_or_create_short_id("rec-first") == "R1"
