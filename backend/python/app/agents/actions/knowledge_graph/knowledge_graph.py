@@ -499,6 +499,8 @@ class KnowledgeGraph:
             frontend_url=state.get("frontend_url"),
         )
 
+        app_names = {c.id: c.name for c in catalog.connectors}
+
         try:
             view = await navigator.navigate(
                 node_id=node_id,
@@ -511,6 +513,7 @@ class KnowledgeGraph:
                 created_at=created_at,
                 updated_at=updated_at,
                 node_types=node_types,
+                app_names=app_names,
             )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)

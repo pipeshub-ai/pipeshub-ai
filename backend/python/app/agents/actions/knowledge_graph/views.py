@@ -92,8 +92,13 @@ def _row_line(
     created_label = _compact_date(row.source_created_at)
     if created_label:
         parts.append(f"| created: {created_label}")
+    modified_label = _compact_date(row.source_modified_at)
+    if modified_label and modified_label != created_label:
+        parts.append(f"| modified: {modified_label}")
     if row.detail:
         parts.append(f"| {row.detail}")
+    if row.web_url:
+        parts.append(f"| url={row.web_url}")
     if row.context_summary:
         parts.append(f"| {row.context_summary}")
     if row.has_children:

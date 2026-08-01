@@ -110,16 +110,31 @@ def _linked_dict_to_row(d: dict[str, Any]) -> NodeRow:
 
 
 def _condensed_summary(context_block: str) -> str | None:
-    """Extract the `* Field: value` lines from a `Record.to_llm_context()`
-    block into one comma-joined line — the type-specific metadata (status,
-    assignee, priority, ...) without repeating identity fields the row
-    already carries."""
+    """Extract type-specific metadata from a ``Record.to_llm_context()``
+    block into one comma-joined line.
+
+    Primary path: ``* Field: value`` lines (status, assignee, priority, …)
+    produced by TicketRecord, MailRecord, MessageRecord, etc.
+
+    Fallback: ``Summary: …`` from semantic metadata — covers record types
+    without ``*`` lines (WebpageRecord, base Record, FileRecord without
+    extension).
+    """
     parts = [
         line[2:].strip()
         for line in context_block.splitlines()
         if line.startswith("* ")
     ]
-    return ", ".join(parts) if parts else None
+    if parts:
+        return ", ".join(parts)
+
+    for line in context_block.splitlines():
+        if line.startswith("Summary: "):
+            summary = line[len("Summary: "):].strip()
+            if len(summary) > 150:
+                summary = summary[:147] + "..."
+            return summary
+    return None
 
 
 class GraphNavigator:
@@ -180,16 +195,24 @@ class GraphNavigator:
         rows: list[NodeRow],
         typed_records: dict[str, Any],
     ) -> None:
-        """Enrich rows with condensed ``Record.to_llm_context()`` metadata.
+        """Enrich rows from typed Records fetched alongside get_nodes().
 
-        Uses typed Records from the ``get_nodes()`` response to call
-        ``to_llm_context()`` and extract type-specific fields (status,
-        assignee, priority, etc.) into each row's ``context_summary``.
+        Fills gaps left by the NodeItem projection: ``web_url`` (when the
+        AQL didn't carry it but the record doc does), ``source_modified_at``,
+        and ``context_summary`` (type-specific ``* Field: value`` lines
+        or ``Summary:`` from semantic metadata).
         """
         for row in rows:
             if not row.is_record or row.id not in typed_records:
                 continue
             record = typed_records[row.id]
+            if not row.web_url and getattr(record, "weburl", None):
+                weburl = record.weburl
+                if weburl and not weburl.startswith("http") and self._frontend_url:
+                    weburl = f"{self._frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
+                row.web_url = weburl
+            if not row.source_modified_at and getattr(record, "source_updated_at", None):
+                row.source_modified_at = record.source_updated_at
             try:
                 block = record.to_llm_context(frontend_url=self._frontend_url)
             except Exception:
@@ -211,6 +234,7 @@ class GraphNavigator:
         created_at: dict[str, int | None] | None = None,
         updated_at: dict[str, int | None] | None = None,
         node_types: list[str] | None = None,
+        app_names: dict[str, str] | None = None,
     ) -> NavigationView:
         """Build a NavigationView for the given node.
 
@@ -244,28 +268,37 @@ class GraphNavigator:
                 folder_mime_types=FOLDER_MIME_TYPES,
             )
             if node_info is None:
-                # Missing or denied — return empty navigation (no info leak)
-                return NavigationView(
-                    current=None,
-                    breadcrumbs=[],
-                    rows=[],
-                    related=[],
-                    pagination=None,
-                    web_url=None,
-                    indexing_status=None,
-                    connector=None,
+                # App nodes may fail the strict role check but still be
+                # reachable via the caller's connector_ids scope.
+                if connector_ids and node_id in connector_ids:
+                    parent_type = "app"
+                    current = _node_ref(
+                        node_id,
+                        (app_names or {}).get(node_id, node_id),
+                        "app",
+                    )
+                else:
+                    return NavigationView(
+                        current=None,
+                        breadcrumbs=[],
+                        rows=[],
+                        related=[],
+                        pagination=None,
+                        web_url=None,
+                        indexing_status=None,
+                        connector=None,
+                    )
+            else:
+                parent_type = node_info["nodeType"]
+                current = _node_ref(
+                    node_id,
+                    node_info["name"],
+                    node_info["nodeType"],
+                    node_info.get("subType"),
                 )
-
-            parent_type = node_info["nodeType"]
-            current = _node_ref(
-                node_id,
-                node_info["name"],
-                node_info["nodeType"],
-                node_info.get("subType"),
-            )
-            web_url = node_info.get("webUrl")
-            indexing_status = node_info.get("indexingStatus")
-            connector = node_info.get("connector")
+                web_url = node_info.get("webUrl")
+                indexing_status = node_info.get("indexingStatus")
+                connector = node_info.get("connector")
 
             # Breadcrumbs and record metadata only on page 1 to save tokens.
             # Gathered so the extra record read costs no extra latency.
@@ -302,7 +335,7 @@ class GraphNavigator:
             created_at=created_at,
             updated_at=updated_at,
             flattened=True,
-            depth=depth if parent_type in ("record", "folder") else None,
+            depth=depth,
             include_typed_records=True,
             node_types=node_types,
         )
@@ -310,7 +343,7 @@ class GraphNavigator:
         rows: list[NodeRow] = [_node_item_to_row(item) for item in (response.items or [])]
 
         # Populate row.level for depth>1 traversals so the LLM sees nesting
-        if depth > 1 and parent_type in ("record", "folder") and rows:
+        if depth > 1 and rows:
             record_ids = [row.id for row in rows if row.is_record]
             if record_ids:
                 depth_map = await self._graph.get_node_depths_batch(
