@@ -100,6 +100,7 @@ def _make_mock_deps():
     ])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.initialize = AsyncMock()
 
     dsp = MagicMock()
@@ -1766,6 +1767,7 @@ class TestBuildIssueRecordsCoverage:
         existing = MagicMock()
         existing.id = "rec-1"
         existing.version = 1
+        existing.is_placeholder = False
         existing.source_updated_at = 1700000000000  # Different from issue updated
 
         mock_tx_store = AsyncMock()
@@ -1792,6 +1794,7 @@ class TestBuildIssueRecordsCoverage:
         existing = MagicMock()
         existing.id = "rec-1"
         existing.version = 1
+        existing.is_placeholder = False
         existing.source_updated_at = ts
 
         mock_tx_store = AsyncMock()
