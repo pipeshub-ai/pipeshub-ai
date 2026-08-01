@@ -267,6 +267,21 @@ class TestArticleToRecord:
     async def test_returns_none_without_id(self, zendesk_connector):
         assert await zendesk_connector._article_to_record({"title": "no id"}) is None
 
+    async def test_draft_is_not_published_org_wide(self, zendesk_connector):
+        assert await zendesk_connector._article_to_record({
+            "id": 42, "title": "Unfinished runbook", "draft": True,
+        }) is None
+
+    async def test_segment_restricted_article_is_not_published_org_wide(
+        self, zendesk_connector
+    ):
+        assert await zendesk_connector._article_to_record({
+            "id": 42, "title": "Agents only", "user_segment_id": 7,
+        }) is None
+        assert await zendesk_connector._article_to_record({
+            "id": 43, "title": "Agents only", "user_segment_ids": [7],
+        }) is None
+
 
 # ===========================================================================
 # Permissions
@@ -281,10 +296,9 @@ class TestRecordPermissions:
         assert group_perm.external_id == "group_7"
         assert group_perm.type == PermissionType.READ
 
-    def test_falls_back_to_org_when_nothing_known(self, zendesk_connector):
-        perms = zendesk_connector._record_permissions(None, {})
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+    def test_never_falls_back_to_org_when_nothing_known(self, zendesk_connector):
+        # Fail closed: an unresolvable record stays invisible rather than org-wide.
+        assert zendesk_connector._record_permissions(None, {}) == []
 
     def test_group_only(self, zendesk_connector):
         perms = zendesk_connector._record_permissions(7, {})
@@ -375,10 +389,22 @@ class TestIncrementalCursor:
             "after_cursor": "stuck",
             "end_of_stream": False,
         }))
-        users, _ = await zendesk_connector._fetch_users(datasource)
+        users, _, complete = await zendesk_connector._fetch_users(datasource)
         # First page consumed, second call detects the repeated cursor and stops.
         assert datasource.incremental_users.await_count == 2
         assert len(users) == 2
+        assert complete is True
+
+    async def test_fetch_users_reports_incomplete_on_failed_page(self, zendesk_connector):
+        datasource = MagicMock()
+        datasource.incremental_users = AsyncMock(
+            return_value=_make_response(success=False, error="429 Too Many Requests")
+        )
+
+        users, _, complete = await zendesk_connector._fetch_users(datasource)
+
+        assert users == []
+        assert complete is False
 
     async def test_fetch_users_starts_from_epoch(self, zendesk_connector):
         datasource = MagicMock()
@@ -393,7 +419,11 @@ class TestIncrementalCursor:
     async def test_sync_tickets_persists_end_time(self, zendesk_connector):
         datasource = MagicMock()
         datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
-            "tickets": [], "end_time": 1767312000, "end_of_stream": True,
+            "tickets": [
+                {"id": 1, "subject": "a", "updated_at": "2026-01-01T00:00:00Z"},
+                {"id": 2, "subject": "b", "updated_at": "2026-01-02T00:00:00Z"},
+            ],
+            "end_of_stream": True,
         }))
         zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
@@ -492,7 +522,7 @@ def _ready(connector):
 class TestRunSync:
     @staticmethod
     def _stub_stages(connector, user):
-        connector._fetch_users = AsyncMock(return_value=([user], {"1": user}))
+        connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
         connector._ensure_creator_access = AsyncMock(return_value=None)
         connector._fetch_groups = AsyncMock(return_value=([("g_rg", [])], [("g_ug", [])]))
         connector._fetch_organizations = AsyncMock(
@@ -528,6 +558,24 @@ class TestRunSync:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
+    async def test_truncated_user_export_skips_membership_sync(
+        self, _filters, zendesk_connector, mock_data_entities_processor
+    ):
+        """on_new_user_groups rebuilds membership from scratch, so a partial user
+        list would silently revoke access for everyone it missed."""
+        _ready(zendesk_connector)
+        self._stub_stages(zendesk_connector, _app_user())
+        user = _app_user()
+        zendesk_connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, False))
+
+        await zendesk_connector.run_sync()
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Record groups are unaffected — only membership rebuilds are destructive.
+        mock_data_entities_processor.on_new_record_groups.assert_awaited()
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
     async def test_creator_access_runs_after_users_before_records(
         self, _filters, zendesk_connector, mock_data_entities_processor
     ):
@@ -553,7 +601,7 @@ class TestRunSync:
         self, _filters, zendesk_connector, mock_data_entities_processor
     ):
         _ready(zendesk_connector)
-        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}))
+        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._ensure_creator_access = AsyncMock(return_value=None)
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], []))
         zendesk_connector._fetch_organizations = AsyncMock(return_value=([], []))
@@ -893,6 +941,29 @@ class TestStreamRecord:
         assert '"name": "Description"' in body
         assert "Comment by Sarah" in body
 
+    async def test_internal_notes_are_not_indexed(self, zendesk_connector):
+        """The record carries a requester grant, so an internal note here leaks
+        agent-only text to the customer who opened the ticket."""
+        datasource = _ready(zendesk_connector)
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={
+            "comments": [
+                {"id": 1, "author_id": 9, "body": "Customer visible", "public": True},
+                {"id": 2, "author_id": 9, "body": "Refund risk, escalate", "public": False},
+            ],
+        }))
+        record = MagicMock()
+        record.record_type = RecordType.TICKET
+        record.external_record_id = "23"
+        record.record_name = "Latency"
+        record.weburl = None
+
+        body = (
+            await zendesk_connector._process_ticket_blockgroups_for_streaming(record)
+        ).decode()
+
+        assert "Customer visible" in body
+        assert "Refund risk, escalate" not in body
+
     async def test_ticket_without_comments_gets_placeholder_block(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.list_comments = AsyncMock(
@@ -992,6 +1063,34 @@ class TestAttachmentChildRecords:
         assert file_record.extension == "log"
         assert file_record.external_record_group_id == "group_7"
         assert file_record.parent_external_record_id == "23"
+
+    async def test_attachment_inherits_parent_requester_grant(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        parent = self._parent()
+        parent.reporter_email = "req@acme.com"
+        comment = {"id": 5, "public": True, "attachments": [{
+            "id": 88, "file_name": "a.txt",
+            "content_url": "https://acme.zendesk.com/attachments/88",
+        }]}
+
+        await zendesk_connector._build_attachment_child_records(comment, parent)
+
+        _, permissions = mock_data_entities_processor.on_new_records.await_args.args[0][0]
+        assert {p.entity_type for p in permissions} == {EntityType.GROUP, EntityType.USER}
+        assert next(p for p in permissions if p.entity_type == EntityType.USER).email == (
+            "req@acme.com"
+        )
+
+    async def test_internal_note_attachments_are_skipped(self, zendesk_connector):
+        comment = {"id": 5, "public": False, "attachments": [{
+            "id": 88, "file_name": "internal.pdf",
+            "content_url": "https://acme.zendesk.com/attachments/88",
+        }]}
+
+        assert await zendesk_connector._build_attachment_child_records(
+            comment, self._parent()
+        ) == []
 
     async def test_skips_attachment_without_content_url(self, zendesk_connector):
         comment = {"id": 5, "attachments": [{"id": 88, "file_name": "x.txt"}]}
