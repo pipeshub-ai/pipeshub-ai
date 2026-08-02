@@ -117,16 +117,19 @@ export abstract class BaseRedisStreamsProducerConnection
   }
 
   async disconnect(): Promise<void> {
+    if (!this.initialized) {
+      return;
+    }
     try {
-      if (this.initialized) {
-        await this.redis.quit();
-        this.initialized = false;
-        this.logger.info('Successfully disconnected Redis Streams producer');
-      }
+      await this.redis.quit();
+      this.logger.info('Successfully disconnected Redis Streams producer');
     } catch (error) {
       this.logger.error('Error disconnecting Redis Streams producer', {
         error: (error as Error).message,
       });
+    } finally {
+      this.initialized = false;
+      this.redis = new Redis(buildRedisOptions(this.config));
     }
   }
 
@@ -311,13 +314,19 @@ export abstract class BaseRedisStreamsConsumerConnection
       }
       if (this.initialized) {
         await Promise.all([this.redis.quit(), this.ackRedis.quit()]);
-        this.initialized = false;
         this.logger.info('Successfully disconnected Redis Streams consumer');
       }
     } catch (error) {
       this.logger.error('Error disconnecting Redis Streams consumer', {
         error: (error as Error).message,
       });
+    } finally {
+      if (this.initialized) {
+        this.initialized = false;
+        // Same as the producer: quit() clients cannot be reconnected.
+        this.redis = new Redis(buildRedisOptions(this.config));
+        this.ackRedis = new Redis(buildRedisOptions(this.config));
+      }
     }
   }
 
