@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
     BATCH_PROCESSING_SIZE,
     DEFAULT_MAX_RESULTS,
@@ -151,11 +152,12 @@ class TestJiraConnectorInitMethod:
     async def test_init_failure(self):
         connector = _make_connector()
 
+        # init() raises rather than returning False so the router can forward the real
+        # failure reason to the FE instead of a generic "check credentials" message.
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_jira_client:
             mock_jira_client.build_from_services = AsyncMock(side_effect=Exception("Auth error"))
-            result = await connector.init()
-
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="Auth error"):
+                await connector.init()
 
 
 # ===========================================================================
@@ -2179,8 +2181,8 @@ class TestFetchProjectPermissionScheme:
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response_fullcov(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        # A transient (non-401/403) grants failure returns None so the caller SKIPS the project
-        # and preserves its existing ACL, rather than overwriting it with an empty one.
+        # A transient (non-401/403) grants failure returns None; the caller then syncs the
+        # RecordGroup with an EMPTY ACL so the project isn't dropped this run.
         permissions = await connector._fetch_project_permission_scheme("PROJ")
         assert permissions is None
 
@@ -2189,7 +2191,7 @@ class TestFetchProjectPermissionScheme:
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("err"))
 
-        # Couldn't determine the scheme at all -> None (skip, preserve ACL).
+        # Couldn't determine the scheme at all -> None; caller syncs with an empty ACL.
         permissions = await connector._fetch_project_permission_scheme("PROJ")
         assert permissions is None
 
@@ -2245,15 +2247,16 @@ class TestFindAttachmentRecordById:
     @pytest.mark.asyncio
     async def test_finds_record(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
         mock_record = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=mock_record
+        )
 
-        result = await connector._find_attachment_record_by_id("100", tx_store)
+        result = await connector._find_attachment_record_by_id("100")
         assert result == mock_record
-        tx_store.get_record_by_external_id.assert_awaited_once_with(
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
             connector_id="conn-jira-1",
-            external_id="attachment_100",
+            external_record_id="attachment_100",
         )
 
 

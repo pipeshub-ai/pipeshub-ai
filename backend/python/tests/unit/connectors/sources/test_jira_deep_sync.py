@@ -808,12 +808,15 @@ class TestFetchDeletedIssuesFromAudit:
         ds = MagicMock()
         ds.get_audit_records = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
-        # A non-OK audit page notifies (missing admin permission) and reports ok=False.
+        # A 5xx is transient, not a permission problem: report ok=False so the caller holds
+        # the deletion checkpoint, but do NOT send the missing-audit-permission notification
+        # (that fires only on 403).
         connector.notify = AsyncMock()
 
         keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
         assert keys == []
         assert ok is False
+        connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_records_returns_empty(self):
@@ -1289,7 +1292,7 @@ class TestFetchProjectPermissionScheme:
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        # Transient 5xx -> None so the caller skips this project and preserves its existing ACL
+        # Transient 5xx -> None; the caller syncs the RecordGroup with an empty ACL
         # (returning [] would overwrite the ACL and hide the project from everyone).
         perms = await connector._fetch_project_permission_scheme("PROJ")
         assert perms is None
@@ -1544,6 +1547,12 @@ class TestPlaceholderPromotion:
 
     @pytest.mark.asyncio
     async def test_stream_record_refuses_placeholder(self):
+        # A client-visible "this can't be streamed" condition, so it must surface as a 400
+        # rather than reaching the global handler as a 500.
+        from fastapi import HTTPException
+
         connector = _make_connector()
-        with pytest.raises(ValueError, match="placeholder"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(_stub_record("2001"))
+        assert exc_info.value.status_code == 400
+        assert "placeholder" in exc_info.value.detail

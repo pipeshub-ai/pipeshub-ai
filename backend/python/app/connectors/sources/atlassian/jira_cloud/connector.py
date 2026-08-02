@@ -150,11 +150,14 @@ RATE_LIMIT_MAX_DELAY_SEC: float = 60.0
 METADATA_FETCH_CONCURRENCY: int = 5
 
 # JQL query constants
+# ``comment`` is fetched so inline-image detection sees comment bodies at sync time. Without
+# it a comment-embedded image gets a FileRecord here AND is inlined into the comment block at
+# stream time — the same image indexed twice.
 ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment",
-    "issuelinks"
+    "issuelinks", "comment"
 ]
 
 # Deliberately narrower than ISSUE_SEARCH_FIELDS: an ancestor stub carries no content, so
@@ -1658,6 +1661,14 @@ class JiraConnector(BaseConnector):
 
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
+            if not scheme_id:
+                # Without an id the grants URL is malformed and can only fail; skip rather
+                # than burn the retry budget. Caller syncs the RecordGroup with an empty ACL.
+                self.logger.warning(
+                    f"⚠️ Permission scheme for {project_key} has no id; "
+                    "returning None so caller syncs with empty ACL"
+                )
+                return None
 
             # Step 2: Get all permission grants in this scheme (transport + 429 retry)
             grants_response = await self._call_with_retry(
@@ -3469,6 +3480,12 @@ class JiraConnector(BaseConnector):
             mime = (attachment.get("mimeType") or "").lower()
             if not mime.startswith("image/"):
                 continue
+            # Only images small enough to actually be inlined are suppressed. An oversized
+            # one is dropped to alt text at stream time, so without this it would end up
+            # with neither a FileRecord nor indexed content.
+            size_bytes = int(attachment.get("size") or 0)
+            if size_bytes > MAX_INLINE_IMAGE_BYTES:
+                continue
             filename = (attachment.get("filename") or "").strip().lower()
             att_id = str(attachment_id)
             if att_id in referenced_ids or (filename and filename in filenames):
@@ -4620,9 +4637,12 @@ class JiraConnector(BaseConnector):
         Stream record content (issue, comment, or attachment).
         """
         if record.is_placeholder:
-            raise ValueError(
-                f"Cannot stream placeholder record {record.external_record_id}: "
-                "it is a stub for an out-of-scope ancestor and has no content"
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=(
+                    f"Cannot stream placeholder record {record.external_record_id}: "
+                    "it is a stub for an out-of-scope ancestor and has no content"
+                ),
             )
         try:
             if not self.data_source:

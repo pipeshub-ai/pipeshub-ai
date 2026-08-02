@@ -1773,7 +1773,7 @@ class TestFetchProjectPermissionScheme:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         # A transient (non-401/403) failure returns None -> caller skips the project and
-        # preserves its existing ACL, rather than wiping it to an empty list.
+        # caller then syncs the RecordGroup with an empty ACL.
         permissions = await connector._fetch_project_permission_scheme("PROJ")
         assert permissions is None
 
@@ -1837,15 +1837,16 @@ class TestFindAttachmentRecordById:
     @pytest.mark.asyncio
     async def test_finds_record(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
         mock_record = MagicMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=mock_record
+        )
 
-        result = await connector._find_attachment_record_by_id("100", tx_store)
+        result = await connector._find_attachment_record_by_id("100")
         assert result == mock_record
-        tx_store.get_record_by_external_id.assert_awaited_once_with(
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
             connector_id="conn-jira-1",
-            external_id="attachment_100",
+            external_record_id="attachment_100",
         )
 
 

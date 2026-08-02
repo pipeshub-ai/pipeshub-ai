@@ -2253,6 +2253,41 @@ class TestFetchIssueAttachmentsCoverage:
         }
         assert connector._resolve_inline_image_attachment_ids(fields) == {"99"}
 
+    def test_resolve_inline_image_ids_from_comment_body(self):
+        # Comment-embedded images must be detected at sync time too, or they get a FileRecord
+        # here AND are inlined into the comment block at stream time — indexed twice.
+        connector = _make_connector()
+        fields = {
+            "description": None,
+            "comment": {
+                "comments": [
+                    {"id": "1", "body": '<p><img src="/rest/api/3/attachment/content/99"/></p>'},
+                ]
+            },
+            "attachment": [
+                {"id": "99", "filename": "x.png", "mimeType": "image/png", "size": 1024},
+                {"id": "100", "filename": "y.pdf", "mimeType": "application/pdf", "size": 1024},
+            ],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"99"}
+
+    def test_oversized_inline_image_is_not_suppressed(self):
+        # Over the inline budget it is dropped to alt text at stream time, so it must keep a
+        # FileRecord rather than ending up with neither record nor content.
+        from app.connectors.sources.atlassian.jira_cloud.connector import MAX_INLINE_IMAGE_BYTES
+
+        connector = _make_connector()
+        fields = {
+            "description": '<p><img src="/rest/api/3/attachment/content/99"/></p>',
+            "attachment": [
+                {
+                    "id": "99", "filename": "big.png", "mimeType": "image/png",
+                    "size": MAX_INLINE_IMAGE_BYTES + 1,
+                },
+            ],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+
 
 # ===========================================================================
 # _process_issue_blockgroups_for_streaming()
