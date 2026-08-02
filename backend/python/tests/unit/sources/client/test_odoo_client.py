@@ -311,3 +311,43 @@ class TestGetConnectorConfig:
         with pytest.raises(ValueError) as exc_info:
             await OdooClientBuilder._get_connector_config(log, cs, "inst-abc")
         assert "inst-abc" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Socket-timeout transports
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutTransports:
+    def test_http_url_gets_plain_transport(self):
+        from app.sources.client.odoo.odoo import _make_transport, _TimeoutTransport
+
+        transport = _make_transport("http://x.odoo.com", 30)
+        assert type(transport) is _TimeoutTransport
+
+    def test_https_url_gets_safe_transport(self):
+        from app.sources.client.odoo.odoo import _make_transport, _TimeoutSafeTransport
+
+        transport = _make_transport("https://x.odoo.com", 30)
+        assert type(transport) is _TimeoutSafeTransport
+
+    @pytest.mark.parametrize("scheme", ["http", "https"])
+    def test_connection_carries_the_timeout(self, scheme):
+        from app.sources.client.odoo.odoo import _make_transport
+
+        transport = _make_transport(f"{scheme}://x.odoo.com", 17)
+        base = type(transport).__mro__[1]
+        with patch.object(base, "make_connection", return_value=MagicMock()):
+            conn = transport.make_connection("x.odoo.com")
+        assert conn.timeout == 17
+
+
+class TestExecuteKwWithoutModels:
+    @pytest.mark.asyncio
+    async def test_authenticated_uid_without_models_proxy_raises(self):
+        client = OdooClient(url="https://x.odoo.com", db="d", username="u", api_key="k")
+        client._uid = 42  # connected, but the object proxy never got built
+        client._models = None
+
+        with pytest.raises(RuntimeError, match="not authenticated"):
+            await client.execute_kw("crm.lead", "search_read")
