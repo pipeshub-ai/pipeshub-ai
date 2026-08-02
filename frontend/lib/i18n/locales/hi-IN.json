@@ -358,6 +358,7 @@
       "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
       "label": "सर्वर URL",
       "submit": "कनेक्ट करें",
+      "changeServer": "सर्वर बदलें",
       "errors": {
         "empty": "कृपया एक सर्वर URL दर्ज करें।",
         "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",

@@ -357,6 +357,7 @@
       "subtitleExisting": "Confirma o actualiza la URL de tu servidor PipesHub.",
       "label": "URL del servidor",
       "submit": "Conectar",
+      "changeServer": "Cambiar servidor",
       "errors": {
         "empty": "Introduce una URL del servidor.",
         "invalid": "Introduce una URL válida (p. ej. http://localhost:3000).",

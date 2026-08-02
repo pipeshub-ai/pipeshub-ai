@@ -358,6 +358,7 @@
       "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
       "label": "Server-URL",
       "submit": "Verbinden",
+      "changeServer": "Server ändern",
       "errors": {
         "empty": "Bitte geben Sie eine Server-URL ein.",
         "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
