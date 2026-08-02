@@ -80,12 +80,12 @@ describe('AgentActivityTimeline — narration text', () => {
     expect(screen.getByText('Let me check the test file first.')).toBeTruthy();
   });
 
-  it('shows a not-yet-settled trailing text part LIVE once a reasoning/tool_call part proves this is a multi-step response', () => {
-    // Once there's other activity (a reasoning block here), `AnswerContent`
-    // is suppressed for the whole turn (see `ChatResponse`) — so the still-
-    // unsettled text has nowhere else to render and must appear live, in
-    // the timeline itself, with a typing-cursor treatment (`LiveNarrationText`)
-    // rather than the plain `NarrationText` used for already-settled text.
+  it('hides a not-yet-settled trailing text part even once a reasoning part follows it — it streams into AnswerContent, not the timeline, until settled', () => {
+    // The trailing text hasn't been proven to be narration yet (that only
+    // happens once `settleLastRootText()` runs, marking it `settled`) — it
+    // stays live in `AnswerContent` (see `ChatResponse`) instead of
+    // duplicating here, regardless of other activity already in the
+    // transcript.
     const { container } = renderTimeline(
       [
         { type: 'text', content: 'Still working on this.' },
@@ -94,12 +94,11 @@ describe('AgentActivityTimeline — narration text', () => {
       { isStreaming: true },
     );
 
-    expect(screen.getByText('Still working on this.')).toBeTruthy();
-    expect(container.querySelector('.live-narration-text')).not.toBeNull();
-    expect(container.querySelector('.typing-cursor')).not.toBeNull();
+    expect(container.textContent).not.toContain('Still working on this.');
+    expect(container.querySelector('.live-narration-text')).toBeNull();
   });
 
-  it('shows a not-yet-settled trailing text part LIVE once a tool_call part proves this is a multi-step response', () => {
+  it('hides a not-yet-settled trailing text part after a tool_call too — it streams into AnswerContent, not the timeline, until settled', () => {
     const { container } = renderTimeline(
       [
         { type: 'tool_call', toolCallId: 'call-1', toolName: 'web_search', status: 'completed' },
@@ -108,8 +107,8 @@ describe('AgentActivityTimeline — narration text', () => {
       { isStreaming: true },
     );
 
-    expect(screen.getByText('Found something, let me dig deeper.')).toBeTruthy();
-    expect(container.querySelector('.live-narration-text')).not.toBeNull();
+    expect(container.textContent).not.toContain('Found something, let me dig deeper.');
+    expect(container.querySelector('.live-narration-text')).toBeNull();
   });
 
   it('renders nothing for an empty-content live text part (status indicator handles the signal)', () => {
@@ -126,7 +125,7 @@ describe('AgentActivityTimeline — narration text', () => {
     expect(container.querySelector('.typing-cursor')).toBeNull();
   });
 
-  it('renders a settled narration part as plain (non-live) text even in a multi-step stream, while the trailing unsettled one stays live', () => {
+  it('renders a settled narration part as plain (non-live) text even in a multi-step stream, while the trailing unsettled one stays hidden', () => {
     const { container } = renderTimeline(
       [
         { type: 'text', content: 'Already settled narration.', settled: true },
@@ -137,9 +136,9 @@ describe('AgentActivityTimeline — narration text', () => {
     );
 
     expect(screen.getByText('Already settled narration.')).toBeTruthy();
-    expect(screen.getByText('Currently being written.')).toBeTruthy();
-    // Only the trailing, unsettled part gets the live treatment.
-    expect(container.querySelectorAll('.live-narration-text').length).toBe(1);
+    // The trailing, unsettled part streams into AnswerContent instead.
+    expect(container.textContent).not.toContain('Currently being written.');
+    expect(container.querySelectorAll('.live-narration-text').length).toBe(0);
   });
 
   it('renders every text part (including isFinal) when nested inside a sub-agent group', () => {
@@ -369,12 +368,12 @@ describe('getVisibleRootParts', () => {
     expect(getVisibleRootParts(parts, true)).toEqual([]);
   });
 
-  it('shows unsettled trailing text while streaming a multi-step response', () => {
+  it('hides unsettled trailing text while streaming a multi-step response too — it streams into AnswerContent instead', () => {
     const parts: MessagePart[] = [
       { type: 'tool_call', toolCallId: 'c1', toolName: 'search' },
       { type: 'text', content: 'candidate text' },
     ];
-    expect(getVisibleRootParts(parts, true)).toEqual(parts);
+    expect(getVisibleRootParts(parts, true)).toEqual([parts[0]]);
   });
 
   it('shows settled narration regardless of streaming state', () => {
