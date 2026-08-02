@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
@@ -94,9 +95,10 @@ class TestCloudInitCoverageGaps:
         assert connector.site_url == "https://first.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_init_returns_false_when_client_build_fails(self):
+    async def test_init_raises_when_client_build_fails(self):
         """Site resolution (incl. the no-accessible-sites error) now lives in
-        build_from_services; if it raises a plain error, init() returns False."""
+        build_from_services; init() re-raises as ConnectorInitError so the router can
+        forward the real reason to the FE."""
         connector = _make_cloud_connector()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
@@ -104,9 +106,8 @@ class TestCloudInitCoverageGaps:
                 side_effect=ValueError("Jira: No accessible Atlassian sites for this OAuth token.")
             )
 
-            result = await connector.init()
-
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="No accessible Atlassian sites"):
+                await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_resolves_creator_email_and_caches_myself(self):
