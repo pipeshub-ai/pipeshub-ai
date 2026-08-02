@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -21,7 +22,7 @@ from helper.graph_provider_utils import sync_until_condition
 
 if TYPE_CHECKING:
     from helper.graph_provider import GraphProviderProtocol
-    from pipeshub_client import PipeshubClient
+    from helper.pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("drive-changes-sync")
 
@@ -219,115 +220,17 @@ def bind_drive_changes_helpers(
     (``settle_drive_changes``, ``sync_until``, ``sync_until_record_present``, …)
     so call sites stay unchanged.
     """
-
-    async def _settle_drive_changes() -> None:
-        await settle_drive_changes(settle_sec)
-
-    async def _sync_until(
-        pipeshub_client: "PipeshubClient",
-        graph_provider: "GraphProviderProtocol",
-        connector_id: str,
-        *,
-        check: Callable[[], Awaitable[bool]],
-        description: str,
-    ) -> None:
-        await sync_until(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            check=check,
-            description=description,
-            sync_and_wait=sync_and_wait,
-            timeout=timeout,
-            settle_sec=settle_sec,
-            retry_gap_sec=retry_gap_sec,
-        )
-
-    async def _sync_until_record_present(
-        pipeshub_client: "PipeshubClient",
-        graph_provider: "GraphProviderProtocol",
-        connector_id: str,
-        external_id: str,
-        *,
-        description: str,
-    ) -> None:
-        await sync_until_record_present(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            external_id,
-            description=description,
-            sync_and_wait=sync_and_wait,
-            timeout=timeout,
-            settle_sec=settle_sec,
-            retry_gap_sec=retry_gap_sec,
-        )
-
-    async def _sync_until_record_absent(
-        pipeshub_client: "PipeshubClient",
-        graph_provider: "GraphProviderProtocol",
-        connector_id: str,
-        external_id: str,
-        *,
-        description: str,
-    ) -> None:
-        await sync_until_record_absent(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            external_id,
-            description=description,
-            sync_and_wait=sync_and_wait,
-            timeout=timeout,
-            settle_sec=settle_sec,
-            retry_gap_sec=retry_gap_sec,
-        )
-
-    async def _sync_until_records_present(
-        pipeshub_client: "PipeshubClient",
-        graph_provider: "GraphProviderProtocol",
-        connector_id: str,
-        external_ids: list[str],
-        *,
-        description: str,
-    ) -> None:
-        await sync_until_records_present(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            external_ids,
-            description=description,
-            sync_and_wait=sync_and_wait,
-            timeout=timeout,
-            settle_sec=settle_sec,
-            retry_gap_sec=retry_gap_sec,
-        )
-
-    async def _sync_until_records_absent(
-        pipeshub_client: "PipeshubClient",
-        graph_provider: "GraphProviderProtocol",
-        connector_id: str,
-        external_ids: list[str],
-        *,
-        description: str,
-    ) -> None:
-        await sync_until_records_absent(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            external_ids,
-            description=description,
-            sync_and_wait=sync_and_wait,
-            timeout=timeout,
-            settle_sec=settle_sec,
-            retry_gap_sec=retry_gap_sec,
-        )
-
+    bound = dict(
+        sync_and_wait=sync_and_wait,
+        timeout=timeout,
+        settle_sec=settle_sec,
+        retry_gap_sec=retry_gap_sec,
+    )
     return SimpleNamespace(
-        settle_drive_changes=_settle_drive_changes,
-        sync_until=_sync_until,
-        sync_until_record_present=_sync_until_record_present,
-        sync_until_record_absent=_sync_until_record_absent,
-        sync_until_records_present=_sync_until_records_present,
-        sync_until_records_absent=_sync_until_records_absent,
+        settle_drive_changes=partial(settle_drive_changes, settle_sec=settle_sec),
+        sync_until=partial(sync_until, **bound),
+        sync_until_record_present=partial(sync_until_record_present, **bound),
+        sync_until_record_absent=partial(sync_until_record_absent, **bound),
+        sync_until_records_present=partial(sync_until_records_present, **bound),
+        sync_until_records_absent=partial(sync_until_records_absent, **bound),
     )
