@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import warnings
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, TYPE_CHECKING, AsyncGenerator, List, Generator
@@ -111,11 +112,13 @@ _init_global_test_env()
 
 from ai_models_setup import (  # noqa: E402
     SeededAIModel,
+    SeededIndexingModels,
     setup_test_indexing_models,
     setup_test_llm_model,
     teardown_test_indexing_models,
     teardown_test_llm_model,
 )
+from xdist_shared import shared_session_resource  # noqa: E402
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
@@ -139,6 +142,10 @@ from sample_data import ensure_sample_data_files_root  # noqa: E402
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
 _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
 _integration_test_report_order: List[str] = []
+
+# Set in pytest_configure. pytest_runtest_logreport gets no config argument, and
+# only the xdist controller may rewrite node ids (see that hook's docstring).
+_IS_XDIST_WORKER = False
 
 
 def _longrepr_and_streams(report: pytest.TestReport) -> tuple[str, str | None, str | None, str | None]:
@@ -403,6 +410,8 @@ def sample_data_root() -> Path:
 
 @pytest.fixture(scope="session")
 def ai_models_configured(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
     pipeshub_client: PipeshubClient,
 ) -> Generator[SeededAIModel, None, None]:
     """Seed OpenAI LLM + cloud embedding models and tear them down at session end.
@@ -428,12 +437,26 @@ def ai_models_configured(
 
     On teardown, both models are DELETEd via the providers endpoint so no test
     residue is left on the backend.
+
+    These models are org-wide singletons, so under ``-n`` they are seeded once
+    per run and shared by every worker rather than once per worker session.
     """
-    models = setup_test_indexing_models(pipeshub_client)
-    try:
+    with shared_session_resource(
+        "ai_models_configured",
+        config=request.config,
+        tmp_path_factory=tmp_path_factory,
+        create=lambda: setup_test_indexing_models(pipeshub_client),
+        destroy=lambda models: teardown_test_indexing_models(pipeshub_client, models),
+        dump=lambda models: {
+            "llm": asdict(models.llm),
+            "embedding": asdict(models.embedding),
+        },
+        load=lambda raw: SeededIndexingModels(
+            llm=SeededAIModel(**raw["llm"]),
+            embedding=SeededAIModel(**raw["embedding"]),
+        ),
+    ) as models:
         yield models.llm
-    finally:
-        teardown_test_indexing_models(pipeshub_client, models)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -488,6 +511,58 @@ async def graph_provider(config_service) -> AsyncGenerator["GraphProviderProtoco
         yield provider
     finally:
         await provider.disconnect()
+
+
+# Suites that may be spread across xdist workers, as rootdir-relative prefixes.
+# Everything else is pinned to one worker by pytest_collection_modifyitems below.
+_PARALLEL_SAFE_PATHS = ("response-validation/enterprise-search",)
+
+# Group name is arbitrary; what matters is that every pinned test shares it, so
+# ``--dist loadgroup`` routes them all to the same worker.
+_SERIAL_XDIST_GROUP = "serial"
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: List[pytest.Item],
+) -> None:
+    """Pin every non-enterprise-search test to one xdist worker.
+
+    The connector suites depend on ``--order-scope=module`` ordering and on
+    module-scoped fixtures that drive a whole connector sync, both of which
+    assume a single process. Enterprise-search tests hold no shared state --
+    each builds its own conversation and the autouse setup only wires clients
+    onto ``self`` -- so they are safe to distribute per test.
+
+    Under ``--dist loadgroup`` all tests carrying the same ``xdist_group`` mark
+    run on one worker, so this keeps the connectors serial and in order while
+    enterprise-search fans out across the remaining workers. No-op on a serial
+    run, which leaves ordering identical to today.
+
+    Two xdist details this depends on, both verified against xdist 3.8:
+
+    * ``tryfirst`` is required. xdist's own ``pytest_collection_modifyitems`` in
+      ``remote.py`` is what turns the mark into the ``nodeid@group`` suffix the
+      scheduler reads, and it otherwise runs before this hook -- marks added
+      afterwards are silently ignored and every test spreads.
+    * Workers cannot be detected via ``--dist``. ``remote.setup_config`` resets
+      ``config.option.dist`` to ``"no"`` on each worker, so a ``dist``-only guard
+      no-ops in precisely the processes that matter. ``workerinput`` is the
+      reliable signal.
+    """
+    is_worker = hasattr(config, "workerinput")
+    if not is_worker and config.getoption("dist", "no") == "no":
+        return
+
+    rootdir = config.rootpath
+    for item in items:
+        try:
+            rel = item.path.relative_to(rootdir).as_posix()
+        except ValueError:
+            rel = str(item.path)
+        if not rel.startswith(_PARALLEL_SAFE_PATHS):
+            item.add_marker(pytest.mark.xdist_group(_SERIAL_XDIST_GROUP))
 
 
 def pytest_sessionstart(session) -> None:  # type: ignore[override]
@@ -558,6 +633,8 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
 def pytest_configure(config: pytest.Config) -> None:
     """Initialize report collection for the HTML integration report."""
     global _integration_test_reports_by_nodeid, _integration_test_report_order
+    global _IS_XDIST_WORKER
+    _IS_XDIST_WORKER = hasattr(config, "workerinput")
     _integration_test_reports_by_nodeid = {}
     _integration_test_report_order = []
     config._integration_test_reports_by_nodeid = _integration_test_reports_by_nodeid  # type: ignore[attr-defined]
@@ -565,8 +642,24 @@ def pytest_configure(config: pytest.Config) -> None:
     config._integration_session_start = time.monotonic()  # type: ignore[attr-defined]
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Collect pass/fail/skip + failure text for HTML report (setup, call, teardown)."""
+    """Collect pass/fail/skip + failure text for HTML report (setup, call, teardown).
+
+    Also drops the ``@<group>`` suffix that xdist appends to node ids under
+    ``--dist loadgroup``. That suffix is how its scheduler routes a test to the
+    pinned worker, but it is an implementation detail that would otherwise land
+    in the JUnit XML, this HTML report, and the failed-test list posted to
+    Slack. Only the controller may rewrite it: workers report back by node id,
+    so stripping there desynchronises them from the scheduler and tests silently
+    go unreported. Scheduling is already settled by the time the controller
+    dispatches reports, so this is presentation-only.
+    """
+    if not _IS_XDIST_WORKER:
+        suffix = f"@{_SERIAL_XDIST_GROUP}"
+        if report.nodeid.endswith(suffix):
+            report.nodeid = report.nodeid[: -len(suffix)]
+
     if report.when not in ("setup", "call", "teardown"):
         return
     config = getattr(report, "config", None)
