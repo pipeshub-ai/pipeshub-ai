@@ -67,6 +67,9 @@ describe('Redis Streams reconnect after disconnect', () => {
     class P extends svc.BaseRedisStreamsProducerConnection {}
     const producer = new (P as any)(config, logger);
 
+    await producer.disconnect();
+    expect(clients.length, 'unstarted producer must not spawn a client').to.equal(1);
+
     await producer.connect();
     await producer.publish('mail-events', { key: 'k', value: { a: 1 } });
     expect(clients.length).to.equal(1);
@@ -82,7 +85,7 @@ describe('Redis Streams reconnect after disconnect', () => {
     expect(producer.isConnected()).to.be.true;
   });
 
-  it('still swaps the client when quit() rejects', async () => {
+  it('swaps exactly once when quit() rejects or disconnects race', async () => {
     class P extends svc.BaseRedisStreamsProducerConnection {}
     const producer = new (P as any)(config, logger);
 
@@ -95,14 +98,16 @@ describe('Redis Streams reconnect after disconnect', () => {
     await producer.connect();
     await producer.publish('mail-events', { key: 'k', value: { a: 1 } });
     expect(clients[1].xadd.called).to.be.true;
-  });
 
-  it('does not create a client when disconnecting an unstarted producer', async () => {
-    class P extends svc.BaseRedisStreamsProducerConnection {}
-    const producer = new (P as any)(config, logger);
+    // Concurrent stops must not quit the same client twice or orphan a spare.
+    await producer.connect();
+    await Promise.all([
+      producer.disconnect(),
+      producer.disconnect(),
+      producer.disconnect(),
+    ]);
 
-    await producer.disconnect();
-
-    expect(clients.length).to.equal(1);
+    expect(clients.length).to.equal(3);
+    expect(clients[1].quit.callCount).to.equal(1);
   });
 });
