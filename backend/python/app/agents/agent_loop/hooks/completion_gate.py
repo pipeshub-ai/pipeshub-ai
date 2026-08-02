@@ -44,21 +44,32 @@ _FILE_GENERATION_TOOL_NAMES = frozenset({"run_code", "coding_agent"})
 # just as easily as a REQUESTED output ("create a pdf report"). To avoid
 # false positives when a user attaches a file for analysis, bare format
 # keywords only trigger when paired with a generation-intent verb/phrase.
-# Unambiguous output words (chart, spreadsheet, presentation, …) trigger
+# Unambiguous output words (spreadsheet, presentation, …) trigger
 # unconditionally. Over-triggering burns weak models' turn budgets on
 # unnecessary nudges; false negatives are preferred (see module docstring).
+#
+# "chart"/"graph"/"plot" are deliberately NOT in this unconditional list:
+# unlike "spreadsheet" or "presentation", "graph" is an ordinary noun in
+# tech/data contexts ("knowledge graph", "graph database", "graph
+# traversal") with nothing to do with a requested visualization. They are
+# handled below in `_CONTEXTUAL_GENERATION_RE` instead, gated on a
+# generation verb, so "implement a knowledge graph system" no longer
+# false-positives the way a bare `\bgraph\b` word match did.
 
 _UNAMBIGUOUS_GENERATION_RE = re.compile(
     r"\b("
     r"spreadsheet|presentation|slide\s?deck|"
     r"downloadable\s+file|generate[sd]?\s+a\s+file|"
-    r"chart|graph|plot|"
     r"word\s+document|excel\s+file"
     r")\b",
     re.IGNORECASE,
 )
 
 _FORMAT_KW = r"(?:pdf|docx?|xlsx?|pptx?|csv)"
+# Visualization nouns — ambiguous on their own (see comment above), so
+# they only ever appear inside `_CONTEXTUAL_GENERATION_RE`'s verb-gated
+# alternatives below, never in the unconditional regex.
+_CHART_KW = r"(?:chart|graph|plot)"
 # Creation verbs (a fresh file) + update verbs (an EXISTING one — "on
 # existing artifact update" turns rarely say "create"/"generate" again,
 # they say "update"/"regenerate"/"revise"/"refresh" the pdf/report).
@@ -69,7 +80,7 @@ _FORMAT_KW = r"(?:pdf|docx?|xlsx?|pptx?|csv)"
 # narrower pattern that requires the format keyword immediately adjacent.
 _GENERATION_VERBS = (
     r"create|make|generate|regenerate|build|export|produce|save|convert|"
-    r"update|regen|refresh|revise|"
+    r"update|regen|refresh|revise|plot|draw|"
     r"give\s+me|send\s+me|need|want"
 )
 _CONTEXTUAL_GENERATION_RE = re.compile(
@@ -98,6 +109,19 @@ _CONTEXTUAL_GENERATION_RE = re.compile(
     r"|"
     # "format report/output" — strong signal the format IS the deliverable
     r"\b" + _FORMAT_KW + r"\s+(?:report|output)\b"
+    r"|"
+    # Same verb-gated shape as the format-keyword alternative above, but
+    # for the visualization nouns (chart/graph/plot) pulled out of the
+    # unconditional regex — matches "create a bar graph" / "plot a chart
+    # of sales", but NOT a bare "graph"/"plot" with no generation verb
+    # ("knowledge graph") or a bare verb with no visualization noun
+    # ("plot the next chapter").
+    r"(?:" + _GENERATION_VERBS + r")"
+    r"\s+(?:(?:a|an|the|me\s+a|me\s+an)\s+)?"
+    r"(?:\S+\s+){0,2}\b" + _CHART_KW + r"\b"
+    r"|"
+    # "as/into/to (a) chart/graph/plot" — e.g. "turn this into a chart"
+    r"\b(?:as|into|to)\s+(?:a\s+)?" + _CHART_KW + r"\b"
     r")",
     re.IGNORECASE,
 )

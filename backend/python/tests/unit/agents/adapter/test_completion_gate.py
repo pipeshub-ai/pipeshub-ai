@@ -108,6 +108,26 @@ class TestLooksLikeFileGenerationRequest:
     def test_no_match_update_me_without_format_keyword(self) -> None:
         assert looks_like_file_generation_request("update me on the project status") is False
 
+    def test_no_match_on_knowledge_graph(self) -> None:
+        """'graph' used to be an unconditional trigger, so any mention of a
+        knowledge graph, graph database, etc. false-positived as a request
+        to generate a chart/plot."""
+        assert looks_like_file_generation_request(
+            "Best way to implement Knowledge graph system",
+        ) is False
+        assert looks_like_file_generation_request("how does the graph database index edges?") is False
+        assert looks_like_file_generation_request("explain graph traversal algorithms") is False
+
+    def test_matches_create_a_bar_graph(self) -> None:
+        assert looks_like_file_generation_request("create a bar graph of the results") is True
+        assert looks_like_file_generation_request("plot a chart of monthly sales") is True
+
+    def test_matches_convert_to_a_chart(self) -> None:
+        assert looks_like_file_generation_request("turn this data into a chart") is True
+
+    def test_no_match_bare_plot_without_visualization_noun(self) -> None:
+        assert looks_like_file_generation_request("plot the next chapter of the story") is False
+
 
 class TestCompletionGate:
     async def test_noop_when_tool_calls_present(self) -> None:
