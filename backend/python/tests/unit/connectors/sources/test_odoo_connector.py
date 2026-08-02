@@ -1286,3 +1286,668 @@ class TestInitCreatorEmailResolution:
 
         assert ok is True
         assert c.creator_email is None
+
+
+# ===========================================================================
+# Lifecycle: create_connector / init failure / test_connection / cleanup
+# ===========================================================================
+
+
+async def _drain(response) -> str:
+    chunks = [chunk async for chunk in response.body_iterator]
+    return b"".join(
+        c if isinstance(c, bytes) else c.encode("utf-8") for c in chunks
+    ).decode("utf-8")
+
+
+class TestCreateConnector:
+    @pytest.mark.asyncio
+    async def test_builds_connector_with_initialized_processor(self, monkeypatch):
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        processor.initialize = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.sources.odoo.connector.DataSourceEntitiesProcessor",
+            MagicMock(return_value=processor),
+        )
+
+        connector = await OdooConnector.create_connector(
+            logger=logging.getLogger("test.odoo"),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="conn-odoo-1",
+            scope="TEAM",
+            created_by="creator-user-id",
+        )
+
+        assert isinstance(connector, OdooConnector)
+        processor.initialize.assert_awaited_once()
+
+
+class TestInitFailure:
+    @pytest.mark.asyncio
+    async def test_builder_failure_returns_false(self, monkeypatch):
+        c = _make_connector()
+
+        async def boom(*_args, **_kwargs):
+            raise ConnectionError("bad credentials")
+
+        monkeypatch.setattr(
+            "app.connectors.sources.odoo.connector.OdooClientBuilder.build_from_services",
+            boom,
+        )
+
+        assert await c.init() is False
+
+    @pytest.mark.asyncio
+    async def test_creator_email_already_resolved_skips_user_lookup(self, monkeypatch):
+        c = _make_connector(created_by="user-123")
+
+        fake_client = MagicMock()
+        fake_client.url = "https://mycompany.odoo.com"
+        fake_client.connect = AsyncMock()
+        fake_builder = MagicMock()
+        fake_builder.get_client = MagicMock(return_value=fake_client)
+
+        async def fake_build_from_services(*_args, **_kwargs):
+            return fake_builder
+
+        monkeypatch.setattr(
+            "app.connectors.sources.odoo.connector.OdooClientBuilder.build_from_services",
+            fake_build_from_services,
+        )
+
+        async def already_resolved() -> None:
+            c.creator_email = "owner@example.com"
+
+        c._load_creator_email = already_resolved
+
+        assert await c.init() is True
+        c.data_entities_processor.get_user_by_user_id.assert_not_called()
+
+
+class TestTestConnectionAndAccess:
+    @pytest.mark.asyncio
+    async def test_uninitialized_data_source_returns_false(self):
+        c = _make_connector()
+        c.data_source = None
+        assert await c.test_connection_and_access() is False
+
+    @pytest.mark.asyncio
+    async def test_successful_probe(self):
+        c = _make_connector()
+        c.data_source.count_leads = AsyncMock(return_value=3)
+        assert await c.test_connection_and_access() is True
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_returns_false(self):
+        c = _make_connector()
+        c.data_source.count_leads = AsyncMock(side_effect=RuntimeError("nope"))
+        assert await c.test_connection_and_access() is False
+
+
+class TestCleanup:
+    @pytest.mark.asyncio
+    async def test_closes_client_and_clears_state(self):
+        c = _make_connector()
+        c.client = MagicMock(close=AsyncMock())
+        client = c.client
+
+        await c.cleanup()
+
+        client.close.assert_awaited_once()
+        assert c.client is None and c.data_source is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_without_client_is_noop(self):
+        c = _make_connector()
+        c.client = None
+        await c.cleanup()
+        assert c.data_source is None
+
+
+# ===========================================================================
+# _run_sync orchestration
+# ===========================================================================
+
+
+class TestRunSyncOrchestration:
+    @staticmethod
+    def _stub_stages(c: OdooConnector) -> None:
+        c._sync_users = AsyncMock()
+        c._sync_teams = AsyncMock()
+        c._sync_partners = AsyncMock()
+        c._sync_stages = AsyncMock()
+        c._sync_leads = AsyncMock()
+        c._sync_attachments = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_full_sync_runs_every_stage(self, monkeypatch):
+        c = _make_connector()
+        self._stub_stages(c)
+        monkeypatch.setattr(
+            "app.connectors.sources.odoo.connector.load_connector_filters",
+            AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        )
+
+        await c._run_sync(full_sync=True)
+
+        c._sync_users.assert_awaited_once()
+        c._sync_teams.assert_awaited_once()
+        c._sync_stages.assert_awaited_once()
+        c._sync_partners.assert_awaited_once_with(full_sync=True)
+        c._sync_leads.assert_awaited_once_with(full_sync=True)
+        c._sync_attachments.assert_awaited_once_with(full_sync=True)
+
+    @pytest.mark.asyncio
+    async def test_stage_failure_propagates(self, monkeypatch):
+        c = _make_connector()
+        self._stub_stages(c)
+        c._sync_leads = AsyncMock(side_effect=RuntimeError("odoo down"))
+        monkeypatch.setattr(
+            "app.connectors.sources.odoo.connector.load_connector_filters",
+            AsyncMock(return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))),
+        )
+
+        with pytest.raises(RuntimeError):
+            await c._run_sync(full_sync=False)
+
+
+class TestSyncWithoutDataSource:
+    """Every sync stage must no-op rather than raise when init() never ran."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "method",
+        ["_sync_users", "_sync_teams", "_sync_stages", "_sync_partners",
+         "_sync_leads", "_sync_attachments"],
+    )
+    async def test_no_data_source_is_a_noop(self, method):
+        c = _make_connector()
+        c.data_source = None
+        await getattr(c, method)()
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+
+class TestSyncStages:
+    @pytest.mark.asyncio
+    async def test_builds_is_won_map(self):
+        from app.sources.external.odoo.odoo import CrmStage
+
+        c = _make_connector()
+        c.data_source.list_stages = AsyncMock(
+            return_value=[
+                CrmStage(id=1, name="New", is_won=False),
+                CrmStage(id=4, name="Won", is_won=True),
+            ]
+        )
+
+        await c._sync_stages()
+
+        assert c._stage_is_won == {1: False, 4: True}
+
+
+class TestSyncUsersPartnerMapping:
+    @pytest.mark.asyncio
+    async def test_partner_id_maps_to_email_for_follower_lookup(self):
+        c = _make_connector()
+        c.data_source.list_users = AsyncMock(
+            return_value=[
+                ResUser.model_validate(
+                    {"id": 7, "name": "Alice", "email": "alice@example.com",
+                     "login": "alice", "active": True, "partner_id": [55, "Alice"]}
+                )
+            ]
+        )
+
+        await c._sync_users()
+
+        assert c._user_email_by_partner_id == {55: "alice@example.com"}
+
+
+class TestSyncTeamsEmpty:
+    @pytest.mark.asyncio
+    async def test_no_teams_skips_processor_call(self):
+        c = _make_connector()
+        c.data_source.list_teams = AsyncMock(return_value=[])
+
+        await c._sync_teams()
+
+        c.data_entities_processor.on_new_user_groups.assert_not_called()
+
+
+class TestModifiedSinceFilterWithoutStart:
+    def test_filter_without_start_datetime_is_ignored(self):
+        c = _make_connector()
+        f = MagicMock()
+        f.is_empty = MagicMock(return_value=False)
+        f.get_datetime_iso = MagicMock(return_value=(None, None))
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(return_value=f)
+
+        assert c._get_modified_since_filter() is None
+
+
+class TestUpsertLeadPeopleEdgeCases:
+    @pytest.mark.asyncio
+    async def test_leads_without_email_yield_no_people(self):
+        c = _make_connector()
+        _mock_transaction(c)
+
+        assert await c._upsert_lead_people([_lead(type="lead", email_from=False)]) == 0
+        c.data_store_provider.transaction.assert_not_called()
+
+
+class TestFetchFollowersMalformedRows:
+    @pytest.mark.asyncio
+    async def test_rows_without_res_id_or_partner_are_dropped(self):
+        c = _make_connector()
+        c.data_source.list_followers = AsyncMock(
+            return_value=[
+                MailFollower.model_validate({"id": 1, "res_id": None, "partner_id": [55, "A"]}),
+                MailFollower.model_validate({"id": 2, "res_id": 10, "partner_id": False}),
+                MailFollower.model_validate({"id": 3, "res_id": 10, "partner_id": [55, "A"]}),
+            ]
+        )
+
+        assert await c._fetch_followers_by_lead([10]) == {10: [55]}
+
+
+# ===========================================================================
+# _sync_partners / _sync_attachments paging and cursors
+# ===========================================================================
+
+
+class TestSyncPartnersPaging:
+    @pytest.mark.asyncio
+    async def test_pages_until_short_page_and_skips_emailless_contacts(self):
+        c = _make_connector()
+        c.batch_size = 1
+        c.contact_sync_point = MagicMock()
+        c.contact_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.contact_sync_point.update_sync_point = AsyncMock()
+        tx_store = _mock_transaction(c)
+        c.data_source.list_partners = AsyncMock(
+            side_effect=[
+                [_partner(id=1, name="Acme", is_company=True)],
+                [_partner(id=2, name="No Email", email=False)],
+                [],
+            ]
+        )
+
+        await c._sync_partners(full_sync=True)
+
+        assert c.data_source.list_partners.await_count == 3
+        tx_store.batch_upsert_people.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_configured_floor_wins_over_older_contact_cursor(self):
+        c = _make_connector()
+        c.contact_sync_point = MagicMock()
+        c.contact_sync_point.read_sync_point = AsyncMock(
+            return_value={"write_date": "2024-01-01 00:00:00"}
+        )
+        c.contact_sync_point.update_sync_point = AsyncMock()
+        c._get_modified_since_filter = MagicMock(return_value="2024-06-01 00:00:00")
+        c.data_source.list_partners = AsyncMock(return_value=[])
+
+        await c._sync_partners(full_sync=False)
+
+        _args, kwargs = c.data_source.list_partners.call_args
+        assert kwargs["updated_since"] == "2024-06-01 00:00:00"
+
+
+class TestSyncAttachmentsBatching:
+    def _prepare(self, c: OdooConnector) -> None:
+        c.attachment_sync_point = MagicMock()
+        c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.attachment_sync_point.update_sync_point = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_full_batch_is_flushed_and_missing_permissions_fall_back(self):
+        c = _make_connector()
+        c.batch_size = 1
+        c.creator_email = "creator@example.com"
+        self._prepare(c)
+        _mock_transaction(c, existing_record=None)
+        c._fetch_lead_permissions = AsyncMock(return_value={1: []})
+        c.data_source.list_attachments = AsyncMock(
+            side_effect=[[_attachment(id=9, res_id=1)], []]
+        )
+
+        await c._sync_attachments(full_sync=True)
+
+        # batch_size=1 means the single attachment flushes mid-page.
+        records = c.data_entities_processor.on_new_records.await_args_list[0].args[0]
+        _record, permissions = records[0]
+        assert [p.email for p in permissions] == ["creator@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_existing_attachment_takes_the_update_path(self):
+        c = _make_connector()
+        self._prepare(c)
+        _mock_transaction(c, existing_record=MagicMock(id="rec-1", version=2))
+        c._fetch_lead_permissions = AsyncMock(return_value={1: []})
+        c.data_source.list_attachments = AsyncMock(return_value=[_attachment(id=9, res_id=1)])
+
+        await c._sync_attachments(full_sync=True)
+
+        c.data_entities_processor.on_record_content_update.assert_awaited_once()
+        c.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_configured_floor_wins_over_older_attachment_cursor(self):
+        c = _make_connector()
+        c.attachment_sync_point = MagicMock()
+        c.attachment_sync_point.read_sync_point = AsyncMock(
+            return_value={"write_date": "2024-01-01 00:00:00"}
+        )
+        c.attachment_sync_point.update_sync_point = AsyncMock()
+        c._get_modified_since_filter = MagicMock(return_value="2024-06-01 00:00:00")
+        c.data_source.list_attachments = AsyncMock(return_value=[])
+
+        await c._sync_attachments(full_sync=False)
+
+        _args, kwargs = c.data_source.list_attachments.call_args
+        assert kwargs["updated_since"] == "2024-06-01 00:00:00"
+
+
+# ===========================================================================
+# _stream_lead — full text body
+# ===========================================================================
+
+
+class TestStreamLeadFullBody:
+    @pytest.mark.asyncio
+    async def test_every_optional_section_is_rendered(self):
+        from app.sources.external.odoo.odoo import MailActivity, MailMessage
+
+        c = _make_connector()
+        c.data_source.get_lead = AsyncMock(
+            return_value=_lead(
+                name="Big Deal",
+                partner_name="Acme Inc",
+                contact_name="Jane Doe",
+                email_from="jane@acme.test",
+                phone="+1 555",
+                function="CTO",
+                website="https://acme.test",
+                street="1 Main St",
+                city="Springfield",
+                state_id=[1, "IL"],
+                country_id=[2, "USA"],
+                source_id=[3, "Website"],
+                medium_id=[4, "Email"],
+                campaign_id=[5, "Q1"],
+                referred="Partner Co",
+                date_deadline="2024-03-01",
+                date_closed="2024-02-20 10:00:00",
+                lost_reason_id=[6, "Too expensive"],
+                description="Internal notes",
+            )
+        )
+        c.data_source.list_messages = AsyncMock(
+            return_value=[
+                MailMessage.model_validate({
+                    "id": 1, "author_id": [7, "Alice"], "date": "2024-01-05 09:00:00",
+                    "subject": "Intro call", "body": "<p>Went <b>well</b></p><br>Follow up",
+                }),
+                MailMessage.model_validate({"id": 2, "author_id": False, "body": "No subject here"}),
+                MailMessage.model_validate({"id": 3, "subject": "Empty body", "body": False}),
+            ]
+        )
+        c.data_source.list_activities = AsyncMock(
+            return_value=[
+                MailActivity.model_validate({
+                    "id": 1, "activity_type_id": [1, "Call"], "date_deadline": "2024-03-05",
+                    "summary": "Follow up", "note": "Ask about budget", "user_id": [7, "Alice"],
+                }),
+                MailActivity.model_validate({"id": 2}),
+            ]
+        )
+        record = MagicMock(external_record_id="crm.lead/1", record_name="Big Deal", id="r1")
+
+        body = await _drain(await c._stream_lead(record))
+
+        assert "Company: Acme Inc" in body
+        assert "Contact: Jane Doe" in body
+        assert "Email: jane@acme.test" in body
+        assert "Phone: +1 555" in body
+        assert "Job Position: CTO" in body
+        assert "Website: https://acme.test" in body
+        assert "Address: 1 Main St, Springfield, IL, USA" in body
+        assert "Source: Website" in body
+        assert "Medium: Email" in body
+        assert "Campaign: Q1" in body
+        assert "Referred By: Partner Co" in body
+        assert "Expected Close: 2024-03-01" in body
+        assert "Close Date: 2024-02-20 10:00:00" in body
+        assert "Lost Reason: Too expensive" in body
+        assert "Description:\nInternal notes" in body
+        assert "[2024-01-05 09:00:00] Alice — Intro call" in body
+        # HTML chatter is flattened, not passed through to the indexer.
+        assert "<b>" not in body and "Went well" in body
+        assert "No subject here" in body
+        assert "[2024-03-05] Call assigned to Alice — Follow up" in body
+        assert "Ask about budget" in body
+        assert "[] Activity" in body
+
+    @pytest.mark.asyncio
+    async def test_enrichment_failures_do_not_block_the_body(self):
+        c = _make_connector()
+        c.data_source.get_lead = AsyncMock(return_value=_lead(name="Big Deal"))
+        c.data_source.list_activities = AsyncMock(side_effect=RuntimeError("activities down"))
+        c.data_source.list_messages = AsyncMock(side_effect=RuntimeError("messages down"))
+        record = MagicMock(external_record_id="crm.lead/1", record_name="Big Deal", id="r1")
+
+        body = await _drain(await c._stream_lead(record))
+
+        assert "Name: Big Deal" in body
+        assert "--- Messages ---" not in body
+        assert "--- Activities ---" not in body
+
+
+class TestStreamAttachmentMissingContent:
+    @pytest.mark.asyncio
+    async def test_attachment_without_content_raises_404(self):
+        from fastapi import HTTPException
+
+        c = _make_connector()
+        c.data_source.get_attachment_content = AsyncMock(return_value=None)
+        record = MagicMock(
+            external_record_id="ir.attachment/9", record_name="x.pdf", id="r1", size_in_bytes=10
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await c._stream_attachment(record)
+
+        assert exc.value.status_code == 404
+
+
+# ===========================================================================
+# Webhooks
+# ===========================================================================
+
+
+class TestWebhookNotification:
+    @pytest.mark.asyncio
+    async def test_notification_triggers_an_incremental_sync(self):
+        c = _make_connector()
+        c.run_incremental_sync = AsyncMock()
+
+        c.handle_webhook_notification({"model": "crm.lead"})
+        # Task is only tracked to keep a strong reference; await it directly.
+        await next(iter(c._background_tasks))
+
+        c.run_incremental_sync.assert_awaited_once()
+        assert not c._background_tasks
+
+    @pytest.mark.asyncio
+    async def test_sync_failure_is_swallowed(self):
+        c = _make_connector()
+        c.run_incremental_sync = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await c._sync_from_webhook()
+
+
+# ===========================================================================
+# reindex_records — edge cases
+# ===========================================================================
+
+
+class TestReindexEdgeCases:
+    @staticmethod
+    def _connector() -> OdooConnector:
+        c = _make_connector()
+        c._sync_users = AsyncMock()
+        c._sync_stages = AsyncMock()
+        return c
+
+    @pytest.mark.asyncio
+    async def test_uninitialized_data_source_raises(self):
+        c = self._connector()
+        c.data_source = None
+
+        with pytest.raises(Exception, match="not initialized"):
+            await c.reindex_records([MagicMock(external_record_id="crm.lead/1")])
+
+    @pytest.mark.asyncio
+    async def test_deleted_attachment_is_skipped(self):
+        c = self._connector()
+        c.data_source.get_attachment = AsyncMock(return_value=None)
+
+        await c.reindex_records([MagicMock(external_record_id="ir.attachment/9")])
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+        c.data_entities_processor.reindex_existing_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unchanged_attachment_is_reindexed_in_place(self):
+        c = self._connector()
+        c.data_source.get_attachment = AsyncMock(
+            return_value=_attachment(write_date="2024-02-01 00:00:00")
+        )
+        record = MagicMock(
+            external_record_id="ir.attachment/9",
+            external_revision_id="2024-02-01 00:00:00",
+        )
+
+        await c.reindex_records([record])
+
+        c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])
+
+    @pytest.mark.asyncio
+    async def test_changed_attachment_keeps_inherited_lead_permissions(self):
+        from app.models.permission import Permission
+
+        c = self._connector()
+        c.data_source.get_attachment = AsyncMock(
+            return_value=_attachment(write_date="2024-03-01 00:00:00")
+        )
+        _mock_transaction(c, existing_record=None)
+        inherited = Permission(
+            external_id="7", email="alice@example.com",
+            type=PermissionType.OWNER, entity_type=EntityType.USER,
+        )
+        c._fetch_lead_permissions = AsyncMock(return_value={1: [inherited]})
+        record = MagicMock(
+            external_record_id="ir.attachment/9",
+            external_revision_id="2024-02-01 00:00:00",
+        )
+
+        await c.reindex_records([record])
+
+        updated = c.data_entities_processor.on_new_records.await_args.args[0]
+        assert [p.email for p in updated[0][1]] == ["alice@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_changed_attachment_without_permissions_or_creator_stays_empty(self):
+        c = self._connector()
+        c.creator_email = None
+        c.data_source.get_attachment = AsyncMock(
+            return_value=_attachment(res_id=False, write_date="2024-03-01 00:00:00")
+        )
+        _mock_transaction(c, existing_record=None)
+        c._fetch_lead_permissions = AsyncMock(return_value={})
+        record = MagicMock(
+            external_record_id="ir.attachment/9",
+            external_revision_id="2024-02-01 00:00:00",
+        )
+
+        await c.reindex_records([record])
+
+        updated = c.data_entities_processor.on_new_records.await_args.args[0]
+        assert updated[0][1] == []
+
+    @pytest.mark.asyncio
+    async def test_deleted_lead_is_skipped(self):
+        c = self._connector()
+        c.data_source.get_lead = AsyncMock(return_value=None)
+
+        await c.reindex_records([MagicMock(external_record_id="crm.lead/1")])
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_bad_record_does_not_abort_the_rest(self):
+        c = self._connector()
+        c.data_source.get_lead = AsyncMock(return_value=None)
+        bad = MagicMock(external_record_id="crm.lead/not-an-int", id="r-bad")
+
+        await c.reindex_records([bad, MagicMock(external_record_id="crm.lead/1")])
+
+        c.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_user_refresh_failure_propagates(self):
+        c = self._connector()
+        c._sync_users = AsyncMock(side_effect=RuntimeError("odoo down"))
+
+        with pytest.raises(RuntimeError):
+            await c.reindex_records([MagicMock(external_record_id="crm.lead/1")])
+
+
+class TestGetFilterOptions:
+    @pytest.mark.asyncio
+    async def test_no_dynamic_filters_declared(self):
+        c = _make_connector()
+        with pytest.raises(ValueError, match="Unsupported filter key"):
+            await c.get_filter_options("lead_type")
+
+
+class TestFetchCompanyGroupWithoutDataSource:
+    @pytest.mark.asyncio
+    async def test_returns_empty_map(self):
+        c = _make_connector()
+        c.data_source = None
+        assert await c._fetch_company_group_by_lead([_lead()]) == {}
+
+
+class TestSyncAttachmentsInheritedPermissions:
+    @pytest.mark.asyncio
+    async def test_lead_permissions_are_used_as_is(self):
+        from app.models.permission import Permission
+
+        c = _make_connector()
+        c.creator_email = "creator@example.com"
+        c.attachment_sync_point = MagicMock()
+        c.attachment_sync_point.read_sync_point = AsyncMock(return_value={})
+        c.attachment_sync_point.update_sync_point = AsyncMock()
+        _mock_transaction(c, existing_record=None)
+        c._fetch_lead_permissions = AsyncMock(
+            return_value={
+                1: [
+                    Permission(
+                        external_id="7", email="alice@example.com",
+                        type=PermissionType.OWNER, entity_type=EntityType.USER,
+                    )
+                ]
+            }
+        )
+        c.data_source.list_attachments = AsyncMock(return_value=[_attachment(id=9, res_id=1)])
+
+        await c._sync_attachments(full_sync=True)
+
+        records = c.data_entities_processor.on_new_records.await_args.args[0]
+        assert [p.email for p in records[0][1]] == ["alice@example.com"]
