@@ -10,6 +10,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
@@ -390,6 +391,16 @@ class EntityEventService(BaseEventService):
                 self.logger.error(f"Organization not found: {org_id}")
                 return False
 
+            # Defense in depth: re-check MANUAL here too, since this event can
+            # arrive from producers other than the toggle endpoint (which already
+            # applies the same check before setting syncAction).
+            if sync_action == "immediate" and connector_id and await self.__is_manual_sync_strategy(connector_id):
+                self.logger.info(
+                    f"Skipping immediate sync for connector {connector_id}: "
+                    "selected strategy is MANUAL"
+                )
+                sync_action = "none"
+
             for app_name in apps:
                 if sync_action == "immediate":
                     # Start sync for each app (connector already initialized for standard connectors)
@@ -409,6 +420,23 @@ class EntityEventService(BaseEventService):
 
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
+            return False
+
+    async def __is_manual_sync_strategy(self, connector_id: str) -> bool:
+        """Read selectedStrategy from the same etcd path connector_factory reads
+        on startup, so this check agrees with it. Defaults to False (i.e. sync)
+        on a missing/unreadable config, matching connector_factory's behavior."""
+        try:
+            config_service = self.app_container.config_service()
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+            sync_strategy = (config or {}).get("sync") or {}
+            return sync_strategy.get("selectedStrategy") == SyncStrategy.MANUAL.value
+        except Exception as e:
+            self.logger.warning(
+                f"Could not read sync strategy for connector {connector_id}: {e}"
+            )
             return False
 
     async def __handle_app_disabled(self, payload: dict) -> bool:

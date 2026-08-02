@@ -302,6 +302,10 @@ async def recover_in_progress_records(
                         "indexingStatus": ProgressStatus.QUEUED.value,
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
+                        # Fresh queuedAt: this write is IN_PROGRESS recovery, not an
+                        # orphaned QUEUED record, so it must not look stale to the
+                        # QUEUED sweep pass below on the very next tick.
+                        "queuedAt": get_epoch_timestamp_in_ms(),
                         "reason": "Recovered after restart; re-queued for indexing",
                     }
 
@@ -370,6 +374,206 @@ async def recover_in_progress_records(
                             )
                     logger.error(
                         f"❌ Error recovering record {record_id}: {str(e)}"
+                    )
+                    results["error"] += 1
+                    return False
+                finally:
+                    if (
+                        record_lock_held
+                        and record_pool is not None
+                        and concurrency_manager is not None
+                    ):
+                        try:
+                            await run_coordination(
+                                concurrency_manager.release(
+                                    record_pool,
+                                    record_owner,
+                                )
+                            )
+                        except Exception as release_exc:
+                            logger.warning(
+                                "Failed to release recovery lease for record %s: %s",
+                                record_id,
+                                release_exc,
+                            )
+
+        async def process_orphaned_record(
+            record: dict[str, Any], expected_status: str
+        ) -> bool | None:
+            """Re-queue one QUEUED/NOT_STARTED record orphaned by broker retention
+            loss or a publish failure.
+
+            QUEUED and NOT_STARTED have no "still mid-flight" signal the way
+            IN_PROGRESS does (process_single_record's re-read above can tell a
+            genuinely stuck record from one the consumer already finished by
+            checking for IN_PROGRESS). Here the compare_and_set_indexing_status
+            call below is what makes the claim atomic instead: it loses cleanly
+            if a live consumer or a broker redelivery has already advanced the
+            record between the re-read and this point, rather than clobbering it.
+            """
+            async with semaphore:
+                record_id = record.get("_key")
+                record_name = record.get("recordName", "Unknown")
+                reset_for_requeue = False
+                published = False
+                record_lock_held = False
+                record_pool: str | None = None
+                record_owner = f"{recovery_owner}:record:{uuid4().hex}"
+                try:
+                    if not record_id:
+                        raise ValueError("Cannot recover a record without _key")
+
+                    if concurrency_manager is not None:
+                        record_pool = f"record:{record_id}"
+                        record_lock_held = await run_coordination(
+                            concurrency_manager.try_acquire(
+                                record_pool,
+                                record_owner,
+                                1,
+                                recovery_lease_seconds,
+                            )
+                        )
+                        if not record_lock_held:
+                            return None
+
+                    latest_record = await graph_provider.get_document(
+                        record_id,
+                        CollectionNames.RECORDS.value,
+                    )
+                    if (
+                        latest_record is None
+                        or latest_record.get("indexingStatus") != expected_status
+                    ):
+                        results["skipped"] += 1
+                        return True
+                    record = latest_record
+                    record_name = record.get("recordName", "Unknown")
+
+                    connector_id = record.get("connectorId")
+                    origin = record.get("origin")
+                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                        connector_instance = await graph_provider.get_document(
+                            connector_id, CollectionNames.APPS.value
+                        )
+                        if not connector_instance or not connector_instance.get(
+                            "isActive", False
+                        ):
+                            reason = (
+                                "Connector no longer exists"
+                                if not connector_instance
+                                else "Connector is inactive"
+                            )
+                            logger.info(
+                                f"⏭️ Skipping recovery for record {record_id}: {reason}."
+                            )
+                            await update_recovery_status(
+                                record_id,
+                                {
+                                    "parsingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                                    "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                                    "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                                    "processingStartedAt": None,
+                                    "queuedAt": None,
+                                    "reason": reason,
+                                },
+                            )
+                            results["skipped"] += 1
+                            return True
+
+                    swapped = await graph_provider.compare_and_set_indexing_status(
+                        [record_id], expected_status, ProgressStatus.QUEUED.value
+                    )
+                    if not swapped:
+                        results["skipped"] += 1
+                        return True
+
+                    payload = {
+                        "recordId": record_id,
+                        "recordName": record.get("recordName"),
+                        "orgId": record.get("orgId"),
+                        "version": record.get("version", 0),
+                        "connectorName": record.get(
+                            "connectorName", Connectors.KNOWLEDGE_BASE.value
+                        ),
+                        "extension": record.get("extension"),
+                        "mimeType": record.get("mimeType"),
+                        "origin": record.get("origin"),
+                        "recordType": record.get("recordType"),
+                        "virtualRecordId": record.get("virtualRecordId"),
+                    }
+                    version = int(payload.get("version", 0) or 0)
+                    virtual_record_id = payload.get("virtualRecordId")
+                    event_type = (
+                        EventTypes.REINDEX_RECORD.value
+                        if version > 0 and virtual_record_id is not None
+                        else EventTypes.NEW_RECORD.value
+                    )
+
+                    reset_fields = {
+                        "parsingStatus": ProgressStatus.NOT_STARTED.value,
+                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        "processingStartedAt": None,
+                        "queuedAt": get_epoch_timestamp_in_ms(),
+                        "reason": (
+                            "Recovered orphaned record after broker/publish gap; "
+                            "re-queued for indexing"
+                        ),
+                    }
+
+                    async def publish_recovery_event() -> None:
+                        nonlocal published
+                        await run_coordination(
+                            retry_producer.send_event(
+                                topic=Topic.RECORD_EVENTS.value,
+                                event_type=event_type,
+                                payload=payload,
+                                key=str(record_id),
+                            )
+                        )
+                        published = True
+
+                    if concurrency_manager is not None:
+                        await publish_recovery_event()
+                        await update_recovery_status(record_id, reset_fields)
+                        reset_for_requeue = True
+                    else:
+                        await update_recovery_status(record_id, reset_fields)
+                        reset_for_requeue = True
+                        await publish_recovery_event()
+
+                    logger.debug(
+                        f"✅ Re-queued orphaned record: {record_name} "
+                        f"(event={event_type})"
+                    )
+                    results["requeued"] += 1
+                    return True
+
+                except Exception as e:
+                    if reset_for_requeue and not published and record_id:
+                        try:
+                            # The CAS already claimed the record; restoring
+                            # expected_status (rather than leaving it at QUEUED
+                            # with no live message) puts it back in front of the
+                            # next sweep tick instead of losing it silently.
+                            await update_recovery_status(
+                                record_id,
+                                {
+                                    "indexingStatus": expected_status,
+                                    "reason": (
+                                        "Orphaned-record recovery publish failed; "
+                                        "will retry"
+                                    ),
+                                },
+                            )
+                        except Exception as restore_exc:
+                            logger.error(
+                                "Failed to restore orphaned status for %s after "
+                                "recovery publish failure: %s",
+                                record_id,
+                                restore_exc,
+                            )
+                    logger.error(
+                        f"❌ Error recovering orphaned record {record_id}: {str(e)}"
                     )
                     results["error"] += 1
                     return False
@@ -474,6 +678,81 @@ async def recover_in_progress_records(
                 # (outside our control) can still shift the offset by one and
                 # skip or repeat a row; harmless since the loop reruns on the
                 # next stale_recovery_interval_seconds tick.
+                offset += len(page) - removed_from_result
+
+        queued_cutoff_ms = (
+            get_epoch_timestamp_in_ms()
+            - int(messaging_env.stale_queued_recovery_after_seconds * 1000)
+        )
+
+        def is_queued_stale(record: dict[str, Any]) -> bool:
+            queued_at = record.get("queuedAt")
+            if queued_at is None:
+                # Opposite convention from is_stale's processingStartedAt check:
+                # a healthy record can go a long time without ever having
+                # queuedAt set (rollout gap, or _mark_queued_after_publish's
+                # best-effort stamp lost the race), so absence must not be
+                # treated as proof of staleness the way it is for IN_PROGRESS.
+                return False
+            try:
+                return float(queued_at) <= queued_cutoff_ms
+            except (TypeError, ValueError):
+                return False
+
+        def is_not_started_stale(record: dict[str, Any]) -> bool:
+            # Local FS stamps createdAtTimestamp with the file's mtime, not a
+            # server clock (see local_fs/connector.py _build_file_record), so an
+            # old file created "just now" would look stale immediately. Skip
+            # Local FS here until it has its own recovery-eligible timestamp.
+            if record.get("connectorName") == Connectors.LOCAL_FS.value:
+                return False
+            created_at = record.get("createdAtTimestamp")
+            if created_at is None:
+                return True
+            effective_cutoff_ms = (
+                distributed_cutoff_ms if concurrency_manager is not None else cutoff_ms
+            )
+            try:
+                return float(created_at) <= effective_cutoff_ms
+            except (TypeError, ValueError):
+                return True
+
+        for status_value, stale_predicate in (
+            (ProgressStatus.QUEUED.value, is_queued_stale),
+            (ProgressStatus.NOT_STARTED.value, is_not_started_stale),
+        ):
+            offset = 0
+            while True:
+                if (
+                    recovery_renewal_task is not None
+                    and recovery_renewal_task.done()
+                ):
+                    recovery_renewal_task.result()
+
+                page = await graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    skip=offset,
+                    limit=page_size,
+                    filters={"indexingStatus": status_value},
+                    sort_field="_key",
+                    raise_on_error=True,
+                )
+                if not page:
+                    break
+
+                candidates = [record for record in page if stale_predicate(record)]
+
+                outcomes = await asyncio.gather(
+                    *(
+                        process_orphaned_record(record, status_value)
+                        for record in candidates
+                    )
+                )
+                total_records += sum(outcome is not None for outcome in outcomes)
+                removed_from_result = sum(outcome is True for outcome in outcomes)
+
+                if len(page) < page_size:
+                    break
                 offset += len(page) - removed_from_result
 
         if total_records == 0:

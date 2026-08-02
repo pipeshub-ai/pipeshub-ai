@@ -98,7 +98,10 @@ from app.connectors.sources.local_fs.connector import (  # noqa: E402
     _parse_sync_settings as read_sync_settings_from_config,
     _validate_sync_root_path as validate_host_path,
 )
-from app.connectors.sources.local_fs.models import LocalFsFileEvent  # noqa: E402
+from app.connectors.sources.local_fs.models import (  # noqa: E402
+    LocalFsFileEvent,
+    LocalFsFileEventBatchStats,
+)
 from app.models.entities import FileRecord, OriginTypes, RecordType, RecordGroupType, User  # noqa: E402
 from app.models.permission import PermissionType  # noqa: E402
 
@@ -2397,6 +2400,8 @@ class TestRunSync:
         owner = User(email="o@x.com", id="owner-1", org_id="org-1")
         folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
         folder_connector._reset_existing_records = AsyncMock(return_value=0)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(return_value={})
+        folder_connector._write_record_sync_point = AsyncMock()
         folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
         folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
         folder_connector.data_entities_processor.on_new_records = AsyncMock()
@@ -2432,6 +2437,8 @@ class TestRunSync:
         owner = User(email="o@x.com", id="owner-1", org_id="org-1")
         folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
         folder_connector._reset_existing_records = AsyncMock(return_value=0)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(return_value={})
+        folder_connector._write_record_sync_point = AsyncMock()
         folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
         folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
         folder_connector.data_entities_processor.on_new_records = AsyncMock()
@@ -2492,6 +2499,8 @@ class TestRunSync:
         owner = User(email="o@x.com", id="owner-1", org_id="org-1")
         folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
         folder_connector._reset_existing_records = AsyncMock(return_value=0)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(return_value={})
+        folder_connector._write_record_sync_point = AsyncMock()
         folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
         folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
         folder_connector.data_entities_processor.on_new_records = AsyncMock()
@@ -2519,6 +2528,225 @@ class TestRunSync:
         # The flaky file was skipped but the second one got through.
         folder_connector.logger.warning.assert_called()
         folder_connector.data_entities_processor.on_new_records.assert_awaited()
+
+    async def test_dispatches_to_incremental_when_sync_point_present(
+        self, folder_connector, tmp_path
+    ):
+        """A populated sync point must route to the non-destructive path, not
+        the full destructive crawl."""
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(
+            return_value={"lastSyncAt": 123, "recordCount": 1}
+        )
+        folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+        folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        folder_connector._run_full_sync = AsyncMock()
+        folder_connector._run_incremental_sync = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            await folder_connector.run_sync()
+
+        folder_connector._run_incremental_sync.assert_awaited_once()
+        folder_connector._run_full_sync.assert_not_awaited()
+
+    async def test_dispatches_to_full_sync_when_no_sync_point(
+        self, folder_connector, tmp_path
+    ):
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
+        )
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(return_value={})
+        folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+        folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        folder_connector._run_full_sync = AsyncMock()
+        folder_connector._run_incremental_sync = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(FilterCollection(filters=[]), FilterCollection(filters=[]))
+            ),
+        ):
+            await folder_connector.run_sync()
+
+        folder_connector._run_full_sync.assert_awaited_once()
+        folder_connector._run_incremental_sync.assert_not_awaited()
+
+
+# --------------------------------------------------------------------------- #
+# _run_incremental_sync — Bug A diff / guard / abort behavior                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestRunIncrementalSync:
+    """Exercises _run_incremental_sync directly (bypassing run_sync's owner /
+    sync-point plumbing, already covered by TestRunSync)."""
+
+    @staticmethod
+    def _revision_for(path: Path) -> str:
+        st = path.stat()
+        return f"{int(st.st_mtime * 1000)}:{st.st_size}"
+
+    async def _run(
+        self,
+        folder_connector: LocalFsConnector,
+        root: Path,
+        sync_point_data: dict,
+        owner: Optional[User] = None,
+    ) -> None:
+        owner = owner or User(email="o@x.com", id="owner-1", org_id="org-1")
+        await folder_connector._run_incremental_sync(
+            root,
+            owner,
+            FilterCollection(filters=[]),
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            sync_point_data,
+        )
+
+    async def test_empty_diff_when_fs_and_db_agree(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """The regression that matters most: filesystem and DB already match,
+        so incremental sync must not create, delete, or re-embed anything."""
+        f1 = tmp_path / "a.txt"
+        f1.write_text("a", encoding="utf-8")
+        ext_id = folder_connector._external_record_id_for_rel_path("a.txt")
+        existing = {ext_id: self._revision_for(f1)}
+
+        folder_connector._scan_existing_records = AsyncMock(return_value=existing)
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await self._run(folder_connector, tmp_path, {"recordCount": 1})
+
+        folder_connector._apply_events_with_context.assert_not_awaited()
+        folder_connector._delete_external_ids.assert_not_awaited()
+        folder_connector._write_record_sync_point.assert_awaited_once_with(1)
+
+    async def test_scan_error_propagates_and_aborts(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """A transient DB error during the scan must abort the run rather than
+        being treated as an empty scan (which would re-create every record)."""
+        folder_connector._scan_existing_records = AsyncMock(
+            side_effect=RuntimeError("db unavailable")
+        )
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await self._run(folder_connector, tmp_path, {"recordCount": 50})
+
+        folder_connector._apply_events_with_context.assert_not_awaited()
+        folder_connector._delete_external_ids.assert_not_awaited()
+        folder_connector._write_record_sync_point.assert_not_awaited()
+        folder_connector.logger.error.assert_called()
+
+    async def test_guard_aborts_when_scan_returns_far_fewer_records(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """A scan that comes back mostly empty compared to the last sync point
+        must abort instead of diffing the (apparently) mass-deleted corpus."""
+        folder_connector._scan_existing_records = AsyncMock(
+            return_value={"ext-1": "1:1"}
+        )
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await self._run(folder_connector, tmp_path, {"recordCount": 100})
+
+        folder_connector._apply_events_with_context.assert_not_awaited()
+        folder_connector._delete_external_ids.assert_not_awaited()
+        folder_connector._write_record_sync_point.assert_not_awaited()
+        folder_connector.logger.error.assert_called()
+
+    async def test_guard_does_not_block_a_genuinely_small_first_scan(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """A previous recordCount of 0 (or missing) must never trip the guard,
+        even though the scan legitimately came back empty."""
+        folder_connector._scan_existing_records = AsyncMock(return_value={})
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await self._run(folder_connector, tmp_path, {"recordCount": 0})
+
+        folder_connector._write_record_sync_point.assert_awaited_once_with(0)
+
+    async def test_new_file_creates_and_stale_record_deletes(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        """New-on-disk -> CREATED event; DB-only (no longer on disk) -> delete
+        via _delete_external_ids, not a full reset."""
+        new_file = tmp_path / "new.txt"
+        new_file.write_text("new", encoding="utf-8")
+        stale_ext_id = "stale-record-not-on-disk"
+        folder_connector._scan_existing_records = AsyncMock(
+            return_value={stale_ext_id: "1:1"}
+        )
+        folder_connector._apply_events_with_context = AsyncMock(
+            return_value=LocalFsFileEventBatchStats(processed=1, deleted=0)
+        )
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        await self._run(folder_connector, tmp_path, {"recordCount": 1}, owner=owner)
+
+        folder_connector._apply_events_with_context.assert_awaited_once()
+        events = folder_connector._apply_events_with_context.await_args.args[0]
+        assert any(
+            e.type == "CREATED" and e.path == "new.txt" for e in events
+        )
+        folder_connector._delete_external_ids.assert_awaited_once_with(
+            [stale_ext_id], owner.id
+        )
+        # seen_external_ids only contains new.txt's id -> count of 1.
+        folder_connector._write_record_sync_point.assert_awaited_once_with(1)
+
+    async def test_modified_file_emits_modified_event(
+        self, folder_connector: LocalFsConnector, tmp_path: Path
+    ):
+        f1 = tmp_path / "a.txt"
+        f1.write_text("a", encoding="utf-8")
+        ext_id = folder_connector._external_record_id_for_rel_path("a.txt")
+        # Stale revision guarantees a mismatch against whatever mtime:size a.txt has now.
+        folder_connector._scan_existing_records = AsyncMock(
+            return_value={ext_id: "1:999999"}
+        )
+        folder_connector._apply_events_with_context = AsyncMock(
+            return_value=LocalFsFileEventBatchStats(processed=1, deleted=0)
+        )
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await self._run(folder_connector, tmp_path, {"recordCount": 1})
+
+        events = folder_connector._apply_events_with_context.await_args.args[0]
+        assert any(e.type == "MODIFIED" and e.path == "a.txt" for e in events)
+        folder_connector._delete_external_ids.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- #

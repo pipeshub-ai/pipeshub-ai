@@ -44,6 +44,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -77,7 +82,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
-from app.utils.time_conversion import parse_timestamp
+from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
 
@@ -390,6 +395,19 @@ class LocalFsConnector(BaseConnector):
         self.include_subfolders: bool = True
         self.batch_size: int = 50
         self._owner_user_for_permissions: Optional[User] = None
+
+        # Per-connector checkpoint used to tell a first/forced full crawl
+        # (empty dict, see SyncPoint.read_sync_point) apart from a later
+        # incremental run (non-empty dict) in run_sync().
+        self._record_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=self.data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=self.data_store_provider,
+        )
+        self._sync_point_key = generate_record_sync_point_key(
+            "files", "localfs", self.connector_id
+        )
 
     async def init(self) -> bool:
         try:
@@ -1470,6 +1488,42 @@ class LocalFsConnector(BaseConnector):
             )
 
         root = Path(detail)
+        try:
+            owner, sync_filters, indexing_filters, rg_external = (
+                await self._ensure_owner_and_record_group(root)
+            )
+            return await self._apply_events_with_context(
+                events,
+                root,
+                owner,
+                sync_filters,
+                indexing_filters,
+                rg_external,
+                reset_before_apply=reset_before_apply,
+            )
+        finally:
+            self._owner_user_for_permissions = None
+
+    async def _apply_events_with_context(
+        self,
+        events: List[LocalFsFileEvent],
+        root: Path,
+        owner: User,
+        sync_filters: FilterCollection,
+        indexing_filters: FilterCollection,
+        rg_external: str,
+        reset_before_apply: bool = False,
+    ) -> LocalFsFileEventBatchStats:
+        """Apply a batch of create/modify/delete/rename events against an
+        already-resolved owner/record-group context.
+
+        Split out of apply_file_event_batch so run_sync's incremental path can
+        reuse the same event-application loop: apply_file_event_batch used to
+        clear _owner_user_for_permissions in its own finally block, which would
+        null the owner out from under a caller still using it mid-run_sync (see
+        _build_file_record's fallback to that field). Owner lifecycle is now the
+        caller's responsibility.
+        """
         processed = 0
         deleted = 0
         upsert_buffer: List[Tuple[FileRecord, List[Permission]]] = []
@@ -1482,152 +1536,145 @@ class LocalFsConnector(BaseConnector):
         emitted_folder_paths: set[str] = set()
         batch_size = max(1, self.batch_size)
 
-        try:
-            owner, sync_filters, indexing_filters, rg_external = (
-                await self._ensure_owner_and_record_group(root)
+        async def flush_upserts() -> None:
+            nonlocal processed, deleted
+            if not upsert_buffer:
+                return
+            await self.data_entities_processor.on_new_records(list(upsert_buffer))
+            processed += self._count_processed_file_records(upsert_buffer)
+            upsert_buffer.clear()
+            if delete_after_upsert_buffer:
+                await self._delete_external_ids(
+                    list(delete_after_upsert_buffer), owner.id
+                )
+                deleted += len(delete_after_upsert_buffer)
+                delete_after_upsert_buffer.clear()
+
+        async def flush_delete_only() -> None:
+            nonlocal deleted
+            if not delete_only_buffer:
+                return
+            await self._delete_external_ids(
+                list(delete_only_buffer), owner.id
+            )
+            deleted += len(delete_only_buffer)
+            delete_only_buffer.clear()
+
+        if reset_before_apply:
+            deleted += await self._reset_existing_records(owner.id)
+
+        for event in events:
+            event_type = event.type.strip().upper()
+            rel_path = event.path.strip().replace("\\", "/")
+            old_rel_path = (
+                event.oldPath.strip().replace("\\", "/") if event.oldPath else ""
             )
 
-            async def flush_upserts() -> None:
-                nonlocal processed, deleted
-                if not upsert_buffer:
-                    return
-                await self.data_entities_processor.on_new_records(list(upsert_buffer))
-                processed += self._count_processed_file_records(upsert_buffer)
-                upsert_buffer.clear()
-                if delete_after_upsert_buffer:
-                    await self._delete_external_ids(
-                        list(delete_after_upsert_buffer), owner.id
-                    )
-                    deleted += len(delete_after_upsert_buffer)
-                    delete_after_upsert_buffer.clear()
-
-            async def flush_delete_only() -> None:
-                nonlocal deleted
-                if not delete_only_buffer:
-                    return
-                await self._delete_external_ids(
-                    list(delete_only_buffer), owner.id
+            if not rel_path:
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="File event path is required",
                 )
-                deleted += len(delete_only_buffer)
-                delete_only_buffer.clear()
-
-            if reset_before_apply:
-                deleted += await self._reset_existing_records(owner.id)
-
-            for event in events:
-                event_type = event.type.strip().upper()
-                rel_path = event.path.strip().replace("\\", "/")
-                old_rel_path = (
-                    event.oldPath.strip().replace("\\", "/") if event.oldPath else ""
+            if event.isDirectory:
+                await self._handle_directory_event_for_batch(
+                    event_type=event_type,
+                    rel_path=rel_path,
+                    old_rel_path=old_rel_path,
+                    root=root,
+                    external_record_group_id=rg_external,
+                    timestamp_ms=int(event.timestamp),
+                    owner=owner,
+                    upsert_buffer=upsert_buffer,
+                    delete_after_upsert_buffer=delete_after_upsert_buffer,
+                    delete_only_buffer=delete_only_buffer,
+                    emitted_folder_paths=emitted_folder_paths,
+                    flush_upserts=flush_upserts,
+                    flush_delete_only=flush_delete_only,
+                    batch_size=batch_size,
                 )
+                continue
 
-                if not rel_path:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                        detail="File event path is required",
-                    )
-                if event.isDirectory:
-                    await self._handle_directory_event_for_batch(
-                        event_type=event_type,
-                        rel_path=rel_path,
-                        old_rel_path=old_rel_path,
-                        root=root,
-                        external_record_group_id=rg_external,
-                        timestamp_ms=int(event.timestamp),
-                        owner=owner,
-                        upsert_buffer=upsert_buffer,
-                        delete_after_upsert_buffer=delete_after_upsert_buffer,
-                        delete_only_buffer=delete_only_buffer,
-                        emitted_folder_paths=emitted_folder_paths,
-                        flush_upserts=flush_upserts,
-                        flush_delete_only=flush_delete_only,
-                        batch_size=batch_size,
-                    )
-                    continue
-
-                if event_type in {"CREATED", "MODIFIED"}:
-                    record = self._prepare_upsert_record(
-                        root, rel_path, rg_external, sync_filters,
-                        indexing_filters, owner=owner,
-                    )
-                    if record is not None:
-                        upsert_buffer.extend(
-                            self._build_parent_folder_records(
-                                rel_path,
-                                root,
-                                rg_external,
-                                int(event.timestamp),
-                                emitted_folder_paths,
-                                owner=owner,
-                            )
+            if event_type in {"CREATED", "MODIFIED"}:
+                record = self._prepare_upsert_record(
+                    root, rel_path, rg_external, sync_filters,
+                    indexing_filters, owner=owner,
+                )
+                if record is not None:
+                    upsert_buffer.extend(
+                        self._build_parent_folder_records(
+                            rel_path,
+                            root,
+                            rg_external,
+                            int(event.timestamp),
+                            emitted_folder_paths,
+                            owner=owner,
                         )
-                        upsert_buffer.append(record)
-                        if len(upsert_buffer) >= batch_size:
-                            await flush_upserts()
-                    continue
+                    )
+                    upsert_buffer.append(record)
+                    if len(upsert_buffer) >= batch_size:
+                        await flush_upserts()
+                continue
 
-                if event_type == "DELETED":
+            if event_type == "DELETED":
+                delete_only_buffer.append(
+                    self._external_record_id_for_rel_path(rel_path)
+                )
+                if len(delete_only_buffer) >= batch_size:
+                    await flush_delete_only()
+                continue
+
+            if event_type in {"RENAMED", "MOVED"}:
+                record = self._prepare_upsert_record(
+                    root, rel_path, rg_external, sync_filters,
+                    indexing_filters, owner=owner,
+                )
+                if record is not None:
+                    upsert_buffer.extend(
+                        self._build_parent_folder_records(
+                            rel_path,
+                            root,
+                            rg_external,
+                            int(event.timestamp),
+                            emitted_folder_paths,
+                            owner=owner,
+                        )
+                    )
+                    upsert_buffer.append(record)
+                    if old_rel_path:
+                        # Validate the old path the same way as the new
+                        # one so a hostile rename can't sneak a path
+                        # escape past us.
+                        self._resolve_event_file_path(root, old_rel_path)
+                        old_ext_id = self._external_record_id_for_rel_path(
+                            old_rel_path
+                        )
+                        new_ext_id = self._external_record_id_for_rel_path(
+                            rel_path
+                        )
+                        if old_ext_id != new_ext_id:
+                            delete_after_upsert_buffer.append(old_ext_id)
+                    if len(upsert_buffer) >= batch_size:
+                        await flush_upserts()
+                elif old_rel_path:
+                    # New file vanished or was filtered out; downgrade
+                    # the rename to a plain DELETE of the old path.
+                    self._resolve_event_file_path(root, old_rel_path)
                     delete_only_buffer.append(
-                        self._external_record_id_for_rel_path(rel_path)
+                        self._external_record_id_for_rel_path(old_rel_path)
                     )
                     if len(delete_only_buffer) >= batch_size:
                         await flush_delete_only()
-                    continue
+                continue
 
-                if event_type in {"RENAMED", "MOVED"}:
-                    record = self._prepare_upsert_record(
-                        root, rel_path, rg_external, sync_filters,
-                        indexing_filters, owner=owner,
-                    )
-                    if record is not None:
-                        upsert_buffer.extend(
-                            self._build_parent_folder_records(
-                                rel_path,
-                                root,
-                                rg_external,
-                                int(event.timestamp),
-                                emitted_folder_paths,
-                                owner=owner,
-                            )
-                        )
-                        upsert_buffer.append(record)
-                        if old_rel_path:
-                            # Validate the old path the same way as the new
-                            # one so a hostile rename can't sneak a path
-                            # escape past us.
-                            self._resolve_event_file_path(root, old_rel_path)
-                            old_ext_id = self._external_record_id_for_rel_path(
-                                old_rel_path
-                            )
-                            new_ext_id = self._external_record_id_for_rel_path(
-                                rel_path
-                            )
-                            if old_ext_id != new_ext_id:
-                                delete_after_upsert_buffer.append(old_ext_id)
-                        if len(upsert_buffer) >= batch_size:
-                            await flush_upserts()
-                    elif old_rel_path:
-                        # New file vanished or was filtered out; downgrade
-                        # the rename to a plain DELETE of the old path.
-                        self._resolve_event_file_path(root, old_rel_path)
-                        delete_only_buffer.append(
-                            self._external_record_id_for_rel_path(old_rel_path)
-                        )
-                        if len(delete_only_buffer) >= batch_size:
-                            await flush_delete_only()
-                    continue
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Unsupported Local FS file event type: {event_type}",
+            )
 
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Unsupported Local FS file event type: {event_type}",
-                )
+        await flush_upserts()
+        await flush_delete_only()
 
-            await flush_upserts()
-            await flush_delete_only()
-
-            return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
-        finally:
-            self._owner_user_for_permissions = None
+        return LocalFsFileEventBatchStats(processed=processed, deleted=deleted)
 
     @staticmethod
     def _normalize_uploaded_rel_path(raw_path: str) -> str:
@@ -2090,6 +2137,15 @@ class LocalFsConnector(BaseConnector):
         )
 
     async def run_sync(self) -> None:
+        """Full or incremental sync, chosen by sync-point presence.
+
+        _handle_start_sync (event_service.py) deletes this connector's sync
+        points before calling run_sync() when the caller asked for a full
+        resync, and never otherwise — so an empty dict here means either the
+        first run ever or an explicit full-resync request, and a populated
+        dict means "diff against what we already have," matching the pattern
+        used by the Drive/OneDrive/Box connectors.
+        """
         await self._reload_sync_settings()
 
         root_raw = self.sync_root_path.strip()
@@ -2113,133 +2169,402 @@ class LocalFsConnector(BaseConnector):
         root = Path(detail)
 
         try:
-            self._owner_user_for_permissions = await self._resolve_owner_user()
-            owner = self._owner_user_for_permissions
-            if not owner:
-                return
-
-            sync_filters, indexing_filters = await load_connector_filters(
-                self.config_service, "localfs", self.connector_id, self.logger
+            owner, sync_filters, indexing_filters, rg_external = (
+                await self._ensure_owner_and_record_group(root)
             )
-
-            await self.data_entities_processor.on_new_app_users([self._to_app_user(owner)])
-
-            rg_external = self._record_group_external_id()
-            record_group = RecordGroup(
-                org_id=self.data_entities_processor.org_id,
-                name=root.name or str(root),
-                external_group_id=rg_external,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                group_type=RecordGroupType.DRIVE,
-                web_url=f"file://{root}",
+            sync_point_data = await self._record_sync_point.read_sync_point(
+                self._sync_point_key
             )
-            await self.data_entities_processor.on_new_record_groups(
-                [
-                    (
-                        record_group,
-                        [
-                            Permission(
-                                external_id=owner.id,
-                                email=owner.email,
-                                type=PermissionType.OWNER,
-                                entity_type=EntityType.USER,
-                            )
-                        ],
-                    )
-                ]
-            )
-
-            deleted = await self._reset_existing_records(
-                owner.id, delete_storage_documents=True
-            )
-
-            folder_paths = self._iter_folder_paths(root)
-            paths = self._iter_file_paths(root)
-            batch: List[Tuple[FileRecord, List[Permission]]] = []
-            emitted_folder_paths: set[str] = set()
-            processed = 0
-            for abs_folder_path in folder_paths:
-                try:
-                    if abs_folder_path.is_symlink():
-                        continue
-                    if not abs_folder_path.is_dir():
-                        continue
-                    st = abs_folder_path.stat()
-                    self._append_folder_upsert_records(
-                        batch,
-                        abs_folder_path.relative_to(root).as_posix(),
-                        root,
-                        rg_external,
-                        int(st.st_mtime * 1000),
-                        emitted_folder_paths,
-                        owner=owner,
-                    )
-                    if len(batch) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch)
-                        batch = []
-                        await asyncio.sleep(0)
-                except Exception as e:
-                    self.logger.warning(
-                        "Local FS: skip folder %s: %s",
-                        abs_folder_path,
-                        e,
-                        exc_info=True,
-                    )
-                    continue
-
-            for abs_path in paths:
-                try:
-                    if abs_path.is_symlink():
-                        continue
-                    if not abs_path.is_file():
-                        continue
-                    if not self._extension_allowed(abs_path, sync_filters):
-                        continue
-                    st = abs_path.stat()
-                    if not _file_stat_matches_date_filters(st, sync_filters):
-                        continue
-                    rel_path = abs_path.relative_to(root).as_posix()
-                    folder_records = self._build_parent_folder_records(
-                        rel_path,
-                        root,
-                        rg_external,
-                        int(st.st_mtime * 1000),
-                        emitted_folder_paths,
-                        owner=owner,
-                    )
-                    if folder_records:
-                        batch.extend(folder_records)
-                    batch.append(
-                        self._build_file_record(
-                            abs_path, root, rg_external, indexing_filters, st=st
-                        )
-                    )
-                    processed += 1
-                    if len(batch) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch)
-                        batch = []
-                        await asyncio.sleep(0)
-                except Exception as e:
-                    self.logger.warning("Local FS: skip %s: %s", abs_path, e)
-                    continue
-
-            if batch:
-                await self.data_entities_processor.on_new_records(batch)
-
-            self.logger.info(
-                "Local FS: finished sync from %s (%d file(s) processed, %d stale record(s) deleted)",
-                root,
-                processed,
-                deleted,
-            )
+            if sync_point_data:
+                await self._run_incremental_sync(
+                    root, owner, sync_filters, indexing_filters, rg_external,
+                    sync_point_data,
+                )
+            else:
+                await self._run_full_sync(
+                    root, owner, sync_filters, indexing_filters, rg_external,
+                )
+        except HTTPException as e:
+            # Owner/record-group could not be resolved; expected occasionally
+            # (e.g. permissions not provisioned yet), so warn rather than
+            # raise and let the next scheduled/triggered sync retry.
+            self.logger.warning("Local FS: run_sync could not start: %s", e.detail)
         except Exception as e:
             self.logger.error("Local FS run_sync failed: %s", e, exc_info=True)
             raise
         finally:
             self._owner_user_for_permissions = None
 
+    async def _run_full_sync(
+        self,
+        root: Path,
+        owner: User,
+        sync_filters: FilterCollection,
+        indexing_filters: FilterCollection,
+        rg_external: str,
+    ) -> None:
+        """Destructive: wipes every existing record for this connector, then
+        re-crawls the whole tree from scratch. Only reached on the first ever
+        run or an explicit full-resync (see run_sync's docstring); a plain
+        incremental run never lands here."""
+        deleted = await self._reset_existing_records(
+            owner.id, delete_storage_documents=True
+        )
+
+        folder_paths = self._iter_folder_paths(root)
+        paths = self._iter_file_paths(root)
+        batch: List[Tuple[FileRecord, List[Permission]]] = []
+        emitted_folder_paths: set[str] = set()
+        processed = 0
+        # Distinct from `processed` (files only, for the log line below): this
+        # counts every record written, files and folders, so it lines up with
+        # what the next incremental run's diff scan will count via
+        # get_documents_paginated({orgId, connectorId}) for the empty-scan guard.
+        total_records = 0
+        for abs_folder_path in folder_paths:
+            try:
+                if abs_folder_path.is_symlink():
+                    continue
+                if not abs_folder_path.is_dir():
+                    continue
+                st = abs_folder_path.stat()
+                before = len(batch)
+                self._append_folder_upsert_records(
+                    batch,
+                    abs_folder_path.relative_to(root).as_posix(),
+                    root,
+                    rg_external,
+                    int(st.st_mtime * 1000),
+                    emitted_folder_paths,
+                    owner=owner,
+                )
+                total_records += len(batch) - before
+                if len(batch) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch)
+                    batch = []
+                    await asyncio.sleep(0)
+            except Exception as e:
+                self.logger.warning(
+                    "Local FS: skip folder %s: %s",
+                    abs_folder_path,
+                    e,
+                    exc_info=True,
+                )
+                continue
+
+        for abs_path in paths:
+            try:
+                if abs_path.is_symlink():
+                    continue
+                if not abs_path.is_file():
+                    continue
+                if not self._extension_allowed(abs_path, sync_filters):
+                    continue
+                st = abs_path.stat()
+                if not _file_stat_matches_date_filters(st, sync_filters):
+                    continue
+                rel_path = abs_path.relative_to(root).as_posix()
+                folder_records = self._build_parent_folder_records(
+                    rel_path,
+                    root,
+                    rg_external,
+                    int(st.st_mtime * 1000),
+                    emitted_folder_paths,
+                    owner=owner,
+                )
+                if folder_records:
+                    batch.extend(folder_records)
+                    total_records += len(folder_records)
+                batch.append(
+                    self._build_file_record(
+                        abs_path, root, rg_external, indexing_filters, st=st
+                    )
+                )
+                total_records += 1
+                processed += 1
+                if len(batch) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch)
+                    batch = []
+                    await asyncio.sleep(0)
+            except Exception as e:
+                self.logger.warning("Local FS: skip %s: %s", abs_path, e)
+                continue
+
+        if batch:
+            await self.data_entities_processor.on_new_records(batch)
+
+        self.logger.info(
+            "Local FS: finished full sync from %s (%d file(s) processed, %d stale record(s) deleted)",
+            root,
+            processed,
+            deleted,
+        )
+
+        await self._write_record_sync_point(total_records)
+
+    async def _scan_existing_records(self) -> Dict[str, Optional[str]]:
+        """externalRecordId -> externalRevisionId for every record (file or
+        folder) already stored for this connector.
+
+        Uses get_documents_paginated with raise_on_error=True rather than
+        get_records_by_status, which swallows exceptions and returns [] on
+        both graph providers: a scan that came back empty because of a
+        transient DB error would look identical to "everything on disk is
+        new," and the incremental path below would re-create (though not
+        re-embed) every record. Propagating lets run_sync abort instead.
+        """
+        org_id = self.data_entities_processor.org_id
+        existing: Dict[str, Optional[str]] = {}
+        page_size = max(1, self.batch_size) * 4
+        offset = 0
+        async with self.data_store_provider.transaction() as tx_store:
+            while True:
+                page = await tx_store.graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    skip=offset,
+                    limit=page_size,
+                    filters={"orgId": org_id, "connectorId": self.connector_id},
+                    sort_field="_key",
+                    transaction=tx_store.txn,
+                    raise_on_error=True,
+                )
+                if not page:
+                    break
+                for doc in page:
+                    external_id = doc.get("externalRecordId")
+                    if external_id:
+                        existing[external_id] = doc.get("externalRevisionId")
+                if len(page) < page_size:
+                    break
+                offset += len(page)
+        return existing
+
+    async def _write_record_sync_point(self, record_count: int) -> None:
+        await self._record_sync_point.update_sync_point(
+            self._sync_point_key,
+            {
+                "lastSyncAt": get_epoch_timestamp_in_ms(),
+                "recordCount": record_count,
+            },
+        )
+
+    async def _requeue_stuck_unchanged_records(self) -> None:
+        """Re-queue records that are unchanged on disk but never finished
+        indexing (FAILED, NOT_STARTED, AUTO_INDEX_OFF), through the existing
+        non-destructive reindex primitive.
+
+        The old destructive full resync retried these by accident, by deleting
+        and recreating everything. Incremental sync must do this on purpose, or
+        a FAILED record — one the diff below will never touch again, since its
+        externalRevisionId already matches what's on disk — becomes permanently
+        invisible.
+        """
+        stuck_statuses = [
+            ProgressStatus.FAILED.value,
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+        ]
+        org_id = self.data_entities_processor.org_id
+        page_size = max(1, self.batch_size) * 4
+        after_key: Optional[str] = None
+        total = 0
+        while True:
+            async with self.data_store_provider.transaction() as tx_store:
+                records = await tx_store.get_records_by_status(
+                    org_id,
+                    self.connector_id,
+                    stuck_statuses,
+                    limit=page_size,
+                    after_key=after_key,
+                    is_placeholder=False,
+                )
+            if not records:
+                break
+            # Keyset, not offset: reindex_records advances these out of the
+            # filtered status set, so an offset would skip or repeat rows as
+            # the underlying result set shrinks out from under it.
+            after_key = records[-1].id
+            await self.reindex_records(list(records))
+            total += len(records)
+            if len(records) < page_size:
+                break
+        if total:
+            self.logger.info(
+                "Local FS: re-queued %d unchanged-but-unindexed record(s) for connector %s",
+                total,
+                self.connector_id,
+            )
+
+    async def _run_incremental_sync(
+        self,
+        root: Path,
+        owner: User,
+        sync_filters: FilterCollection,
+        indexing_filters: FilterCollection,
+        rg_external: str,
+        sync_point_data: Dict[str, JsonValue],
+    ) -> None:
+        """Diff the filesystem against what's already in the graph and apply
+        only what changed, instead of the full-sync path's delete-everything-
+        and-recrawl. See the module-level Bug A design notes in the incremental
+        sync plan for the full flowchart."""
+        try:
+            existing = await self._scan_existing_records()
+        except Exception as e:
+            self.logger.error(
+                "Local FS: incremental scan failed for connector %s; aborting "
+                "this run without touching any record (sync point left intact, "
+                "will retry next trigger): %s",
+                self.connector_id,
+                e,
+                exc_info=True,
+            )
+            return
+
+        previous_count = sync_point_data.get("recordCount")
+        if (
+            isinstance(previous_count, (int, float))
+            and previous_count > 0
+            and len(existing) < previous_count * 0.5
+        ):
+            self.logger.error(
+                "Local FS: incremental scan for connector %s returned %d "
+                "record(s), far fewer than the %s recorded at the last sync; "
+                "aborting instead of treating the gap as deletions (likely a "
+                "transient DB issue) — sync point left intact, will retry.",
+                self.connector_id,
+                len(existing),
+                previous_count,
+            )
+            return
+
+        now_ms = get_epoch_timestamp_in_ms()
+        events: List[LocalFsFileEvent] = []
+        seen_external_ids: set[str] = set()
+
+        for abs_folder_path in self._iter_folder_paths(root):
+            try:
+                if abs_folder_path.is_symlink() or not abs_folder_path.is_dir():
+                    continue
+                rel_path = abs_folder_path.relative_to(root).as_posix()
+                external_id = self._external_record_id_for_rel_path(rel_path)
+                seen_external_ids.add(external_id)
+                if external_id not in existing:
+                    events.append(
+                        LocalFsFileEvent(
+                            type="CREATED",
+                            path=rel_path,
+                            isDirectory=True,
+                            timestamp=now_ms,
+                        )
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "Local FS: skip folder %s during incremental diff: %s",
+                    abs_folder_path,
+                    e,
+                )
+                continue
+
+        for abs_path in self._iter_file_paths(root):
+            try:
+                if abs_path.is_symlink() or not abs_path.is_file():
+                    continue
+                if not self._extension_allowed(abs_path, sync_filters):
+                    continue
+                st = abs_path.stat()
+                if not _file_stat_matches_date_filters(st, sync_filters):
+                    continue
+                rel_path = abs_path.relative_to(root).as_posix()
+                external_id = self._external_record_id_for_rel_path(rel_path)
+                seen_external_ids.add(external_id)
+                # Known limitation: a same-second edit that preserves file size
+                # produces an identical "{mtime_ms}:{size}" revision and is
+                # missed. LocalFsFileEvent already carries an optional sha256
+                # field; wiring content hashing in is a follow-up, not required
+                # for the common case this fixes (mtime and/or size changes).
+                revision = f"{int(st.st_mtime * 1000)}:{st.st_size}"
+                if external_id not in existing:
+                    events.append(
+                        LocalFsFileEvent(
+                            type="CREATED",
+                            path=rel_path,
+                            isDirectory=False,
+                            timestamp=now_ms,
+                        )
+                    )
+                elif existing[external_id] != revision:
+                    events.append(
+                        LocalFsFileEvent(
+                            type="MODIFIED",
+                            path=rel_path,
+                            isDirectory=False,
+                            timestamp=now_ms,
+                        )
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "Local FS: skip %s during incremental diff: %s", abs_path, e
+                )
+                continue
+
+        deleted_external_ids = [
+            external_id
+            for external_id in existing
+            if external_id not in seen_external_ids
+        ]
+
+        if not events and not deleted_external_ids:
+            self.logger.info(
+                "Local FS: incremental sync found no changes under %s", root
+            )
+        else:
+            if events:
+                stats = await self._apply_events_with_context(
+                    events, root, owner, sync_filters, indexing_filters, rg_external,
+                )
+                self.logger.info(
+                    "Local FS: incremental sync applied %d event(s) from %s "
+                    "(%d file(s) processed, %d deleted via rename cleanup)",
+                    len(events),
+                    root,
+                    stats.processed,
+                    stats.deleted,
+                )
+            if deleted_external_ids:
+                await self._delete_external_ids(deleted_external_ids, owner.id)
+                self.logger.info(
+                    "Local FS: incremental sync removed %d record(s) no longer "
+                    "on disk under %s",
+                    len(deleted_external_ids),
+                    root,
+                )
+
+        try:
+            await self._requeue_stuck_unchanged_records()
+        except Exception as e:
+            # Best-effort: a failure here must not block the sync-point write
+            # below, since the diff above (the part that can silently re-embed
+            # everything if skipped) already applied successfully.
+            self.logger.error(
+                "Local FS: failed to re-queue unchanged-but-unindexed records "
+                "for connector %s: %s",
+                self.connector_id,
+                e,
+                exc_info=True,
+            )
+
+        # Every path still on disk now has (or, for a mid-run failure that
+        # already propagated out of this function, will on the next retry
+        # have) a DB row; every row not on disk was just deleted above.
+        await self._write_record_sync_point(len(seen_external_ids))
+
     async def run_incremental_sync(self) -> None:
+        # run_sync() already infers full-vs-incremental from sync-point
+        # presence (see its docstring), so delegating here is correct rather
+        # than an alias to a destructive path: once a sync point exists this
+        # call is incremental, and on the very first run it is a full crawl
+        # exactly like calling run_sync() directly would be.
         await self.run_sync()
 
     def handle_webhook_notification(self, notification: Dict) -> None:

@@ -1061,7 +1061,7 @@ class DataSourceEntitiesProcessor:
         if not record_ids:
             return
         try:
-            await self.data_store_provider.compare_and_set_indexing_status(
+            queued_ids = await self.data_store_provider.compare_and_set_indexing_status(
                 record_ids,
                 ProgressStatus.NOT_STARTED.value,
                 ProgressStatus.QUEUED.value,
@@ -1069,6 +1069,23 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             # Never fail a publish over a status write; the records are already on the topic.
             self.logger.error(f"❌ Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
+            return
+        if not queued_ids:
+            return
+        try:
+            # Best-effort stamp, deliberately not part of the CAS above: orphan
+            # recovery treats a missing queuedAt as "not stale", so a failure here
+            # only delays this record's eligibility for the sweep, it never causes
+            # a false republish.
+            await self.data_store_provider.batch_update_nodes(
+                [
+                    {"id": record_id, "queuedAt": get_epoch_timestamp_in_ms()}
+                    for record_id in queued_ids
+                ],
+                CollectionNames.RECORDS.value,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to stamp queuedAt for {len(queued_ids)} record(s): {str(e)}")
 
     @retry_on_deadlock()
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:

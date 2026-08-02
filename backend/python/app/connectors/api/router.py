@@ -62,7 +62,7 @@ from app.connectors.core.constants import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
-from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.connector_builder import ConnectorScope, SyncStrategy
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.local_fs.connector import LocalFsConnector
@@ -6709,6 +6709,19 @@ async def toggle_connector_instance(
             event_type = "appEnabled" if target_status else "appDisabled"
             credentials_route = f"api/v1/configurationManager/internal/connectors/{connector_id}/config"
 
+            # MANUAL strategy must not trigger a crawl just because the connector
+            # was toggled on; only the explicit sync-trigger endpoints should sync
+            # it. Read the same etcd path connector_factory reads on startup so
+            # this path and the startup path agree. Fetched here rather than in
+            # the enable-validation block above, since that block is skipped
+            # entirely when disabling.
+            config_service = container.config_service()
+            config_path = _get_config_path_for_instance(connector_id)
+            config = await config_service.get_config(config_path)
+            sync_strategy = (config or {}).get("sync") or {}
+            sync_strategy = sync_strategy.get("selectedStrategy")
+            sync_action = "none" if sync_strategy == SyncStrategy.MANUAL.value else "immediate"
+
             payload = {
                 "orgId": user_info["orgId"],
                 "appGroup": instance["appGroup"],
@@ -6716,7 +6729,7 @@ async def toggle_connector_instance(
                 "credentialsRoute": credentials_route,
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
-                "syncAction": "immediate",
+                "syncAction": sync_action,
                 "scope": instance.get("scope"),
                 "fullSync": full_sync,
             }

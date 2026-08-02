@@ -35,6 +35,7 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 SUPPORTED_CODE_FILE_EXTENSIONS = {
@@ -738,6 +739,10 @@ class RecordEventHandler(BaseEventService):
                                 updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
                             if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
                                 updates["indexingStatus"] = ProgressStatus.QUEUED.value
+                                # A fresh queuedAt marks this revert as healthy so the
+                                # orphan sweep (indexing_main.recover_in_progress_records)
+                                # doesn't mistake it for an abandoned QUEUED record.
+                                updates["queuedAt"] = get_epoch_timestamp_in_ms()
                                 if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
                                     updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
                         if updates:
