@@ -22,7 +22,12 @@ describe('requestElectronServerUrlChange', () => {
     const { requestElectronServerUrlChange, ELECTRON_SERVER_URL_NAVIGATION_EVENT } = await import(
       '../auth-store'
     );
-    const listener = vi.fn();
+    // Assert ordering from inside the listener — dispatch is synchronous, so
+    // by the time it fires the ack must already be cleared. A plain
+    // post-hoc call-count check would pass even if the event fired first.
+    const listener = vi.fn(() => {
+      expect(clearElectronLogoutServerStateMock).toHaveBeenCalledTimes(1);
+    });
     window.addEventListener(ELECTRON_SERVER_URL_NAVIGATION_EVENT, listener);
 
     requestElectronServerUrlChange();
