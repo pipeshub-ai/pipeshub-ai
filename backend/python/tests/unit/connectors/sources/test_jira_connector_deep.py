@@ -442,21 +442,21 @@ class TestFindAttachmentRecordById:
     async def test_finds_record(self):
         c, dep, dsp, cs, tx = _make_connector()
         mock_record = MagicMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        dep.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
-        result = await c._find_attachment_record_by_id("12345", tx)
+        result = await c._find_attachment_record_by_id("12345")
         assert result == mock_record
-        tx.get_record_by_external_id.assert_called_with(
+        dep.get_record_by_external_id.assert_called_with(
             connector_id="conn-jira-deep",
-            external_id="attachment_12345"
+            external_record_id="attachment_12345"
         )
 
     @pytest.mark.asyncio
     async def test_not_found(self):
         c, dep, dsp, cs, tx = _make_connector()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
-        result = await c._find_attachment_record_by_id("99999", tx)
+        result = await c._find_attachment_record_by_id("99999")
         assert result is None
 
 
@@ -488,7 +488,7 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.id = "r1"
         mock_record.external_record_id = "att_555"
         mock_record.record_name = "deleted.pdf"
-        tx.get_record_by_external_id = AsyncMock(return_value=mock_record)
+        dep.get_record_by_external_id = AsyncMock(return_value=mock_record)
 
         issue = {
             "id": "10001",
@@ -508,8 +508,8 @@ class TestHandleAttachmentDeletionsFromChangelog:
         # The method returns the internal ids for the caller to hard-delete.
         result = await c._handle_attachment_deletions_from_changelog(issue, tx)
         assert result == ["r1"]
-        tx.get_record_by_external_id.assert_awaited_with(
-            connector_id=c.connector_id, external_id="attachment_555"
+        dep.get_record_by_external_id.assert_awaited_with(
+            connector_id=c.connector_id, external_record_id="attachment_555"
         )
 
 

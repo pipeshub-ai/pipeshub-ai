@@ -16,6 +16,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -139,10 +140,11 @@ class TestJiraInit:
     async def test_init_failure(self):
         connector, dep, dsp, cs, tx = _make_connector()
 
+        # init() raises so the router surfaces the real reason, not a generic message.
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_client_cls:
             mock_client_cls.build_from_services = AsyncMock(side_effect=Exception("fail"))
-            result = await connector.init()
-            assert result is False
+            with pytest.raises(ConnectorInitError, match="fail"):
+                await connector.init()
 
 
 # ===========================================================================
@@ -456,7 +458,9 @@ class TestDeletionHandling:
         )
 
     @pytest.mark.asyncio
-    async def test_handle_deleted_issue_not_found_in_db(self):
+    async def test_handle_deleted_issue_skips_delete_when_record_absent(self):
+        # Distinct from test_handle_deleted_issue_not_found_in_db above: asserts that no
+        # attachment cascade is triggered at all when the record is missing.
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
         dep.on_records_deleted_with_attachments = AsyncMock()
