@@ -60,7 +60,6 @@ EXPECTED_STEM_BY_KIND: dict[str, str] = {
     "newsletter_doc": "newsletter_doc",
     "science_fair_slides": "science_fair_slides",
     "gantt_chart_sheets": "gantt_chart_sheets",
-    "owasp_pdf": "owasp_pdf",
     "contributing_md": "contributing_md",
 }
 

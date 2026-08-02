@@ -70,6 +70,66 @@ async def wait_until_graph_condition(
     )
 
 
+async def sync_until_condition(
+    connector_id: str,
+    *,
+    sync_fn: Callable[[], Awaitable[None]],
+    check: Callable[[], Awaitable[bool]],
+    timeout: int = 300,
+    settle_sec: int = 15,
+    retry_gap_sec: int = 15,
+    description: str = "condition",
+) -> None:
+    """Settle for Drive Changes lag, sync, and re-sync until *check* passes.
+
+    A single incremental sync right after a Drive write often misses the change
+    (Changes API lag). Waiting on the graph alone cannot help — another sync is
+    required. This helper sleeps *settle_sec*, runs *sync_fn*, evaluates *check*,
+    and on failure waits *retry_gap_sec* before syncing again until *timeout*.
+    """
+    if settle_sec > 0:
+        logger.info(
+            "Waiting %ds for Drive Changes API settle before sync (%s on connector %s)...",
+            settle_sec,
+            description,
+            connector_id,
+        )
+        await asyncio.sleep(settle_sec)
+
+    deadline = time.time() + timeout
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        await sync_fn()
+        if await check():
+            logger.info(
+                "✅ %s for connector %s (sync attempt %d)",
+                description,
+                connector_id,
+                attempt,
+            )
+            return
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        gap = min(float(retry_gap_sec), remaining)
+        logger.info(
+            "⏳ %s not met after sync attempt %d on connector %s; "
+            "re-syncing in %.0fs (%.0fs remaining)...",
+            description,
+            attempt,
+            connector_id,
+            gap,
+            remaining,
+        )
+        await asyncio.sleep(gap)
+
+    raise TimeoutError(
+        f"Timed out waiting for {description} for connector {connector_id} "
+        f"after {timeout}s ({attempt} sync attempt(s))"
+    )
+
+
 async def async_wait_for_stable_record_count(
     graph_provider: "GraphProviderProtocol",
     connector_id: str,

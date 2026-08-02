@@ -42,16 +42,16 @@ Uses class-scoped connectors (see conftest):
   order 23 TC-DRIVE-IND-BLOCKS-001 — Newsletter (Docs) stream → Processor snapshot
   order 24 TC-DRIVE-IND-BLOCKS-002 — Science fair (Slides)
   order 25 TC-DRIVE-IND-BLOCKS-003 — Gantt chart (Sheets)
-  order 26 TC-DRIVE-IND-BLOCKS-004 — OWASP Test PDF
-  order 27 TC-DRIVE-IND-BLOCKS-005 — CONTRIBUTING.md
+  order 26 TC-DRIVE-IND-BLOCKS-004 — CONTRIBUTING.md
+  (PDF has no snapshot — Docling layout is not a Drive export contract)
 
-  order 28-32 TC-DRIVE-IND-IDX-001..005 — same five samples reach indexingStatus
-                                          COMPLETED via the live pipeline
+  order 28-32 TC-DRIVE-IND-IDX-001..005 — same five samples (incl. PDF) reach
+                                          indexingStatus COMPLETED via the live pipeline
 
 Blocks snapshots are the Workspace ``fixtures/<kind>.expected.json`` files — same
 samples, same export mimes, same Processor path. A mismatch is a real personal-vs-
 workspace divergence, not a fixture that needs forking. Docling must be reachable
-for PDF / Docs / Slides; Sheets uses the non-LLM Excel path.
+for Docs / Slides; Sheets uses the non-LLM Excel path. PDF is covered by IDX only.
 
 The blocks connector runs with auto-indexing ON so the IDX suite can share its
 five records; the snapshot tests parse in-process and are unaffected.
@@ -59,11 +59,12 @@ five records; the snapshot tests parse in-process and are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
+    sync_until_condition,
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
@@ -130,6 +132,9 @@ pytestmark = [
 
 _SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_INDIVIDUAL_SYNC_TIMEOUT", "300"))
 _INDEXING_WAIT_SEC = int(os.getenv("GOOGLE_DRIVE_INDIVIDUAL_INDEXING_WAIT", "300"))
+# Drive Changes API often lags writes; settle then re-sync until the graph matches.
+_DRIVE_CHANGES_SETTLE_SEC = int(os.getenv("GOOGLE_DRIVE_CHANGES_SETTLE", "15"))
+_DRIVE_CHANGES_RETRY_GAP_SEC = int(os.getenv("GOOGLE_DRIVE_CHANGES_RETRY_GAP", "15"))
 
 
 def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
@@ -195,6 +200,143 @@ async def _sync_and_wait(
         graph_provider,
         connector_id,
         timeout=_SYNC_TIMEOUT_SEC,
+    )
+
+
+async def _settle_drive_changes() -> None:
+    """Pause so Drive Changes API can publish recent writes before the next sync."""
+    if _DRIVE_CHANGES_SETTLE_SEC <= 0:
+        return
+    logger.info(
+        "Waiting %ds for Drive Changes API settle...",
+        _DRIVE_CHANGES_SETTLE_SEC,
+    )
+    await asyncio.sleep(_DRIVE_CHANGES_SETTLE_SEC)
+
+
+async def _sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    *,
+    check: Callable[[], Awaitable[bool]],
+    description: str,
+) -> None:
+    """Settle, sync, and re-sync until *check* passes (Drive Changes lag)."""
+
+    async def _sync() -> None:
+        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
+
+    await sync_until_condition(
+        connector_id,
+        sync_fn=_sync,
+        check=check,
+        timeout=_SYNC_TIMEOUT_SEC,
+        settle_sec=_DRIVE_CHANGES_SETTLE_SEC,
+        retry_gap_sec=_DRIVE_CHANGES_RETRY_GAP_SEC,
+        description=description,
+    )
+
+
+async def _sync_until_record_present(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    external_id: str,
+    *,
+    description: str,
+) -> None:
+    async def _present() -> bool:
+        return (
+            await graph_provider.get_record_by_external_id(connector_id, external_id)
+            is not None
+        )
+
+    await _sync_until(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        check=_present,
+        description=description,
+    )
+
+
+async def _sync_until_record_absent(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    external_id: str,
+    *,
+    description: str,
+) -> None:
+    async def _absent() -> bool:
+        return (
+            await graph_provider.get_record_by_external_id(connector_id, external_id)
+            is None
+        )
+
+    await _sync_until(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        check=_absent,
+        description=description,
+    )
+
+
+async def _sync_until_records_present(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    external_ids: list[str],
+    *,
+    description: str,
+) -> None:
+    async def _present() -> bool:
+        for external_id in external_ids:
+            if (
+                await graph_provider.get_record_by_external_id(
+                    connector_id, external_id
+                )
+                is None
+            ):
+                return False
+        return True
+
+    await _sync_until(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        check=_present,
+        description=description,
+    )
+
+
+async def _sync_until_records_absent(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    external_ids: list[str],
+    *,
+    description: str,
+) -> None:
+    async def _absent() -> bool:
+        for external_id in external_ids:
+            if (
+                await graph_provider.get_record_by_external_id(
+                    connector_id, external_id
+                )
+                is not None
+            ):
+                return False
+        return True
+
+    await _sync_until(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        check=_absent,
+        description=description,
     )
 
 
@@ -680,26 +822,26 @@ class TestDriveIndividualEntitySync:
         )
         drive_individual_entity_connector["delta_new_file_id"] = delta_new_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
-            graph_provider,
-            connector_id,
-            delta_new_id,
-            description=f"delta-new.txt ({delta_new_id}) after incremental sync",
-        )
-
-        async def _child_rev_updated() -> bool:
+        async def _delta_synced() -> bool:
+            new_rec = await graph_provider.get_record_by_external_id(
+                connector_id, delta_new_id
+            )
+            if new_rec is None:
+                return False
             rec = await graph_provider.get_typed_record_by_external_id(
                 connector_id, child_id
             )
             return rec is not None and str(rec.external_revision_id) == expected_rev
 
-        await wait_until_graph_condition(
+        await _sync_until(
+            pipeshub_client,
+            graph_provider,
             connector_id,
-            check=_child_rev_updated,
-            timeout=_SYNC_TIMEOUT_SEC,
-            poll_interval=10,
-            description=f"child.txt revision → {expected_rev}",
+            check=_delta_synced,
+            description=(
+                f"delta-new.txt ({delta_new_id}) present and "
+                f"child.txt revision → {expected_rev}"
+            ),
         )
 
         after_count = await graph_provider.count_records(connector_id, scoped=True)
@@ -843,8 +985,8 @@ class TestDriveIndividualFolderFilter:
         drive_individual_ff_connector["new_file_id"] = new_file_id
         drive_individual_ff_connector["new_file_name"] = "new.txt"
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_record_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
             new_file_id,
@@ -885,8 +1027,8 @@ class TestDriveIndividualFolderFilter:
         drive_individual_ff_connector["deeper_folder_id"] = deeper_id
         drive_individual_ff_connector["deeper_file_id"] = deeper_file_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_record_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
             deeper_file_id,
@@ -934,8 +1076,8 @@ class TestDriveIndividualFolderFilter:
         drive_individual_ff_connector["leave_file_id"] = leave_file_id
         drive_individual_ff_connector["leave_file_name"] = "leave.txt"
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_record_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
             leave_file_id,
@@ -950,8 +1092,8 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["leave_file_parent_id"] = oos_folder_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_absent(
+        await _sync_until_record_absent(
+            pipeshub_client,
             graph_provider,
             connector_id,
             leave_file_id,
@@ -980,8 +1122,8 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["leave_file_parent_id"] = seed_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_record_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
             leave_file_id,
@@ -1022,8 +1164,8 @@ class TestDriveIndividualFolderFilter:
         drive_individual_ff_connector["movable_folder_id"] = movable_id
         drive_individual_ff_connector["movable_inside_file_id"] = inside_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_record_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
             inside_id,
@@ -1038,18 +1180,15 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["movable_parent_id"] = oos_folder_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_absent(
+        await _sync_until_records_absent(
+            pipeshub_client,
             graph_provider,
             connector_id,
-            movable_id,
-            description=f"movable folder ({movable_id}) deleted after scope exit",
-        )
-        await _wait_record_absent(
-            graph_provider,
-            connector_id,
-            inside_id,
-            description=f"inside.txt ({inside_id}) cascade-deleted after folder scope exit",
+            [movable_id, inside_id],
+            description=(
+                f"movable ({movable_id}) + inside.txt ({inside_id}) "
+                "deleted after folder scope exit"
+            ),
         )
 
     @pytest.mark.order(12)
@@ -1075,18 +1214,15 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["movable_parent_id"] = seed_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
+        await _sync_until_records_present(
+            pipeshub_client,
             graph_provider,
             connector_id,
-            movable_id,
-            description=f"movable folder ({movable_id}) re-synced after scope enter",
-        )
-        await _wait_record_present(
-            graph_provider,
-            connector_id,
-            inside_id,
-            description=f"inside.txt ({inside_id}) pulled with folder enter-scope",
+            [movable_id, inside_id],
+            description=(
+                f"movable ({movable_id}) + inside.txt ({inside_id}) "
+                "re-synced after scope enter"
+            ),
         )
 
         await connector_assertions.assert_record_exists(
@@ -1135,6 +1271,7 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["oos_ignored_file_id"] = ignored_id
 
+        await _settle_drive_changes()
         await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
 
         ignored = await graph_provider.get_record_by_external_id(
@@ -1170,25 +1307,17 @@ class TestDriveIndividualFolderFilter:
         await rename_drive_item(drive_individual_datasource, leave_file_id, new_name)
         drive_individual_ff_connector["leave_file_name"] = new_name
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-        await _wait_record_present(
-            graph_provider,
-            connector_id,
-            leave_file_id,
-            description=f"{new_name} ({leave_file_id}) present after rename",
-        )
-
         async def _renamed() -> bool:
             record = await graph_provider.get_record_by_external_id(
                 connector_id, leave_file_id
             )
             return record is not None and record.record_name == new_name
 
-        await wait_until_graph_condition(
+        await _sync_until(
+            pipeshub_client,
+            graph_provider,
             connector_id,
             check=_renamed,
-            timeout=_SYNC_TIMEOUT_SEC,
-            poll_interval=10,
             description=f"leave.txt renamed to {new_name}",
         )
 
@@ -1254,8 +1383,6 @@ class TestDriveIndividualFolderFilter:
         )
         drive_individual_ff_connector["new_file_parent_id"] = nested_id
 
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-
         async def _parent_updated() -> bool:
             record = await graph_provider.get_record_by_external_id(
                 connector_id, new_file_id
@@ -1265,11 +1392,11 @@ class TestDriveIndividualFolderFilter:
                 and record.parent_external_record_id == nested_id
             )
 
-        await wait_until_graph_condition(
+        await _sync_until(
+            pipeshub_client,
+            graph_provider,
             connector_id,
             check=_parent_updated,
-            timeout=_SYNC_TIMEOUT_SEC,
-            poll_interval=10,
             description=f"new.txt ({new_file_id}) parent → nested",
         )
 
@@ -1704,16 +1831,10 @@ _BLOCKS_CASES = [
         id="TC-DRIVE-IND-BLOCKS-003",
     ),
     pytest.param(
-        "owasp_pdf",
+        "contributing_md",
         "TC-DRIVE-IND-BLOCKS-004",
         marks=pytest.mark.order(26),
         id="TC-DRIVE-IND-BLOCKS-004",
-    ),
-    pytest.param(
-        "contributing_md",
-        "TC-DRIVE-IND-BLOCKS-005",
-        marks=pytest.mark.order(27),
-        id="TC-DRIVE-IND-BLOCKS-005",
     ),
 ]
 
