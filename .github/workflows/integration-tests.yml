@@ -67,7 +67,7 @@ on:
           - kafka
           - redis
       pytest_workers:
-        description: 'pytest-xdist workers. One is reserved for the serial (connector) group; the rest run enterprise-search. 1 disables parallelism.'
+        description: 'pytest-xdist worker count. Connector suites are grouped onto a single worker to keep their ordering; enterprise-search tests spread across all workers. 1 disables parallelism.'
         required: false
         default: '5'
 
@@ -85,9 +85,13 @@ concurrency:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
-  # xdist workers. `--dist loadgroup` pins every non-enterprise-search test to a
-  # single worker (connectors keep their --order-scope=module ordering), so the
-  # remaining PYTEST_WORKERS-1 spread enterprise-search per test.
+  # xdist workers. `--dist loadgroup` keeps every non-enterprise-search test on
+  # one worker so connectors retain their --order-scope=module ordering, while
+  # enterprise-search is distributed test-by-test. That worker is not exclusive
+  # -- it takes enterprise-search work too, it just rarely has spare capacity
+  # while the ~30m connector group is running.
+  # The `|| '5'` is what schedule and pull_request_target runs use; `inputs` only
+  # exists on workflow_dispatch. The input's own default just prefills the form.
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '5' }}
 
 jobs:
