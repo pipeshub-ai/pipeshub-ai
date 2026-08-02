@@ -59,12 +59,11 @@ five records; the snapshot tests parse in-process and are unaffected.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +92,9 @@ from connectors.google_drive_workspace.drive_block_utils import (  # noqa: E402
     normalize_blocks_container,
     parse_drive_stream_via_processor,
 )
+from connectors.google_drive_workspace.drive_changes_sync import (  # noqa: E402
+    bind_drive_changes_helpers,
+)
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # noqa: E402
     DRIVE_BLOCKS_SAMPLE_SPECS,
     create_drive_folder,
@@ -104,7 +106,6 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
-    sync_until_condition,
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
@@ -132,9 +133,6 @@ pytestmark = [
 
 _SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_INDIVIDUAL_SYNC_TIMEOUT", "300"))
 _INDEXING_WAIT_SEC = int(os.getenv("GOOGLE_DRIVE_INDIVIDUAL_INDEXING_WAIT", "300"))
-# Drive Changes API often lags writes; settle then re-sync until the graph matches.
-_DRIVE_CHANGES_SETTLE_SEC = int(os.getenv("GOOGLE_DRIVE_CHANGES_SETTLE", "15"))
-_DRIVE_CHANGES_RETRY_GAP_SEC = int(os.getenv("GOOGLE_DRIVE_CHANGES_RETRY_GAP", "15"))
 
 
 def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
@@ -203,141 +201,16 @@ async def _sync_and_wait(
     )
 
 
-async def _settle_drive_changes() -> None:
-    """Pause so Drive Changes API can publish recent writes before the next sync."""
-    if _DRIVE_CHANGES_SETTLE_SEC <= 0:
-        return
-    logger.info(
-        "Waiting %ds for Drive Changes API settle...",
-        _DRIVE_CHANGES_SETTLE_SEC,
-    )
-    await asyncio.sleep(_DRIVE_CHANGES_SETTLE_SEC)
-
-
-async def _sync_until(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    *,
-    check: Callable[[], Awaitable[bool]],
-    description: str,
-) -> None:
-    """Settle, sync, and re-sync until *check* passes (Drive Changes lag)."""
-
-    async def _sync() -> None:
-        await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-
-    await sync_until_condition(
-        connector_id,
-        sync_fn=_sync,
-        check=check,
-        timeout=_SYNC_TIMEOUT_SEC,
-        settle_sec=_DRIVE_CHANGES_SETTLE_SEC,
-        retry_gap_sec=_DRIVE_CHANGES_RETRY_GAP_SEC,
-        description=description,
-    )
-
-
-async def _sync_until_record_present(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_id: str,
-    *,
-    description: str,
-) -> None:
-    async def _present() -> bool:
-        return (
-            await graph_provider.get_record_by_external_id(connector_id, external_id)
-            is not None
-        )
-
-    await _sync_until(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        check=_present,
-        description=description,
-    )
-
-
-async def _sync_until_record_absent(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_id: str,
-    *,
-    description: str,
-) -> None:
-    async def _absent() -> bool:
-        return (
-            await graph_provider.get_record_by_external_id(connector_id, external_id)
-            is None
-        )
-
-    await _sync_until(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        check=_absent,
-        description=description,
-    )
-
-
-async def _sync_until_records_present(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_ids: list[str],
-    *,
-    description: str,
-) -> None:
-    async def _present() -> bool:
-        for external_id in external_ids:
-            if (
-                await graph_provider.get_record_by_external_id(
-                    connector_id, external_id
-                )
-                is None
-            ):
-                return False
-        return True
-
-    await _sync_until(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        check=_present,
-        description=description,
-    )
-
-
-async def _sync_until_records_absent(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    external_ids: list[str],
-    *,
-    description: str,
-) -> None:
-    async def _absent() -> bool:
-        for external_id in external_ids:
-            if (
-                await graph_provider.get_record_by_external_id(
-                    connector_id, external_id
-                )
-                is not None
-            ):
-                return False
-        return True
-
-    await _sync_until(
-        pipeshub_client,
-        graph_provider,
-        connector_id,
-        check=_absent,
-        description=description,
-    )
+_drive_changes = bind_drive_changes_helpers(
+    sync_and_wait=_sync_and_wait,
+    timeout=_SYNC_TIMEOUT_SEC,
+)
+_settle_drive_changes = _drive_changes.settle_drive_changes
+_sync_until = _drive_changes.sync_until
+_sync_until_record_present = _drive_changes.sync_until_record_present
+_sync_until_record_absent = _drive_changes.sync_until_record_absent
+_sync_until_records_present = _drive_changes.sync_until_records_present
+_sync_until_records_absent = _drive_changes.sync_until_records_absent
 
 
 def _folder_ids_filters(folder_ids: list[str]) -> dict[str, Any]:

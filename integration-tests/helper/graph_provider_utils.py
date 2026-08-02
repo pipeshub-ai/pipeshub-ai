@@ -100,8 +100,17 @@ async def sync_until_condition(
     attempt = 0
     while time.time() < deadline:
         attempt += 1
-        await sync_fn()
-        if await check():
+        remaining_for_attempt = max(deadline - time.time(), 0.0)
+        try:
+            await asyncio.wait_for(sync_fn(), timeout=remaining_for_attempt or None)
+            passed = await asyncio.wait_for(check(), timeout=remaining_for_attempt or None)
+        except Exception:
+            logger.exception(
+                "Attempt %d for %s on connector %s raised an error; will retry if time remains",
+                attempt, description, connector_id,
+            )
+            passed = False
+        if passed:
             logger.info(
                 "✅ %s for connector %s (sync attempt %d)",
                 description,
