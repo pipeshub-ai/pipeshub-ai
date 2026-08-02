@@ -1465,6 +1465,123 @@ class TestPlaceholderSweep:
         )
         assert sizes == [50, 100]
 
+    @pytest.mark.asyncio
+    async def test_dedupes_a_parent_shared_by_two_stubs(self):
+        # Two stubs under the same epic must not enqueue it twice.
+        connector, ds = _sweep_connector([
+            {"issues": [
+                _bulk_issue("2001", "PROJ-2", parent_id="3001"),
+                _bulk_issue("2002", "PROJ-3", parent_id="3001"),
+            ]},
+            {"issues": [_bulk_issue("3001", "PROJ-9")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001"), _stub_record("2002")]
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_stub_record("3001")
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        # Looked up once despite two children pointing at it.
+        assert connector.data_entities_processor.get_record_by_external_id.await_count == 1
+        assert ds.bulk_fetch_issues.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skips_parent_missing_from_graph(self):
+        # on_new_records should have materialised the parent stub; if it somehow did not,
+        # skip rather than crash the sweep.
+        connector, ds = _sweep_connector([
+            {"issues": [_bulk_issue("2001", "PROJ-2", parent_id="3001")]},
+        ])
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001")]
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        assert ds.bulk_fetch_issues.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_aborts_at_depth_cap(self):
+        # A pathologically deep (or cyclic-by-id) chain must stop rather than walk forever.
+        from app.connectors.sources.atlassian.jira_cloud.connector import (
+            PLACEHOLDER_SWEEP_MAX_DEPTH,
+        )
+
+        connector = _make_connector()
+        connector.site_url = "https://co.atlassian.net"
+        counter = {"n": 0}
+
+        async def endless_chain(**kwargs):
+            counter["n"] += 1
+            n = counter["n"]
+            return _resp(200, {"issues": [
+                _bulk_issue(str(2000 + n), f"PROJ-{n}", parent_id=str(2001 + n))
+            ]})
+
+        ds = MagicMock()
+        ds.bulk_fetch_issues = AsyncMock(side_effect=endless_chain)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_stub_record("2001")]
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda **kw: _stub_record(kw["external_record_id"])
+        )
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        assert ds.bulk_fetch_issues.await_count == PLACEHOLDER_SWEEP_MAX_DEPTH
+
+    @pytest.mark.asyncio
+    async def test_bulkfetch_transport_error_resubmits_stub(self):
+        stub = _stub_record("2001")
+        connector = _make_connector()
+        connector.site_url = "https://co.atlassian.net"
+        ds = MagicMock()
+        ds.bulk_fetch_issues = AsyncMock(side_effect=RuntimeError("boom"))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        submitted = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert submitted[0][0] is stub
+        assert submitted[0][0].is_placeholder is True
+
+    @pytest.mark.asyncio
+    async def test_bulkfetch_non_ok_status_resubmits_stub(self):
+        stub = _stub_record("2001")
+        connector, _ds = _sweep_connector([])
+        connector._get_fresh_datasource.return_value.bulk_fetch_issues = AsyncMock(
+            return_value=_resp(500, {})
+        )
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        submitted = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert submitted[0][0] is stub
+
+    @pytest.mark.asyncio
+    async def test_bulkfetch_unparsable_body_resubmits_stub(self):
+        stub = _stub_record("2001")
+        bad = MagicMock()
+        bad.status = 200
+        bad.json = MagicMock(side_effect=ValueError("not json"))
+
+        connector, _ds = _sweep_connector([])
+        connector._get_fresh_datasource.return_value.bulk_fetch_issues = AsyncMock(return_value=bad)
+        connector.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+
+        await connector._sweep_placeholder_records({"p-1"})
+
+        submitted = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert submitted[0][0] is stub
+
 
     @pytest.mark.asyncio
     async def test_stub_revision_never_collides_with_the_real_issue(self):
@@ -1556,3 +1673,643 @@ class TestPlaceholderPromotion:
             await connector.stream_record(_stub_record("2001"))
         assert exc_info.value.status_code == 400
         assert "placeholder" in exc_info.value.detail
+
+
+# ===========================================================================
+# _rate_limit_delay / permission-scheme guards
+# ===========================================================================
+
+
+class TestRateLimitDelay:
+
+    def _resp_with_headers(self, headers):
+        r = MagicMock()
+        r.headers = headers
+        return r
+
+    def test_honors_retry_after_header(self):
+        connector = _make_connector()
+        delay = connector._rate_limit_delay(self._resp_with_headers({"Retry-After": "7"}), attempt=0)
+        assert delay == 7.0
+
+    def test_retry_after_is_case_insensitive(self):
+        connector = _make_connector()
+        delay = connector._rate_limit_delay(self._resp_with_headers({"retry-after": "3"}), attempt=2)
+        assert delay == 3.0
+
+    def test_retry_after_capped_so_a_huge_value_cannot_stall_the_sync(self):
+        from app.connectors.sources.atlassian.jira_cloud.connector import RATE_LIMIT_MAX_DELAY_SEC
+
+        connector = _make_connector()
+        delay = connector._rate_limit_delay(
+            self._resp_with_headers({"Retry-After": "99999"}), attempt=0
+        )
+        assert delay == RATE_LIMIT_MAX_DELAY_SEC
+
+    def test_unparsable_retry_after_falls_back_to_backoff(self):
+        connector = _make_connector()
+        delay = connector._rate_limit_delay(
+            self._resp_with_headers({"Retry-After": "soon"}), attempt=0
+        )
+        # 2s base with +/-30% jitter
+        assert 1.4 <= delay <= 2.6
+
+    def test_backoff_doubles_per_attempt_when_no_header(self):
+        connector = _make_connector()
+        first = connector._rate_limit_delay(self._resp_with_headers({}), attempt=0)
+        third = connector._rate_limit_delay(self._resp_with_headers({}), attempt=2)
+        assert 1.4 <= first <= 2.6      # 2s
+        assert 5.6 <= third <= 10.4     # 8s
+
+    def test_backoff_capped(self):
+        from app.connectors.sources.atlassian.jira_cloud.connector import RATE_LIMIT_MAX_DELAY_SEC
+
+        connector = _make_connector()
+        delay = connector._rate_limit_delay(self._resp_with_headers({}), attempt=20)
+        assert delay == RATE_LIMIT_MAX_DELAY_SEC
+
+    def test_missing_headers_attribute_is_tolerated(self):
+        connector = _make_connector()
+        r = MagicMock()
+        r.headers = None
+        assert connector._rate_limit_delay(r, attempt=0) > 0
+
+
+class TestPermissionSchemeIdGuard:
+
+    @pytest.mark.asyncio
+    async def test_scheme_without_id_returns_none_and_skips_grants(self):
+        # A scheme payload with no id would build a malformed grants URL that can only fail;
+        # bail out instead of burning the retry budget.
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_resp(200, {}))
+        ds.get_permission_scheme_grants = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        result = await connector._fetch_project_permission_scheme("PROJ")
+
+        assert result is None
+        ds.get_permission_scheme_grants.assert_not_awaited()
+
+
+# ===========================================================================
+# Graceful-degradation paths: project record groups, skipped-project notice
+# ===========================================================================
+
+
+class TestBuildProjectRecordGroupDegradation:
+
+    @pytest.mark.asyncio
+    async def test_scheme_unavailable_syncs_project_with_empty_permissions(self):
+        # A transient scheme failure must not drop the project — sync it with an empty ACL
+        # so its issues keep flowing; the next successful fetch refreshes permissions.
+        connector = _make_connector()
+        connector._fetch_project_permission_scheme = AsyncMock(return_value=None)
+
+        result = await connector._build_project_record_group(
+            {"id": "p-1", "key": "PROJ", "name": "Project"}, {}, {},
+        )
+
+        assert result is not None
+        record_group, permissions = result
+        assert record_group.short_name == "PROJ"
+        assert permissions == []
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_record_group_build_fails(self):
+        # Returning None makes the caller skip (and notify about) this project rather than
+        # aborting the whole sync.
+        connector = _make_connector()
+        connector._fetch_project_permission_scheme = AsyncMock(
+            side_effect=RuntimeError("scheme blew up")
+        )
+
+        result = await connector._build_project_record_group(
+            {"id": "p-1", "key": "PROJ", "name": "Project"}, {}, {},
+        )
+
+        assert result is None
+
+
+class TestSkippedProjectNotification:
+
+    @pytest.mark.asyncio
+    async def test_notifies_when_projects_are_skipped(self):
+        connector = _make_connector()
+        connector.notify = AsyncMock()
+        connector._list_projects_with_filter = AsyncMock(
+            return_value=[{"id": "p-1", "key": "PROJ", "name": "Project"}]
+        )
+        connector._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        connector._build_project_record_group = AsyncMock(return_value=None)
+
+        record_groups, _raw = await connector._fetch_projects(None, None, [])
+
+        assert record_groups == []
+        connector.notify.assert_awaited_once()
+        assert "PROJ" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_skipped_preview_truncates_past_ten(self):
+        connector = _make_connector()
+        connector.notify = AsyncMock()
+        projects = [{"id": f"p-{i}", "key": f"P{i}", "name": f"Project {i}"} for i in range(13)]
+        connector._list_projects_with_filter = AsyncMock(return_value=projects)
+        connector._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
+        connector._build_project_record_group = AsyncMock(return_value=None)
+
+        await connector._fetch_projects(None, None, [])
+
+        message = connector.notify.await_args.kwargs["message"]
+        assert "and 3 more" in message
+
+
+class TestChangelogDeletionErrorIsolation:
+
+    @pytest.mark.asyncio
+    async def test_malformed_changelog_returns_ids_found_so_far(self):
+        # A changelog that blows up mid-parse must not abort the issue's whole record build.
+        connector = _make_connector()
+        tx = AsyncMock()
+
+        class Exploding(dict):
+            def get(self, key, default=None):
+                if key == "histories":
+                    raise RuntimeError("bad changelog")
+                return super().get(key, default)
+
+        issue = {"id": "10001", "key": "PROJ-1", "fields": {"attachment": []},
+                 "changelog": Exploding({"histories": []})}
+
+        result = await connector._handle_attachment_deletions_from_changelog(issue, tx)
+
+        assert result == []
+
+
+class TestInlineResolverEdgeCases:
+
+    def test_ignores_malformed_comment_and_attachment_entries(self):
+        # Jira payloads are not guaranteed well-formed; a non-dict entry must be skipped
+        # rather than raising and dropping every attachment on the issue.
+        connector = _make_connector()
+        fields = {
+            "description": None,
+            "comment": {"comments": ["not-a-dict", None,
+                                      {"id": "1", "body": '<p><img src="/rest/api/3/attachment/content/99"/></p>'}]},
+            "attachment": [
+                "not-a-dict",
+                {"filename": "no-id.png", "mimeType": "image/png"},   # missing id
+                {"id": "99", "filename": "x.png", "mimeType": "image/png", "size": 10},
+            ],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"99"}
+
+    def test_returns_empty_when_nothing_is_referenced(self):
+        connector = _make_connector()
+        fields = {
+            "description": "<p>no images here</p>",
+            "attachment": [{"id": "99", "filename": "x.png", "mimeType": "image/png", "size": 10}],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+
+    def test_matches_by_filename_when_id_is_not_referenced(self):
+        connector = _make_connector()
+        fields = {
+            "description": "!diagram.png!",
+            "attachment": [{"id": "99", "filename": "diagram.png", "mimeType": "image/png", "size": 10}],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"99"}
+
+
+class TestStreamAttachmentErrors:
+
+    @pytest.mark.asyncio
+    async def test_attachment_stream_error_propagates(self):
+        # A mid-stream failure must surface, not silently truncate the file.
+        connector = _make_connector()
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("connection reset")
+            yield b""  # pragma: no cover - generator marker
+
+        ds = MagicMock()
+        ds.download_attachment_content = MagicMock(side_effect=boom)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with pytest.raises(RuntimeError, match="connection reset"):
+            async for _ in connector._stream_attachment_content("123", "attachment_123"):
+                pass
+
+
+# ===========================================================================
+# Coverage: error / edge paths
+# ===========================================================================
+
+
+class TestCacheAuthenticatedProfile:
+
+    def test_bad_response_is_ignored(self):
+        connector = _make_connector()
+        bad = MagicMock()
+        type(bad).status = property(lambda s: (_ for _ in ()).throw(RuntimeError("boom")))
+        connector._cache_authenticated_jira_profile(bad)
+
+    def test_non_ok_status_returns_early(self):
+        connector = _make_connector()
+        connector._cache_authenticated_jira_profile(_resp(500, {}))
+
+    def test_unknown_timezone_falls_back_to_utc(self):
+        connector = _make_connector()
+        connector._cache_authenticated_jira_profile(
+            _resp(200, {"emailAddress": "a@b.com", "timeZone": "Not/AZone"})
+        )
+
+    def test_valid_timezone_is_cached(self):
+        connector = _make_connector()
+        connector._cache_authenticated_jira_profile(
+            _resp(200, {"emailAddress": "a@b.com", "timeZone": "UTC"})
+        )
+        assert connector._jql_timezone is not None
+
+
+class TestMapBoundedEmpty:
+
+    @pytest.mark.asyncio
+    async def test_empty_items_returns_empty(self):
+        connector = _make_connector()
+        assert await connector._map_bounded([], AsyncMock()) == []
+
+
+class TestParseJiraTimestamp:
+
+    def test_parses_iso_with_offset(self):
+        connector = _make_connector()
+        assert connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000") > 0
+
+    def test_none_returns_zero(self):
+        connector = _make_connector()
+        assert connector._parse_jira_timestamp(None) == 0
+
+    def test_garbage_returns_zero(self):
+        connector = _make_connector()
+        assert connector._parse_jira_timestamp("not-a-date") == 0
+
+
+class TestParseIssueLinksEdges:
+
+    def test_skips_non_dict_links(self):
+        connector = _make_connector()
+        issue = {"fields": {"issuelinks": ["nope", None]}}
+        assert connector._parse_issue_links(issue) == []
+
+    def test_skips_links_without_type_or_outward(self):
+        connector = _make_connector()
+        issue = {"fields": {"issuelinks": [
+            {"outwardIssue": {"id": "1"}},
+            {"type": {"outward": "blocks"}},
+            {"type": {"outward": "blocks"}, "outwardIssue": {}},
+        ]}}
+        assert connector._parse_issue_links(issue) == []
+
+    def test_unknown_relation_falls_back_to_related(self):
+        from app.models.entities import RecordRelations
+
+        connector = _make_connector()
+        issue = {"fields": {"issuelinks": [
+            {"type": {"outward": "zzz-unmapped"}, "outwardIssue": {"id": "77"}},
+        ]}}
+        links = connector._parse_issue_links(issue)
+        assert links[0].relation_type == RecordRelations.RELATED
+
+    def test_no_issuelinks_returns_empty(self):
+        connector = _make_connector()
+        assert connector._parse_issue_links({"fields": {}}) == []
+        assert connector._parse_issue_links(None) == []
+        assert connector._parse_issue_links({"fields": None}) == []
+
+
+class TestBuildIssueRecordsIsolation:
+
+    @pytest.mark.asyncio
+    async def test_malformed_issue_is_skipped_not_fatal(self):
+        connector = _make_connector()
+        connector.indexing_filters = None
+        connector._build_records_for_issue = AsyncMock(side_effect=RuntimeError("bad issue"))
+
+        records, delete_ids = await connector._build_issue_records(
+            [_issue_dict()], "p-1", [], AsyncMock()
+        )
+
+        assert records == []
+        assert delete_ids == []
+
+
+class TestInlineResolverEdges:
+
+    def test_skips_malformed_comment_and_attachment_entries(self):
+        connector = _make_connector()
+        img = "<p><img src=\"/rest/api/3/attachment/content/99\"/></p>"
+        fields = {
+            "description": None,
+            "comment": {"comments": ["x", None, {"id": "1", "body": img}]},
+            "attachment": [
+                "not-a-dict",
+                {"filename": "no-id.png", "mimeType": "image/png"},
+                {"id": "99", "filename": "x.png", "mimeType": "image/png", "size": 10},
+            ],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"99"}
+
+    def test_nothing_referenced_returns_empty(self):
+        connector = _make_connector()
+        fields = {
+            "description": "<p>plain</p>",
+            "attachment": [{"id": "9", "filename": "x.png", "mimeType": "image/png", "size": 1}],
+        }
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+
+
+class TestFetchIssueAttachmentsEdges:
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty_list(self):
+        connector = _make_connector()
+        connector._resolve_inline_image_attachment_ids = MagicMock(side_effect=RuntimeError("x"))
+        result = await connector._fetch_issue_attachments(
+            "1", "PROJ-1", {"attachment": [{"id": "1"}]}, [], "p-1",
+            RecordGroupType.PROJECT, AsyncMock(),
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_no_attachments_returns_empty(self):
+        connector = _make_connector()
+        result = await connector._fetch_issue_attachments(
+            "1", "PROJ-1", {"attachment": []}, [], "p-1",
+            RecordGroupType.PROJECT, AsyncMock(),
+        )
+        assert result == []
+
+
+class TestCallWithRetryRateLimit:
+
+    @pytest.mark.asyncio
+    async def test_429_sleeps_then_retries(self):
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        responses = [_resp(429, {}), _resp(200, {"ok": True})]
+
+        async def call(ds):
+            return responses.pop(0)
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep_mock:
+            result = await connector._call_with_retry(call, ctx="test")
+
+        assert result.status == 200
+        sleep_mock.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_429_on_last_attempt_returns_the_429(self):
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+
+        async def call(ds):
+            return _resp(429, {})
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await connector._call_with_retry(call, ctx="test", max_attempts=2)
+
+        assert result.status == 429
+
+
+class TestCleanupSwallowsErrors:
+
+    @pytest.mark.asyncio
+    async def test_cleanup_swallows_errors(self):
+        connector = _make_connector()
+        bad = MagicMock()
+        type(bad).get_client = property(
+            lambda s: (_ for _ in ()).throw(RuntimeError("nope"))
+        )
+        connector.external_client = bad
+        await connector.cleanup()
+
+
+class TestCheckAndFetchUpdatedEdges:
+
+    @pytest.mark.asyncio
+    async def test_issue_non_ok_status_returns_none(self):
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_issue = AsyncMock(return_value=_resp(500, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.indexing_filters = MagicMock()
+
+        record = _stub_record("1001")
+        assert await connector._check_and_fetch_updated_issue(record) is None
+
+    @pytest.mark.asyncio
+    async def test_unsupported_record_type_returns_none(self):
+        connector = _make_connector()
+        record = _stub_record("1001")
+        record.record_type = RecordType.MAIL
+        assert await connector._check_and_fetch_updated_record(record) is None
+
+    @pytest.mark.asyncio
+    async def test_attachment_fetch_exception_returns_none(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
+
+        record = _stub_record("attachment_5")
+        record.record_type = RecordType.FILE
+        assert await connector._check_and_fetch_updated_attachment(record) is None
+
+
+# ===========================================================================
+# Coverage: notifications, pagination bounds, streaming failures
+# ===========================================================================
+
+
+class TestNotificationPreviewTruncation:
+
+    @pytest.mark.asyncio
+    async def test_run_sync_failed_project_preview_truncates(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.notify = AsyncMock()
+        user = _app_user()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[user])
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            new_callable=AsyncMock,
+        ) as mock_filters:
+            from app.connectors.core.registry.filters import FilterCollection
+
+            mock_filters.return_value = (FilterCollection(), FilterCollection())
+            connector._fetch_users = AsyncMock(return_value=[user])
+            connector._sync_user_groups = AsyncMock(return_value={})
+            connector._fetch_projects = AsyncMock(return_value=([(_project_rg(), [])], []))
+            connector._sync_project_roles = AsyncMock()
+            connector._sync_project_lead_roles = AsyncMock()
+            connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+            connector._sync_all_project_issues = AsyncMock(return_value={
+                "total_synced": 0, "new_count": 0, "updated_count": 0,
+                "failed_project_keys": [f"K{i}" for i in range(13)],
+                "full_sync_project_ids": set(),
+            })
+            connector._update_issues_sync_checkpoint = AsyncMock()
+            connector._handle_issue_deletions = AsyncMock()
+
+            await connector.run_sync()
+
+        assert "and 3 more" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_sync_project_roles_failure_preview_truncates(self):
+        connector = _make_connector()
+        connector.notify = AsyncMock()
+        connector.data_source = MagicMock()
+        connector._fetch_project_roles = AsyncMock(
+            side_effect=lambda pk, *a, **k: (pk, [], True)
+        )
+
+        await connector._sync_project_roles([f"K{i}" for i in range(13)], [], None)
+
+        assert "and 3 more" in connector.notify.await_args.kwargs["message"]
+
+
+class TestProcessGroupEdges:
+
+    @pytest.mark.asyncio
+    async def test_system_group_is_skipped(self):
+        connector = _make_connector()
+        result = await connector._process_group({"name": "atlassian-addons-admin", "groupId": "g1"}, {})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_membership_failure_syncs_group_with_no_members(self):
+        connector = _make_connector()
+        connector._fetch_group_members = AsyncMock(return_value=([], False))
+
+        result = await connector._process_group({"name": "devs", "groupId": "g1"}, {})
+
+        assert result is not None
+        _gid, _name, _group, members = result
+        assert members == []
+
+
+class TestPaginationBounds:
+
+    @pytest.mark.asyncio
+    async def test_project_search_unparsable_body_raises(self):
+        connector = _make_connector()
+        bad = MagicMock()
+        bad.status = 200
+        bad.json = MagicMock(side_effect=ValueError("bad"))
+        connector._call_with_retry = AsyncMock(return_value=bad)
+        connector.data_source = MagicMock()
+
+        with pytest.raises(Exception, match="Failed to parse project search response"):
+            await connector._paginate_project_search(None)
+
+    @pytest.mark.asyncio
+    async def test_issues_batched_unparsable_body_raises(self):
+        connector = _make_connector()
+        connector.sync_filters = None
+        connector.data_source = MagicMock()
+        bad = MagicMock()
+        bad.status = 200
+        bad.json = MagicMock(side_effect=ValueError("bad"))
+        connector._search_issues_with_retry = AsyncMock(return_value=bad)
+
+        with pytest.raises(Exception, match="Failed to parse issues response"):
+            async for _ in connector._fetch_issues_batched("PROJ", "p-1", []):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_group_members_non_ok_stops_paging(self):
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_users_from_group = AsyncMock(return_value=_resp(500, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.data_source = MagicMock()
+
+        members, ok = await connector._fetch_group_members("g1", "devs")
+        assert members == []
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_groups_non_ok_flags_failure(self):
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_groups_paginated = AsyncMock(return_value=_resp(500, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.data_source = MagicMock()
+
+        groups, forbidden = await connector._fetch_groups()
+        assert groups == []
+
+
+class TestStreamingFailures:
+
+    @pytest.mark.asyncio
+    async def test_streaming_issue_missing_at_source_raises_404(self):
+        from fastapi import HTTPException
+
+        connector = _make_connector()
+        connector._get_issue_with_retry = AsyncMock(return_value=_resp(404, {}))
+
+        record = _stub_record("1001")
+        record.is_placeholder = False
+        with pytest.raises(HTTPException) as exc:
+            await connector._process_issue_blockgroups_for_streaming(record)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_attachment_stream_error_propagates(self):
+        connector = _make_connector()
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("connection reset")
+            yield b""
+
+        ds = MagicMock()
+        ds.download_attachment_content = MagicMock(side_effect=boom)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        with pytest.raises(RuntimeError, match="connection reset"):
+            async for _ in connector._stream_attachment_content("123", "attachment_123"):
+                pass
+
+
+class TestBase64OversizedBytes:
+
+    @pytest.mark.asyncio
+    async def test_actual_bytes_over_cap_are_not_inlined(self):
+        from app.connectors.sources.atlassian.jira_cloud.connector import (
+            MAX_INLINE_IMAGE_BYTES,
+        )
+
+        connector = _make_connector()
+        big = MagicMock()
+        big.status = 200
+        big.bytes = MagicMock(return_value=b"x" * (MAX_INLINE_IMAGE_BYTES + 1))
+        ds = MagicMock()
+        ds.get_attachment_content = AsyncMock(return_value=big)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        cache = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "9", "mimeType": "image/png", "size": 0}, cache,
+        )
+        assert result is None
+        assert cache["9"] is None
