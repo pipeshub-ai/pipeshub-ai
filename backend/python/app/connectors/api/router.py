@@ -1328,7 +1328,7 @@ async def stream_record(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e), exc_info=True)
+        logger.error("Error streaming record: %s", str(e), exc_info=True)
         raise to_stream_error(e) from e
 
 

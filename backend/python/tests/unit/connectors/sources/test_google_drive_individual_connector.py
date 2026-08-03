@@ -1869,7 +1869,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_chunk_error(self, connector):
@@ -2266,7 +2266,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_non_forbidden(self, connector):
@@ -2297,7 +2297,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_requested_google_workspace_doc(self, connector):

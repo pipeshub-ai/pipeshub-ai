@@ -75,6 +75,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     not_found_at_source,
     to_stream_error,
 )
@@ -1357,7 +1358,7 @@ class AzureBlobConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a SAS URL for an Azure blob."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             container_name = record.external_record_group_id
             if not container_name:
