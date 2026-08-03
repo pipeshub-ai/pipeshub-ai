@@ -1468,8 +1468,9 @@ class TestLinearStreamRecord:
         record.record_type = RecordType.LINK
         record.weburl = None
         record.external_record_id = "att-1"
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1490,8 +1491,9 @@ class TestLinearStreamRecord:
         record = MagicMock()
         record.record_type = "UNKNOWN"
         record.external_record_id = "x"
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===================================================================

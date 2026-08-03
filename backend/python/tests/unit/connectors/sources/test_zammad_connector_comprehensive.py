@@ -273,8 +273,9 @@ class TestStreamRecord:
     async def test_stream_unsupported_type_raises(self, zammad_connector):
         record = MagicMock()
         record.record_type = RecordType.PROJECT
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await zammad_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     async def test_stream_error_raises(self, zammad_connector):
         record = MagicMock()
@@ -283,8 +284,9 @@ class TestStreamRecord:
         zammad_connector._process_ticket_blockgroups_for_streaming = AsyncMock(
             side_effect=Exception("API down")
         )
-        with pytest.raises(Exception, match="API down"):
+        with pytest.raises(HTTPException) as exc_info:
             await zammad_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===========================================================================
