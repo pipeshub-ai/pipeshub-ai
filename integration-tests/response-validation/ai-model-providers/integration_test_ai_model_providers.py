@@ -59,6 +59,11 @@ from openapi_schema_validator import (  # noqa: E402
 logger = logging.getLogger("ai-model-providers-integration-test")
 
 _MODEL_TYPE_LLM = "llm"
+# Parametrize arguments are evaluated at import time, and every xdist worker imports
+# this module separately -- a uuid4() here gives each worker a different test id and
+# aborts the whole run with a collection mismatch. These cases are rejected by
+# validation before the key is looked up, so any well-formed absent key will do.
+_ABSENT_MODEL_KEY = "00000000-0000-4000-8000-000000000000"
 _AI_MODEL_BUCKET_KEYS = (
     "ocr",
     "embedding",
@@ -640,7 +645,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "invalid modelType path",
                 "not-a-real-type",
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 _minimal_update_body(
                     _PROVIDER_OPENAI,
                     {"model": "gpt-4o-mini", "apiKey": "sk-test"},
@@ -649,7 +654,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "missing provider",
                 _MODEL_TYPE_LLM,
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 {
                     "configuration": {"model": "gpt-4o-mini", "apiKey": "sk-test"},
                     "isMultimodal": False,
@@ -660,7 +665,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "missing configuration",
                 _MODEL_TYPE_LLM,
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 {
                     "provider": _PROVIDER_OPENAI,
                     "isMultimodal": False,
@@ -671,7 +676,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "empty provider",
                 _MODEL_TYPE_LLM,
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 _minimal_update_body(
                     "",
                     {"model": "gpt-4o-mini", "apiKey": "sk-test"},
@@ -680,7 +685,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "modelFriendlyName with comma-separated models",
                 _MODEL_TYPE_LLM,
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 _minimal_update_body(
                     _PROVIDER_OPENAI,
                     {
@@ -693,7 +698,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             (
                 "contextLength wrong type",
                 _MODEL_TYPE_LLM,
-                str(uuid.uuid4()),
+                _ABSENT_MODEL_KEY,
                 {
                     "provider": _PROVIDER_OPENAI,
                     "configuration": {"model": "gpt-4o-mini", "apiKey": "sk-test"},
@@ -952,7 +957,7 @@ class TestDeleteAIModelProviderValidation(AIModelsTestBase):
     @pytest.mark.parametrize(
         "label,model_type,model_key",
         [
-            ("invalid modelType path", "not-a-real-type", str(uuid.uuid4())),
+            ("invalid modelType path", "not-a-real-type", _ABSENT_MODEL_KEY),
         ],
     )
     def test_validation_rejects_invalid_delete(
