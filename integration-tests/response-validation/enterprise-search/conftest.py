@@ -271,12 +271,21 @@ def reasoning_multimodal_llm_model(
     del ai_models_configured  # fixture ordering only
 
     def _seed() -> SeededAIModel:
-        seeded = setup_test_llm_model(
-            pipeshub_client,
-            is_reasoning=True,
-            is_multimodal=True,
-            is_default=False,
-        )
+        try:
+            seeded = setup_test_llm_model(
+                pipeshub_client,
+                is_reasoning=True,
+                is_multimodal=True,
+                is_default=False,
+            )
+        except RuntimeError as e:
+            pytest.fail(
+                f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
+                "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
+                "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
+                "Set TEST_AI_MODEL_PROVIDER=azureOpenAI to prefer Azure when multiple "
+                "providers are configured."
+            )
         logger.info(
             "Seeded reasoning multimodal LLM for agent ITs: modelKey=%s model=%s",
             seeded.model_key,
@@ -284,25 +293,16 @@ def reasoning_multimodal_llm_model(
         )
         return seeded
 
-    try:
-        with shared_session_resource(
-            "reasoning_multimodal_llm_model",
-            config=request.config,
-            tmp_path_factory=tmp_path_factory,
-            create=_seed,
-            destroy=lambda seeded: teardown_test_llm_model(pipeshub_client, seeded),
-            dump=asdict,
-            load=lambda raw: SeededAIModel(**raw),
-        ) as seeded_by_fixture:
-            yield seeded_by_fixture
-    except RuntimeError as e:
-        pytest.fail(
-            f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
-            "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
-            "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
-            "Set TEST_AI_MODEL_PROVIDER=azureOpenAI to prefer Azure when multiple "
-            "providers are configured."
-        )
+    with shared_session_resource(
+        "reasoning_multimodal_llm_model",
+        config=request.config,
+        tmp_path_factory=tmp_path_factory,
+        create=_seed,
+        destroy=lambda seeded: teardown_test_llm_model(pipeshub_client, seeded),
+        dump=asdict,
+        load=lambda raw: SeededAIModel(**raw),
+    ) as seeded_by_fixture:
+        yield seeded_by_fixture
 
 
 @pytest.fixture(scope="session")
