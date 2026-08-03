@@ -28,6 +28,10 @@ describe('Redis Streams reconnect after disconnect', () => {
     c.quit = sinon.stub().resolves();
     c.xadd = sinon.stub().resolves('1-0');
     c.pipeline = sinon.stub();
+    c.xgroup = sinon.stub().resolves('OK');
+    c.xautoclaim = sinon.stub().resolves(['0-0', [], []]);
+    c.xreadgroup = sinon.stub().resolves(null);
+    c.xack = sinon.stub().resolves(1);
     return c;
   };
 
@@ -109,5 +113,44 @@ describe('Redis Streams reconnect after disconnect', () => {
 
     expect(clients.length).to.equal(3);
     expect(clients[1].quit.callCount).to.equal(1);
+  });
+
+  it('replaces both consumer clients and acks on the new ackRedis', async () => {
+    class C extends svc.BaseRedisStreamsConsumerConnection {}
+    const consumer = new (C as any)(config, logger);
+
+    await consumer.connect();
+    await consumer.subscribe(['mail-events']);
+    expect(clients.length, 'redis + ackRedis').to.equal(2);
+
+    await consumer.disconnect();
+    expect(clients.length, 'both dead clients must be replaced').to.equal(4);
+    expect(clients[0].quit.callCount).to.equal(1);
+    expect(clients[1].quit.callCount).to.equal(1);
+
+    await consumer.connect();
+    await consumer.subscribe(['mail-events']);
+    expect(clients[2].xgroup.called, 'group created on the new redis').to.be.true;
+
+    let reads = 0;
+    clients[2].xreadgroup.callsFake(async () => {
+      reads += 1;
+      if (reads === 1) {
+        return [
+          ['mail-events', [['1-0', ['key', 'k', 'value', JSON.stringify({ a: 1 })]]]],
+        ];
+      }
+      consumer.running = false;
+      return null;
+    });
+
+    const handler = sinon.stub().resolves();
+    await consumer.consume(handler);
+    await consumer.consumeLoopPromise;
+
+    expect(handler.calledOnce).to.be.true;
+    expect(clients[3].xack.calledWith('mail-events', sinon.match.string, '1-0')).to.be
+      .true;
+    expect(clients[1].xack.called, 'must not ack on the quit client').to.be.false;
   });
 });
