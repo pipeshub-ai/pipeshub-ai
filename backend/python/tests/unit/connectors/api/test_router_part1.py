@@ -757,6 +757,8 @@ def _make_stream_connector():
 
     conn = object.__new__(GoogleDriveTeamConnector)
     conn.logger = MagicMock()
+    # None routes run_in_executor to the loop's default pool.
+    conn._drive_executor = None
     return conn
 
 
@@ -775,7 +777,7 @@ class TestStreamGoogleApiRequest:
             ])
 
             # Simulate that after next_chunk, buffer contains data
-            def fake_init(buf, req):
+            def fake_init(buf, req, **kwargs):
                 # Write data into the buffer before next_chunk returns
                 original_next = instance.next_chunk
 

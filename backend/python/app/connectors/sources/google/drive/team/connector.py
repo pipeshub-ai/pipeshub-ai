@@ -4,6 +4,7 @@ import logging
 import os
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
@@ -96,6 +97,17 @@ from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+
+# Dedicated executor capacity for this connector's blocking Google API calls.
+# Isolating Drive sync on its own pool means a slow/hung Google response can
+# only stall this connector's work, never the loop's shared default executor
+# (which other connectors and platform file I/O also depend on).
+_DRIVE_TEAM_EXECUTOR_MAX_WORKERS = 8
+
+# Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
+# 100 MB, which buffers a whole slice in memory before any of it reaches the
+# client and keeps one executor thread busy for that entire transfer.
+_DRIVE_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -284,6 +296,16 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.config: Optional[Dict] = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
+        # Dedicated executor for this connector's blocking Google API calls.
+        # Every GoogleDriveDataSource / GoogleAdminDataSource instance this
+        # connector constructs (service-account and per-user impersonated
+        # alike) borrows this same pool; the connector owns creation and
+        # shutdown so a large workspace sync never spins up one pool per user.
+        self._drive_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=_DRIVE_TEAM_EXECUTOR_MAX_WORKERS,
+            thread_name_prefix=f"gdrive-team-{connector_id[:8]}",
+        )
+
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set() # to filter out non workspace emails during shared drive file share processing
@@ -336,7 +358,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 # Create Google Admin Data Source from the client
                 self.admin_data_source = GoogleAdminDataSource(
-                    self.admin_client.get_client()
+                    self.admin_client.get_client(),
+                    executor=self._drive_executor,
                 )
 
                 self.logger.info(
@@ -362,7 +385,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 # Create Google Drive Data Source from the client
                 self.drive_data_source = GoogleDriveDataSource(
-                    self.drive_client.get_client()
+                    self.drive_client.get_client(),
+                    executor=self._drive_executor,
                 )
 
                 self.logger.info(
@@ -1110,7 +1134,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Create user-specific GoogleDriveDataSource from the client
             user_drive_data_source = GoogleDriveDataSource(
-                user_drive_client.get_client()
+                user_drive_client.get_client(),
+                executor=self._drive_executor,
             )
 
             # Fetch root drive info to get the actual drive ID
@@ -2092,7 +2117,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             connector_instance_id=self.connector_id
         )
 
-        return GoogleDriveDataSource(user_drive_client.get_client())
+        return GoogleDriveDataSource(user_drive_client.get_client(), executor=self._drive_executor)
 
     async def _resolve_folder_scope_across_users(self, users: List[AppUser]) -> None:
         """
@@ -2843,14 +2868,20 @@ class GoogleDriveTeamConnector(BaseConnector):
         Yields:
             bytes: File content from the request
         """
+        loop = asyncio.get_running_loop()
         buffer = io.BytesIO()
         try:
-            downloader = MediaIoBaseDownload(buffer, request)
+            downloader = MediaIoBaseDownload(buffer, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
             done = False
 
             while not done:
                 try:
-                    _, done = downloader.next_chunk()
+                    # next_chunk() performs the HTTP range request synchronously, so
+                    # calling it here would freeze the event loop for the whole
+                    # round-trip and stall every other request in the process.
+                    _, done = await loop.run_in_executor(
+                        self._drive_executor, downloader.next_chunk
+                    )
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
                     raise HTTPException(
@@ -2872,9 +2903,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Clear buffer for next chunk
                 buffer.seek(0)
                 buffer.truncate(0)
-
-                # Yield control back to event loop
-                await asyncio.sleep(0)
+        except HTTPException:
+            raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
             raise HTTPException(
@@ -2950,12 +2980,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             Dictionary with file metadata including mimeType
         """
         try:
-            file_metadata = drive_service.files().get(
+            metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields="id,name,mimeType",
                 supportsAllDrives=True  # ADD THIS for Shared Drive support
-            ).execute()
-            return file_metadata
+            )
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(self._drive_executor, metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
             if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -3132,11 +3163,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 fileId=file_id,
                                 supportsAllDrives=True  # ADDED
                             )
-                            downloader = MediaIoBaseDownload(f, request)
+                            downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
 
+                            loop = asyncio.get_running_loop()
                             done = False
                             while not done:
-                                status, done = downloader.next_chunk()
+                                status, done = await loop.run_in_executor(
+                                    self._drive_executor, downloader.next_chunk
+                                )
                                 self.logger.info(f"Download {int(status.progress() * 100)}%.")
                     except HttpError as http_error:
                         if http_error.resp.status == HttpStatusCode.FORBIDDEN.value:
@@ -3277,7 +3311,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             drive_service = await self._get_drive_service_for_user(user_email)
 
             # Wrap drive service in GoogleDriveDataSource to use files_get method
-            user_drive_data_source = GoogleDriveDataSource(drive_service)
+            user_drive_data_source = GoogleDriveDataSource(drive_service, executor=self._drive_executor)
 
             # Get user information (permissionId) from the user-specific drive service
             fields = 'user(displayName,emailAddress,permissionId)'
@@ -3359,6 +3393,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("Cleaning up Google Drive enterprise connector resources")
+
+            # Stop accepting new work before dropping the data source references that
+            # borrow this pool. Pending futures are cancelled rather than awaited, so
+            # any in-flight datasource call raises RuntimeError instead of hanging.
+            if hasattr(self, '_drive_executor') and self._drive_executor:
+                self._drive_executor.shutdown(wait=False, cancel_futures=True)
 
             # Clear data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:

@@ -213,10 +213,10 @@ class GoogleAPIMethodGenerator:
         # Format parameters with each on a new line
         all_params = ['self'] + required_params + optional_params
         if len(all_params) == 1:
-            signature = f"def {method_full_name}(self) -> Dict[str, Any]:"
+            signature = f"async def {method_full_name}(self) -> Dict[str, Any]:"
         else:
             params_formatted = ',\n        '.join(all_params)
-            signature = f"def {method_full_name}(\n        {params_formatted}\n    ) -> Dict[str, Any]:"
+            signature = f"async def {method_full_name}(\n        {params_formatted}\n    ) -> Dict[str, Any]:"
         
         return signature, method_full_name
     
@@ -289,7 +289,7 @@ class GoogleAPIMethodGenerator:
         method_body = f"""        kwargs = {{}}
 {chr(10).join(param_mapping) if param_mapping else "        # No parameters for this method"}
 {body_handling}
-        return request.execute()"""
+        return await self._execute(request)"""
         
         return method_body
     
@@ -457,7 +457,9 @@ Generated from Google Discovery API schema definitions.
         all_methods = self._process_nested_resources(resources)
         
         # Generate class header
-        class_code = f'''from typing import Dict, Any, Optional, List
+        class_code = f'''import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, Optional, List
 
 
 class {class_name}:
@@ -470,14 +472,27 @@ class {class_name}:
     
     def __init__(
         self,
-        client: object
+        client: object,
+        *,
+        executor: Optional[ThreadPoolExecutor] = None
     ) -> None:
         """
         Initialize with {service_description} client.
         Args:
             client: {service_description} client from build('{self.service_name}', '{self.version}', credentials=credentials)
+            executor: Optional dedicated thread pool to run blocking calls on. When
+                omitted, falls back to the event loop's default executor.
         """
         self.client = client
+        self._executor = executor
+        # googleapiclient services share one httplib2.Http per instance, which is
+        # not thread-safe, so at most one in-flight request per datasource instance.
+        self._execute_lock = asyncio.Lock()
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        async with self._execute_lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(self._executor, request.execute)
 
 '''
         
