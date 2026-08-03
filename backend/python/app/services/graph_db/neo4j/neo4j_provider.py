@@ -13070,8 +13070,8 @@ class Neo4jProvider(IGraphDBProvider):
                     # Children-first approach: need parent_doc_id (Record ID)
                     params["parent_doc_id"] = parent_id
                 elif parent_type == "app":
-                    # App-level scope: use parent_id for scope filters
                     params["parent_id"] = parent_id
+                    params["parent_doc_id"] = parent_id
                     if parent_connector_id:
                         params["parent_connector_id"] = parent_connector_id
 
@@ -15189,27 +15189,8 @@ class Neo4jProvider(IGraphDBProvider):
             """
             else:
                 remaining = max(1, depth - 2)
-                child_clause = ""
-                combine = "rg_records + kb_records"
-                if depth >= 3:
-                    child_clause = f"""
-            // Depth>=3: also find children of direct records via RECORD_RELATION
-            OPTIONAL MATCH (direct_rec)-[:RECORD_RELATION*1..{remaining}]->(child:Record)
-            WHERE direct_rec IN rg_records + kb_records
-              AND child.orgId = $org_id
-              AND ALL(rel IN relationships((direct_rec)-[:RECORD_RELATION*1..{remaining}]->(child))
-                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
-            WITH accessible_rgs, accessible_records, rg_records, kb_records,
-                 collect(DISTINCT child) AS child_records
-            """
-                    combine = "rg_records + kb_records + child_records"
-                else:
-                    child_clause = """
-            WITH accessible_rgs, accessible_records, rg_records, kb_records,
-                 [] AS child_records
-            """
 
-                return f"""
+                base_query = """
             // App node depth>=2: find records under record groups + KB direct records
             OPTIONAL MATCH (rg:RecordGroup {{connectorId: $parent_doc_id}})
             WHERE rg.isDeleted <> true AND rg IN accessible_rgs
@@ -15223,11 +15204,46 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE kb_rec.orgId = $org_id
             WITH accessible_rgs, accessible_records, rg_records,
                  collect(DISTINCT kb_rec) AS kb_records
-            {child_clause}
+            """
+
+                if depth >= 3:
+                    child_clause = f"""
+            // Depth>=3: children of records under record groups
+            OPTIONAL MATCH (rg2:RecordGroup {{connectorId: $parent_doc_id}})
+            WHERE rg2.isDeleted <> true
+            OPTIONAL MATCH (rg_top:Record)-[:BELONGS_TO]->(rg2)
+            WHERE rg_top.orgId = $org_id
+            OPTIONAL MATCH rg_child_path = (rg_top)-[:RECORD_RELATION*1..{remaining}]->(rg_child:Record)
+            WHERE rg_child.orgId = $org_id
+              AND ALL(rel IN relationships(rg_child_path)
+                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            WITH accessible_rgs, accessible_records, rg_records, kb_records,
+                 [r IN collect(DISTINCT rg_child) WHERE r IS NOT NULL] AS rg_child_records
+
+            // Depth>=3: children of KB-direct records
+            OPTIONAL MATCH (kb_top:Record)-[:BELONGS_TO]->(kb_app2:App {{id: $parent_doc_id}})
+            WHERE kb_top.orgId = $org_id
+            OPTIONAL MATCH kb_child_path = (kb_top)-[:RECORD_RELATION*1..{remaining}]->(kb_child:Record)
+            WHERE kb_child.orgId = $org_id
+              AND ALL(rel IN relationships(kb_child_path)
+                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            WITH accessible_rgs, accessible_records, rg_records, kb_records, rg_child_records,
+                 [r IN collect(DISTINCT kb_child) WHERE r IS NOT NULL] AS kb_child_records
+
             // Intersect with accessible records
             WITH accessible_rgs AS final_accessible_rgs,
-                 [r IN {combine} WHERE r IN accessible_records AND r IS NOT NULL] AS final_accessible_records
+                 [r IN rg_records + kb_records + rg_child_records + kb_child_records
+                  WHERE r IN accessible_records AND r IS NOT NULL] AS final_accessible_records
             """
+                else:
+                    child_clause = """
+            // Intersect with accessible records
+            WITH accessible_rgs AS final_accessible_rgs,
+                 [r IN rg_records + kb_records
+                  WHERE r IN accessible_records AND r IS NOT NULL] AS final_accessible_records
+            """
+
+                return base_query + child_clause
 
         if parent_type == "recordGroup":
             # For KB/RecordGroup: traverse INHERIT_PERMISSIONS to find all children
