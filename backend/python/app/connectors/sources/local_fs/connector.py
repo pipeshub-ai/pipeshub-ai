@@ -1397,11 +1397,28 @@ class LocalFsConnector(BaseConnector):
     ) -> None:
         if not external_ids:
             return
+        # Resolve storage blobs before the graph rows disappear. Desktop-uploaded
+        # records use storage:// paths; server-side disk records have none and
+        # this is a no-op for them. Matches apply_uploaded_file_event_batch /
+        # _reset_existing_records(..., delete_storage_documents=True).
+        existing_by_ext = await self._bulk_get_records_by_external_ids(external_ids)
+        storage_document_ids: List[str] = []
+        for external_id in external_ids:
+            record = existing_by_ext.get(external_id)
+            document_id = self._storage_document_id_from_path(
+                getattr(record, "path", None) if record is not None else None
+            )
+            if document_id:
+                storage_document_ids.append(document_id)
+
         async with self.data_store_provider.transaction() as tx_store:
             for external_id in external_ids:
                 await tx_store.delete_record_by_external_id(
                     self.connector_id, external_id, user_id
                 )
+
+        for document_id in storage_document_ids:
+            await self._delete_storage_document(document_id)
 
     def _prepare_upsert_record(
         self,
@@ -2443,11 +2460,18 @@ class LocalFsConnector(BaseConnector):
         seen_external_ids: set[str] = set()
 
         for abs_folder_path in self._iter_folder_paths(root):
+            guarded_external_id: Optional[str] = None
             try:
+                # Resolve the external id before any further FS checks so a
+                # transient error below cannot classify this on-disk path as a
+                # deletion (see the matching guard in the file loop).
+                guarded_external_id = self._external_record_id_for_rel_path(
+                    abs_folder_path.relative_to(root).as_posix()
+                )
                 if abs_folder_path.is_symlink() or not abs_folder_path.is_dir():
                     continue
                 rel_path = abs_folder_path.relative_to(root).as_posix()
-                external_id = self._external_record_id_for_rel_path(rel_path)
+                external_id = guarded_external_id
                 seen_external_ids.add(external_id)
                 if external_id not in existing:
                     events.append(
@@ -2459,6 +2483,8 @@ class LocalFsConnector(BaseConnector):
                         )
                     )
             except Exception as e:
+                if guarded_external_id:
+                    seen_external_ids.add(guarded_external_id)
                 self.logger.warning(
                     "Local FS: skip folder %s during incremental diff: %s",
                     abs_folder_path,
@@ -2467,7 +2493,15 @@ class LocalFsConnector(BaseConnector):
                 continue
 
         for abs_path in self._iter_file_paths(root):
+            guarded_external_id: Optional[str] = None
             try:
+                # Same as the folder loop: pin the id before risky FS calls so a
+                # transient OSError from stat/is_file cannot turn into a delete.
+                # Intentional filter continues (extension / date) still omit the
+                # id from seen_external_ids so out-of-scope files are removed.
+                guarded_external_id = self._external_record_id_for_rel_path(
+                    abs_path.relative_to(root).as_posix()
+                )
                 if abs_path.is_symlink() or not abs_path.is_file():
                     continue
                 if not self._extension_allowed(abs_path, sync_filters):
@@ -2476,7 +2510,7 @@ class LocalFsConnector(BaseConnector):
                 if not _file_stat_matches_date_filters(st, sync_filters):
                     continue
                 rel_path = abs_path.relative_to(root).as_posix()
-                external_id = self._external_record_id_for_rel_path(rel_path)
+                external_id = guarded_external_id
                 seen_external_ids.add(external_id)
                 # Known limitation: a same-second edit that preserves file size
                 # produces an identical "{mtime_ms}:{size}" revision and is
@@ -2503,6 +2537,8 @@ class LocalFsConnector(BaseConnector):
                         )
                     )
             except Exception as e:
+                if guarded_external_id:
+                    seen_external_ids.add(guarded_external_id)
                 self.logger.warning(
                     "Local FS: skip %s during incremental diff: %s", abs_path, e
                 )

@@ -1260,7 +1260,13 @@ class DataSourceEntitiesProcessor:
 
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
-                            new_record.indexing_status = ProgressStatus.QUEUED.value
+                            # NOT_STARTED until the updateRecord lands on the topic;
+                            # _mark_queued_after_publish then CAS-promotes to QUEUED
+                            # and stamps queuedAt. Writing QUEUED here would leave the
+                            # record stranded (and unscannable by orphan recovery,
+                            # which treats missing queuedAt as not-stale) if the
+                            # publish below fails.
+                            new_record.indexing_status = ProgressStatus.NOT_STARTED.value
                         records_to_reindex.append(new_record)
 
                     await tx_store.batch_upsert_records([new_record])
@@ -1298,7 +1304,7 @@ class DataSourceEntitiesProcessor:
 
             new_batch = _publishable(new_records_to_publish)
             if new_batch:
-                await self.messaging_producer.send_messages(
+                acked = await self.messaging_producer.send_messages(
                     "record-events",
                     [
                         (
@@ -1312,6 +1318,9 @@ class DataSourceEntitiesProcessor:
                         for record in new_batch
                     ],
                 )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(new_batch, acked) if ok]
+                )
 
             reindex_batch = _publishable(records_to_reindex)
             for record in reindex_batch:
@@ -1321,7 +1330,7 @@ class DataSourceEntitiesProcessor:
                     record.id,
                 )
             if reindex_batch:
-                await self.messaging_producer.send_messages(
+                acked = await self.messaging_producer.send_messages(
                     "record-events",
                     [
                         (
@@ -1334,6 +1343,9 @@ class DataSourceEntitiesProcessor:
                         )
                         for record in reindex_batch
                     ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(reindex_batch, acked) if ok]
                 )
 
         except Exception as e:

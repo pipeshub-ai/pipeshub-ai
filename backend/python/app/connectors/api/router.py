@@ -6610,6 +6610,11 @@ async def toggle_connector_instance(
             target_status = not current_agent_status
             status_field = "isAgentActive"
 
+        # Resolve connector config before any status write when enabling sync.
+        # Kept in outer scope so the MANUAL syncAction check below can reuse it
+        # instead of re-fetching after update_connector_instance().
+        config = None
+
         # Validate prerequisites when enabling
         if toggle_type == "sync" and not current_sync_status:
             auth_type = (instance.get("authType") or "").upper()
@@ -6711,16 +6716,16 @@ async def toggle_connector_instance(
 
             # MANUAL strategy must not trigger a crawl just because the connector
             # was toggled on; only the explicit sync-trigger endpoints should sync
-            # it. Read the same etcd path connector_factory reads on startup so
-            # this path and the startup path agree. Fetched here rather than in
-            # the enable-validation block above, since that block is skipped
-            # entirely when disabling.
-            config_service = container.config_service()
-            config_path = _get_config_path_for_instance(connector_id)
-            config = await config_service.get_config(config_path)
-            sync_strategy = (config or {}).get("sync") or {}
-            sync_strategy = sync_strategy.get("selectedStrategy")
-            sync_action = "none" if sync_strategy == SyncStrategy.MANUAL.value else "immediate"
+            # it. Reuse the config already loaded in the enable-validation block
+            # above — resolving strategy after update_connector_instance() would
+            # leave isActive flipped if get_config failed (no appEnabled /
+            # appDisabled publish, and on disable no connectors_map cleanup).
+            # Disable never needs the strategy: appDisabled ignores syncAction.
+            sync_action = "immediate"
+            if target_status:
+                sync_config = (config or {}).get("sync") or {}
+                if sync_config.get("selectedStrategy") == SyncStrategy.MANUAL.value:
+                    sync_action = "none"
 
             payload = {
                 "orgId": user_info["orgId"],

@@ -424,20 +424,29 @@ class EntityEventService(BaseEventService):
 
     async def __is_manual_sync_strategy(self, connector_id: str) -> bool:
         """Read selectedStrategy from the same etcd path connector_factory reads
-        on startup, so this check agrees with it. Defaults to False (i.e. sync)
-        on a missing/unreadable config, matching connector_factory's behavior."""
+        on startup, so this check agrees with it.
+
+        On a successful read with no/other strategy, returns False (allow sync).
+        On a read failure, returns True so we suppress automatic sync rather than
+        starting a crawl for a MANUAL connector whose config we could not see.
+        """
         try:
             config_service = self.app_container.config_service()
             config = await config_service.get_config(
                 f"/services/connectors/{connector_id}/config"
             )
-            sync_strategy = (config or {}).get("sync") or {}
+            if not isinstance(config, dict):
+                config = {}
+            sync_strategy = config.get("sync") or {}
+            if not isinstance(sync_strategy, dict):
+                sync_strategy = {}
             return sync_strategy.get("selectedStrategy") == SyncStrategy.MANUAL.value
         except Exception as e:
             self.logger.warning(
                 f"Could not read sync strategy for connector {connector_id}: {e}"
             )
-            return False
+            # Fail closed: unknown strategy must not authorize immediate sync.
+            return True
 
     async def __handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""

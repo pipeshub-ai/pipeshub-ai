@@ -93,8 +93,10 @@ from app.connectors.sources.local_fs.connector import (  # noqa: E402
     SYNC_ROOT_PATH_KEY,
     _file_stat_matches_date_filters as local_fs_passes_date_filters,
     _get_created_timestamp_ms as stat_created_epoch_ms,
+    _get_datetime_filter_bounds_ms as datetime_filter_bounds_ms,
     _get_sync_config_value as sync_value_from_config,
     _parse_sync_batch_size as parse_batch_size_from_sync,
+    _parse_sync_bool as parse_sync_bool,
     _parse_sync_settings as read_sync_settings_from_config,
     _validate_sync_root_path as validate_host_path,
 )
@@ -102,7 +104,14 @@ from app.connectors.sources.local_fs.models import (  # noqa: E402
     LocalFsFileEvent,
     LocalFsFileEventBatchStats,
 )
-from app.models.entities import FileRecord, OriginTypes, RecordType, RecordGroupType, User  # noqa: E402
+from app.models.entities import (  # noqa: E402
+    FileRecord,
+    OriginTypes,
+    Record,
+    RecordGroupType,
+    RecordType,
+    User,
+)
 from app.models.permission import PermissionType  # noqa: E402
 
 
@@ -2158,6 +2167,54 @@ class TestDeleteExternalIds:
         await folder_connector._delete_external_ids([], "user-1")
         spy.assert_not_called()
 
+    async def test_deletes_storage_blob_for_storage_backed_record(
+        self, folder_connector
+    ):
+        """Incremental / event deletes must GC storage:// blobs, not only the
+        graph row — otherwise desktop-seeded connectors leak documents."""
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+
+        storage_rec = MagicMock()
+        storage_rec.path = f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-orphan"
+        disk_rec = MagicMock()
+        disk_rec.path = "/tmp/local/file.txt"
+
+        folder_connector._bulk_get_records_by_external_ids = AsyncMock(
+            return_value={"ext-storage": storage_rec, "ext-disk": disk_rec}
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        await folder_connector._delete_external_ids(
+            ["ext-storage", "ext-disk"], "user-1"
+        )
+
+        assert txn.delete_record_by_external_id.await_count == 2
+        folder_connector._delete_storage_document.assert_awaited_once_with(
+            "doc-orphan"
+        )
+
+    async def test_no_storage_lookup_side_effects_when_no_blobs(
+        self, folder_connector
+    ):
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.delete_record_by_external_id = AsyncMock()
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector._bulk_get_records_by_external_ids = AsyncMock(
+            return_value={}
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        await folder_connector._delete_external_ids(["missing"], "user-1")
+
+        txn.delete_record_by_external_id.assert_awaited_once()
+        folder_connector._delete_storage_document.assert_not_awaited()
+
 
 # --------------------------------------------------------------------------- #
 # _prepare_upsert_record — symlinks + extension filter                        #
@@ -3717,3 +3774,664 @@ class TestStreamRecordLocalFileOsError:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
         assert "Cannot read file" in str(ei.value.detail)
+
+
+# --------------------------------------------------------------------------- #
+# Coverage for incremental helpers + previously-missed branches               #
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_sync_bool_non_bool_non_str_returns_default():
+    assert parse_sync_bool(None, True) is True
+    assert parse_sync_bool(1, False) is False
+    assert parse_sync_bool(["x"], True) is True
+
+
+def test_datetime_filter_bounds_iso_path_when_value_not_tuple():
+    """Filter validators normally coerce datetime values to tuples; the ISO
+    fallback must still work when value is something else (e.g. a list)."""
+    fl = Filter.model_construct(
+        key=SyncFilterKey.MODIFIED.value,
+        type=FilterType.DATETIME,
+        operator=DatetimeOperator.IS_BETWEEN,
+        value=[1_700_000_000_000, 1_700_000_100_000],
+    )
+    after_ms, before_ms = datetime_filter_bounds_ms(fl)
+    # Round-trip through ISO drops sub-second precision; just confirm the
+    # non-tuple branch produced parsed bounds in the right order.
+    assert after_ms is not None and before_ms is not None
+    assert after_ms < before_ms
+    assert abs(after_ms - 1_700_000_000_000) < 86_400_000  # within a day
+
+
+def test_event_matches_created_after_upper_bound():
+    ev = LocalFsFileEvent(
+        type="CREATED", path="x", timestamp=9000, isDirectory=False,
+    )
+    flt = Filter(
+        key=SyncFilterKey.CREATED.value,
+        type=FilterType.DATETIME,
+        operator=DatetimeOperator.IS_BETWEEN,
+        value={"start": 1000, "end": 5000},
+    )
+    assert (
+        LocalFsConnector._event_matches_date_filters(
+            ev, FilterCollection(filters=[flt])
+        )
+        is False
+    )
+
+
+class TestIterFolderPaths:
+    def test_top_level_only_when_include_subfolders_false(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "a").mkdir()
+        nested = tmp_path / "a" / "b"
+        nested.mkdir()
+        (tmp_path / "c").mkdir()
+        folder_connector.include_subfolders = False
+        out = folder_connector._iter_folder_paths(tmp_path)
+        assert sorted(p.name for p in out) == ["a", "c"]
+
+
+class TestAppendFolderUpsertRecords:
+    def test_empty_rel_path_is_noop(self, folder_connector, tmp_path):
+        buf: list = []
+        emitted: set[str] = set()
+        folder_connector._append_folder_upsert_records(
+            buf, "  /  ", tmp_path, "rg", 1, emitted
+        )
+        assert buf == []
+        assert emitted == set()
+
+    def test_already_emitted_folder_skips_rebuild(self, folder_connector, tmp_path):
+        buf: list = []
+        emitted = {"docs"}
+        folder_connector._append_folder_upsert_records(
+            buf, "docs", tmp_path, "rg", 1, emitted
+        )
+        # No parents and already emitted → buffer stays empty.
+        assert buf == []
+        assert emitted == {"docs"}
+
+
+@pytest.mark.asyncio
+class TestHandleDirectoryEventForBatch:
+    async def test_dir_deleted_flushes_at_batch_size(self, folder_connector):
+        delete_only: list[str] = []
+        flush_delete = AsyncMock()
+        await folder_connector._handle_directory_event_for_batch(
+            event_type="DIR_DELETED",
+            rel_path="gone",
+            old_rel_path="",
+            root=Path("/tmp"),
+            external_record_group_id="rg",
+            timestamp_ms=1,
+            owner=User(email="u@x.com", id="u1", org_id="org-1"),
+            upsert_buffer=[],
+            delete_after_upsert_buffer=[],
+            delete_only_buffer=delete_only,
+            emitted_folder_paths=set(),
+            flush_upserts=AsyncMock(),
+            flush_delete_only=flush_delete,
+            batch_size=1,
+        )
+        assert len(delete_only) == 1
+        flush_delete.assert_awaited_once()
+
+    async def test_dir_created_flushes_upserts_at_batch_size(
+        self, folder_connector, tmp_path
+    ):
+        upsert_buffer: list = []
+        flush_upserts = AsyncMock()
+        await folder_connector._handle_directory_event_for_batch(
+            event_type="DIR_CREATED",
+            rel_path="newdir",
+            old_rel_path="",
+            root=tmp_path,
+            external_record_group_id="rg",
+            timestamp_ms=1,
+            owner=User(email="u@x.com", id="u1", org_id="org-1"),
+            upsert_buffer=upsert_buffer,
+            delete_after_upsert_buffer=[],
+            delete_only_buffer=[],
+            emitted_folder_paths=set(),
+            flush_upserts=flush_upserts,
+            flush_delete_only=AsyncMock(),
+            batch_size=1,
+        )
+        assert upsert_buffer
+        flush_upserts.assert_awaited_once()
+
+    async def test_dir_renamed_queues_old_path_and_flushes(
+        self, folder_connector, tmp_path
+    ):
+        upsert_buffer: list = []
+        delete_after: list[str] = []
+        flush_upserts = AsyncMock()
+        await folder_connector._handle_directory_event_for_batch(
+            event_type="DIR_RENAMED",
+            rel_path="new",
+            old_rel_path="old",
+            root=tmp_path,
+            external_record_group_id="rg",
+            timestamp_ms=1,
+            owner=User(email="u@x.com", id="u1", org_id="org-1"),
+            upsert_buffer=upsert_buffer,
+            delete_after_upsert_buffer=delete_after,
+            delete_only_buffer=[],
+            emitted_folder_paths=set(),
+            flush_upserts=flush_upserts,
+            flush_delete_only=AsyncMock(),
+            batch_size=1,
+        )
+        assert delete_after == [
+            folder_connector._external_record_id_for_rel_path("old")
+        ]
+        flush_upserts.assert_awaited_once()
+
+    async def test_unsupported_directory_event_raises(self, folder_connector, tmp_path):
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector._handle_directory_event_for_batch(
+                event_type="DIR_WAT",
+                rel_path="x",
+                old_rel_path="",
+                root=tmp_path,
+                external_record_group_id="rg",
+                timestamp_ms=1,
+                owner=User(email="u@x.com", id="u1", org_id="org-1"),
+                upsert_buffer=[],
+                delete_after_upsert_buffer=[],
+                delete_only_buffer=[],
+                emitted_folder_paths=set(),
+                flush_upserts=AsyncMock(),
+                flush_delete_only=AsyncMock(),
+                batch_size=10,
+            )
+        assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+
+class TestPrepareUpsertRecordDateFilter:
+    def test_returns_none_when_date_filters_reject(
+        self, folder_connector, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "old.txt"
+        f.write_text("x", encoding="utf-8")
+        # Far-future window so the real file mtime cannot match.
+        sync_f = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.MODIFIED.value,
+                    type=FilterType.DATETIME,
+                    operator=DatetimeOperator.IS_BETWEEN,
+                    value={"start": 9_999_999_999_000, "end": 9_999_999_999_999},
+                )
+            ]
+        )
+        empty = FilterCollection(filters=[])
+        out = folder_connector._prepare_upsert_record(
+            tmp_path, "old.txt", "rg", sync_f, empty, owner=None
+        )
+        assert out is None
+
+
+@pytest.mark.asyncio
+class TestResetExistingRecordsEdgeCases:
+    async def test_returns_early_when_batch_has_no_external_ids(
+        self, folder_connector
+    ):
+        """Rows without external_record_id must not spin forever; exit when a
+        page yields zero deletable records."""
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        orphan = MagicMock()
+        orphan.external_record_id = None
+        orphan.path = None
+        txn.get_records_by_status = AsyncMock(return_value=[orphan])
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+
+        deleted = await folder_connector._reset_existing_records("owner-1")
+        assert deleted == 0
+        txn.delete_record_by_external_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestScanExistingRecords:
+    async def test_paginates_and_maps_external_revision_ids(self, folder_connector):
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.txn = object()
+        txn.graph_provider = MagicMock()
+        folder_connector.batch_size = 1  # page_size = 4
+        full = [
+            {"externalRecordId": f"id-{i}", "externalRevisionId": f"{i}:{i}"}
+            for i in range(4)
+        ]
+        short = [
+            {"externalRecordId": "tail", "externalRevisionId": "9:9"},
+            {"_key": "no-ext"},  # skipped — no externalRecordId
+        ]
+        txn.graph_provider.get_documents_paginated = AsyncMock(
+            side_effect=[full, short]
+        )
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+
+        existing = await folder_connector._scan_existing_records()
+        assert existing["id-0"] == "0:0"
+        assert existing["tail"] == "9:9"
+        assert "no-ext" not in existing
+        assert len(existing) == 5
+        assert txn.graph_provider.get_documents_paginated.await_count == 2
+
+
+@pytest.mark.asyncio
+class TestWriteRecordSyncPoint:
+    async def test_writes_last_sync_at_and_count(self, folder_connector):
+        folder_connector._record_sync_point.update_sync_point = AsyncMock()
+        with patch(
+            "app.connectors.sources.local_fs.connector.get_epoch_timestamp_in_ms",
+            return_value=42,
+        ):
+            await folder_connector._write_record_sync_point(7)
+        folder_connector._record_sync_point.update_sync_point.assert_awaited_once_with(
+            folder_connector._sync_point_key,
+            {"lastSyncAt": 42, "recordCount": 7},
+        )
+
+
+@pytest.mark.asyncio
+class TestRequeueStuckUnchangedRecords:
+    def _record(self, rid: str) -> Record:
+        return Record(
+            id=rid,
+            record_name=rid,
+            record_type=RecordType.FILE,
+            external_record_id=f"ext-{rid}",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="connector-instance-1",
+        )
+
+    async def test_reindexes_pages_with_keyset_pagination(self, folder_connector):
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        folder_connector.batch_size = 1  # page_size = 4
+        page1 = [self._record(f"r{i}") for i in range(4)]
+        page2 = [self._record("r4")]
+        txn.get_records_by_status = AsyncMock(side_effect=[page1, page2])
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.reindex_records = AsyncMock()
+
+        await folder_connector._requeue_stuck_unchanged_records()
+
+        assert folder_connector.reindex_records.await_count == 2
+        folder_connector.logger.info.assert_called()
+        second_kwargs = txn.get_records_by_status.await_args_list[1].kwargs
+        assert second_kwargs.get("after_key") == page1[-1].id
+
+    async def test_noop_when_no_stuck_records(self, folder_connector):
+        txn = MagicMock()
+        txn.__aenter__ = AsyncMock(return_value=txn)
+        txn.__aexit__ = AsyncMock(return_value=None)
+        txn.get_records_by_status = AsyncMock(return_value=[])
+        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.reindex_records = AsyncMock()
+
+        await folder_connector._requeue_stuck_unchanged_records()
+        folder_connector.reindex_records.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+class TestRunIncrementalSyncCoverage:
+    async def test_new_folder_emits_created_directory_event(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "docs").mkdir()
+        folder_connector._scan_existing_records = AsyncMock(return_value={})
+        folder_connector._apply_events_with_context = AsyncMock(
+            return_value=LocalFsFileEventBatchStats(processed=0, deleted=0)
+        )
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            owner,
+            FilterCollection(filters=[]),
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 0},
+        )
+
+        events = folder_connector._apply_events_with_context.await_args.args[0]
+        assert any(e.type == "CREATED" and e.isDirectory and e.path == "docs" for e in events)
+
+    async def test_skips_disallowed_extension_and_date_filtered_files(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "keep.txt").write_text("k", encoding="utf-8")
+        (tmp_path / "skip.md").write_text("s", encoding="utf-8")
+        keep_id = folder_connector._external_record_id_for_rel_path("keep.txt")
+        st = (tmp_path / "keep.txt").stat()
+        revision = f"{int(st.st_mtime * 1000)}:{st.st_size}"
+
+        folder_connector._scan_existing_records = AsyncMock(
+            return_value={keep_id: revision}
+        )
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=["txt"],
+                ),
+                Filter(
+                    key=SyncFilterKey.MODIFIED.value,
+                    type=FilterType.DATETIME,
+                    operator=DatetimeOperator.IS_BETWEEN,
+                    # Window that includes keep.txt's mtime.
+                    value={
+                        "start": int(st.st_mtime * 1000) - 10_000,
+                        "end": int(st.st_mtime * 1000) + 10_000,
+                    },
+                ),
+            ]
+        )
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            User(email="o@x.com", id="owner-1", org_id="org-1"),
+            sync_filters,
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 1},
+        )
+        folder_connector._apply_events_with_context.assert_not_awaited()
+        folder_connector._write_record_sync_point.assert_awaited()
+
+    async def test_date_filter_rejects_file_during_diff(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "old.txt").write_text("o", encoding="utf-8")
+        folder_connector._scan_existing_records = AsyncMock(return_value={})
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.MODIFIED.value,
+                    type=FilterType.DATETIME,
+                    operator=DatetimeOperator.IS_BETWEEN,
+                    value={"start": 9_999_999_999_000, "end": 9_999_999_999_999},
+                )
+            ]
+        )
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            User(email="o@x.com", id="owner-1", org_id="org-1"),
+            sync_filters,
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 0},
+        )
+        folder_connector._apply_events_with_context.assert_not_awaited()
+
+    async def test_per_file_exception_is_skipped(self, folder_connector, tmp_path):
+        (tmp_path / "bad.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "ok.txt").write_text("y", encoding="utf-8")
+        folder_connector._scan_existing_records = AsyncMock(return_value={})
+        folder_connector._apply_events_with_context = AsyncMock(
+            return_value=LocalFsFileEventBatchStats(processed=1, deleted=0)
+        )
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        original = folder_connector._extension_allowed
+
+        def _flaky(path, filters):
+            if path.name == "bad.txt":
+                raise OSError("stat failed")
+            return original(path, filters)
+
+        folder_connector._extension_allowed = _flaky  # type: ignore[method-assign]
+
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            User(email="o@x.com", id="owner-1", org_id="org-1"),
+            FilterCollection(filters=[]),
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 0},
+        )
+        folder_connector.logger.warning.assert_called()
+        folder_connector._write_record_sync_point.assert_awaited()
+        events = folder_connector._apply_events_with_context.await_args.args[0]
+        assert any(e.path == "ok.txt" for e in events)
+
+    async def test_per_file_exception_does_not_delete_existing_record(
+        self, folder_connector, tmp_path
+    ):
+        """A transient OSError while inspecting an on-disk file must not treat
+        that path as deleted — otherwise one flaky stat() re-embeds the file."""
+        bad = tmp_path / "bad.txt"
+        bad.write_text("x", encoding="utf-8")
+        bad_id = folder_connector._external_record_id_for_rel_path("bad.txt")
+        st = bad.stat()
+        revision = f"{int(st.st_mtime * 1000)}:{st.st_size}"
+
+        folder_connector._scan_existing_records = AsyncMock(
+            return_value={bad_id: revision}
+        )
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock()
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        original = folder_connector._extension_allowed
+
+        def _flaky(path, filters):
+            if path.name == "bad.txt":
+                raise OSError("stat failed")
+            return original(path, filters)
+
+        folder_connector._extension_allowed = _flaky  # type: ignore[method-assign]
+
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            User(email="o@x.com", id="owner-1", org_id="org-1"),
+            FilterCollection(filters=[]),
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 1},
+        )
+
+        folder_connector._delete_external_ids.assert_not_awaited()
+        folder_connector._apply_events_with_context.assert_not_awaited()
+        # Sync point still counts the error-skipped path as present on disk.
+        folder_connector._write_record_sync_point.assert_awaited_once_with(1)
+
+    async def test_requeue_failure_still_writes_sync_point(
+        self, folder_connector, tmp_path
+    ):
+        folder_connector._scan_existing_records = AsyncMock(return_value={})
+        folder_connector._apply_events_with_context = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+        folder_connector._requeue_stuck_unchanged_records = AsyncMock(
+            side_effect=RuntimeError("requeue boom")
+        )
+        folder_connector._write_record_sync_point = AsyncMock()
+
+        await folder_connector._run_incremental_sync(
+            tmp_path,
+            User(email="o@x.com", id="owner-1", org_id="org-1"),
+            FilterCollection(filters=[]),
+            FilterCollection(filters=[]),
+            folder_connector._record_group_external_id(),
+            {"recordCount": 0},
+        )
+        folder_connector.logger.error.assert_called()
+        folder_connector._write_record_sync_point.assert_awaited_once_with(0)
+
+
+@pytest.mark.asyncio
+class TestFullSyncSkipBranches:
+    async def test_skips_folder_errors_and_disallowed_extensions(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "ok.txt").write_text("ok", encoding="utf-8")
+        (tmp_path / "skip.md").write_text("no", encoding="utf-8")
+        (tmp_path / "docs").mkdir()
+
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path), "batchSize": "50"}}
+        )
+        owner = User(email="o@x.com", id="owner-1", org_id="org-1")
+        folder_connector._resolve_owner_user = AsyncMock(return_value=owner)
+        folder_connector._reset_existing_records = AsyncMock(return_value=0)
+        folder_connector._record_sync_point.read_sync_point = AsyncMock(return_value={})
+        folder_connector._write_record_sync_point = AsyncMock()
+        folder_connector.data_entities_processor.on_new_app_users = AsyncMock()
+        folder_connector.data_entities_processor.on_new_record_groups = AsyncMock()
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+
+        sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.FILE_EXTENSIONS.value,
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                    value=["txt"],
+                ),
+            ]
+        )
+
+        original_append = folder_connector._append_folder_upsert_records
+
+        def _flaky_append(buf, rel_path, *args, **kwargs):
+            if rel_path == "docs":
+                raise OSError("cannot read folder")
+            return original_append(buf, rel_path, *args, **kwargs)
+
+        folder_connector._append_folder_upsert_records = _flaky_append  # type: ignore[method-assign]
+
+        with patch(
+            "app.connectors.sources.local_fs.connector.load_connector_filters",
+            new=AsyncMock(
+                return_value=(sync_filters, FilterCollection(filters=[]))
+            ),
+        ):
+            await folder_connector.run_sync()
+
+        folder_connector.data_entities_processor.on_new_records.assert_awaited()
+        folder_connector.logger.warning.assert_called()
+        folder_connector._write_record_sync_point.assert_awaited()
+
+
+@pytest.mark.asyncio
+class TestApplyFileEventBatchFlushBranches:
+    async def test_created_and_deleted_flush_at_batch_size(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("b", encoding="utf-8")
+        folder_connector.batch_size = 1
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={
+                "sync": {
+                    SYNC_ROOT_PATH_KEY: str(tmp_path),
+                    "batchSize": "1",
+                }
+            }
+        )
+        owner = User(email="u@x.com", id="u1", org_id="org-1")
+        folder_connector._ensure_owner_and_record_group = AsyncMock(
+            return_value=(
+                owner,
+                FilterCollection(filters=[]),
+                FilterCollection(filters=[]),
+                folder_connector._record_group_external_id(),
+            )
+        )
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+
+        events = [
+            LocalFsFileEvent(
+                type="CREATED", path="a.txt", timestamp=1, isDirectory=False
+            ),
+            LocalFsFileEvent(
+                type="CREATED", path="b.txt", timestamp=1, isDirectory=False
+            ),
+            LocalFsFileEvent(
+                type="DELETED", path="gone.txt", timestamp=1, isDirectory=False
+            ),
+            LocalFsFileEvent(
+                type="DELETED", path="gone2.txt", timestamp=1, isDirectory=False
+            ),
+        ]
+        stats = await folder_connector.apply_file_event_batch(events)
+        assert stats.processed >= 2
+        assert stats.deleted >= 2
+        assert folder_connector.data_entities_processor.on_new_records.await_count >= 2
+        assert folder_connector._delete_external_ids.await_count >= 2
+
+    async def test_rename_flush_and_downgrade_delete_flush(
+        self, folder_connector, tmp_path
+    ):
+        (tmp_path / "new.txt").write_text("n", encoding="utf-8")
+        (tmp_path / "old.txt").write_text("o", encoding="utf-8")
+        folder_connector.config_service.get_config = AsyncMock(
+            return_value={
+                "sync": {SYNC_ROOT_PATH_KEY: str(tmp_path), "batchSize": "1"}
+            }
+        )
+        owner = User(email="u@x.com", id="u1", org_id="org-1")
+        folder_connector._ensure_owner_and_record_group = AsyncMock(
+            return_value=(
+                owner,
+                FilterCollection(filters=[]),
+                FilterCollection(filters=[]),
+                folder_connector._record_group_external_id(),
+            )
+        )
+        folder_connector.data_entities_processor.on_new_records = AsyncMock()
+        folder_connector._delete_external_ids = AsyncMock()
+
+        # Happy rename (upsert + delete-after) and a vanished-new rename
+        # (downgrade to delete-only), both with batch_size=1 to hit flushes.
+        events = [
+            LocalFsFileEvent(
+                type="RENAMED",
+                path="new.txt",
+                oldPath="old.txt",
+                timestamp=1,
+                isDirectory=False,
+            ),
+            LocalFsFileEvent(
+                type="RENAMED",
+                path="missing.txt",
+                oldPath="old.txt",
+                timestamp=1,
+                isDirectory=False,
+            ),
+        ]
+        stats = await folder_connector.apply_file_event_batch(events)
+        assert stats.processed >= 1
+        assert stats.deleted >= 1
+        folder_connector._delete_external_ids.assert_awaited()

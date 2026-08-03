@@ -1911,6 +1911,35 @@ class TestQueuedRecoverySweep:
 
         mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
 
+    async def test_failed_republish_restores_original_queued_at(self):
+        """Non-distributed mode stamps a fresh queuedAt before publish; if the
+        publish then fails, that stamp must be rolled back or the next sweep
+        treats the still-orphaned record as fresh for the full threshold."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        original_queued_at = int(time.time() * 1000) - 1_000_000
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "orphaned.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": original_queued_at,
+                "version": 0,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        # First update_node is the pre-publish reset (fresh queuedAt); last is
+        # the restore after publish failure.
+        assert gp.update_node.await_count >= 2
+        restored = gp.update_node.await_args_list[-1].args[2]
+        assert restored["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert restored["queuedAt"] == original_queued_at
+
 
 class TestNotStartedRecoverySweep:
     """Age-gated recovery of NOT_STARTED records stranded outside both QUEUED
@@ -1920,8 +1949,8 @@ class TestNotStartedRecoverySweep:
         from app.indexing_main import recover_in_progress_records
 
         mock_container = _make_container()
-        # Past the default stale_recovery_after_seconds window (record
-        # processing timeout + concurrency lease), not just any old value.
+        # Past the QUEUED/NOT_STARTED orphan window
+        # (stale_queued_recovery_after_seconds, default 900s).
         old_created_at = int((time.time() - 3_000) * 1000)
         gp = _make_status_scoped_graph_provider({
             ProgressStatus.NOT_STARTED.value: [{
@@ -1937,6 +1966,30 @@ class TestNotStartedRecoverySweep:
 
         gp.compare_and_set_indexing_status.assert_awaited_once()
         mock_container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_fresh_not_started_record_is_not_recovered(self):
+        """NOT_STARTED must use the same generous orphan window as QUEUED, not
+        the short concurrency-lease cutoff — otherwise distributed mode would
+        republish records whose newRecord events are still in flight."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        # Older than one lease interval, but well under the 900s orphan window.
+        recent_created_at = int((time.time() - 120) * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.NOT_STARTED.value: [{
+                "_key": "r1",
+                "recordName": "fresh.pdf",
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "connectorName": "GOOGLE_DRIVE",
+                "createdAtTimestamp": recent_created_at,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
 
     async def test_local_fs_not_started_record_is_never_swept(self):
         """Local FS stamps createdAtTimestamp with the file's mtime, not a

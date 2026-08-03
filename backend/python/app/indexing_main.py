@@ -555,10 +555,15 @@ async def recover_in_progress_records(
                             # expected_status (rather than leaving it at QUEUED
                             # with no live message) puts it back in front of the
                             # next sweep tick instead of losing it silently.
+                            # Also restore the pre-reset queuedAt: non-distributed
+                            # mode wrote a fresh one in reset_fields above, and
+                            # leaving that in place would make is_queued_stale
+                            # return False for the full threshold window.
                             await update_recovery_status(
                                 record_id,
                                 {
                                     "indexingStatus": expected_status,
+                                    "queuedAt": record.get("queuedAt"),
                                     "reason": (
                                         "Orphaned-record recovery publish failed; "
                                         "will retry"
@@ -708,12 +713,16 @@ async def recover_in_progress_records(
                 return False
             created_at = record.get("createdAtTimestamp")
             if created_at is None:
+                # Unlike queuedAt (a new field whose absence is a rollout gap and
+                # must not mass-republish), createdAtTimestamp has always been
+                # written on create — a missing value is anomalous, so recover.
                 return True
-            effective_cutoff_ms = (
-                distributed_cutoff_ms if concurrency_manager is not None else cutoff_ms
-            )
+            # Do not reuse distributed_cutoff_ms here: that lease-interval window
+            # only makes sense for processingStartedAt (IN_PROGRESS liveness).
+            # NOT_STARTED is an orphaned-publish case like QUEUED, so share the
+            # same generous broker-reclaim window.
             try:
-                return float(created_at) <= effective_cutoff_ms
+                return float(created_at) <= queued_cutoff_ms
             except (TypeError, ValueError):
                 return True
 
