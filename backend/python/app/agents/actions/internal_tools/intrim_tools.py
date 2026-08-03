@@ -204,7 +204,67 @@ class InternalTools:
                 type=ParameterType.ARRAY,
                 description="Focused questions with tappable options. Each question independently sets multiSelect.",
                 required=True,
-                items={"type": "object"},
+                items={
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Question prompt to show to the user",
+                        },
+                        "options": {
+                            "type": "array",
+                            "description": (
+                                "Sorted tappable options for this question. "
+                                "Every option must be concrete and specific. "
+                                "NEVER include 'Other', 'Something else', 'None of the above', or any open-ended catch-all option. "
+                                "The UI always adds its own 'Something else' free-text option — never duplicate it."
+                            ),
+                            "minItems": 3,
+                            "maxItems": 7,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": (
+                                            "Tappable option label. "
+                                            "NEVER use catch-all labels such as 'Other', 'Something else', 'None of the above', "
+                                            "'Other option', 'Custom option', 'Not listed', 'None of these', 'Enter your own', "
+                                            "or any similar open-ended fallback. The UI auto-appends a 'Something else' option — "
+                                            "every option you provide must be concrete and specific."
+                                        ),
+                                    },
+                                    "isUserInput": {
+                                        "type": "boolean",
+                                        "default": False,
+                                        "description": (
+                                            "If true, selecting this option reveals a free-text input field. "
+                                            "Set to true ONLY when the answer is a specific value the user must type — "
+                                            "e.g. 'Enter a person by name', 'Enter an email address', 'Enter a date'. "
+                                            "NEVER emit a generic catch-all option. "
+                                            "Keep to at most 1–2 isUserInput options per question."
+                                        ),
+                                    },
+                                },
+                                "required": ["label"],
+                            },
+                        },
+                        "multiSelect": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "REQUIRED decision for every question — do not blindly default to false. "
+                                "Set to TRUE when the user can logically pick MORE THAN ONE option "
+                                "(e.g. 'Which topics?', 'Which features?', 'Which attendees?'). "
+                                "Set to FALSE only for genuinely mutually-exclusive single-answer choices "
+                                "(e.g. 'Which priority level?', 'Pick a single date')."
+                            ),
+                        },
+                    },
+                    "required": ["question", "options"],
+                },
             ),
         ],
         tags=[

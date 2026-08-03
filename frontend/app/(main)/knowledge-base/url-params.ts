@@ -49,7 +49,7 @@ const DEFAULTS = {
 };
 
 // Valid enum values for parsing
-const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET']);
+const VALID_RECORD_TYPES = new Set<string>(['FILE', 'WEBPAGE', 'MESSAGE', 'EMAIL', 'TICKET', 'ARTIFACT']);
 /** Must match `IndexingStatus` in ./types — used so URL round-trip keeps filter state */
 const VALID_INDEXING_STATUS = new Set<string>([
   'COMPLETED',

@@ -9,7 +9,13 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from '@/app/components/file-preview/renderers/file-preview-renderer';
-import { isPresentationFile, isDocxFile, shouldShowPagination, resolvePreviewIconExtension } from '@/app/components/file-preview/utils';
+import {
+  isPresentationFile,
+  isDocxFile,
+  shouldShowPagination,
+  resolvePreviewIconExtension,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
@@ -43,6 +49,19 @@ function resolveWebUrl(record: RecordDetailsResponse['record']): string | null {
   return url;
 }
 
+function isStreamableRecordType(recordType: string): boolean {
+  return recordType === 'FILE' || recordType === 'ARTIFACT';
+}
+
+function getErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof Error && e.message.trim()) return e.message.trim();
+  if (e && typeof e === 'object' && 'message' in e) {
+    const msg = (e as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg.trim()) return msg.trim();
+  }
+  return fallback;
+}
+
 /** Returns a Material icon name matching the record type. */
 function recordTypeIcon(recordType: string): string {
   switch (recordType) {
@@ -72,6 +91,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [fileType, setFileType] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
@@ -96,6 +116,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    setPreviewError(null);
     setRecordDetails(null);
     revokeBlobUrl();
     setFileUrl('');
@@ -111,48 +132,92 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         if (cancelled) return;
 
         const canPreviewRecord =
-          details.record.recordType === 'FILE' &&
+          isStreamableRecordType(details.record.recordType) &&
           details.record.previewRenderable !== false;
 
         const name = details.record.recordName || details.record.fileRecord?.name || 'Record';
         const resolvedType = details.record.mimeType || '';
 
+        // Record metadata is independent of stream/preview success.
+        setRecordDetails(details);
+        setFileName(name);
+        setFileType(resolvedType);
+
         if (!canPreviewRecord) {
-          setRecordDetails(details);
-          setFileName(name);
-          setFileType(resolvedType);
           setIsLoading(false);
           return;
         }
 
-        const streamOptions = isPresentationFile(
+        const wantsPdfConversion = isPresentationFile(
           details.record.mimeType,
           details.record.recordName,
-        )
-          ? { convertTo: 'application/pdf' as const }
-          : undefined;
+        );
 
-        const blob = await KnowledgeBaseApi.streamRecord(recordId, streamOptions);
+        try {
+          let blob: Blob;
+          let usedPdfConversion = false;
 
-        if (cancelled) return;
+          if (wantsPdfConversion) {
+            try {
+              blob = await KnowledgeBaseApi.streamRecord(recordId, {
+                convertTo: 'application/pdf',
+              });
+              usedPdfConversion = true;
+            } catch {
+              // Conversion failed — still fetch the original so download works.
+              blob = await KnowledgeBaseApi.streamRecord(recordId);
+              if (cancelled) return;
+              const isDocx = isDocxFile(resolvedType, name);
+              if (isDocx) {
+                setFileBlob(blob);
+                setFileUrl('');
+              } else {
+                const nextUrl = URL.createObjectURL(blob);
+                blobUrlRef.current = nextUrl;
+                setFileUrl(nextUrl);
+                setFileBlob(undefined);
+              }
+              setPreviewError(
+                t('recordView.previewConversionFailed', {
+                  defaultValue: 'Preview conversion failed. You can still download the file.',
+                }),
+              );
+              setIsLoading(false);
+              return;
+            }
+          } else {
+            blob = await KnowledgeBaseApi.streamRecord(recordId);
+          }
 
-        const isDocx = isDocxFile(resolvedType, name);
-        const nextUrl = isDocx ? '' : URL.createObjectURL(blob);
+          if (cancelled) return;
 
-        if (!isDocx) {
-          blobUrlRef.current = nextUrl;
+          const previewMime = resolvePreviewMimeAfterStream(
+            resolvedType,
+            name,
+            blob,
+            usedPdfConversion,
+          );
+          const isDocx = isDocxFile(previewMime, name);
+          const nextUrl = isDocx ? '' : URL.createObjectURL(blob);
+
+          if (!isDocx) {
+            blobUrlRef.current = nextUrl;
+          }
+
+          setFileType(previewMime);
+          setFileBlob(isDocx ? blob : undefined);
+          setFileUrl(isDocx ? '' : nextUrl);
+          setIsLoading(false);
+        } catch (streamErr) {
+          if (cancelled) return;
+          setPreviewError(
+            getErrorMessage(streamErr, t('recordView.previewUnavailable')),
+          );
+          setIsLoading(false);
         }
-
-        setRecordDetails(details);
-        setFileName(name);
-        setFileType(resolvedType);
-        setFileBlob(isDocx ? blob : undefined);
-        setFileUrl(isDocx ? '' : nextUrl);
-        setIsLoading(false);
       } catch (e) {
         if (cancelled) return;
-        const message = e instanceof Error ? e.message : t('recordView.loadFailed');
-        setError(message);
+        setError(getErrorMessage(e, t('recordView.loadFailed')));
         setIsLoading(false);
       }
     })();
@@ -212,6 +277,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   const paginationVisibility = shouldShowPagination(fileType, fileName, totalPages, isLoading, false);
   const hasError = !isLoading && !!error;
+  const hasPreviewError = !isLoading && !!previewError;
+  const hasDownloadableFile = Boolean(fileUrl || fileBlob);
   const headerTitle = recordDetails?.record.recordName || fileName || t('recordView.loading');
   const handleFullscreenToggle = async () => {
     const el = previewHostRef.current;
@@ -316,11 +383,12 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const isAttachment = recordDetails?.record?.connectorName?.toUpperCase() === 'ATTACHMENTS';
 
   const canPreview = recordDetails
-    ? recordDetails.record.recordType === 'FILE' &&
+    ? isStreamableRecordType(recordDetails.record.recordType) &&
     recordDetails.record.previewRenderable !== false
     : true;
 
-  const showZoom = !isLoading && !hasError && canPreview;
+  const showZoom =
+    !isLoading && !hasError && !hasPreviewError && canPreview && hasDownloadableFile;
 
   const webUrl = recordDetails ? resolveWebUrl(recordDetails.record) : null;
 
@@ -378,7 +446,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
           </Text>
         </Flex>
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          {!isLoading && !hasError && !isAttachment && (
+          {!isLoading && !!recordDetails && !isAttachment && (
             <>
               {showReindexButton && (
               <Button
@@ -442,6 +510,30 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                   {error}
                 </Text>
               </Flex>
+            ) : hasPreviewError ? (
+              <Flex
+                direction="column"
+                align="center"
+                justify="center"
+                gap="4"
+                style={{ width: '100%', height: '100%', minHeight: '280px', padding: 'var(--space-6)' }}
+              >
+                <MaterialIcon name="error_outline" size={48} color="var(--amber-9)" />
+                <Flex direction="column" align="center" gap="1" style={{ maxWidth: '360px', textAlign: 'center' }}>
+                  <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+                    {fileName}
+                  </Text>
+                  <Text size="2" style={{ color: 'var(--gray-9)' }}>
+                    {previewError}
+                  </Text>
+                </Flex>
+                {hasDownloadableFile && (
+                  <Button variant="solid" color="jade" size="3" onClick={handleDownload}>
+                    <MaterialIcon name="download" size={18} />
+                    {t('recordView.download')}
+                  </Button>
+                )}
+              </Flex>
             ) : !canPreview ? (
               <Flex
                 direction="column"
@@ -462,7 +554,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
                     justifyContent: 'center',
                   }}
                 >
-                  {recordDetails?.record.recordType === 'FILE' ? (
+                  {recordDetails && isStreamableRecordType(recordDetails.record.recordType) ? (
                     <FileIcon
                       extension={resolvePreviewIconExtension(recordDetails, fileType)}
                       filename={fileName}
