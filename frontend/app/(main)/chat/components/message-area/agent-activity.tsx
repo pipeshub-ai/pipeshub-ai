@@ -50,10 +50,10 @@ interface AgentActivityTimelineProps {
 
 /** True when the transcript contains any tool call, reasoning block, or
  * sub-agent delegation — i.e. this is a multi-step ReAct response, not a
- * simple single-shot answer. Drives two decisions: whether unsettled root
- * text streams into the timeline (see `filterRootParts`) instead of
- * `AnswerContent`, and whether the completed activity gets a collapsible
- * summary wrapper (`CollapsibleActivitySection`). */
+ * simple single-shot answer. Drives whether the completed activity gets a
+ * collapsible summary wrapper (`CollapsibleActivitySection`) and whether the
+ * live status entry renders inside the timeline vs. below the answer (see
+ * `ChatResponse`). */
 export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean {
   if (!parts) return false;
   return parts.some((part) => part.type === 'tool_call' || part.type === 'reasoning' || part.type === 'sub_agent');
@@ -68,21 +68,20 @@ export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean 
  *   (`agui-event-handler.ts`'s `LivePartsBuilder.settleLastRootText()`,
  *   called the moment a tool call, reasoning block, or new text turn
  *   proves the text wasn't the final answer).
- * - **Multi-step responses** (tool calls / reasoning already happened, or
- *   are happening): the still-unsettled trailing text is ALSO shown here,
- *   live, via `LiveNarrationText` — once a message has multi-step activity,
- *   `AnswerContent` is suppressed entirely for the duration of the stream
- *   (see `ChatResponse`), so there's no duplicate render and no "yank" of
- *   text jumping from the answer area into the timeline when it settles.
- * - **Simple responses** (no activity at all yet): unsettled text stays
- *   hidden here and is mirrored live in `streamingContent` /
- *   `AnswerContent` instead — showing it here too would duplicate it.
+ * - The still-unsettled trailing text — whether or not the response has
+ *   had multi-step activity — stays hidden here and streams live into
+ *   `AnswerContent` instead (`ChatResponse` no longer suppresses the
+ *   answer for multi-step runs). This is what makes the common case (the
+ *   trailing text IS the final answer) render seamlessly in the answer
+ *   area as it streams, with no jump when `RUN_FINISHED` lands. If it
+ *   later turns out to be narration (a tool call/reasoning block follows),
+ *   `settleLastRootText()` moves it here and clears the answer buffer in
+ *   the same update.
  */
-function filterRootParts(parts: MessagePart[], isStreaming: boolean, multiStep: boolean): MessagePart[] {
+function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
   return parts.filter((part) => {
     if (part.type !== 'text') return true;
     if (part.isFinal) return false;
-    if (isStreaming && multiStep) return true;
     if (isStreaming && !part.settled) return false;
     return true;
   });
@@ -94,7 +93,7 @@ function filterRootParts(parts: MessagePart[], isStreaming: boolean, multiStep: 
  * render a separator / collapsible wrapper around the timeline without
  * duplicating (and risking drift from) the filtering rules above. */
 export function getVisibleRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
-  return filterRootParts(parts, isStreaming, hasMultiStepActivity(parts));
+  return filterRootParts(parts, isStreaming);
 }
 
 type RenderItem =

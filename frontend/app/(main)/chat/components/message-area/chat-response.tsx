@@ -449,23 +449,15 @@ export const ChatResponse = React.memo(function ChatResponse({
   const effectiveParts = isStreaming ? streamingParts : persistedParts;
 
   // A multi-step (ReAct) response has at least one tool call, reasoning
-  // block, or sub-agent delegation. Simple single-shot answers (no tools)
-  // keep today's behavior: text streams straight into `AnswerContent`.
+  // block, or sub-agent delegation. The trailing (unsettled) text streams
+  // straight into `AnswerContent` for both simple and multi-step responses
+  // — see `filterRootParts` in `agent-activity.tsx`. This keeps the common
+  // case (trailing text IS the final answer) seamless: it grows in the
+  // answer area as it streams and there's no jump when `RUN_FINISHED`
+  // lands. If it later turns out to be narration (a tool call/reasoning
+  // block follows), it's settled into the timeline and cleared from the
+  // answer buffer in the same update, so it never renders in both places.
   const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
-  // Once the run's `RUN_FINISHED` marks a text part `isFinal`, that text IS
-  // the answer — never suppress `AnswerContent` for it, even though
-  // `isStreaming` stays true for the brief window until `onComplete`
-  // replaces the slot's messages.
-  const isFinalTextReached = useMemo(
-    () => effectiveParts?.some((p) => p.type === 'text' && p.isFinal) ?? false,
-    [effectiveParts],
-  );
-  // While a multi-step response is actively streaming and hasn't produced
-  // its final answer yet, the trailing text is a "candidate" that might
-  // turn out to be narration — render it live in the timeline instead
-  // (`AgentActivityTimeline`'s `LiveNarrationText`) so it never has to jump
-  // from the answer area into the timeline the moment it gets settled.
-  const suppressAnswerDuringMultiStep = isStreaming && multiStep && !isFinalTextReached;
   // Drives both the "Answer" separator and the collapsible-summary wrapper
   // around a completed activity timeline — computed with the exact same
   // filtering the timeline itself applies, so it never disagrees with what
@@ -552,7 +544,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 "here's the answer" — only when there's activity actually
                 visible above (not just a lone isFinal part that the
                 timeline itself filtered out) and content to show below. */}
-            {hasVisibleActivity && displayContent && !suppressAnswerDuringMultiStep && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {hasVisibleActivity && displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <Box
                 style={{
                   borderTop: '1px solid var(--slate-4)',
@@ -562,14 +554,13 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* Show content - either streaming or final.
-                Suppressed when an ask_user_question card (streaming or persisted)
-                owns this row so partial/final answer chunks are not shown
-                above the question card, and while a multi-step response's
-                trailing text hasn't been proven to be the final answer yet
-                (it's rendered live in the timeline above instead — see
-                `suppressAnswerDuringMultiStep`). */}
-            {displayContent && !suppressAnswerDuringMultiStep && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {/* Show content - either streaming or final. Suppressed only
+                when an ask_user_question card (streaming or persisted) owns
+                this row so partial/final answer chunks aren't shown above
+                the question card. The trailing text streams straight in
+                here even for multi-step responses — see the `multiStep`
+                comment above. */}
+            {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <AnswerContent
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
