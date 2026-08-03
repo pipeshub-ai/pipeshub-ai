@@ -392,6 +392,10 @@ class VectorStore(Transformer):
         if summary_doc is None:
             return
 
+        # Reconciliation may skip index_documents(); still need an embedder here.
+        if self.dense_embeddings is None:
+            await self.get_embedding_model_instance()
+
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
         await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
         await self._process_document_chunks([summary_doc], record_id)

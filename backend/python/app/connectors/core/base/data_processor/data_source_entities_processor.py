@@ -1355,17 +1355,16 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str
+        self,
+        record_ids: list[str],
+        connector_id: str,
     ) -> dict:
-        """Recursively delete records — the single delete path for files, folders and
-        multi-record deletes, generic across KB and connectors.
+        """Delete records and their full PARENT_CHILD + ATTACHMENT subtree.
 
-        A folder is just a record with children, so there is no folder/file special-casing:
-        each root id is deleted together with its whole containment subtree (a leaf yields
-        just itself; a folder/container yields all descendants). Scoped by
-        ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
-        (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
-        per deleted record that has a virtualRecordId (Qdrant cleanup).
+        Correct for KB folders and connectors whose children should be removed
+        together with the parent. For ticket systems that must keep live child
+        tickets (stories under a deleted epic), use
+        :meth:`on_records_deleted_with_attachments` instead.
         """
         if not record_ids:
             return {
@@ -1377,7 +1376,38 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(record_ids, connector_id)
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=True,
+            )
+        await self._publish_delete_events((result or {}).get("eventData"))
+        return result
+
+    @retry_on_deadlock()
+    async def on_records_deleted_with_attachments(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+    ) -> dict:
+        """Delete records and their ATTACHMENT descendants only.
+
+        PARENT_CHILD children (e.g. stories under a deleted epic) are left
+        intact; their parent link edges are swept with the deleted records.
+        Use this for Jira/ticket issue deletes and for hard-deleting FILE
+        attachment records.
+        """
+        if not record_ids:
+            return {
+                "success": True,
+                "deleted_records": [],
+                "failed_records": [],
+                "total_requested": 0,
+                "successfully_deleted": 0,
+                "failed_count": 0,
+            }
+        async with self.data_store_provider.transaction() as tx_store:
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=False,
+            )
         await self._publish_delete_events((result or {}).get("eventData"))
         return result
 
