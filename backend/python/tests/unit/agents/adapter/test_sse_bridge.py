@@ -134,27 +134,25 @@ class TestQueueEventSinkCoalescing:
     async def test_text_message_content_deltas_key_on_message_id(self) -> None:
         """Two different messages' deltas (e.g. main answer vs. a spawned
         sub-agent's) must never merge into each other even though both use
-        the same event name."""
+        the same event name, and each keeps its own pending slot rather than
+        evicting the other."""
         queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         sink = QueueEventSink(queue)
         await self._fill_queue(queue)
 
         await sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}})
-        # Pending now holds m1's delta (queue full, so it wasn't flushed yet).
+        await sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}})
+        # Both held (queue full); neither write blocked on the other's flush.
+        assert queue.qsize() == 1
 
-        write_task = asyncio.ensure_future(
-            sink.write({"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}})
-        )
-        await asyncio.sleep(0)
-        assert not write_task.done()  # blocked: flushing m1 (different key) needs a freed slot
+        await queue.get()  # drain filler
+        # maxsize=1, so flush() blocks after m1 until the consumer drains it.
+        flush_task = asyncio.ensure_future(sink.flush())
 
-        await queue.get()  # drain filler -> unblocks flushing m1; m2 becomes the new pending
-        await asyncio.wait_for(write_task, timeout=1)
-
+        # Flushed in arrival order, unmerged.
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}}
-        # m2 never merged into m1 -- different messageId keys them apart.
-        await sink.flush()
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}}
+        await asyncio.wait_for(flush_task, timeout=1)
 
     async def test_non_coalescable_event_flushes_pending_delta_first_then_blocks(self) -> None:
         """A tool/lifecycle event must never be silently dropped or

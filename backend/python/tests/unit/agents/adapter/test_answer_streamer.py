@@ -8,6 +8,7 @@ and `streamed_answer` reflecting whichever turn last ended via
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -32,11 +33,78 @@ class _RecordingSink:
         return True
 
 
-def _make_streamer(context=None) -> tuple[TerminalAnswerStreamer, _RecordingSink]:
+def _make_streamer(context=None, *, emit_interval: float = 0.0) -> tuple[TerminalAnswerStreamer, _RecordingSink]:
+    """Throttling is off by default so these tests see one emit per delta and
+    can assert on emit CONTENT; `TestEmitRateLimit` covers the rate itself."""
     context = context or make_context()
     collector = CitationCollector(context)
     sink = _RecordingSink()
-    return TerminalAnswerStreamer(context, collector, sink), sink
+    streamer = TerminalAnswerStreamer(context, collector, sink)
+    streamer._emit_interval = emit_interval
+    return streamer, sink
+
+
+class TestEmitRateLimit:
+    """`_emit_state_delta` re-normalizes the whole accumulated answer and
+    rebuilds every citation, so running it per token is quadratic in answer
+    length — 22% of query-service CPU. It is rate-limited instead; the final
+    state must still be emitted when the turn ends."""
+
+    async def test_deltas_inside_the_interval_do_not_each_emit(self) -> None:
+        streamer, sink = _make_streamer(emit_interval=10.0)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        for i in range(50):
+            await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": f"tok{i} "}))
+
+        assert len(sink.events) == 1, "only the first delta of the window emits"
+
+    async def test_withheld_delta_is_flushed_at_agent_complete(self) -> None:
+        streamer, sink = _make_streamer(emit_interval=10.0)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "The answer"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": " is 42."}))
+        assert sink.events[-1]["data"]["accumulated"] == "The answer"  # 2nd withheld
+
+        await streamer.on_event(_event(EventType.AGENT_COMPLETE))
+
+        assert sink.events[-1]["data"]["accumulated"] == "The answer is 42."
+        assert streamer.streamed_answer == "The answer is 42."
+
+    async def test_no_extra_emit_when_nothing_was_withheld(self) -> None:
+        """A turn the limiter never throttled must not pay for a second
+        full-size frame at AGENT_COMPLETE."""
+        streamer, sink = _make_streamer(emit_interval=10.0)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "The answer is 42."}))
+        emitted = len(sink.events)
+
+        await streamer.on_event(_event(EventType.AGENT_COMPLETE))
+
+        assert len(sink.events) == emitted
+
+    async def test_interval_elapsing_allows_the_next_emit(self) -> None:
+        streamer, sink = _make_streamer(emit_interval=0.01)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "a"}))
+        await asyncio.sleep(0.03)
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "b"}))
+
+        assert len(sink.events) == 2
+
+    async def test_new_turn_resets_the_window(self) -> None:
+        streamer, sink = _make_streamer(emit_interval=10.0)
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "first"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "second"}))
+
+        assert [e["data"]["accumulated"] for e in sink.events] == ["first", "second"]
+
 
 
 class TestTextDeltaStreaming:

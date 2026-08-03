@@ -1,0 +1,8 @@
+# Measurement output — reports, flame graphs, CSVs. Local only.
+results/
+
+# Bearer tokens for the target environment. Never commit.
+.env
+.env.*
+# ...except the template, which is the documentation for all of the above.
+!.env.example

@@ -25,10 +25,13 @@ The one turn that ends via `AGENT_COMPLETE` instead of a tool call is, by
 whatever is in the buffer at that point IS the streamed answer.
 
 Citation refs (`[source](refN)`) are resolved progressively via
-`normalize_citations_and_chunks` on every delta, using the `ref_to_url`
-mapping from `CitationCollector` — the same function `AnswerFinalizer`
-uses for the authoritative `complete` event, so numbered citations appear
-live as the answer streams in. The citation state (`ref_to_url`,
+`normalize_citations_and_chunks`, using the `ref_to_url` mapping from
+`CitationCollector` — the same function `AnswerFinalizer` uses for the
+authoritative `complete` event, so numbered citations appear live as the
+answer streams in. That resolution re-runs over the whole accumulated answer,
+so it is rate-limited (`PIPESHUB_ANSWER_DELTA_INTERVAL_MS`, default 100 ms)
+rather than run per token, and forced once more at `AGENT_COMPLETE`; raw text
+still streams per token on its own channel. The citation state (`ref_to_url`,
 `final_results`, `web_records`) is snapshotted once per turn at
 `TEXT_MESSAGE_START` — stable within a turn since no tools execute between
 the model call's first token and its completion.
@@ -41,11 +44,30 @@ passes through token by token — so it never reaches the screen.
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.events.base import EventType
 from app.utils.citations import normalize_citations_and_chunks
-from app.utils.streaming import parse_confidence_from_answer, strip_partial_confidence_trailer
+from app.utils.streaming import (
+    parse_confidence_from_answer,
+    strip_partial_confidence_trailer,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def answer_delta_min_interval() -> float:
+    """Seconds between live citation refreshes; 0 restores per-token emits."""
+    raw = os.getenv("PIPESHUB_ANSWER_DELTA_INTERVAL_MS", "100")
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid PIPESHUB_ANSWER_DELTA_INTERVAL_MS=%r, falling back to 100", raw)
+        return 0.1
+    return max(value, 0.0) / 1000.0
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.events.base import AgentEvent
@@ -75,6 +97,9 @@ class TerminalAnswerStreamer:
         self._web_records: list[dict[str, Any]] = []
         self._ref_to_url: dict[str, str] | None = None
         self.streamed_answer = ""
+        self._emit_interval = answer_delta_min_interval()
+        self._last_emit = 0.0
+        self._withheld = False
 
         # Reasoning/thinking accumulation (Phase 1f) — one entry per model
         # turn that actually reasoned. Populated from the SAME `AgentEvent`
@@ -100,6 +125,10 @@ class TerminalAnswerStreamer:
                 await self._clear_preamble()
         elif event.event_type == EventType.AGENT_COMPLETE:
             self.streamed_answer = self._buffer
+            # Flush only what the limiter actually withheld, so a turn it
+            # never throttled does not pay for a second full-size frame.
+            if self._withheld and self._buffer:
+                await self._emit_state_delta()
         elif event.event_type == EventType.REASONING_MESSAGE_START:
             self._reasoning_buffer = ""
         elif event.event_type == EventType.REASONING_MESSAGE_CONTENT:
@@ -118,16 +147,22 @@ class TerminalAnswerStreamer:
         TEXT_MESSAGE_CONTENT deltas extracted from tool call arguments.
         Clearing the preamble buffer for these tools would erase the live
         answer mid-flight."""
-        from app.agent_loop_lib.tools.builtin.planning.final_answer import final_answer_enabled
+        from app.agent_loop_lib.tools.builtin.planning.final_answer import (
+            final_answer_enabled,
+        )
         if not final_answer_enabled():
             return False
-        from app.agent_loop_lib.tools.builtin.planning.final_answer import FinalAnswerTool
+        from app.agent_loop_lib.tools.builtin.planning.final_answer import (
+            FinalAnswerTool,
+        )
         return tool_name == FinalAnswerTool().name
 
     def _start_turn(self) -> None:
         """Snapshot the citation state for this turn's normalization calls.
         Stable within a turn since no tools execute mid-model-call."""
         self._buffer = ""
+        self._last_emit = 0.0
+        self._withheld = False
         self._web_records = self._collector.web_records
         ref_mapper = self._collector.citation_ref_mapper
         self._ref_to_url = ref_mapper.ref_to_url if ref_mapper is not None else None
@@ -136,7 +171,26 @@ class TerminalAnswerStreamer:
         if not delta:
             return
         self._buffer += delta
-        await self._emit_state_delta(delta)
+        if self._due_for_emit():
+            await self._emit_state_delta(delta)
+
+    def _due_for_emit(self) -> bool:
+        """Rate-limit the live-citation refresh.
+
+        `_emit_state_delta` re-normalizes the WHOLE accumulated answer, so
+        per-token calls made it quadratic in answer length (22% of
+        query-service CPU). Raw text still streams per token on its own
+        channel; only the citation overlay refreshes less often.
+        """
+        if self._emit_interval <= 0:
+            return True
+        now = time.monotonic()
+        if (now - self._last_emit) < self._emit_interval:
+            self._withheld = True
+            return False
+        self._last_emit = now
+        self._withheld = False
+        return True
 
     async def _emit_state_delta(self, chunk: str = "") -> None:
         answer_text, confidence = parse_confidence_from_answer(self._buffer)

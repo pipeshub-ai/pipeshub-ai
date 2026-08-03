@@ -265,6 +265,41 @@ class TestFullReadStartsAtTheBeginning:
         text = await self._read(record, final_results=[])
         assert "content of block 0" in text
 
+    async def test_continuation_read_after_a_capped_read_returns_the_next_slice(self) -> None:
+        """The truncation hint tells the model to call back with the next
+        `start_block`, and the tool description advertises that. A guard that
+        short-circuits an already-read record would swallow exactly that call,
+        leaving the model with a tail it believes is the whole document."""
+        from app.agents.agent_loop.hooks.citations import _FetchFullRecordTool
+
+        record = _record_with_blocks("rec-1", 10)
+        context = _agent_context()
+        # One context and one tool across both calls — the production shape, and
+        # the only way this pins the regression: a fresh context per call would
+        # never have the record marked fetched in the first place.
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        structured = MagicMock()
+
+        async def _coroutine(**_: object) -> dict:
+            return {"ok": True, "records": [record]}
+
+        structured.coroutine = _coroutine
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=structured,
+        ):
+            first = await tool.execute(record_ids=["rec-1"], max_blocks=4)
+            assert "start_block=4" in first.data
+            assert "rec-1" in context.full_records_fetched
+
+            second = await tool.execute(record_ids=["rec-1"], start_block=4)
+
+        assert second.success is True
+        assert "content of block 4" in second.data
+        assert "content of block 0" not in second.data
+
     async def test_oversized_record_is_capped_from_the_start_with_a_hint(self) -> None:
         record = _record_with_blocks("rec-3", 10)
         text = await self._read(

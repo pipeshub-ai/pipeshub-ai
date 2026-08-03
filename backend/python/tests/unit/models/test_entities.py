@@ -2752,8 +2752,7 @@ class TestFileRecordToLlmFullContext:
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]), \
              patch("app.agents.actions.util.parse_file.LlmTextContent", LlmTextContent):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TABLE_RENDERED")
                 items = rec.to_llm_full_context()
 
@@ -2769,8 +2768,7 @@ class TestFileRecordToLlmFullContext:
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
 
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            from jinja2 import Template
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 captured = {}
 
                 def _render(**kwargs):
@@ -2826,7 +2824,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="STR_ROW")
                 items = rec.to_llm_full_context()
         assert any("STR_ROW" in i.text for i in items)
@@ -2838,7 +2836,7 @@ class TestFileRecordToLlmFullContextExtended:
         group = BlockGroup(index=0, type=GroupType.TABLE, children=children)
         rec = _make_file_record_with_blocks(blocks=[row0, row1], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.TABLE.value]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="TBL")
                 items = rec.to_llm_full_context()
         texts = " ".join(i.text for i in items)
@@ -2872,7 +2870,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec.virtual_record_id = "vr-1"
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "GROUP_BODY"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="GROUP_RENDERED")
                 items = rec.to_llm_full_context()
         assert any("GROUP_RENDERED" in i.text for i in items)
@@ -2921,7 +2919,7 @@ class TestFileRecordToLlmFullContextExtended:
         rec = _make_file_record_with_blocks(blocks=[b1, b2], block_groups=[group])
         with patch("app.utils.chat_helpers.valid_group_labels", [GroupType.LIST.value]), \
              patch("app.utils.chat_helpers.build_group_blocks", return_value=[{"content": "G"}]):
-            with patch("app.models.entities.Template") as mock_tpl:
+            with patch("app.models.entities.compiled_template") as mock_tpl:
                 mock_tpl.return_value.render = MagicMock(return_value="ONCE")
                 items = rec.to_llm_full_context()
         assert " ".join(i.text for i in items).count("ONCE") == 1
