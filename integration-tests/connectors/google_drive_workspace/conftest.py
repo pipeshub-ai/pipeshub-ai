@@ -100,7 +100,7 @@ async def drive_workspace_datasource() -> GoogleDriveDataSource:
     try:
         return await build_drive_datasource(sa_json, admin_email, test_user)
     except Exception as e:
-        pytest.skip(f"Failed to build Drive Workspace datasource: {e}")
+        pytest.fail(f"Failed to build Drive Workspace datasource: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -114,7 +114,7 @@ def drive_workspace_admin_datasource() -> Any:
     try:
         return build_admin_directory_client(sa_json, admin_email)
     except Exception as e:
-        pytest.skip(f"Failed to build Drive Workspace Admin Directory client: {e}")
+        pytest.fail(f"Failed to build Drive Workspace Admin Directory client: {e}")
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

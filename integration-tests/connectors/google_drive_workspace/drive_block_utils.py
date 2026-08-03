@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.config.constants.arangodb import ExtensionTypes, MimeTypes
+from app.utils.table_enrichment import TableEnrichmentResult
 
 _FIXTURES_DIR = Path(__file__).with_name("fixtures")
 
@@ -144,30 +145,62 @@ def _container_to_dict(bc: Any) -> dict[str, Any]:
     }
 
 
-async def _stable_table_summary_n_headers(config: Any, table_data: Any) -> Any:
-    """Deterministic stand-in for LLM table summary + headers."""
-    headers: list[str] = []
-    if isinstance(table_data, list) and table_data:
-        first = table_data[0]
-        if isinstance(first, list):
-            headers = [str(c) if c else "" for c in first]
-        elif isinstance(first, dict):
-            headers = [str(k) for k in first.keys()]
-    return MagicMock(summary=_LLM_PLACEHOLDER, headers=headers)
+def _cell_text(cell: Any) -> str:
+    if isinstance(cell, dict):
+        return str(cell.get("text", "") or "")
+    return "" if cell is None else str(cell)
 
 
-async def _stable_get_rows_text(
-    config: Any,
-    table_data: Any,
-    table_summary: Any,
-    column_headers: Any,
-) -> tuple[list[str], list[Any]]:
-    """Deterministic stand-in for LLM row natural-language text."""
-    grid = (table_data or {}).get("grid") or []
-    # Prefer body rows (skip header row when present).
-    rows = grid[1:] if len(grid) > 1 else list(grid)
-    texts = [_LLM_PLACEHOLDER] * len(rows)
-    return texts, rows
+def _stable_table_enrichment(grid: Any, known_header_row_count: int | None) -> TableEnrichmentResult:
+    """Deterministic stand-in for one table's LLM summary/headers/row descriptions."""
+    rows = [[_cell_text(c) for c in row] for row in (grid or [])]
+    if not rows:
+        return TableEnrichmentResult()
+
+    header_rows = (
+        (1 if known_header_row_count else 0)
+        if known_header_row_count is not None
+        else (1 if len(rows) > 1 else 0)
+    )
+    headers = list(rows[0]) if header_rows else []
+    data_rows = rows[header_rows:]
+    return TableEnrichmentResult(
+        summary=_LLM_PLACEHOLDER,
+        headers=headers,
+        header_row_count=header_rows,
+        descriptions=[_LLM_PLACEHOLDER] * len(data_rows),
+    )
+
+
+async def _stable_enrich_table_grid(
+    llm: Any,
+    grid: Any,
+    *,
+    logger: Any = None,
+    known_header_row_count: int | None = None,
+    describe_rows: bool = True,
+    batch_size: int | None = None,
+) -> TableEnrichmentResult:
+    """Deterministic stand-in for ``table_enrichment.enrich_table_grid``."""
+    return _stable_table_enrichment(grid, known_header_row_count)
+
+
+async def _stable_enrich_tables(
+    llm: Any,
+    grids: Any,
+    *,
+    logger: Any = None,
+    known_header_row_counts: Any = None,
+    describe_rows: Any = None,
+    max_concurrent: int | None = None,
+) -> list[TableEnrichmentResult]:
+    """Deterministic stand-in for ``table_enrichment.enrich_tables``."""
+    grids = list(grids or [])
+    counts = list(known_header_row_counts) if known_header_row_counts else [None] * len(grids)
+    return [
+        _stable_table_enrichment(grid, counts[i] if i < len(counts) else None)
+        for i, grid in enumerate(grids)
+    ]
 
 
 async def _capture_via_indexing_pipeline(coro_agen: Any) -> dict[str, Any]:
@@ -186,16 +219,28 @@ async def _capture_via_indexing_pipeline(coro_agen: Any) -> dict[str, Any]:
     return _container_to_dict(bc)
 
 
-def _docling_llm_patches() -> tuple[Any, Any]:
-    """Patch Docling table LLM helpers used by DoclingDocToBlocksConverter."""
+def _docling_llm_patches() -> tuple[Any, Any, Any]:
+    """Patch Docling table LLM helpers used by DoclingDocToBlocksConverter.
+
+    ``docling_doc_to_blocks`` imports these by name from ``app.utils.table_enrichment``
+    / ``app.utils.llm``, so the patch target must be the name bound in *this* module's
+    namespace, not the definition site.
+    """
     return (
         patch(
-            "app.utils.converters.docling_doc_to_blocks.get_table_summary_n_headers",
-            new=_stable_table_summary_n_headers,
+            "app.utils.converters.docling_doc_to_blocks.enrich_table_grid",
+            new=_stable_enrich_table_grid,
         ),
         patch(
-            "app.utils.converters.docling_doc_to_blocks.get_rows_text",
-            new=_stable_get_rows_text,
+            "app.utils.converters.docling_doc_to_blocks.enrich_tables",
+            new=_stable_enrich_tables,
+        ),
+        # Only reached when the doc has tables; today's docx/pptx fixtures don't, but
+        # keep it stubbed so a real (mocked) config_service is never asked for an LLM.
+        patch(
+            "app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), {}),
         ),
     )
 
@@ -263,10 +308,10 @@ async def parse_drive_stream_via_processor(
             if getattr(self, "workbook", None) is not None:
                 self.workbook.close()
 
-    summary_patch, rows_patch = _docling_llm_patches()
+    table_grid_patch, tables_patch, llm_role_patch = _docling_llm_patches()
 
     if mime in (google_docs, docx):
-        with summary_patch, rows_patch:
+        with table_grid_patch, tables_patch, llm_role_patch:
             agen = processor.process_docx_document(
                 recordName=record_name,
                 recordId="test-record-1",
@@ -279,7 +324,7 @@ async def parse_drive_stream_via_processor(
             return await _capture_via_indexing_pipeline(agen)
 
     if mime in (google_slides, pptx):
-        with summary_patch, rows_patch:
+        with table_grid_patch, tables_patch, llm_role_patch:
             agen = processor.process_pptx_document(
                 recordName=record_name,
                 recordId="test-record-1",
