@@ -29,11 +29,15 @@ def main() -> int:
         print("  (no BACKENDAGG lines — run ./instrument.sh on)")
         return 0
 
-    print(f"  {'backend':<12}{'calls':>9}{'p50':>9}{'p95 worst':>12}{'max':>9}")
+    print(f"  {'backend':<12}{'calls':>9}{'qps':>8}{'p50':>9}{'p95 worst':>12}{'max':>9}")
     for kind, rows in sorted(windows.items(), key=lambda kv: -sum(r[0] for r in kv[1])):
         calls = sum(r[0] for r in rows)
         print(
             f"  {kind:<12}{calls:>9}"
+            # Median of the per-window rates, not calls/elapsed: the run's first
+            # and last windows are partial, and averaging over them understates
+            # the rate the backend actually sustained.
+            f"{st.median(r[1] for r in rows):>8.1f}"
             f"{st.median(r[2] for r in rows):>8.0f}ms"
             f"{max(r[3] for r in rows):>11.0f}ms"
             f"{max(r[4] for r in rows):>8.0f}ms"

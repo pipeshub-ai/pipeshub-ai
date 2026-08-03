@@ -15,6 +15,14 @@
 set -euo pipefail
 
 N=${1:?usage: set_workers.sh <N|restore>}
+# Validated before anything is written: an unvalidated value reaches the sed as
+# `--workers $N`, and the grep that follows would confirm its own bad string,
+# so the container restarts into a uvicorn that cannot start.
+case "$N" in
+    restore) ;;
+    ''|*[!0-9]*) echo "usage: set_workers.sh <N|restore> -- worker count must be a positive integer, got '$N'" >&2; exit 1 ;;
+    0) echo "usage: set_workers.sh <N|restore> -- worker count must be > 0" >&2; exit 1 ;;
+esac
 CONTAINER=${CONTAINER:-${PIPESHUB_CONTAINER:-pipeshub-ai}}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 require_target || exit 1
@@ -78,7 +86,7 @@ fi
 
 echo "== phase instrumentation still applied:"
 $DOCKER exec "$CONTAINER" grep -c '_phase_mark("' \
-    /app/python/app/api/routes/chatbot.py /app/python/app/agents/chat_modes/bridge.py
+    /app/python/app/api/routes/chatbot.py /app/python/app/agents/chat_modes/bridge.py || true
 
 echo "== settling ${SETTLE}s (restart also bounces indexing/connector; F6 showed"
 echo "   background indexing inflates latency and contaminated an early baseline)"

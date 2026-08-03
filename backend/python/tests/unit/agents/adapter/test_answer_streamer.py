@@ -8,7 +8,6 @@ and `streamed_answer` reflecting whichever turn last ended via
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -85,12 +84,18 @@ class TestEmitRateLimit:
 
         assert len(sink.events) == emitted
 
-    async def test_interval_elapsing_allows_the_next_emit(self) -> None:
+    async def test_interval_elapsing_allows_the_next_emit(self, monkeypatch) -> None:
+        """Drives a controlled clock rather than sleeping: a real wait makes the
+        test both slow and dependent on how promptly the loop reschedules."""
+        from app.agents.agent_loop import answer_streamer as mod
+
+        now = [1000.0]
+        monkeypatch.setattr(mod.time, "monotonic", lambda: now[0])
         streamer, sink = _make_streamer(emit_interval=0.01)
 
         await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
         await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "a"}))
-        await asyncio.sleep(0.03)
+        now[0] += 0.03
         await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "b"}))
 
         assert len(sink.events) == 2

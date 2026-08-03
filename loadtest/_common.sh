@@ -140,7 +140,10 @@ query_pid() {
     if [ -n "$PIPESHUB_QUERY_PID" ]; then echo "$PIPESHUB_QUERY_PID"; return 0; fi
     local pid=""
     if command -v pgrep >/dev/null 2>&1; then
-        pid=$(pgrep -f 'app[._]query_main' 2>/dev/null | tail -1)
+        # Lowest match = the master. `query_rss_mb` sums its children and
+        # py-spy runs with --subprocesses, so starting at the master covers the
+        # workers; starting at a worker would miss its siblings.
+        pid=$(pgrep -f 'app[._]query_main' 2>/dev/null | sort -n | head -1)
     fi
     if [ -z "$pid" ] && command -v powershell.exe >/dev/null 2>&1; then
         pid=$(powershell.exe -NoProfile -Command \

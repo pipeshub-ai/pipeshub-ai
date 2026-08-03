@@ -56,8 +56,9 @@ def _sub(src: str, path: str, region: "tuple[int, int]", find: str, repl: str) -
 
 def _insert_shim(src: str, path: str, after: str) -> str:
     """Insert the import shim after `after`, enforcing __future__ placement."""
-    if src.count(after) != 1:
-        raise PatchError(f"{path}: shim anchor not unique: {after!r}")
+    n = src.count(after)
+    if n != 1:
+        raise PatchError(f"{path}: shim anchor must appear exactly once, found {n}: {after!r}")
     at = src.index(after) + len(after)
     fut = src.find("from __future__ import")
     if fut >= 0 and at <= fut:

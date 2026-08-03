@@ -9,7 +9,7 @@ CONTAINER=${CONTAINER:-${PIPESHUB_CONTAINER:-pipeshub-ai}}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 require_target || exit 1
 [ "$PIPESHUB_MODE" = "docker" ] || { echo "$(basename "$0") needs PIPESHUB_MODE=docker (it restarts the container)."; exit 1; }
-PORT=${QUERY_PORT:-8000}
+PORT=${PIPESHUB_QUERY_PORT:-8000}
 DEADLINE=${DEADLINE:-180}
 
 echo
