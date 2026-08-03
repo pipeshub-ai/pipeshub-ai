@@ -1,5 +1,6 @@
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.utils.llm_api_mode_store import get_llm_api_mode_store
 
 
 class AiConfigEventService(BaseEventService):
@@ -44,6 +45,13 @@ class AiConfigEventService(BaseEventService):
 
             # Refresh the LLM instance with new configuration
             await self.retrieval_service.get_llm_instance(use_cache=False)
+
+            # Admin may have edited a model's provider/endpoint since a fact
+            # was learned for it — re-sync the snapshot rather than letting
+            # a stale learned mode outlive the config it was learned under.
+            store = get_llm_api_mode_store(self.retrieval_service.config_service)
+            if store is not None:
+                await store.load()
 
             self.logger.info("✅ Successfully updated LLM configuration in all services")
             return True

@@ -300,6 +300,7 @@ async def run_agent_loop_stream(
                 context, llm, query_info.get("chatMode", "quick"),
                 query=query_info.get("query", ""),
                 model_name=model_name or "",
+                model_key=model_key,
             )
 
             if clarifying_questions:

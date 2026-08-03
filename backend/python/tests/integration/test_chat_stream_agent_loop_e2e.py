@@ -109,7 +109,7 @@ def _fake_agent_run():
     would need a live LLM/tool registry -- the one boundary this E2E test
     still mocks, at the exact same seam `test_bridge.py` uses."""
 
-    async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
         agent = MagicMock()
         agent.last_stream_result = MagicMock(success=True, error=None, output="The answer, with citations.")
 
@@ -310,7 +310,7 @@ class TestWebSearchCitationEndToEnd:
             }
         ]
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             from app.agents.agent_loop.tool_loader import _build_dynamic_tools  # noqa: PLC0415
 
             tools = _build_dynamic_tools(context)

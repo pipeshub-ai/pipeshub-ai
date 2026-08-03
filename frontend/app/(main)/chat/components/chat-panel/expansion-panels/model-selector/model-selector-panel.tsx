@@ -21,8 +21,15 @@ import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
 // render a matching "· High" style indicator without redefining labels.
+//
+// "none" is intentionally NOT offered here: some reasoning-capable models
+// (e.g. ChatOpenAI with reasoning_effort="none") are prone to hallucinating
+// malformed/oversized tool-call names once reasoning is fully disabled,
+// which can crash the whole turn. The backend still accepts "none" on the
+// wire (old persisted conversations/agents may carry it) and silently
+// upgrades it to "low" rather than rejecting it — see
+// `_reasoning_effort_kwargs` in `app/utils/aimodels.py`.
 export const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; labelKey: string; defaultLabel: string }[] = [
-  { value: 'none', labelKey: 'chat.reasoningEffort.none', defaultLabel: 'None' },
   { value: 'low', labelKey: 'chat.reasoningEffort.low', defaultLabel: 'Low' },
   { value: 'medium', labelKey: 'chat.reasoningEffort.medium', defaultLabel: 'Medium' },
   { value: 'high', labelKey: 'chat.reasoningEffort.high', defaultLabel: 'High' },

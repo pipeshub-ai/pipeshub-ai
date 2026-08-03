@@ -206,6 +206,7 @@ class PipesHubAgentFactory:
         query: str,
         model_name: str = "",
         session_id: str | None = None,
+        model_key: str | None = None,
     ) -> tuple[Agent, AgentRuntime, "Goal", list["AskUserQuestionItemInput"]]:
         """Builds a fully-wired `Agent` plus the intent-parsed `Goal` it
         should run with. Async because every request now resolves its
@@ -237,7 +238,9 @@ class PipesHubAgentFactory:
         transport_registry.register(
             "langchain",
             traced_transport_factory(
-                lambda: LangChainTransport(llm, model_name=model_name, opik_project_name=opik_project_name),
+                lambda: LangChainTransport(
+                    llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                ),
                 opik_active=opik_active,
                 project_name=opik_project_name,
             ),

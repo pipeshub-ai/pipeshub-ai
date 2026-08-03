@@ -22,6 +22,11 @@ from app.config.constants.ai_models import (
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
+from app.utils.llm_api_mode_store import (
+    REASONING_MANDATORY_FALLBACK_EFFORT,
+    LLMApiMode,
+    get_llm_api_mode_store,
+)
 from app.utils.logger import create_logger
 
 
@@ -634,7 +639,9 @@ _GEMINI_FAMILY = frozenset({
 # These two providers must be routed through the Responses API instead.
 # Third-party OpenAI-compatible providers (OpenRouter, LiteLLM proxy,
 # Fireworks, MiniMax, XAI, LM Studio) don't expose /v1/responses, so they
-# keep using `reasoning_effort` as-is.
+# keep using `reasoning_effort` as-is — UNLESS they're proxying an actual
+# OpenAI gpt-5.x model (see `_is_openai_gpt5_model` below), in which case
+# they hit this same restriction and must also switch.
 _RESPONSES_API_PROVIDERS = frozenset({
     LLMProvider.OPENAI.value,
     LLMProvider.AZURE_OPENAI.value,
@@ -655,12 +662,66 @@ def _targets_openai_responses_api(base_url: str | None) -> bool:
     return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
 
 
+# LLM routers/gateways (Requesty, OpenRouter, LiteLLM proxy, and similar)
+# commonly proxy requests for OpenAI's own "gpt-5.x" models straight through
+# to OpenAI's real backend under an `openAICompatible`/`litellmProxy`/
+# `openRouter` config entry, without the caller ever pointing `base_url` at
+# `api.openai.com` directly. Those requests still hit the exact same Chat
+# Completions restriction as the direct provider — and, since these routers
+# exist specifically to be OpenAI-protocol compatible, they expose a
+# matching `/v1/responses` endpoint at the same base URL for this reason
+# (confirmed for Requesty and OpenRouter). Detecting by model name (rather
+# than by host) is what makes this work regardless of which router/proxy
+# sits in front of the real OpenAI model.
+#
+# o-series reasoning models (o3, o4-mini, ...) are intentionally excluded:
+# they support `reasoning_effort` + bound tools on Chat Completions today
+# (with a documented, non-fatal loss of cross-turn reasoning persistence),
+# unlike gpt-5.x which hard-rejects the combination with a 400.
+_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+
+# gpt-5-chat / gpt-5.x-chat-latest are non-reasoning chat variants: they
+# don't accept a `reasoning`/`reasoning_effort` value at all and must never
+# be routed to the Responses API or forced onto temperature=1 for that
+# reason — langchain-openai itself special-cases them the same way
+# (`"chat" not in model_lower`, `validate_temperature`/
+# `_construct_responses_api_payload` in langchain_openai's chat_models/base.py).
+_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
+
+
+def _is_openai_gpt5_model(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    if _OPENAI_GPT5_CHAT_PATTERN.search(model_name):
+        return False
+    return bool(_OPENAI_GPT5_MODEL_PATTERN.search(model_name))
+
+
+def _default_temperature(
+    configuration: dict[str, Any], config: dict[str, Any], model_name: str | None,
+) -> float:
+    """Default ``temperature`` for a provider's constructor kwargs.
+
+    OpenAI gpt-5.x reasoning models only accept ``temperature=1`` (any other
+    value 400s on both Chat Completions and the Responses API) — this is the
+    one check shared verbatim by every provider branch below that constructs
+    a LangChain client, so it lives here once instead of being copy-pasted
+    per branch (it previously was, with a plain ``"gpt-5" in model_name``
+    substring check that also mis-fired on ``gpt-5-chat-latest``, which has
+    no such restriction).
+    """
+    is_reasoning_model = _is_openai_gpt5_model(model_name) or bool(config.get("isReasoning", False))
+    return 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+
+
 def _reasoning_effort_kwargs(
     reasoning_effort: str | None,
     config: dict[str, Any],
     *,
     provider: str = "",
     base_url: str | None = None,
+    model_name: str | None = None,
+    api_mode: str | None = None,
 ) -> Dict[str, Any]:
     """Build the constructor kwarg for LangChain's standard ``reasoning_effort``
     parameter (langchain-core>=1.5.2), gated on the model being flagged as
@@ -675,8 +736,19 @@ def _reasoning_effort_kwargs(
     ("high") rather than silently omitting the parameter and letting each
     provider fall back to its own default — those vary per provider/model and
     are often a lower, cheaper tier than a user picking a "reasoning" model
-    would expect. An explicit ``"none"`` still disables reasoning, since that's
-    a real choice distinct from "unset".
+    would expect.
+
+    An explicit ``"none"`` is silently floored to ``REASONING_MANDATORY_FALLBACK_EFFORT``
+    ("low") rather than actually disabling reasoning. Fully disabling reasoning
+    makes some models prone to hallucinating malformed/oversized tool-call
+    names once reasoning stops constraining their output (see
+    ``app/agent_loop_lib/tools/executor.py::_collapse_repeated_name`` and
+    ``app/agents/agent_loop/converters.py::_clamp_tool_call_name`` for the
+    defenses against that once it happens anyway). The frontend no longer
+    offers "none" as a choice (see ``REASONING_EFFORT_OPTIONS`` in
+    ``model-selector-panel.tsx``); this floor is what makes it safe to still
+    accept "none" on the wire from already-persisted conversations/agents
+    instead of rejecting them.
 
     Provider-specific translation is applied because each provider accepts
     different value sets:
@@ -690,22 +762,73 @@ def _reasoning_effort_kwargs(
     - LM Studio: low, medium, high (no 'none' or 'max')
     - Ollama: False, low, medium, high (no 'none' string or 'max')
 
-    Models served by OpenAI itself (direct OpenAI, Azure OpenAI, or an
-    OpenAI-compatible entry pointed at ``api.openai.com``) additionally route
-    through the Responses API (``reasoning`` + ``use_responses_api=True``)
-    rather than the legacy ``reasoning_effort`` kwarg, because Chat Completions
-    rejects reasoning effort combined with bound tools for gpt-5.x models.
+    Requests that reach an actual OpenAI gpt-5.x model with reasoning
+    genuinely turned on additionally route through the Responses API
+    (``reasoning`` + ``use_responses_api=True``) rather than the legacy
+    ``reasoning_effort`` kwarg, because Chat Completions rejects reasoning
+    effort combined with bound tools for that model family. This is detected
+    two ways, since the model can be reached several ways:
+    - Provider is direct OpenAI or Azure OpenAI (``_RESPONSES_API_PROVIDERS``).
+    - The configured ``base_url`` is OpenAI's own host, or ``model_name``
+      itself matches the ``gpt-5.x`` family — the latter covers routers/
+      gateways (Requesty, OpenRouter, LiteLLM proxy, a generic
+      OpenAI-compatible entry, ...) that transparently forward to OpenAI's
+      real backend under a different host.
+    The post-mapping ``effort != "none"`` guard on this switch is now purely
+    defensive: since ``"none"`` is floored to ``REASONING_MANDATORY_FALLBACK_EFFORT``
+    up front (see above), no provider map below ever actually produces
+    ``"none"`` as its output. It's kept because OpenAI's own error for this
+    restriction states Chat Completions works fine with reasoning effort set
+    to ``"none"`` even with bound tools — if a future caller legitimately
+    needs that combination again, the guard is already in place to keep
+    reasoning-off on the plain ``reasoning_effort`` kwarg for every provider
+    rather than routing it through the newer Responses API code path.
+
+    The Responses API ``reasoning`` dict is deliberately kept to just
+    ``{"effort": ...}`` — no ``"summary"`` key. Requesting a summary needs
+    the caller's OpenAI organization to be Verified and 400s otherwise, and
+    some Azure OpenAI / gateway Responses API implementations reject the
+    field outright even when verified upstream, so it's opt-in territory we
+    don't control from here rather than something safe to default to.
 
     Ollama is a special case: LangChain's ``ChatOllama`` doesn't expose a
     ``reasoning_effort`` constructor kwarg at all — it uses ``reasoning``
     (bool | str), which maps onto Ollama's native ``think`` field rather than
     the OpenAI-style ``reasoning_effort`` body parameter. Callers must read
     the ``"reasoning"`` key from the returned dict for this provider instead.
+
+    ``api_mode`` overrides the heuristic above with a fact *learned* at
+    runtime by ``LangChainTransport`` from an actual provider rejection
+    (see ``app/utils/llm_api_mode_store.py``), rather than guessed from the
+    model name / base_url:
+    - ``LLMApiMode.NO_REASONING_WITH_TOOLS``: this model's provider/gateway
+      rejects reasoning together with bound tools on *both* API shapes —
+      skip reasoning entirely (identical to ``isReasoning`` being off).
+    - ``LLMApiMode.RESPONSES``: this model needs the Responses API even
+      though the name/host heuristic didn't detect it — take that branch
+      unconditionally (still gated on ``effort != "none"`` like the
+      heuristic path, since reasoning-off never needs it).
+    - ``LLMApiMode.REASONING_MANDATORY``: this model/gateway rejects an
+      explicit ``"none"`` effort outright (some OpenRouter-proxied Gemini
+      models: "Reasoning is mandatory for this endpoint and cannot be
+      disabled."). In practice this is now a defensive no-op for calls that
+      go through this function, since ``"none"`` is already floored to
+      ``REASONING_MANDATORY_FALLBACK_EFFORT`` up front regardless of
+      ``api_mode`` — it's kept in case something outside this function ever
+      hands a model an unfloored ``"none"``.
     """
     if not config.get("isReasoning"):
         return {}
 
+    if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:
+        return {}
+
     effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    if effort_input == "none":
+        # "none" is no longer offered as a UI choice (see the docstring
+        # above) — floor it unconditionally rather than only when a
+        # REASONING_MANDATORY fact happens to be learned for this model.
+        effort_input = REASONING_MANDATORY_FALLBACK_EFFORT
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
@@ -726,9 +849,27 @@ def _reasoning_effort_kwargs(
     elif provider == LLMProvider.ANTHROPIC.value:
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
-    if provider in _RESPONSES_API_PROVIDERS or _targets_openai_responses_api(base_url):
+    needs_responses_api = effort != "none" and (
+        api_mode == LLMApiMode.RESPONSES.value
+        or provider in _RESPONSES_API_PROVIDERS
+        or (
+            provider in _OPENAI_FAMILY
+            and (_targets_openai_responses_api(base_url) or _is_openai_gpt5_model(model_name))
+        )
+    )
+    if needs_responses_api:
+        # No `"summary"` key: requesting a reasoning summary requires the
+        # caller's OpenAI organization to be Verified (platform.openai.com
+        # settings) and 400s otherwise ("Your organization must be verified
+        # to generate reasoning summaries..."), and some Azure OpenAI /
+        # gateway (Requesty et al.) Responses API implementations reject the
+        # field outright ("Unknown parameter: 'reasoning_summary'.") even
+        # when verified upstream. Reasoning effort/depth still fully applies
+        # without it — only the optional textual reasoning-summary blocks
+        # LangChain would otherwise surface via `content_blocks` are absent,
+        # same as every other provider that doesn't emit reasoning text.
         return {
-            "reasoning": {"effort": effort, "summary": "auto"},
+            "reasoning": {"effort": effort},
             "use_responses_api": True,
         }
 
@@ -743,20 +884,30 @@ def get_generator_model(
 ) -> BaseChatModel:
     configuration = config['configuration']
     is_default = config.get("isDefault")
-    if is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+    configured_model = configuration.get("model")
+    if not configured_model:
+        raise ValueError(f"Provider '{provider}' configuration is missing a 'model' name.")
+    model_names = [name.strip() for name in configured_model.split(",") if name.strip()]
+    if not model_names:
+        raise ValueError(f"Provider '{provider}' configuration has an empty 'model' field.")
+
+    if model_name is None:
         model_name = model_names[0]
-    elif not is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        model_name = model_names[0]
-    elif not is_default and model_name is not None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        if model_name not in model_names:
-            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+    elif not is_default and model_name not in model_names:
+        raise ValueError(f"Model name {model_name} not found in {configured_model}")
+
+    # Resolved once per call from the process-wide learned-facts snapshot
+    # (see `app/utils/llm_api_mode_store.py`) and threaded explicitly into
+    # every `_reasoning_effort_kwargs()` call below, so that function stays
+    # a pure, synchronously-testable computation with no knowledge of the
+    # store. `None` (store not yet loaded, or nothing learned for this
+    # model) falls through to today's name/host heuristic unchanged.
+    api_mode_store = get_llm_api_mode_store()
+    api_mode = api_mode_store.get(config.get("modelKey"), model_name) if api_mode_store else None
 
     logger.info(
         f"Getting generator model: provider={provider}, model_name={model_name}, "
-        f"reasoning_effort={reasoning_effort}"
+        f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )
 
     DEFAULT_LLM_TIMEOUT = 360.0
@@ -773,7 +924,11 @@ def get_generator_model(
         )
         if _anthropic_supports_sampling_params(model_name):
             anthropic_kwargs["temperature"] = 0.2
-        anthropic_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        anthropic_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatAnthropic(**anthropic_kwargs)
 
     elif provider == LLMProvider.AWS_BEDROCK.value:
@@ -845,8 +1000,7 @@ def get_generator_model(
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
 
         is_claude_model = "claude" in model_name
         if is_claude_model:
@@ -860,7 +1014,12 @@ def get_generator_model(
             )
             if _anthropic_supports_sampling_params(model_name):
                 azure_claude_kwargs["temperature"] = temperature
-            azure_claude_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=LLMProvider.ANTHROPIC.value))
+            azure_claude_kwargs.update(
+                _reasoning_effort_kwargs(
+                    reasoning_effort, config, provider=LLMProvider.ANTHROPIC.value,
+                    model_name=model_name, api_mode=api_mode,
+                )
+            )
             return ChatAnthropic(**azure_claude_kwargs)
         else:
             azure_ai_openai_kwargs: Dict[str, Any] = dict(
@@ -871,14 +1030,27 @@ def get_generator_model(
                 base_url=configuration.get("endpoint"),
                 stream_usage=True,  # Enable token usage tracking for Opik
             )
-            azure_ai_openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=LLMProvider.OPENAI.value))
+            # `provider` here (not `LLMProvider.OPENAI.value`) matters: Azure
+            # AI Foundry also hosts non-OpenAI models (Llama, Mistral,
+            # DeepSeek, ...) under `isReasoning=True`, and those have no
+            # `/v1/responses` endpoint at all. Passing the real `azureAI`
+            # provider keeps it in `_OPENAI_FAMILY` (so effort-value mapping
+            # is unchanged) while taking it out of the unconditional
+            # `_RESPONSES_API_PROVIDERS` set — only an actual gpt-5.x model
+            # name or an `api.openai.com` base_url still routes it through
+            # the Responses API.
+            azure_ai_openai_kwargs.update(
+                _reasoning_effort_kwargs(
+                    reasoning_effort, config, provider=provider,
+                    base_url=configuration.get("endpoint"), model_name=model_name, api_mode=api_mode,
+                )
+            )
             return ChatOpenAI(**azure_ai_openai_kwargs)
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         azure_openai_kwargs: Dict[str, Any] = dict(
             api_key=configuration["apiKey"],
             azure_endpoint=configuration["endpoint"],
@@ -888,7 +1060,11 @@ def get_generator_model(
             azure_deployment=configuration["deploymentName"],
             stream_usage=True,
         )
-        azure_openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        azure_openai_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return AzureChatOpenAI(**azure_openai_kwargs)
 
     elif provider == LLMProvider.COHERE.value:
@@ -908,7 +1084,11 @@ def get_generator_model(
             timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
             api_key=configuration["apiKey"],
         )
-        fireworks_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        fireworks_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatFireworks(**fireworks_kwargs)
 
     elif provider == LLMProvider.GEMINI.value:
@@ -922,7 +1102,11 @@ def get_generator_model(
             max_retries=2,
             google_api_key=configuration["apiKey"],
         )
-        gemini_llm_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        gemini_llm_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatGoogleGenerativeAI(**gemini_llm_kwargs)
 
     elif provider == LLMProvider.GROQ.value:
@@ -948,7 +1132,11 @@ def get_generator_model(
             base_url="https://api.minimax.io/v1",
             stream_usage=True,
         )
-        minimax_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        minimax_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatOpenAI(**minimax_kwargs)
 
     elif provider == LLMProvider.MISTRAL.value:
@@ -968,7 +1156,9 @@ def get_generator_model(
         # Non-reasoning models keep `reasoning=False` (the historical default)
         # so <think> tags never leak into their output; reasoning-capable
         # models get Ollama's native `think` level via `_reasoning_effort_kwargs`.
-        reasoning_kwarg = _reasoning_effort_kwargs(reasoning_effort, config, provider=provider)
+        reasoning_kwarg = _reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+        )
         ollama_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=configuration.get("temperature", 0.2),
@@ -987,8 +1177,7 @@ def get_generator_model(
     elif provider == LLMProvider.OPENAI.value:
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -997,7 +1186,11 @@ def get_generator_model(
             organization=configuration.get("organizationId"),
             stream_usage=True,  # Enable token usage tracking for Opik
         )
-        openai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        openai_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatOpenAI(**openai_kwargs)
 
     elif provider == LLMProvider.XAI.value:
@@ -1009,7 +1202,11 @@ def get_generator_model(
             timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
             api_key=configuration["apiKey"],
         )
-        xai_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        xai_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatXAI(**xai_kwargs)
 
     elif provider == LLMProvider.TOGETHER.value:
@@ -1025,8 +1222,7 @@ def get_generator_model(
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         openai_compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1036,14 +1232,14 @@ def get_generator_model(
             stream_usage=True,  # Enable token usage tracking for Opik
         )
         openai_compat_kwargs.update(_reasoning_effort_kwargs(
-            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+            reasoning_effort, config, provider=provider,
+            base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
         return ChatOpenAI(**openai_compat_kwargs)
 
     elif provider == LLMProvider.LM_STUDIO.value:
         from langchain_openai import ChatOpenAI
-        is_reasoning_model = config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         lm_studio_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1053,14 +1249,14 @@ def get_generator_model(
             stream_usage=True,
         )
         lm_studio_kwargs.update(_reasoning_effort_kwargs(
-            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+            reasoning_effort, config, provider=provider,
+            base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
         return ChatOpenAI(**lm_studio_kwargs)
 
     elif provider == LLMProvider.LITELLM_PROXY.value:
         from langchain_openai import ChatOpenAI
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         litellm_proxy_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1070,15 +1266,15 @@ def get_generator_model(
             stream_usage=True,
         )
         litellm_proxy_kwargs.update(_reasoning_effort_kwargs(
-            reasoning_effort, config, provider=provider, base_url=configuration["endpoint"]
+            reasoning_effort, config, provider=provider,
+            base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
         return ChatOpenAI(**litellm_proxy_kwargs)
 
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
 
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         openrouter_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1087,7 +1283,10 @@ def get_generator_model(
             base_url=OPENROUTER_BASE_URL,
             stream_usage=True,
         )
-        openrouter_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        openrouter_kwargs.update(_reasoning_effort_kwargs(
+            reasoning_effort, config, provider=provider,
+            base_url=OPENROUTER_BASE_URL, model_name=model_name, api_mode=api_mode,
+        ))
         return ChatOpenAI(**openrouter_kwargs)
 
     elif provider == LLMProvider.VERTEX_AI.value:
@@ -1106,8 +1305,7 @@ def get_generator_model(
                 "Please provide the Google Cloud project that hosts Vertex AI."
             )
         creds = _create_vertex_credentials(sa_json)
-        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
-        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        temperature = _default_temperature(configuration, config, model_name)
         vertex_llm_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,
@@ -1118,7 +1316,11 @@ def get_generator_model(
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
         )
-        vertex_llm_kwargs.update(_reasoning_effort_kwargs(reasoning_effort, config, provider=provider))
+        vertex_llm_kwargs.update(
+            _reasoning_effort_kwargs(
+                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+            )
+        )
         return ChatGoogleGenerativeAI(**vertex_llm_kwargs)
 
     raise ValueError(f"Unsupported provider type: {provider}")

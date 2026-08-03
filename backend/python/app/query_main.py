@@ -31,6 +31,7 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
+from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
@@ -55,6 +56,13 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         # Store the resolved graph_provider in the container to avoid coroutine reuse
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
+
+        # Load previously-learned LLM API-mode facts (Responses vs. Chat
+        # Completions) before any request can build a model — see
+        # `app/utils/llm_api_mode_store.py`. Best-effort: a failed load
+        # just means the heuristic-only path is used until the next
+        # `llmConfigured` event refreshes it.
+        await get_llm_api_mode_store(container.config_service()).load()
 
         return True
 

@@ -162,9 +162,20 @@ class TestGetGeneratorModelVertexAI:
     @patch("langchain_google_genai.ChatGoogleGenerativeAI")
     def test_gpt5_model_id_forces_reasoning_temperature(self, mock_chat_cls, _mock_from_info):
         mock_chat_cls.return_value = MagicMock()
-        cfg = self._config(model="gpt-5-chat", temperature=0.2)
+        cfg = self._config(model="gpt-5-mini", temperature=0.2)
         get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
         assert mock_chat_cls.call_args.kwargs["temperature"] == 1
+
+    @patch("google.oauth2.service_account.Credentials.from_service_account_info")
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
+    def test_gpt5_chat_model_id_does_not_force_reasoning_temperature(self, mock_chat_cls, _mock_from_info):
+        """`gpt-5-chat` (and dated variants) are non-reasoning chat models —
+        they must NOT be forced to temperature=1 just because their name
+        contains "gpt-5" (see `_is_openai_gpt5_model`'s chat exclusion)."""
+        mock_chat_cls.return_value = MagicMock()
+        cfg = self._config(model="gpt-5-chat", temperature=0.2)
+        get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
+        assert mock_chat_cls.call_args.kwargs["temperature"] == 0.2
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
     @patch("langchain_google_genai.ChatGoogleGenerativeAI")

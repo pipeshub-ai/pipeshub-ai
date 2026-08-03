@@ -58,6 +58,11 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.utils.llm_api_mode_store import (
+    REASONING_MANDATORY_FALLBACK_EFFORT,
+    LLMApiMode,
+    get_llm_api_mode_store,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -82,6 +87,39 @@ _STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 # "*Connection*"/"*Timeout*" naming convention covers the common transient
 # cases without a hard dependency on any one provider's package.
 _NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout", "timeouterror", "apitimeouterror", "apiconnectionerror")
+
+# Substrings providers/gateways actually emit when reasoning + bound function
+# tools can't both go through the API shape the request used. Matched
+# case-insensitively against `str(exc)` — deliberately loose (not a status
+# code check) since these come from very different SDKs (openai, httpx-based
+# gateway clients, ...) with no shared exception hierarchy.
+# - "please use /v1/responses instead": Chat Completions rejected the
+#   combination (the exact case that motivated this — see module docstring).
+# - "please use /v1/chat/completions instead": the inverse — a Responses-API
+#   attempt landed on a backend that only supports this on Chat Completions.
+# - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
+#   Responses-only model/deployment.
+_API_SHAPE_CONFLICT_MARKERS = (
+    "please use /v1/responses instead",
+    "please use /v1/chat/completions instead",
+    "tool_choice.function",
+)
+
+
+def _is_api_shape_conflict(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _API_SHAPE_CONFLICT_MARKERS)
+
+
+# Substring a provider/gateway emits when it refuses to let reasoning be
+# turned off at all — observed on some OpenRouter-proxied Gemini models:
+# "Reasoning is mandatory for this endpoint and cannot be disabled."
+_REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
+
+
+def _is_reasoning_mandatory_conflict(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _REASONING_MANDATORY_CONFLICT_MARKERS)
 
 
 def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
@@ -142,10 +180,21 @@ class LangChainTransport(LLMTransport):
     """Bridges a LangChain `BaseChatModel` to agent-loop's `LLMTransport`."""
 
     def __init__(
-        self, chat_model: BaseChatModel, model_name: str = "", opik_project_name: str | None = None,
+        self,
+        chat_model: BaseChatModel,
+        model_name: str = "",
+        opik_project_name: str | None = None,
+        model_key: str | None = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # etcd `aiModels` config-entry key (see `app/utils/aimodels.py`'s
+        # `get_generator_model`) — the identity a learned API-mode fact is
+        # recorded/looked-up against (`app/utils/llm_api_mode_store.py`).
+        # `None` for call sites that don't thread it through yet, in which
+        # case `_record_api_mode` just skips persisting (the in-request
+        # runtime fallback below still applies either way).
+        self._model_key = model_key
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
 
     def _langchain_config(self) -> dict[str, Any]:
@@ -162,9 +211,17 @@ class LangChainTransport(LLMTransport):
     def _resolve_model_name(self, model: str | None) -> str:
         return model or self._model
 
-    def _bind_tools(self, tools: list[ToolSchema] | None) -> BaseChatModel:
-        """Binds `tools` onto the underlying `BaseChatModel`, or raises a
+    def _bind_tools(
+        self, tools: list[ToolSchema] | None, llm: BaseChatModel | None = None,
+    ) -> BaseChatModel:
+        """Binds `tools` onto `llm` (defaults to `self._llm`), or raises a
         `TransportError` if binding fails.
+
+        The optional `llm` override exists for the API-shape fallback in
+        `complete()`/`stream()`: the retry attempt rebinds the same tools
+        onto a differently-configured model copy (reasoning cleared or
+        moved to the Responses API) without touching `self._llm` until
+        that retry actually succeeds.
 
         This USED to fail-soft (`except: pass`, then later a bare WARNING
         log) and silently continue the turn with the model's tools stripped
@@ -180,13 +237,14 @@ class LangChainTransport(LLMTransport):
         `_wrap_error`'s callers, the adapter's error-response path), instead
         of a distinct silent-degradation code path nothing else knows about.
         """
+        llm = llm if llm is not None else self._llm
         if not tools:
             logger.debug("LangChainTransport: no tools offered for this turn")
-            return self._llm
+            return llm
         tool_names = [t.name for t in tools]
         lc_tools = convert_tool_schemas_to_langchain(tools)
         try:
-            bound = self._llm.bind_tools(lc_tools)
+            bound = llm.bind_tools(lc_tools)
         except Exception as exc:
             logger.error(
                 "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
@@ -213,6 +271,101 @@ class LangChainTransport(LLMTransport):
             status_code=status_code,
             retryable=retryable,
         )
+
+    def _api_shape_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
+        """Builds the "other API shape" copy of `self._llm` to retry once
+        against, when `exc` looks like the reasoning+tools API-shape
+        conflict described at `_API_SHAPE_CONFLICT_MARKERS`. Returns
+        `None` when `exc` doesn't match, or the model has no
+        `use_responses_api` attribute to flip (non-OpenAI-family
+        integrations — Anthropic, Gemini, Bedrock, Ollama, ... — have no
+        such conflict to begin with).
+
+        Direction is decided by the model's OWN current state, not by
+        which marker matched (both directions can, in principle, produce
+        either message depending on the gateway):
+        - Already on the Responses API: that attempt itself was rejected,
+          so this gateway/backend can't do reasoning + tools at all for
+          this model — drop reasoning entirely, keep tools on Chat
+          Completions. `use_responses_api=None` (not `False`) leaves
+          LangChain's own Responses-only model detection
+          (`_model_prefers_responses_api`) in charge, so this never
+          force-downgrades a model that only exists on the Responses API
+          (`gpt-5-pro`, `codex`, ...).
+        - Not yet on the Responses API: flip to it, moving
+          `reasoning_effort` into the `reasoning` dict shape the Responses
+          API expects (`_default_params` drops `None` values, so clearing
+          the other kwarg outright is required, not optional).
+        """
+        if not _is_api_shape_conflict(exc):
+            return None
+        llm = self._llm
+        if not hasattr(llm, "use_responses_api"):
+            return None
+        if getattr(llm, "use_responses_api", None):
+            return llm.model_copy(update={
+                "use_responses_api": None, "reasoning": None, "reasoning_effort": None,
+            }), LLMApiMode.NO_REASONING_WITH_TOOLS.value
+        effort = getattr(llm, "reasoning_effort", None)
+        return llm.model_copy(update={
+            "use_responses_api": True,
+            "reasoning": {"effort": effort} if effort else None,
+            "reasoning_effort": None,
+        }), LLMApiMode.RESPONSES.value
+
+    def _reasoning_mandatory_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
+        """Builds a copy of `self._llm` with reasoning bumped off an
+        explicitly disabled value, when `exc` looks like a provider
+        hard-rejecting "no reasoning" outright (see
+        `_REASONING_MANDATORY_CONFLICT_MARKERS`).
+
+        Returns `None` when `exc` doesn't match, or reasoning wasn't
+        actually set to a disabled value on this call — a false-positive
+        marker match with nothing to bump means the 400 has some other
+        cause, so there's nothing useful to retry here.
+
+        `REASONING_MANDATORY_FALLBACK_EFFORT` ("low") rather than
+        `DEFAULT_REASONING_EFFORT` ("high"): the user's actual choice was
+        "off", so the smallest still-legal step away from that is a closer
+        match to their intent than jumping to the platform default.
+        """
+        if not _is_reasoning_mandatory_conflict(exc):
+            return None
+        llm = self._llm
+        updates: dict[str, Any] = {}
+        if getattr(llm, "reasoning_effort", None) == "none":
+            updates["reasoning_effort"] = REASONING_MANDATORY_FALLBACK_EFFORT
+        current_reasoning = getattr(llm, "reasoning", None)
+        if current_reasoning is False:
+            updates["reasoning"] = REASONING_MANDATORY_FALLBACK_EFFORT
+        elif isinstance(current_reasoning, dict) and current_reasoning.get("effort") == "none":
+            updates["reasoning"] = {**current_reasoning, "effort": REASONING_MANDATORY_FALLBACK_EFFORT}
+        if not updates:
+            return None
+        return llm.model_copy(update=updates), LLMApiMode.REASONING_MANDATORY.value
+
+    def _conflict_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
+        """Tries each known provider-conflict fallback in turn against
+        `exc`, returning the first that matches — `complete()`/`stream()`
+        retry identically regardless of which one fired. See
+        `_api_shape_fallback` (Chat Completions vs Responses API shape) and
+        `_reasoning_mandatory_fallback` (provider refuses reasoning
+        disabled outright)."""
+        return self._api_shape_fallback(exc) or self._reasoning_mandatory_fallback(exc)
+
+    async def _record_api_mode(self, mode: str) -> None:
+        """Persists a learned API-mode fact once a fallback retry has
+        actually succeeded, so `aimodels.get_generator_model()` applies it
+        from construction time on every later call for this model — see
+        `app/utils/llm_api_mode_store.py`. A no-op when the store hasn't
+        been initialized yet (e.g. this transport is used outside the
+        query service's normal startup path) or `model_key` was never
+        threaded through to this transport; the in-request retry above
+        still applies regardless."""
+        store = get_llm_api_mode_store()
+        if store is None or not self._model_key:
+            return
+        await store.record(self._model_key, self._model, mode)
 
     def _log_turn_outcome(
         self, tools: list[ToolSchema] | None, ai_message: AIMessage, stop_reason: StopReason,
@@ -271,7 +424,35 @@ class LangChainTransport(LLMTransport):
         try:
             ai_message = await lc_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
-            raise self._wrap_error(exc, "complete") from exc
+            fallback = self._conflict_fallback(exc)
+            if fallback is None:
+                raise self._wrap_error(exc, "complete") from exc
+            fallback_llm, mode = fallback
+            fallback_bound = self._bind_tools(tools, llm=fallback_llm)
+            logger.warning(
+                "LangChainTransport.complete: provider conflict for model=%s, "
+                "retrying once with api_mode=%s: %s",
+                self._model, mode, exc,
+            )
+            try:
+                ai_message = await fallback_bound.ainvoke(lc_messages, config=self._langchain_config())
+            except Exception as retry_exc:
+                logger.error(
+                    "LangChainTransport.complete: retry with api_mode=%s also failed for "
+                    "model=%s: %s — raising the ORIGINAL error",
+                    mode, self._model, retry_exc,
+                )
+                raise self._wrap_error(exc, "complete") from exc
+            # Pinned for the rest of this agent loop (many more calls will
+            # follow) and persisted so the NEXT request for this model
+            # skips straight to the working shape.
+            self._llm = fallback_llm
+            await self._record_api_mode(mode)
+            logger.info(
+                "LangChainTransport.complete: retry succeeded — pinned api_mode=%s for "
+                "model=%s for the rest of this run",
+                mode, self._model,
+            )
 
         assistant_message = convert_assistant_message_from_langchain(ai_message)
         usage = token_usage_from_ai_message(ai_message)
@@ -400,52 +581,97 @@ class LangChainTransport(LLMTransport):
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []
-        try:
-            async for chunk in lc_llm.astream(lc_messages, config=self._langchain_config()):
-                chunks.append(chunk)
-                text = getattr(chunk, "content", None)
-                if isinstance(text, str) and text:
-                    yield TextDeltaEvent(delta=text)
-                elif isinstance(text, list):
-                    for block in text:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            delta = block.get("text", "")
-                            if delta:
-                                yield TextDeltaEvent(delta=delta)
+        fallback_llm: BaseChatModel | None = None
+        fallback_mode: str | None = None
+        original_exc: Exception | None = None
+        retried = False
+        current_llm = lc_llm
+        while True:
+            try:
+                async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                    chunks.append(chunk)
+                    text = getattr(chunk, "content", None)
+                    if isinstance(text, str) and text:
+                        yield TextDeltaEvent(delta=text)
+                    elif isinstance(text, list):
+                        for block in text:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                delta = block.get("text", "")
+                                if delta:
+                                    yield TextDeltaEvent(delta=delta)
 
-                # Extended-thinking / reasoning deltas (Claude extended
-                # thinking, o-series/DeepSeek reasoning_content). LangChain
-                # normalizes all of these into `content_blocks` — the same
-                # accessor `convert_assistant_message_from_langchain` uses
-                # for the final message — so per-chunk reasoning text
-                # surfaces uniformly here without hand-parsing each
-                # provider's raw delta shape.
-                for block in chunk.content_blocks:
-                    if block.get("type") == "reasoning":
-                        reasoning_delta = block.get("reasoning", "")
-                        if reasoning_delta:
-                            yield ThinkingDeltaEvent(delta=reasoning_delta)
+                    # Extended-thinking / reasoning deltas (Claude extended
+                    # thinking, o-series/DeepSeek reasoning_content). LangChain
+                    # normalizes all of these into `content_blocks` — the same
+                    # accessor `convert_assistant_message_from_langchain` uses
+                    # for the final message — so per-chunk reasoning text
+                    # surfaces uniformly here without hand-parsing each
+                    # provider's raw delta shape.
+                    for block in chunk.content_blocks:
+                        if block.get("type") == "reasoning":
+                            reasoning_delta = block.get("reasoning", "")
+                            if reasoning_delta:
+                                yield ThinkingDeltaEvent(delta=reasoning_delta)
 
-                # Tool-call argument deltas — used by Agent.step()'s streaming
-                # branch to mirror final_answer.answer_markdown into live
-                # TEXT_MESSAGE_CONTENT events (Phase 7).
-                # NOTE: Ollama delivers tool calls whole (no incremental
-                # tool_call_chunks), so local models get exactly one delta
-                # for each tool call when StreamCompleteEvent is processed.
-                for tc_chunk in getattr(chunk, "tool_call_chunks", []) or []:
-                    if not isinstance(tc_chunk, dict):
-                        continue
-                    args_delta = tc_chunk.get("args") or ""
-                    if not args_delta:
-                        continue
-                    yield ToolCallDeltaEvent(
-                        index=tc_chunk.get("index") or 0,
-                        id=tc_chunk.get("id"),
-                        name=tc_chunk.get("name"),
-                        arguments_delta=args_delta,
+                    # Tool-call argument deltas — used by Agent.step()'s streaming
+                    # branch to mirror final_answer.answer_markdown into live
+                    # TEXT_MESSAGE_CONTENT events (Phase 7).
+                    # NOTE: Ollama delivers tool calls whole (no incremental
+                    # tool_call_chunks), so local models get exactly one delta
+                    # for each tool call when StreamCompleteEvent is processed.
+                    for tc_chunk in getattr(chunk, "tool_call_chunks", []) or []:
+                        if not isinstance(tc_chunk, dict):
+                            continue
+                        args_delta = tc_chunk.get("args") or ""
+                        if not args_delta:
+                            continue
+                        yield ToolCallDeltaEvent(
+                            index=tc_chunk.get("index") or 0,
+                            id=tc_chunk.get("id"),
+                            name=tc_chunk.get("name"),
+                            arguments_delta=args_delta,
+                        )
+                break
+            except Exception as exc:
+                # A 400 raised while opening the stream is safe to retry —
+                # nothing has reached the client yet. The same `except`
+                # also catches a failure mid-stream (after some chunks
+                # already yielded), and retrying THAT would replay text the
+                # client already received, so `chunks` (and `retried`, to
+                # cap this to exactly one attempt) gate the retry.
+                if retried:
+                    logger.error(
+                        "LangChainTransport.stream: retry with api_mode=%s also failed for "
+                        "model=%s: %s — raising the ORIGINAL error",
+                        fallback_mode, self._model, exc,
                     )
-        except Exception as exc:
-            raise self._wrap_error(exc, "stream") from exc
+                    raise self._wrap_error(original_exc, "stream") from original_exc
+                if chunks:
+                    raise self._wrap_error(exc, "stream") from exc
+                fallback = self._conflict_fallback(exc)
+                if fallback is None:
+                    raise self._wrap_error(exc, "stream") from exc
+                original_exc = exc
+                fallback_llm, fallback_mode = fallback
+                current_llm = self._bind_tools(tools, llm=fallback_llm)
+                retried = True
+                logger.warning(
+                    "LangChainTransport.stream: provider conflict for model=%s, "
+                    "retrying once with api_mode=%s: %s",
+                    self._model, fallback_mode, exc,
+                )
+
+        if retried and fallback_llm is not None:
+            # Pinned for the rest of this agent loop (many more calls will
+            # follow) and persisted so the NEXT request for this model
+            # skips straight to the working shape.
+            self._llm = fallback_llm
+            await self._record_api_mode(fallback_mode)
+            logger.info(
+                "LangChainTransport.stream: retry succeeded — pinned api_mode=%s for "
+                "model=%s for the rest of this run",
+                fallback_mode, self._model,
+            )
 
         if not chunks:
             final_ai_message = AIMessage(content="")

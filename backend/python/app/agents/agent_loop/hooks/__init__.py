@@ -33,7 +33,10 @@ from app.agents.agent_loop.hooks.full_record_gate import (
     full_record_fetch_tracking,
     full_record_gate,
 )
-from app.agents.agent_loop.hooks.memory import conversation_enrichment, seed_visible_tools_from_history
+from app.agents.agent_loop.hooks.memory import (
+    conversation_enrichment,
+    seed_visible_tools_from_history,
+)
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,

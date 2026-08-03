@@ -38,9 +38,14 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import ToolScope
     from app.agent_loop_lib.tools.base import Tool
 
-__all__ = ["ToolExecutor"]
+__all__ = ["UNKNOWN_TOOL_ERROR_PREFIX", "ToolExecutor"]
 
 OverrideExecute = Callable[[], Awaitable[CoreToolResult]]
+
+# Shared constant so callers can detect a tool-name resolution failure (as
+# opposed to any other tool-execution error) without duplicating the string
+# literal or parsing the full message.
+UNKNOWN_TOOL_ERROR_PREFIX = "Unknown tool:"
 
 # Invoked exactly once, only when PRE_TOOL_USE escalates to `PreDecision.ASK`
 # (see `call_tool()` below). Takes the call plus the escalating middleware's
@@ -50,6 +55,34 @@ OverrideExecute = Callable[[], Awaitable[CoreToolResult]]
 OnAsk = Callable[[ToolCall, str], Awaitable[bool]]
 
 _USAGE_HINT_DESCRIPTION_LIMIT = 100
+
+
+def _collapse_repeated_name(name: str) -> str | None:
+    """If *name* is a shorter string repeated back-to-back 2+ times (e.g.
+    ``"knowledgegraph__searchknowledgegraph__search"`` ->
+    ``"knowledgegraph__search"``), returns the shortest repeating unit;
+    otherwise ``None``.
+
+    Some models/gateways degenerate into echoing an already-hallucinated
+    tool name doubled, then quadrupled, on successive turns once a bad name
+    has entered conversation history (each failed call's name becomes part
+    of the next request's context). Left unchecked this both keeps failing
+    forever AND grows the name past provider-side length limits (observed:
+    OpenAI's 128-char function-name cap) until the whole request is
+    rejected outright. Trying the collapsed form here — before giving up
+    with an "Unknown tool" error — often turns the call into one that
+    resolves correctly on its very first occurrence.
+    """
+    length = len(name)
+    if length < 2:
+        return None
+    for unit_len in range(1, length // 2 + 1):
+        if length % unit_len:
+            continue
+        unit = name[:unit_len]
+        if unit * (length // unit_len) == name:
+            return unit
+    return None
 
 
 def _usage_hint(tool: "Tool") -> str:
@@ -230,28 +263,32 @@ class ToolExecutor:
                 )
             tool = self._registry.resolve_by_name(call.name)
         except ToolNotFoundError:
-            # The model addressed a toolset by its group name (e.g. a
-            # `KnowledgeHub`-style toolset with one tool, called as
-            # `"knowledgehub"` instead of `"knowledgehub__list_files"`)
-            # instead of the concrete `app__tool` name. `expand_tool_names`
-            # already knows how to turn a group/prefix name into its member
-            # tool names for schema listing (see `registry.py`) — reuse it
-            # here so a call that unambiguously means one tool still
-            # succeeds instead of round-tripping an "unknown tool" error
-            # back to the model.
-            candidates = self._registry.expand_tool_names([call.name])
-            if len(candidates) == 1:
-                tool = self._registry.resolve_by_name(candidates[0])
-            elif candidates:
-                return ToolOutput(
-                    success=False,
-                    error=(
-                        f"Unknown tool: {call.name!r} — that's a toolset name, not a "
-                        f"callable tool. Call one of its tools directly: {', '.join(sorted(candidates))}"
-                    ),
-                )
+            collapsed = _collapse_repeated_name(call.name)
+            if collapsed is not None and collapsed != call.name and self._registry.has(collapsed):
+                tool = self._registry.resolve_by_name(collapsed)
             else:
-                return ToolOutput(success=False, error=f"Unknown tool: {call.name}")
+                # The model addressed a toolset by its group name (e.g. a
+                # `KnowledgeHub`-style toolset with one tool, called as
+                # `"knowledgehub"` instead of `"knowledgehub__list_files"`)
+                # instead of the concrete `app__tool` name. `expand_tool_names`
+                # already knows how to turn a group/prefix name into its member
+                # tool names for schema listing (see `registry.py`) — reuse it
+                # here so a call that unambiguously means one tool still
+                # succeeds instead of round-tripping an "unknown tool" error
+                # back to the model.
+                candidates = self._registry.expand_tool_names([call.name])
+                if len(candidates) == 1:
+                    tool = self._registry.resolve_by_name(candidates[0])
+                elif candidates:
+                    return ToolOutput(
+                        success=False,
+                        error=(
+                            f"{UNKNOWN_TOOL_ERROR_PREFIX} {call.name!r} — that's a toolset name, not a "
+                            f"callable tool. Call one of its tools directly: {', '.join(sorted(candidates))}"
+                        ),
+                    )
+                else:
+                    return ToolOutput(success=False, error=f"{UNKNOWN_TOOL_ERROR_PREFIX} {call.name}")
 
         try:
             normalized = dict(tool_input)

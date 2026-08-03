@@ -41,6 +41,13 @@ export type FailReasonType =
 // Reasoning effort levels accepted from the client and forwarded to Python.
 // Shared between the Zod request validators and the Mongoose persistence
 // schemas so both stay in sync with the LLM factory's accepted values.
+//
+// 'none' is kept here for backward compatibility with already-persisted
+// conversations/agents (and isn't rejected on the wire), but is no longer
+// offered by either frontend selector and is silently floored to 'low' by
+// Python's LLM factory (`_reasoning_effort_kwargs` in
+// `backend/python/app/utils/aimodels.py`) instead of actually disabling
+// reasoning.
 export const REASONING_EFFORT_VALUES = [
   'none',
   'low',

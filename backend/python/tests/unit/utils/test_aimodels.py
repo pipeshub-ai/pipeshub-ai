@@ -12,12 +12,14 @@ from app.utils.aimodels import (
     EmbeddingProvider,
     LLMProvider,
     _get_anthropic_max_tokens,
+    _is_openai_gpt5_model,
     _reasoning_effort_kwargs,
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
     is_multimodal_llm,
 )
+from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +145,12 @@ class TestReasoningEffortKwargs:
     def test_missing_is_reasoning_key_defaults_to_not_capable(self):
         assert _reasoning_effort_kwargs("max", {}) == {}
 
-    def test_none_value_forwarded_as_is(self):
-        """'none' is a real platform value (disable reasoning), distinct from
-        Python None (let the provider decide) — it must pass through unchanged."""
+    def test_none_string_is_floored_to_low_not_forwarded_as_is(self):
+        """'none' is distinct from Python None (let the provider decide), but
+        is no longer offered as a UI choice and is silently floored to 'low'
+        instead of actually disabling reasoning — see the docstring above."""
         config = {"isReasoning": True}
-        assert _reasoning_effort_kwargs("none", config) == {"reasoning_effort": "none"}
+        assert _reasoning_effort_kwargs("none", config) == {"reasoning_effort": "low"}
 
     def test_max_mapped_to_xhigh_for_openai_provider(self):
         """Direct OpenAI routes through the Responses API to allow combining
@@ -155,7 +158,7 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("max", config, provider="openAI")
         assert result == {
-            "reasoning": {"effort": "xhigh", "summary": "auto"},
+            "reasoning": {"effort": "xhigh"},
             "use_responses_api": True,
         }
 
@@ -165,7 +168,7 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("max", config, provider="azureOpenAI")
         assert result == {
-            "reasoning": {"effort": "xhigh", "summary": "auto"},
+            "reasoning": {"effort": "xhigh"},
             "use_responses_api": True,
         }
 
@@ -175,7 +178,8 @@ class TestReasoningEffortKwargs:
         assert result == {"reasoning_effort": "max"}
 
     def test_none_mapped_to_low_for_anthropic(self):
-        """Anthropic doesn't support 'none'; lowest valid is 'low'."""
+        """'none' is floored to 'low' up front (Anthropic doesn't support
+        'none' anyway; lowest valid is 'low')."""
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("none", config, provider="anthropic")
         assert result == {"reasoning_effort": "low"}
@@ -186,11 +190,13 @@ class TestReasoningEffortKwargs:
         result = _reasoning_effort_kwargs("max", config, provider="gemini")
         assert result == {"reasoning_effort": "high"}
 
-    def test_none_mapped_to_minimal_for_gemini(self):
-        """Gemini doesn't support 'none'; lowest is 'minimal'."""
+    def test_none_floored_to_low_for_gemini(self):
+        """'none' is floored to 'low' up front, before Gemini's own map ever
+        sees it — Gemini's map only translates a genuine 'none' input to its
+        'minimal' tier, which no caller can produce anymore."""
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("none", config, provider="gemini")
-        assert result == {"reasoning_effort": "minimal"}
+        assert result == {"reasoning_effort": "low"}
 
     def test_max_mapped_to_high_for_vertex_ai(self):
         config = {"isReasoning": True}
@@ -201,7 +207,7 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("high", config, provider="openAI")
         assert result == {
-            "reasoning": {"effort": "high", "summary": "auto"},
+            "reasoning": {"effort": "high"},
             "use_responses_api": True,
         }
 
@@ -222,7 +228,7 @@ class TestReasoningEffortKwargs:
             base_url="https://api.openai.com/v1",
         )
         assert result == {
-            "reasoning": {"effort": "xhigh", "summary": "auto"},
+            "reasoning": {"effort": "xhigh"},
             "use_responses_api": True,
         }
 
@@ -287,6 +293,28 @@ class TestReasoningEffortKwargs:
         result = _reasoning_effort_kwargs("medium", config, provider="azureOpenAI")
         assert "reasoning_effort" not in result
 
+    def test_responses_api_reasoning_dict_never_requests_a_summary(self):
+        """`reasoning.summary` requires the caller's OpenAI organization to
+        be Verified (400s otherwise: "Your organization must be verified to
+        generate reasoning summaries...") and some Azure OpenAI / gateway
+        (Requesty et al.) Responses API implementations reject the field
+        outright even when verified ("Unknown parameter: 'reasoning_summary'."),
+        so it must never be requested by default for any Responses-API-routed
+        provider."""
+        config = {"isReasoning": True}
+        for provider, base_url, model_name in (
+            ("openAI", None, None),
+            ("azureOpenAI", None, None),
+            ("openAICompatible", "https://router.requesty.ai/v1", "azure/gpt-5.6-luna@swedencentral"),
+        ):
+            result = _reasoning_effort_kwargs(
+                "high", config, provider=provider, base_url=base_url, model_name=model_name,
+            )
+            assert result == {
+                "reasoning": {"effort": "high"},
+                "use_responses_api": True,
+            }, (provider, base_url, model_name)
+
     # -- LM Studio: only low/medium/high are valid, unlike OpenAI itself -----
 
     def test_lm_studio_high_passes_through_unchanged(self):
@@ -295,7 +323,8 @@ class TestReasoningEffortKwargs:
         assert result == {"reasoning_effort": "high"}
 
     def test_lm_studio_none_clamped_to_low(self):
-        """LM Studio's reasoning_effort has no 'none' tier; lowest is 'low'."""
+        """'none' is floored to 'low' up front (LM Studio's reasoning_effort
+        has no 'none' tier anyway; lowest is 'low')."""
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("none", config, provider="lmStudio")
         assert result == {"reasoning_effort": "low"}
@@ -314,11 +343,13 @@ class TestReasoningEffortKwargs:
         assert result == {"reasoning": "high"}
         assert "reasoning_effort" not in result
 
-    def test_ollama_none_mapped_to_false(self):
-        """Ollama has no 'none' string; thinking is disabled via `reasoning=False`."""
+    def test_ollama_none_floored_to_low_thinking_stays_on(self):
+        """'none' is floored to 'low' up front, so an explicit 'none' choice
+        no longer disables Ollama's thinking via `reasoning=False` — it now
+        enables it at the lowest tier, same as every other provider."""
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("none", config, provider="ollama")
-        assert result == {"reasoning": False}
+        assert result == {"reasoning": "low"}
 
     def test_ollama_max_clamped_to_high(self):
         """Ollama's `think` level has no 'max' tier yet; highest is 'high'."""
@@ -343,6 +374,108 @@ class TestReasoningEffortKwargs:
         config = {"isReasoning": True}
         assert _reasoning_effort_kwargs(None, config, provider="ollama") == {
             "reasoning": "high"
+        }
+
+    # -- gpt-5.x model-name detection (routers/proxies fronting real OpenAI) -
+
+    def test_openai_compatible_gpt5_model_name_uses_responses_api(self):
+        """A router/proxy (Requesty, OpenRouter, LiteLLM proxy, ...) that
+        transparently forwards to an actual OpenAI gpt-5.x model hits the
+        same Chat Completions restriction as the direct provider, even
+        though its base_url is the router's own host, not api.openai.com."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://router.requesty.ai/v1",
+            model_name="gpt-5.6-luna",
+        )
+        assert result == {
+            "reasoning": {"effort": "high"},
+            "use_responses_api": True,
+        }
+
+    def test_litellm_proxy_gpt5_model_name_uses_responses_api(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "medium", config, provider="litellmProxy",
+            base_url="https://my-litellm-proxy.internal/v1",
+            model_name="gpt-5-mini",
+        )
+        assert result["use_responses_api"] is True
+
+    def test_openrouter_gpt5_model_name_uses_responses_api(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openRouter", model_name="openai/gpt-5.4",
+        )
+        assert result["use_responses_api"] is True
+
+    def test_gpt5_model_name_match_requires_openai_family_provider(self):
+        """A non-OpenAI-protocol provider must never be switched to
+        ChatOpenAI's Responses API kwargs, even if its model happens to be
+        named like OpenAI's gpt-5.x — those constructors (ChatFireworks,
+        ChatXAI, ...) don't accept `use_responses_api`."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="fireworks", model_name="gpt-5-lookalike",
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_non_gpt5_model_name_keeps_legacy_kwarg_on_proxy(self):
+        """A proxy serving a non-OpenAI model (even one with 'gpt-5' as a
+        substring elsewhere in an unrelated position) keeps the legacy
+        kwarg — only the documented gpt-5.x naming pattern matches."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible",
+            base_url="https://router.requesty.ai/v1",
+            model_name="some-other-model-50",
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_gpt5_model_name_variants_all_match(self):
+        config = {"isReasoning": True}
+        for name in ("gpt-5", "gpt-5.1", "gpt-5.6-luna", "gpt-5-mini", "openai/gpt-5.4"):
+            result = _reasoning_effort_kwargs(
+                "high", config, provider="openAICompatible",
+                base_url="https://router.requesty.ai/v1", model_name=name,
+            )
+            assert result["use_responses_api"] is True, name
+
+    # -- reasoning "none" is floored to "low" and then routes like any real
+    #    "low" effort choice (including through the Responses API when the
+    #    provider/model needs it for reasoning + bound tools) -------------
+
+    def test_reasoning_none_floored_then_routes_through_responses_api_for_direct_openai(self):
+        """Once floored to 'low', a direct-OpenAI reasoning-capable model
+        needs the Responses API for genuine reasoning + bound tools, same as
+        any other non-'none' effort — 'none' no longer gets a free pass onto
+        Chat Completions."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs("none", config, provider="openAI")
+        assert result == {
+            "reasoning": {"effort": "low"},
+            "use_responses_api": True,
+        }
+
+    def test_reasoning_none_floored_then_routes_through_responses_api_for_gpt5_via_proxy(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="openAICompatible",
+            base_url="https://router.requesty.ai/v1",
+            model_name="gpt-5.6-luna",
+        )
+        assert result == {
+            "reasoning": {"effort": "low"},
+            "use_responses_api": True,
+        }
+
+    def test_reasoning_none_floored_then_routes_through_responses_api_for_azure_openai(self):
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs("none", config, provider="azureOpenAI")
+        assert result == {
+            "reasoning": {"effort": "low"},
+            "use_responses_api": True,
         }
 
 
@@ -707,13 +840,15 @@ class TestGetGeneratorModel:
         assert "reasoning_effort" not in call_kwargs
 
     @patch("langchain_ollama.ChatOllama")
-    def test_ollama_reasoning_effort_none_disables_thinking(self, mock_cls):
+    def test_ollama_reasoning_effort_none_is_floored_to_low(self, mock_cls):
+        """An explicit 'none' choice no longer disables Ollama's thinking —
+        it's floored to 'low' before reaching the provider map."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("gpt-oss:20b")
         config["isReasoning"] = True
         get_generator_model(LLMProvider.OLLAMA.value, config, reasoning_effort="none")
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["reasoning"] is False
+        assert call_kwargs["reasoning"] == "low"
 
     @patch("langchain_ollama.ChatOllama")
     def test_ollama_reasoning_effort_max_clamped_to_high(self, mock_cls):
@@ -852,7 +987,7 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort="high")
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
-        assert call_kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert call_kwargs["reasoning"] == {"effort": "high"}
         assert call_kwargs["use_responses_api"] is True
 
     @patch("langchain_openai.ChatOpenAI")
@@ -877,7 +1012,7 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort=None)
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
-        assert call_kwargs["reasoning"] == {"effort": "high", "summary": "auto"}
+        assert call_kwargs["reasoning"] == {"effort": "high"}
         assert call_kwargs["use_responses_api"] is True
 
     @patch("langchain_openai.AzureChatOpenAI")
@@ -890,7 +1025,7 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.AZURE_OPENAI.value, config, reasoning_effort="max")
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
-        assert call_kwargs["reasoning"] == {"effort": "xhigh", "summary": "auto"}
+        assert call_kwargs["reasoning"] == {"effort": "xhigh"}
         assert call_kwargs["use_responses_api"] is True
 
     @patch("langchain_openai.ChatOpenAI")
@@ -903,7 +1038,7 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.AZURE_AI.value, config, reasoning_effort="medium")
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
-        assert call_kwargs["reasoning"] == {"effort": "medium", "summary": "auto"}
+        assert call_kwargs["reasoning"] == {"effort": "medium"}
         assert call_kwargs["use_responses_api"] is True
 
     @patch("langchain_openai.ChatOpenAI")
@@ -931,7 +1066,38 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config, reasoning_effort="max")
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
-        assert call_kwargs["reasoning"] == {"effort": "xhigh", "summary": "auto"}
+        assert call_kwargs["reasoning"] == {"effort": "xhigh"}
+        assert call_kwargs["use_responses_api"] is True
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_compatible_router_proxying_gpt5_uses_responses_api(self, mock_cls):
+        """A router/gateway (e.g. Requesty, `router.requesty.ai`) configured
+        as an OpenAI-compatible entry that forwards to a real OpenAI gpt-5.x
+        model must also route through the Responses API, even though its
+        base_url is the router's own host rather than api.openai.com."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.6-luna")
+        config["configuration"]["endpoint"] = "https://router.requesty.ai/v1"
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config, reasoning_effort="high")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+        assert call_kwargs["reasoning"] == {"effort": "high"}
+        assert call_kwargs["use_responses_api"] is True
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_compatible_router_proxying_gpt5_with_reasoning_requested_off(self, mock_cls):
+        """Requesting 'none' on the same router/proxy setup is floored to
+        'low' up front, so it now routes through the Responses API exactly
+        like any other real reasoning effort for this gpt-5.x model."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.6-luna")
+        config["configuration"]["endpoint"] = "https://router.requesty.ai/v1"
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config, reasoning_effort="none")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+        assert call_kwargs["reasoning"] == {"effort": "low"}
         assert call_kwargs["use_responses_api"] is True
 
     @patch("langchain_openai.ChatOpenAI")
@@ -1002,3 +1168,252 @@ class TestGetGeneratorModel:
         get_generator_model(LLMProvider.GEMINI.value, config, reasoning_effort="low")
         call_kwargs = mock_cls.call_args.kwargs
         assert "reasoning_effort" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# _is_openai_gpt5_model — gpt-5-chat exclusion (review fix #2)
+# ---------------------------------------------------------------------------
+class TestIsOpenaiGpt5Model:
+    def test_matches_plain_gpt5(self):
+        assert _is_openai_gpt5_model("gpt-5") is True
+
+    def test_matches_dotted_minor_version(self):
+        assert _is_openai_gpt5_model("gpt-5.6-luna") is True
+
+    def test_matches_with_router_prefix(self):
+        assert _is_openai_gpt5_model("openai/gpt-5") is True
+
+    def test_excludes_gpt5_chat_latest(self):
+        """gpt-5-chat-latest is a non-reasoning chat variant — it must never
+        be routed to the Responses API (review fix #2)."""
+        assert _is_openai_gpt5_model("gpt-5-chat-latest") is False
+
+    def test_excludes_dotted_minor_version_chat_variant(self):
+        assert _is_openai_gpt5_model("gpt-5.3-chat-latest") is False
+
+    def test_none_model_name_returns_false(self):
+        assert _is_openai_gpt5_model(None) is False
+
+    def test_empty_model_name_returns_false(self):
+        assert _is_openai_gpt5_model("") is False
+
+    def test_unrelated_model_returns_false(self):
+        assert _is_openai_gpt5_model("gpt-4o") is False
+
+
+# ---------------------------------------------------------------------------
+# _reasoning_effort_kwargs — api_mode override (learned facts, see
+# app/utils/llm_api_mode_store.py)
+# ---------------------------------------------------------------------------
+class TestReasoningEffortKwargsApiMode:
+    def test_api_mode_none_falls_back_to_heuristic(self):
+        """No learned fact yet — behaves exactly like today."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible", model_name="some-random-alias",
+            api_mode=None,
+        )
+        assert result == {"reasoning_effort": "high"}
+
+    def test_api_mode_responses_forces_responses_branch(self):
+        """A learned RESPONSES fact routes through the Responses API even
+        though neither the provider nor the model name would trigger it on
+        their own — this is exactly what a gateway alias the upfront
+        heuristic can't classify needs."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAICompatible", model_name="some-random-alias",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}
+
+    def test_api_mode_responses_applies_even_to_a_floored_none_effort(self):
+        """'none' is floored to 'low' before api_mode is even consulted, so a
+        learned RESPONSES fact applies to it exactly like any other effort —
+        there's no longer a "none stays on Chat Completions" exemption."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="openAICompatible", model_name="some-random-alias",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"reasoning": {"effort": "low"}, "use_responses_api": True}
+
+    def test_api_mode_no_reasoning_with_tools_drops_reasoning_entirely(self):
+        """A learned NO_REASONING_WITH_TOOLS fact means the gateway rejects
+        reasoning + tools on both API shapes — the only safe result is to
+        skip reasoning altogether."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAI", model_name="gpt-5.6-luna",
+            api_mode=LLMApiMode.NO_REASONING_WITH_TOOLS.value,
+        )
+        assert result == {}
+
+    def test_api_mode_no_reasoning_with_tools_overrides_gpt5_heuristic(self):
+        """Even a model the name heuristic would otherwise route through
+        the Responses API defers to the learned fact."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openAI", model_name="gpt-5",
+            api_mode=LLMApiMode.NO_REASONING_WITH_TOOLS.value,
+        )
+        assert result == {}
+
+    def test_api_mode_reasoning_mandatory_bumps_explicit_none(self):
+        """A learned REASONING_MANDATORY fact used to be the only thing that
+        bumped an explicit "none" effort to the fallback tier; now the
+        unconditional floor above does it for every request regardless of
+        api_mode, so this exercises that this api_mode's own dedicated
+        handling remains a harmless no-op rather than double-processing."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="openRouter", model_name="google/gemini-3.6-flash",
+            api_mode=LLMApiMode.REASONING_MANDATORY.value,
+        )
+        assert result == {"reasoning_effort": REASONING_MANDATORY_FALLBACK_EFFORT}
+
+    def test_api_mode_reasoning_mandatory_leaves_non_none_effort_untouched(self):
+        """Only an explicit "none" is affected — a real effort choice
+        (low/medium/high/...) is passed through unchanged since the
+        provider never rejected those."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openRouter", model_name="google/gemini-3.6-flash",
+            api_mode=LLMApiMode.REASONING_MANDATORY.value,
+        )
+        assert result == {"reasoning_effort": "high"}
+
+
+# ---------------------------------------------------------------------------
+# get_generator_model — azureAI non-OpenAI passthrough fix (review fix #1)
+# ---------------------------------------------------------------------------
+class TestGetGeneratorModelAzureAiPassthroughFix:
+    def _base_config(self, model="test-model"):
+        return {
+            "configuration": {
+                "model": model,
+                "apiKey": "test-key",
+                "endpoint": "https://my-deployment.services.ai.azure.com/models",
+            },
+            "isDefault": True,
+        }
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_azure_ai_non_openai_reasoning_model_keeps_legacy_kwarg(self, mock_cls):
+        """A non-OpenAI model (e.g. Llama/Mistral/DeepSeek) hosted on Azure
+        AI Foundry has no /v1/responses endpoint — flagging it as
+        `isReasoning` must NOT route it through the Responses API just
+        because the old code forced `provider=LLMProvider.OPENAI.value`
+        for this branch."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("Meta-Llama-3.1-70B-Instruct")
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.AZURE_AI.value, config, reasoning_effort="high")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in call_kwargs
+        assert "use_responses_api" not in call_kwargs
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_azure_ai_actual_gpt5_model_still_uses_responses_api(self, mock_cls):
+        """An actual gpt-5.x deployment on Azure AI Foundry must still be
+        detected via the gpt-5.x name heuristic even with the real
+        `azureAI` provider passed through."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5")
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.AZURE_AI.value, config, reasoning_effort="high")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+        assert call_kwargs["reasoning"] == {"effort": "high"}
+        assert call_kwargs["use_responses_api"] is True
+
+
+# ---------------------------------------------------------------------------
+# get_generator_model — unguarded model-name resolution fix (review fix #5)
+# ---------------------------------------------------------------------------
+class TestGetGeneratorModelNameGuards:
+    def test_missing_model_field_raises_value_error(self):
+        config = {"configuration": {"apiKey": "test-key"}, "isDefault": True}
+        with pytest.raises(ValueError, match="missing a 'model'"):
+            get_generator_model(LLMProvider.OPENAI.value, config)
+
+    def test_empty_model_field_raises_value_error(self):
+        config = {"configuration": {"model": "", "apiKey": "test-key"}, "isDefault": True}
+        with pytest.raises(ValueError, match="missing a 'model'"):
+            get_generator_model(LLMProvider.OPENAI.value, config)
+
+    def test_blank_comma_only_model_field_raises_value_error(self):
+        config = {"configuration": {"model": " , ,", "apiKey": "test-key"}, "isDefault": True}
+        with pytest.raises(ValueError, match="empty 'model' field"):
+            get_generator_model(LLMProvider.OPENAI.value, config)
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_default_model_name_none_still_resolves_first_entry(self, mock_cls):
+        mock_cls.return_value = MagicMock()
+        config = {
+            "configuration": {"model": "model-a, model-b", "apiKey": "test-key"},
+            "isDefault": True,
+        }
+        get_generator_model(LLMProvider.OPENAI.value, config)
+        assert mock_cls.call_args.kwargs["model"] == "model-a"
+
+    def test_non_default_model_name_not_in_list_raises(self):
+        config = {
+            "configuration": {"model": "model-a, model-b", "apiKey": "test-key"},
+            "isDefault": False,
+        }
+        with pytest.raises(ValueError, match="not found"):
+            get_generator_model(LLMProvider.OPENAI.value, config, model_name="model-c")
+
+
+# ---------------------------------------------------------------------------
+# get_generator_model — end-to-end wiring of the learned-mode snapshot
+# (app/utils/llm_api_mode_store.py) into the read path
+# ---------------------------------------------------------------------------
+class TestGetGeneratorModelApiModeWiring:
+    def _base_config(self, model="gpt-5.6-luna"):
+        return {
+            "configuration": {
+                "model": model,
+                "apiKey": "test-key",
+                "endpoint": "https://router.requesty.ai/v1",
+            },
+            "isDefault": True,
+            "isReasoning": True,
+            "modelKey": "abc-123",
+        }
+
+    @patch("langchain_openai.ChatOpenAI")
+    @patch("app.utils.aimodels.get_llm_api_mode_store")
+    def test_learned_no_reasoning_mode_is_applied(self, mock_get_store, mock_cls):
+        mock_cls.return_value = MagicMock()
+        mock_store = MagicMock()
+        mock_store.get.return_value = LLMApiMode.NO_REASONING_WITH_TOOLS.value
+        mock_get_store.return_value = mock_store
+
+        config = self._base_config()
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config, reasoning_effort="high")
+
+        mock_store.get.assert_called_once_with("abc-123", "gpt-5.6-luna")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+        assert "reasoning" not in call_kwargs
+        assert "use_responses_api" not in call_kwargs
+
+    @patch("langchain_openai.ChatOpenAI")
+    @patch("app.utils.aimodels.get_llm_api_mode_store")
+    def test_no_store_loaded_yet_falls_back_to_heuristic(self, mock_get_store, mock_cls):
+        """`get_llm_api_mode_store()` returns `None` until a service has
+        called it once with a `ConfigurationService` (see that module's
+        docstring) — the read path must degrade to today's heuristic
+        rather than raise."""
+        mock_cls.return_value = MagicMock()
+        mock_get_store.return_value = None
+
+        config = self._base_config()
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config, reasoning_effort="high")
+
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["reasoning"] == {"effort": "high"}
+        assert call_kwargs["use_responses_api"] is True

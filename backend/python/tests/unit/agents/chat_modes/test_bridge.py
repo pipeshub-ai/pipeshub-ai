@@ -229,7 +229,7 @@ class TestRunChatStream:
         assert "boom" not in payload["message"]
 
     async def test_successful_agent_mode_run_streams_to_completion(self) -> None:
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             agent = _stream_agent(MagicMock(success=True, error=None, output="42"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
@@ -260,7 +260,7 @@ class TestRunChatStream:
         before `build_initial_state`'s state is handed to the factory."""
         captured_chat_state: dict[str, Any] = {}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             captured_chat_state.update(context.tool_state)
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
@@ -297,7 +297,7 @@ class TestRunChatStream:
         so `PipesHubPromptBuilder` can render it in the same turn."""
         captured_context: Any = None
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             nonlocal captured_context
             captured_context = context
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
@@ -333,7 +333,7 @@ class TestRunChatStream:
         `custom_instructions` handling)."""
         captured_context: Any = None
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             nonlocal captured_context
             captured_context = context
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
@@ -373,7 +373,7 @@ class TestRunChatStream:
         )
         captured: dict[str, Any] = {}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             goal = MagicMock(constraints=[])
             captured["context"] = context
             captured["goal"] = goal
@@ -442,7 +442,7 @@ class TestRunChatStream:
         )
         captured: dict[str, Any] = {}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             goal_obj = MagicMock(constraints=[])
             captured["context"] = context
             captured["goal"] = goal_obj
@@ -506,7 +506,7 @@ class TestRunChatStream:
         )
         captured: dict[str, Any] = {}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             goal_obj = MagicMock(constraints=[])
             captured["context"] = context
             captured["goal"] = goal_obj
@@ -550,7 +550,7 @@ class TestRunChatStream:
         )
 
     async def test_agent_run_failure_emits_error_event(self) -> None:
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             raise RuntimeError("transport exploded")
 
         sql_patch, slack_patch = _patch_connectors()
@@ -574,7 +574,7 @@ class TestRunChatStream:
         sandbox_manager = MagicMock()
         sandbox_manager.destroy_all = AsyncMock()
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             context.sandbox_manager = sandbox_manager
             agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
             return agent, MagicMock(), MagicMock(constraints=[]), []
@@ -625,7 +625,7 @@ class TestRunChatStream:
         agent.last_stream_result = None
         agent.stream = _hanging_stream
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
             return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
 
         sql_patch, slack_patch = _patch_connectors()

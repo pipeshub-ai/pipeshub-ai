@@ -951,14 +951,6 @@ class TestGetAssistantAgentHelper:
 class TestReasoningModelValidation:
     """Tests for reasoning model validation."""
 
-    def test_reasoning_model_required_error(self) -> None:
-        """Should create ReasoningModelRequiredError with correct details."""
-        from app.api.routes.agent import ReasoningModelRequiredError
-
-        error = ReasoningModelRequiredError()
-        assert error.status_code == 400
-        assert "reasoning model" in error.detail.lower()
-
     def test_parse_models_detects_reasoning_model(self) -> None:
         """Should detect reasoning models."""
         from app.api.routes.agent import _parse_models
@@ -984,44 +976,6 @@ class TestReasoningModelValidation:
         entries, has_reasoning = _parse_models(models, MagicMock())
 
         assert has_reasoning is False
-
-    @pytest.mark.asyncio
-    async def test_chat_stream_requires_reasoning_model(self) -> None:
-        """Should raise ReasoningModelRequiredError when LLM is not reasoning."""
-        from app.api.routes.agent import ReasoningModelRequiredError, chat_stream
-
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1",
-            "knowledge": [],
-            "toolsets": [],
-            "models": ["mk1_mn1"],
-        })
-        services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_edit": True, "can_share": True, "role": "editor"},
-        )
-
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"query":"test"}')
-
-        llm_config = {"isReasoning": False}
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent.get_llm_for_chat", new_callable=AsyncMock, return_value=(MagicMock(), llm_config, {})):
-
-            with pytest.raises(ReasoningModelRequiredError):
-                await chat_stream(request, "agent-123")
 
     @pytest.mark.asyncio
     async def test_chat_stream_succeeds_with_reasoning_model(self) -> None:

@@ -193,14 +193,6 @@ class LLMInitializationError(AgentError):
             status_code=500
         )
 
-class ReasoningModelRequiredError(AgentError):
-    """Reasoning model required"""
-    def __init__(self) -> None:
-        super().__init__(
-            detail="Reasoning model is required in agent mode. Please use a reasoning model.",
-            status_code=400
-        )
-
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -2949,8 +2941,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         llm_config = llm_result[1]
         ai_models_config = llm_result[2] if len(llm_result) > 2 else {}
         is_multimodal_llm = llm_config.get("isMultimodal", False)
-        if not llm_config.get("isReasoning", False):
-            raise ReasoningModelRequiredError()
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])

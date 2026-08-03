@@ -213,6 +213,8 @@ services:
 
   mongodb:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
+    ports:
+      - "27017:27017"
     restart: always
     # Shared ~16 GB hosts: cap WiredTiger so Mongo does not grab ~half of RAM.
     # Sibling deploy.limits are OOM caps, not concurrent reservations.

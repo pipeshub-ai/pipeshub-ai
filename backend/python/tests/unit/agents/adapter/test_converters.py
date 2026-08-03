@@ -158,6 +158,20 @@ class TestAssistantMessageFromLangchain:
         call = convert_tool_call_from_langchain({"name": "foo", "args": {}})
         assert call.id == ""
 
+    def test_overlong_name_is_clamped_to_provider_limit(self) -> None:
+        """A name over OpenAI's 128-char function-name cap must never enter
+        `AssistantMessage.tool_calls` unclamped — see `_clamp_tool_call_name`'s
+        docstring for why an unclamped name left in message history can grow
+        across turns and get an entire later request rejected outright."""
+        overlong = "knowledgegraph__search" * 10  # 220 chars
+        call = convert_tool_call_from_langchain({"name": overlong, "args": {}, "id": "x1"})
+        assert len(call.name) == 128
+        assert call.name == overlong[:128]
+
+    def test_name_at_or_under_limit_is_untouched(self) -> None:
+        call = convert_tool_call_from_langchain({"name": "a" * 128, "args": {}})
+        assert call.name == "a" * 128
+
 
 class TestInvalidToolCallRecovery:
     """`AIMessage.invalid_tool_calls` must never be silently dropped — a
@@ -217,6 +231,19 @@ class TestInvalidToolCallRecovery:
         assert call.id == "call_1"
         assert MALFORMED_TOOL_CALL_ARGS_KEY in call.arguments
         assert MALFORMED_TOOL_CALL_ERROR_KEY in call.arguments
+
+    def test_overlong_name_is_clamped_here_too(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{
+                "name": "run_code" * 20,
+                "args": "not json",
+                "id": "call_1",
+                "error": "invalid json",
+            }],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert len(result.tool_calls[0].name) == 128
 
     def test_missing_name_defaults_to_unknown_tool(self) -> None:
         ai_message = AIMessage(

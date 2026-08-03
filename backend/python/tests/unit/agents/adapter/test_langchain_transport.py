@@ -14,7 +14,9 @@ from app.agent_loop_lib.core.messages import UserMessage
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agents.agent_loop import langchain_transport as transport_module
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -66,6 +68,69 @@ class _FakeStructuredModel:
 
     async def ainvoke(self, messages: list, config: Any = None) -> dict:
         return {"parsed": self._parsed, "raw": self._raw}
+
+
+class _FakeApiShapeModel:
+    """Fake OpenAI-family LangChain model exposing `use_responses_api`/
+    `reasoning`/`reasoning_effort` fields plus `model_copy(update=...)`
+    (both required by `LangChainTransport._api_shape_fallback`), with
+    pluggable success/failure behavior keyed off `use_responses_api` so a
+    test can simulate "the Responses attempt is rejected, Chat Completions
+    works" (and the inverse) without a real provider.
+
+    `fail_when_responses_api`: `True` raises whenever `use_responses_api`
+    is truthy, `False` raises whenever it's falsy, `None` never raises.
+    """
+
+    def __init__(
+        self,
+        use_responses_api: bool | None = None,
+        reasoning: dict | None = None,
+        reasoning_effort: str | None = None,
+        fail_when_responses_api: bool | None = None,
+        error: Exception | None = None,
+        response: AIMessage | None = None,
+        stream_chunks: list[AIMessageChunk] | None = None,
+    ) -> None:
+        self.use_responses_api = use_responses_api
+        self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
+        self._fail_when_responses_api = fail_when_responses_api
+        self._error = error
+        self._response = response or AIMessage(content="ok")
+        self._stream_chunks = stream_chunks
+        self.bind_tools_calls: list[list[Any]] = []
+
+    def _should_fail(self) -> bool:
+        if self._fail_when_responses_api is None:
+            return False
+        return bool(self.use_responses_api) == self._fail_when_responses_api
+
+    def bind_tools(self, tools: list[Any]) -> "_FakeApiShapeModel":
+        self.bind_tools_calls.append(tools)
+        return self
+
+    async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+        if self._should_fail():
+            raise self._error
+        return self._response
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        if self._should_fail():
+            raise self._error
+        for chunk in self._stream_chunks or []:
+            yield chunk
+
+    def model_copy(self, update: dict) -> "_FakeApiShapeModel":
+        return _FakeApiShapeModel(
+            use_responses_api=update.get("use_responses_api", self.use_responses_api),
+            reasoning=update.get("reasoning", self.reasoning),
+            reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+            fail_when_responses_api=self._fail_when_responses_api,
+            error=self._error,
+            response=self._response,
+            stream_chunks=self._stream_chunks,
+        )
 
 
 class TestComplete:
@@ -338,3 +403,414 @@ class TestStream:
         events = [e async for e in transport.stream([UserMessage(content="hi")])]
 
         assert events[-1].response.model == "my-model"
+
+
+def _requesty_conflict_error() -> RuntimeError:
+    """The exact wording from the bug this fallback fixes: a gateway
+    (Requesty) accepted a Responses-shaped request and forwarded it to a
+    backend that only supports the combination on Chat Completions."""
+    exc = RuntimeError(
+        "Function tools with reasoning_effort are not supported for "
+        "gpt-5.6-luna in /v1/chat/completions. Please use /v1/responses instead."
+    )
+    exc.status_code = 400
+    return exc
+
+
+def _tool_choice_conflict_error() -> RuntimeError:
+    exc = RuntimeError("Invalid parameter: 'tool_choice.function' is not supported here.")
+    exc.status_code = 400
+    return exc
+
+
+class _FakeApiModeStore:
+    def __init__(self) -> None:
+        self.recorded: list[tuple[str | None, str, str]] = []
+
+    async def record(self, model_key: str | None, model_name: str, mode: str) -> None:
+        self.recorded.append((model_key, model_name, mode))
+
+
+class TestApiShapeFallbackComplete:
+    """`LangChainTransport.complete()` retrying once against the other API
+    shape when a provider rejects reasoning + bound tools — see
+    `_api_shape_fallback`'s docstring."""
+
+    async def test_responses_conflict_falls_back_to_no_reasoning_and_pins_llm(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=True, reasoning={"effort": "high"},
+            fail_when_responses_api=True, error=_requesty_conflict_error(),
+            response=AIMessage(content="worked without reasoning"),
+        )
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+
+        response = await transport.complete([UserMessage(content="hi")], tools=[schema])
+
+        assert response.message.text == "worked without reasoning"
+        # Pinned for the rest of the run: no longer the original model.
+        pinned = transport._llm
+        assert pinned.use_responses_api is None
+        assert pinned.reasoning is None
+        assert pinned.reasoning_effort is None
+        # Tools were (re)bound on the fallback model, not silently dropped.
+        assert len(model.bind_tools_calls) == 1
+        assert store.recorded == [
+            ("model-key-1", "gpt-5.6-luna", LLMApiMode.NO_REASONING_WITH_TOOLS.value),
+        ]
+
+    async def test_chat_completions_conflict_falls_back_to_responses_api(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=None, reasoning_effort="high",
+            fail_when_responses_api=False, error=_tool_choice_conflict_error(),
+            response=AIMessage(content="worked via responses api"),
+        )
+        transport = LangChainTransport(model, model_name="some-model", model_key="model-key-2")
+
+        response = await transport.complete([UserMessage(content="hi")])
+
+        assert response.message.text == "worked via responses api"
+        pinned = transport._llm
+        assert pinned.use_responses_api is True
+        assert pinned.reasoning == {"effort": "high"}
+        assert pinned.reasoning_effort is None
+        assert store.recorded == [
+            ("model-key-2", "some-model", LLMApiMode.RESPONSES.value),
+        ]
+
+    async def test_unrelated_500_does_not_trigger_fallback(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        exc = RuntimeError("internal server error")
+        exc.status_code = 500
+        model = _FakeApiShapeModel(use_responses_api=True, fail_when_responses_api=True, error=exc)
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+
+        assert exc_info.value.retryable is True
+        assert transport._llm is model
+        assert store.recorded == []
+
+    async def test_non_openai_family_model_has_nothing_to_flip(self) -> None:
+        """A model with no `use_responses_api` attribute at all (e.g.
+        Anthropic, Gemini, Bedrock) can't be flipped even if its error
+        text happens to match one of the conflict markers — the plain
+        `TransportError` path applies unchanged."""
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=_requesty_conflict_error()))
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi")])
+
+    async def test_retry_also_failing_raises_the_original_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        class _AlwaysFailingModel(_FakeApiShapeModel):
+            """Fails on every `ainvoke`, including the fallback retry's
+            freshly-`model_copy`'d instance (overridden here too, since the
+            base `model_copy` would otherwise hand back a plain
+            `_FakeApiShapeModel` that succeeds)."""
+
+            async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+                raise _requesty_conflict_error()
+
+            def model_copy(self, update: dict) -> "_AlwaysFailingModel":
+                return _AlwaysFailingModel(
+                    use_responses_api=update.get("use_responses_api", self.use_responses_api),
+                    reasoning=update.get("reasoning", self.reasoning),
+                    reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+                )
+
+        model = _AlwaysFailingModel(use_responses_api=True, reasoning={"effort": "high"})
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+
+        assert "Please use /v1/responses instead" in str(exc_info.value)
+        assert store.recorded == []
+
+
+class TestApiShapeFallbackStream:
+    async def test_conflict_before_any_chunk_retries_and_pins_llm(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=True, reasoning={"effort": "high"},
+            fail_when_responses_api=True, error=_requesty_conflict_error(),
+            stream_chunks=[AIMessageChunk(content="fallback "), AIMessageChunk(content="worked")],
+        )
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+        assert [e.delta for e in text_events] == ["fallback ", "worked"]
+        assert isinstance(events[-1], StreamCompleteEvent)
+        pinned = transport._llm
+        assert pinned.use_responses_api is None
+        assert store.recorded == [
+            ("model-key-1", "gpt-5.6-luna", LLMApiMode.NO_REASONING_WITH_TOOLS.value),
+        ]
+
+    async def test_mid_stream_failure_after_chunks_does_not_retry(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A 400 raised while opening the stream is safe to retry; the same
+        failure AFTER chunks were already yielded is not — retrying then
+        would replay text the client already received."""
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        class _MidStreamFailureModel(_FakeApiShapeModel):
+            async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+                yield AIMessageChunk(content="partial text ")
+                raise _requesty_conflict_error()
+
+        model = _MidStreamFailureModel(use_responses_api=True, reasoning={"effort": "high"})
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+
+        with pytest.raises(TransportError):
+            events = []
+            async for event in transport.stream([UserMessage(content="hi")]):
+                events.append(event)
+
+        # No retry happened: the model was never flipped, and nothing was recorded.
+        assert transport._llm is model
+        assert store.recorded == []
+
+    async def test_stream_retry_also_failing_raises_the_original_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        class _AlwaysFailsBeforeAnyChunk(_FakeApiShapeModel):
+            async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+                raise _requesty_conflict_error()
+                yield  # pragma: no cover - makes this an async generator
+
+            def model_copy(self, update: dict) -> "_AlwaysFailsBeforeAnyChunk":
+                return _AlwaysFailsBeforeAnyChunk(
+                    use_responses_api=update.get("use_responses_api", self.use_responses_api),
+                    reasoning=update.get("reasoning", self.reasoning),
+                    reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+                )
+
+        model = _AlwaysFailsBeforeAnyChunk(use_responses_api=True, reasoning={"effort": "high"})
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna", model_key="model-key-1")
+
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        assert "Please use /v1/responses instead" in str(exc_info.value)
+        assert store.recorded == []
+
+    async def test_no_model_key_skips_persisting_but_retry_still_applies(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`model_key` not threaded through yet (older call sites) must not
+        block the in-request retry — only cross-request persistence is
+        skipped."""
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: None)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=True, reasoning={"effort": "high"},
+            fail_when_responses_api=True, error=_requesty_conflict_error(),
+            response=AIMessage(content="worked without reasoning"),
+        )
+        transport = LangChainTransport(model, model_name="gpt-5.6-luna")
+
+        response = await transport.complete([UserMessage(content="hi")])
+
+        assert response.message.text == "worked without reasoning"
+
+
+def _reasoning_mandatory_error() -> RuntimeError:
+    """The exact wording from the bug this fallback fixes: some
+    OpenRouter-proxied Gemini models reject an explicitly disabled
+    reasoning effort outright."""
+    exc = RuntimeError("Reasoning is mandatory for this endpoint and cannot be disabled.")
+    exc.status_code = 400
+    return exc
+
+
+class _FakeReasoningMandatoryModel:
+    """Fails on the first `ainvoke`/`astream` call (simulating a provider
+    rejecting an explicitly disabled reasoning value), succeeds on the
+    `model_copy`'d retry — keyed on a plain "already retried" flag rather
+    than `_FakeApiShapeModel`'s `use_responses_api` toggle, since this
+    conflict doesn't care about API shape at all."""
+
+    def __init__(
+        self,
+        reasoning: dict | bool | None = None,
+        reasoning_effort: str | None = None,
+        already_retried: bool = False,
+        response: AIMessage | None = None,
+        stream_chunks: list[AIMessageChunk] | None = None,
+        always_fail: bool = False,
+    ) -> None:
+        self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
+        self._already_retried = already_retried
+        self._response = response or AIMessage(content="ok")
+        self._stream_chunks = stream_chunks
+        self._always_fail = always_fail
+        self.bind_tools_calls: list[Any] = []
+
+    def bind_tools(self, tools: list[Any]) -> "_FakeReasoningMandatoryModel":
+        self.bind_tools_calls.append(tools)
+        return self
+
+    async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
+        if self._always_fail or not self._already_retried:
+            raise _reasoning_mandatory_error()
+        return self._response
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        if self._always_fail or not self._already_retried:
+            raise _reasoning_mandatory_error()
+        for chunk in self._stream_chunks or []:
+            yield chunk
+
+    def model_copy(self, update: dict) -> "_FakeReasoningMandatoryModel":
+        return _FakeReasoningMandatoryModel(
+            reasoning=update.get("reasoning", self.reasoning),
+            reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+            already_retried=True,
+            response=self._response,
+            stream_chunks=self._stream_chunks,
+            always_fail=self._always_fail,
+        )
+
+
+class TestReasoningMandatoryFallbackComplete:
+    """`LangChainTransport.complete()` retrying once with reasoning bumped
+    off an explicitly disabled value when a provider refuses to have it
+    disabled at all — see `_reasoning_mandatory_fallback`'s docstring."""
+
+    async def test_none_reasoning_effort_bumps_to_low_and_pins_llm(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeReasoningMandatoryModel(
+            reasoning_effort="none", response=AIMessage(content="worked with reasoning on"),
+        )
+        transport = LangChainTransport(model, model_name="gemini-flash", model_key="model-key-1")
+
+        response = await transport.complete([UserMessage(content="hi")])
+
+        assert response.message.text == "worked with reasoning on"
+        pinned = transport._llm
+        assert pinned.reasoning_effort == REASONING_MANDATORY_FALLBACK_EFFORT
+        assert store.recorded == [
+            ("model-key-1", "gemini-flash", LLMApiMode.REASONING_MANDATORY.value),
+        ]
+
+    async def test_reasoning_false_bumps_to_low(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeReasoningMandatoryModel(reasoning=False)
+        transport = LangChainTransport(model, model_name="local-model", model_key="model-key-2")
+
+        await transport.complete([UserMessage(content="hi")])
+
+        assert transport._llm.reasoning == REASONING_MANDATORY_FALLBACK_EFFORT
+
+    async def test_dict_shaped_reasoning_none_effort_bumps_to_low(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeReasoningMandatoryModel(reasoning={"effort": "none"})
+        transport = LangChainTransport(model, model_name="gemini-flash", model_key="model-key-3")
+
+        await transport.complete([UserMessage(content="hi")])
+
+        assert transport._llm.reasoning == {"effort": REASONING_MANDATORY_FALLBACK_EFFORT}
+
+    async def test_reasoning_already_enabled_has_nothing_to_bump(self) -> None:
+        """The error text matches, but reasoning wasn't actually disabled on
+        this call — nothing to retry, so the original error surfaces."""
+        model = _FakeReasoningMandatoryModel(reasoning_effort="high", always_fail=True)
+        transport = LangChainTransport(model, model_name="gemini-flash")
+
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi")])
+
+    async def test_unrelated_error_does_not_trigger_fallback(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=_requesty_conflict_error()))
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi")])
+
+
+class TestReasoningMandatoryFallbackStream:
+    async def test_conflict_before_any_chunk_retries_and_pins_llm(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeReasoningMandatoryModel(
+            reasoning_effort="none",
+            stream_chunks=[AIMessageChunk(content="fallback "), AIMessageChunk(content="worked")],
+        )
+        transport = LangChainTransport(model, model_name="gemini-flash", model_key="model-key-1")
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+        assert [e.delta for e in text_events] == ["fallback ", "worked"]
+        assert isinstance(events[-1], StreamCompleteEvent)
+        assert transport._llm.reasoning_effort == REASONING_MANDATORY_FALLBACK_EFFORT
+        assert store.recorded == [
+            ("model-key-1", "gemini-flash", LLMApiMode.REASONING_MANDATORY.value),
+        ]
+
+    async def test_mid_stream_failure_after_chunks_does_not_retry(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        class _MidStreamFailureModel(_FakeReasoningMandatoryModel):
+            async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+                yield AIMessageChunk(content="partial text ")
+                raise _reasoning_mandatory_error()
+
+        model = _MidStreamFailureModel(reasoning_effort="none")
+        transport = LangChainTransport(model, model_name="gemini-flash", model_key="model-key-1")
+
+        with pytest.raises(TransportError):
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        assert transport._llm is model
+        assert store.recorded == []

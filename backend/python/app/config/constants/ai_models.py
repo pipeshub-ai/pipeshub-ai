@@ -23,11 +23,19 @@ class AzureDocIntelligenceModel(Enum):
 class ReasoningEffort(str, Enum):
     """Platform-normalized reasoning effort levels, forwarded to LangChain's
     standard ``reasoning_effort`` constructor parameter (langchain-core>=1.5.2)
-    for reasoning-capable models. ``NONE`` actively disables reasoning on
-    models that support it; absence of this field (``None``) means "no
+    for reasoning-capable models. Absence of this field (``None``) means "no
     explicit choice" — the LLM factory applies ``DEFAULT_REASONING_EFFORT``
     for reasoning-capable models — and must NOT be translated into the string
     ``"none"``.
+
+    ``NONE`` is kept as a valid enum value for backward compatibility with
+    already-persisted conversations/agents and is still accepted on the wire,
+    but no longer actually disables reasoning: the LLM factory
+    (``app/utils/aimodels.py::_reasoning_effort_kwargs``) silently floors it
+    to ``LOW`` instead, since fully disabling reasoning made some models
+    prone to hallucinating malformed tool-call names. It is not offered as a
+    choice in either UI selector (chat's ``model-selector-panel.tsx`` or the
+    agent builder's ``agent-core-node.tsx``).
     """
 
     NONE = "none"

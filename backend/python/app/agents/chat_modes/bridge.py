@@ -414,6 +414,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, policy.loop_chat_mode,
                 query=query_info.get("query", ""), model_name=model_name or "",
+                model_key=model_key,
             )
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
