@@ -427,6 +427,7 @@ async def test_stream_record_unsupported_raises():
     bad_rec = MagicMock()
     bad_rec.external_record_id = "x"
     bad_rec.record_type = RecordType.MESSAGE
+    bad_rec.is_placeholder = False
     with patch.object(conn, "init", new_callable=AsyncMock):
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(bad_rec)
