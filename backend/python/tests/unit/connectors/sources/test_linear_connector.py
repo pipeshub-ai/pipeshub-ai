@@ -1394,13 +1394,21 @@ class TestLinearRunSync:
                 c.data_entities_processor.get_all_active_users = AsyncMock(
                     return_value=[MagicMock(email="alice@test.com")]
                 )
-                with patch.object(c, "_sync_issues_for_teams", new_callable=AsyncMock):
+                with patch.object(
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock, return_value=set()
+                ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
                             with patch.object(c, "_sync_projects_for_teams", new_callable=AsyncMock):
                                 with patch.object(c, "_sync_deleted_issues", new_callable=AsyncMock):
                                     with patch.object(c, "_sync_deleted_projects", new_callable=AsyncMock):
-                                        await c.run_sync()
+                                        with patch.object(
+                                            c,
+                                            "_sweep_placeholder_records",
+                                            new_callable=AsyncMock,
+                                            return_value=0,
+                                        ):
+                                            await c.run_sync()
 
         c.data_entities_processor.on_new_app_users.assert_called_once()
 
@@ -5549,6 +5557,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
+                            return_value=set(),
                         ):
                             with patch.object(
                                 connector,
@@ -5575,7 +5584,13 @@ class TestRunSync:
                                                 "_sync_deleted_projects",
                                                 new_callable=AsyncMock,
                                             ):
-                                                await connector.run_sync()
+                                                with patch.object(
+                                                    connector,
+                                                    "_sweep_placeholder_records",
+                                                    new_callable=AsyncMock,
+                                                    return_value=0,
+                                                ):
+                                                    await connector.run_sync()
 
     @pytest.mark.asyncio
     async def test_run_sync_with_team_filter(self):
@@ -5613,6 +5628,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
+                            return_value=set(),
                         ):
                             with patch.object(
                                 connector,
@@ -5639,7 +5655,13 @@ class TestRunSync:
                                                 "_sync_deleted_projects",
                                                 new_callable=AsyncMock,
                                             ):
-                                                await connector.run_sync()
+                                                with patch.object(
+                                                    connector,
+                                                    "_sweep_placeholder_records",
+                                                    new_callable=AsyncMock,
+                                                    return_value=0,
+                                                ):
+                                                    await connector.run_sync()
 
     @pytest.mark.asyncio
     async def test_run_sync_error_propagated(self):
