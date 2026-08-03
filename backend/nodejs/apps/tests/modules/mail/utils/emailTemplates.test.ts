@@ -147,6 +147,15 @@ describe('mail/utils/emailTemplates', () => {
       expect(result.length).to.be.greaterThan(0)
     })
 
+    it('orgEmailVerification should compile and return HTML', () => {
+      const result = emailTemplates.orgEmailVerification({
+        name: 'Acme Corp',
+        link: 'http://example.com/verify',
+      })
+      expect(result).to.be.a('string')
+      expect(result.length).to.be.greaterThan(0)
+    })
+
     it('should throw when templateData is null (compileTemplate guard)', () => {
       expect(() => emailTemplates.loginWithOTPRequest(null as any)).to.throw('Invalid templateData')
     })
