@@ -8454,6 +8454,11 @@ components:
             - provider
           example:
             provider: "serper"
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         tags:
           type: array
           items:
@@ -8620,6 +8625,11 @@ components:
               type: string
             providerLabel:
               type: string
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -8981,6 +8991,11 @@ components:
             $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentCreateWarning:
       type: object
@@ -9117,6 +9132,11 @@ components:
                 providerLabel:
                   type: string
             - type: 'null'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         isActive:
           type: boolean
         isServiceAccount:
@@ -9247,6 +9267,11 @@ components:
             $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentUpdateResponse:
       type: object
