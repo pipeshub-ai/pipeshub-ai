@@ -284,7 +284,7 @@ class KnowledgeGraph:
                     "the hierarchy — e.g. node_types=['record'] to skip record groups, "
                     "or node_types=['recordGroup'] to see only projects/spaces under an app."
                 ),
-                required=False,
+                required=True,
                 items={"type": "string"},
             ),
             ToolParameter(

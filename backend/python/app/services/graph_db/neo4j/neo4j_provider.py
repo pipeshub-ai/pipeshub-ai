@@ -7592,23 +7592,23 @@ class Neo4jProvider(IGraphDBProvider):
             if parent_type == "app":
                 record_depth = max(1, safe_depth - 1)
                 query = f"""
-                MATCH (rg:RecordGroup {{connectorId: $parent_id}})
-                WHERE rg.isDeleted <> true
-                MATCH (direct:Record)-[:BELONGS_TO]->(rg)
-                WHERE direct.id IN $node_ids
-                WITH collect({{id: direct.id, level: 1}}) AS direct_hits
-
-                MATCH (rg2:RecordGroup {{connectorId: $parent_id}})
-                WHERE rg2.isDeleted <> true
-                MATCH (top:Record)-[:BELONGS_TO]->(rg2)
-                MATCH path = (top)-[:RECORD_RELATION*1..{record_depth}]->(desc:Record)
-                WHERE ALL(rel IN relationships(path)
-                          WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
-                AND desc.id IN $node_ids
-                WITH direct_hits + collect({{id: desc.id, level: length(path) + 1}}) AS all_hits
-
-                UNWIND all_hits AS hit
-                RETURN hit.id AS id, hit.level AS level
+                CALL {{
+                    MATCH (rg:RecordGroup {{connectorId: $parent_id}})
+                    WHERE rg.isDeleted <> true
+                    MATCH (direct:Record)-[:BELONGS_TO]->(rg)
+                    WHERE direct.id IN $node_ids
+                    RETURN direct.id AS id, 1 AS level
+                    UNION ALL
+                    MATCH (rg2:RecordGroup {{connectorId: $parent_id}})
+                    WHERE rg2.isDeleted <> true
+                    MATCH (top:Record)-[:BELONGS_TO]->(rg2)
+                    MATCH path = (top)-[:RECORD_RELATION*1..{record_depth}]->(desc:Record)
+                    WHERE ALL(rel IN relationships(path)
+                              WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                    AND desc.id IN $node_ids
+                    RETURN desc.id AS id, length(path) + 1 AS level
+                }}
+                RETURN id, level
                 """
             else:
                 query = f"""
