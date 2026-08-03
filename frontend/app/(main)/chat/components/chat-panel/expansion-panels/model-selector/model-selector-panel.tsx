@@ -12,6 +12,7 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
+  humanizeProviderKey,
 } from '@/chat/constants';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { resolveLlmProviderIconPath, AGENT_LLM_FALLBACK_ICON } from '@/lib/utils/llm-provider-icons';
@@ -349,14 +350,14 @@ interface ModelItemProps {
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   // Provider always comes through from the API. If we don't have a curated
-  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to the raw
-  // provider string (case-insensitive lookup first) rather than a placeholder.
+  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to splitting
+  // the raw camelCase provider key into words rather than a placeholder.
   const providerKey = Object.keys(PROVIDER_FRIENDLY_NAMES).find(
     (k) => k.toLowerCase() === model.provider?.toLowerCase(),
   );
   const providerName = providerKey
     ? PROVIDER_FRIENDLY_NAMES[providerKey]
-    : (model.provider?.trim() || '');
+    : humanizeProviderKey(model.provider?.trim() || '');
   // Description is optional — only render when we actually have one so we
   // don't show placeholder text for models that aren't in the curated map.
   const description = MODEL_DESCRIPTIONS[model.modelName];

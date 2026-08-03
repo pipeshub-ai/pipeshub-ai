@@ -10,14 +10,41 @@ export const PROVIDER_FRIENDLY_NAMES: Record<string, string> = {
   openAI: 'OpenAI',
   anthropic: 'Anthropic',
   google: 'Google',
+  gemini: 'Gemini',
   mistral: 'Mistral',
   meta: 'Meta',
   cohere: 'Cohere',
   groq: 'Groq',
+  xai: 'xAI',
+  fireworks: 'Fireworks',
+  together: 'Together AI',
+  bedrock: 'AWS Bedrock',
+  vertexAI: 'Vertex AI',
+  azureOpenAI: 'Azure OpenAI',
+  azureAI: 'Azure AI',
+  ollama: 'Ollama',
+  openAICompatible: 'OpenAI Compatible',
   openRouter: 'OpenRouter',
   lmStudio: 'LM Studio',
   litellmProxy: 'LiteLLM Proxy',
+  voyage: 'Voyage AI',
+  jinaAI: 'Jina AI',
+  sentenceTransformers: 'Sentence Transformers',
+  fastembed: 'FastEmbed',
 };
+
+/**
+ * Fallback for provider keys not (yet) covered by PROVIDER_FRIENDLY_NAMES —
+ * splits camelCase (e.g. "openAICompatible") into space-separated words so
+ * the UI never renders a raw camelCase key.
+ */
+export function humanizeProviderKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/^./, (c) => c.toUpperCase())
+    .trim();
+}
 
 /**
  * Maps model name → short one-liner description shown under the model name.
