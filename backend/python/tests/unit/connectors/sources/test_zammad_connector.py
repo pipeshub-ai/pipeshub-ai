@@ -2094,8 +2094,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN"
         record.id = "test"
 
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     async def test_stream_error_reraises(self, connector):
         connector._process_ticket_blockgroups_for_streaming = AsyncMock(
@@ -2105,8 +2106,9 @@ class TestStreamRecord:
         record.record_type = RecordType.TICKET
         record.id = "test"
 
-        with pytest.raises(Exception, match="stream fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 class TestProcessFileForStreaming:

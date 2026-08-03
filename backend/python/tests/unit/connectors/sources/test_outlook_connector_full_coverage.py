@@ -219,7 +219,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing group_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -235,7 +235,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing thread_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -315,7 +315,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_user_attachment(self):
