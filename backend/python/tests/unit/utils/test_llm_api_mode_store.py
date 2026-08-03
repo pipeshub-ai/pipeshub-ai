@@ -66,6 +66,81 @@ class TestLoad:
         assert store.get("k", "m") == "responses"
 
 
+class TestLoadNormalizesMalformedShapes:
+    """`get()` runs synchronously on `get_generator_model()`'s hot path, so a
+    malformed KV entry (corruption, manual edit, future/incompatible schema)
+    must be dropped here at load time rather than raise out of `get()` and
+    fail model construction for every request."""
+
+    async def test_non_dict_top_level_yields_empty_snapshot(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = ["not", "a", "dict"]
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "gpt-5.6-luna") is None
+
+    async def test_non_dict_model_name_map_for_a_key_is_dropped(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = {"model-key-1": "not-a-dict"}
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "gpt-5.6-luna") is None
+
+    async def test_non_dict_entry_is_dropped(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = {
+            "model-key-1": {"gpt-5.6-luna": "responses"},
+        }
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "gpt-5.6-luna") is None
+
+    async def test_non_numeric_learned_at_is_dropped(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = {
+            "model-key-1": {"gpt-5.6-luna": {"mode": "responses", "learnedAt": "not-a-number"}},
+        }
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "gpt-5.6-luna") is None
+
+    async def test_non_string_mode_is_dropped(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = {
+            "model-key-1": {"gpt-5.6-luna": {"mode": 123, "learnedAt": store_module.time.time()}},
+        }
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "gpt-5.6-luna") is None
+
+    async def test_malformed_entry_does_not_drop_valid_sibling_entries(self):
+        config_service = _fake_config_service()
+        config_service.get_config.return_value = {
+            "model-key-1": {
+                "bad-model": "not-a-dict",
+                "gpt-5.6-luna": {"mode": "responses", "learnedAt": store_module.time.time()},
+            },
+            "bad-key": "not-a-dict",
+        }
+        store = LLMApiModeStore(config_service)
+
+        await store.load()
+
+        assert store.get("model-key-1", "bad-model") is None
+        assert store.get("model-key-1", "gpt-5.6-luna") == "responses"
+        assert store.get("bad-key", "anything") is None
+
+
 class TestGet:
     def test_get_returns_none_when_nothing_learned(self):
         store = LLMApiModeStore(_fake_config_service())

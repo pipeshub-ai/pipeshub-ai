@@ -766,6 +766,21 @@ class TestGetGeneratorModel:
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["temperature"] == 1
 
+    @patch("langchain_openai.ChatOpenAI")
+    def test_azure_ai_is_reasoning_flag_alone_does_not_force_temperature(self, mock_cls):
+        """Azure AI Foundry also hosts non-OpenAI reasoning models (Llama,
+        Mistral, DeepSeek, ...) under `isReasoning=True` — only an actual
+        `_is_openai_gpt5_model`-matching name should force temperature=1,
+        not the flag alone, since this provider is not guaranteed to be
+        talking to OpenAI's own API (see `_default_temperature`)."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("deepseek-v3")
+        config["isReasoning"] = True
+        config["configuration"]["temperature"] = 0.3
+        get_generator_model(LLMProvider.AZURE_AI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.3
+
     @patch("langchain_openai.AzureChatOpenAI")
     def test_azure_openai(self, mock_cls):
         mock_cls.return_value = MagicMock()
@@ -1133,6 +1148,20 @@ class TestGetGeneratorModel:
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["reasoning_effort"] == "high"
 
+    @patch("langchain_openai.ChatOpenAI")
+    def test_lm_studio_is_reasoning_flag_alone_does_not_force_temperature(self, mock_cls):
+        """LM Studio only ever serves locally-hosted models (Qwen, DeepSeek,
+        ...), never OpenAI's own API — `isReasoning=True` must not force
+        temperature=1 for it (see `_default_temperature`)."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("qwen3.5:9b")
+        config["configuration"]["endpoint"] = "http://localhost:1234/v1"
+        config["configuration"]["temperature"] = 0.4
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.LM_STUDIO.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.4
+
     @patch("langchain_anthropic.ChatAnthropic")
     def test_anthropic_reasoning_effort_passed_when_reasoning_capable(self, mock_cls):
         mock_cls.return_value = MagicMock()
@@ -1171,7 +1200,8 @@ class TestGetGeneratorModel:
 
 
 # ---------------------------------------------------------------------------
-# _is_openai_gpt5_model — gpt-5-chat exclusion (review fix #2)
+# _is_openai_gpt5_model — gpt-5-chat variants are non-reasoning models and
+# must never be routed to the Responses API.
 # ---------------------------------------------------------------------------
 class TestIsOpenaiGpt5Model:
     def test_matches_plain_gpt5(self):
@@ -1185,7 +1215,7 @@ class TestIsOpenaiGpt5Model:
 
     def test_excludes_gpt5_chat_latest(self):
         """gpt-5-chat-latest is a non-reasoning chat variant — it must never
-        be routed to the Responses API (review fix #2)."""
+        be routed to the Responses API."""
         assert _is_openai_gpt5_model("gpt-5-chat-latest") is False
 
     def test_excludes_dotted_minor_version_chat_variant(self):
@@ -1226,6 +1256,21 @@ class TestReasoningEffortKwargsApiMode:
             api_mode=LLMApiMode.RESPONSES.value,
         )
         assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}
+
+    def test_api_mode_responses_ignored_for_non_openai_family_provider(self):
+        """`api_mode` is looked up only by (model_key, model_name), with no
+        provider check — if a stale/reused fact says RESPONSES for a
+        provider that isn't ChatOpenAI-based (e.g. Anthropic, reached after
+        a model entry was reconfigured to a different provider under the
+        same key), it must not force `use_responses_api`/`reasoning` onto
+        that provider's constructor kwargs, which don't understand them."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="anthropic", model_name="claude-x",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"reasoning_effort": "high"}
+        assert "use_responses_api" not in result
 
     def test_api_mode_responses_applies_even_to_a_floored_none_effort(self):
         """'none' is floored to 'low' before api_mode is even consulted, so a
@@ -1285,7 +1330,9 @@ class TestReasoningEffortKwargsApiMode:
 
 
 # ---------------------------------------------------------------------------
-# get_generator_model — azureAI non-OpenAI passthrough fix (review fix #1)
+# get_generator_model — a non-OpenAI model hosted on Azure AI Foundry must
+# stay on the legacy `reasoning_effort` kwarg, not the Responses API, even
+# though this provider branch used to force `provider=LLMProvider.OPENAI`.
 # ---------------------------------------------------------------------------
 class TestGetGeneratorModelAzureAiPassthroughFix:
     def _base_config(self, model="test-model"):
@@ -1328,9 +1375,90 @@ class TestGetGeneratorModelAzureAiPassthroughFix:
         assert call_kwargs["reasoning"] == {"effort": "high"}
         assert call_kwargs["use_responses_api"] is True
 
+    @patch("langchain_openai.ChatOpenAI")
+    def test_azure_ai_non_openai_reasoning_model_keeps_configured_temperature(self, mock_cls):
+        """The same non-OpenAI Azure AI Foundry deployment must also keep
+        its configured temperature — `isReasoning=True` alone doesn't imply
+        OpenAI's temperature=1 restriction for a provider that isn't
+        guaranteed to be OpenAI's own API (see `_default_temperature`)."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("Meta-Llama-3.1-70B-Instruct")
+        config["configuration"]["temperature"] = 0.5
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.AZURE_AI.value, config, reasoning_effort="high")
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.5
+
 
 # ---------------------------------------------------------------------------
-# get_generator_model — unguarded model-name resolution fix (review fix #5)
+# get_generator_model — isReasoning temperature=1 override, provider-gated:
+# only providers guaranteed to be OpenAI's own API (see
+# `_RESPONSES_API_PROVIDERS`) trust `isReasoning` alone; gateways/local
+# providers need an actual gpt-5.x name match.
+# ---------------------------------------------------------------------------
+class TestDefaultTemperatureProviderGating:
+    def _base_config(self, model="test-model"):
+        return {
+            "configuration": {
+                "model": model,
+                "apiKey": "test-key",
+                "endpoint": "https://router.requesty.ai/v1",
+                "temperature": 0.6,
+            },
+            "isDefault": True,
+        }
+
+    @patch("langchain_openai.AzureChatOpenAI")
+    def test_azure_openai_is_reasoning_flag_alone_still_forces_temperature(self, mock_cls):
+        """Direct Azure OpenAI is guaranteed to be OpenAI's own API, so
+        `isReasoning=True` alone (e.g. for an o-series model whose name
+        doesn't match the gpt-5.x pattern) must still force temperature=1."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("o3-mini")
+        config["configuration"]["deploymentName"] = "test-deployment"
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 1
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_litellm_proxy_is_reasoning_flag_alone_does_not_force_temperature(self, mock_cls):
+        """A LiteLLM proxy can forward `isReasoning=True` to any backing
+        model (Qwen, DeepSeek, ...), not just OpenAI's — the flag alone
+        must not force temperature=1 without a gpt-5.x name match."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("qwen-plus")
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.LITELLM_PROXY.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.6
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openrouter_is_reasoning_flag_alone_does_not_force_temperature(self, mock_cls):
+        """Same for OpenRouter: it proxies arbitrary reasoning models
+        (Gemini, DeepSeek, ...), so `isReasoning=True` alone must not force
+        temperature=1 without a gpt-5.x name match."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("google/gemini-3.6-flash")
+        config["isReasoning"] = True
+        get_generator_model(LLMProvider.OPENROUTER.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.6
+
+    @patch("langchain_openai.ChatOpenAI")
+    def test_openai_compatible_gpt5_name_still_forces_temperature_regardless_of_flag(self, mock_cls):
+        """The gpt-5.x name heuristic is independent of the provider gate —
+        it still applies even without `isReasoning` set explicitly."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-5.6-luna")
+        get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["temperature"] == 1
+
+
+# ---------------------------------------------------------------------------
+# get_generator_model — a missing/blank/comma-only 'model' field must raise
+# a clear ValueError instead of resolving an unguarded, possibly-empty name.
 # ---------------------------------------------------------------------------
 class TestGetGeneratorModelNameGuards:
     def test_missing_model_field_raises_value_error(self):

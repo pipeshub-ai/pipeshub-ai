@@ -213,13 +213,35 @@ _MAX_TOOL_CALL_NAME_LEN = 128
 
 
 def _clamp_tool_call_name(name: str) -> str:
-    return name if len(name) <= _MAX_TOOL_CALL_NAME_LEN else name[:_MAX_TOOL_CALL_NAME_LEN]
+    """Keeps `name` within the provider's length cap — same hash-suffix
+    scheme as `_clamp_tool_call_id` above, and for the same reason: a plain
+    `name[:_MAX_TOOL_CALL_NAME_LEN]` prefix could coincidentally collide
+    with a real, shorter registered tool name, turning an invalid/
+    hallucinated call into a *different*, unintended tool actually
+    executing instead of failing with "unknown tool". Appending a content
+    hash makes that coincidence practically impossible regardless of what
+    tool names happen to be registered.
+    """
+    if len(name) <= _MAX_TOOL_CALL_NAME_LEN:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:16]
+    prefix_len = _MAX_TOOL_CALL_NAME_LEN - 1 - len(digest)  # 1 for the `-`
+    return f"{name[:prefix_len]}-{digest}"
 
 
 def convert_tool_call_from_langchain(call: dict[str, Any]) -> ToolCall:
+    # Every LangChain-internal constructor for a *valid* `tool_calls` entry
+    # (as opposed to `invalid_tool_calls`, see `_recover_invalid_tool_call`
+    # below) guarantees a string `name`, but this still takes an untyped
+    # provider dict — guard against a nonconforming integration the same
+    # way the invalid-call path already does, instead of a raw `call["name"]`
+    # `KeyError`/non-string crashing the whole turn.
+    name = call.get("name")
+    if not isinstance(name, str) or not name:
+        name = "unknown_tool"
     return ToolCall(
         id=call.get("id") or "",
-        name=_clamp_tool_call_name(call["name"]),
+        name=_clamp_tool_call_name(name),
         arguments=call.get("args") or {},
     )
 

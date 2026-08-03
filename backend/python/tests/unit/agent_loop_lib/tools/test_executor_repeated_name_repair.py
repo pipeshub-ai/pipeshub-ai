@@ -11,7 +11,10 @@ back another "Unknown tool" error."""
 from __future__ import annotations
 
 from app.agent_loop_lib.core.types import ToolCall
-from app.agent_loop_lib.tools.base import Tool, ToolOutput
+from app.agent_loop_lib.hooks.events import HookEvent
+from app.agent_loop_lib.hooks.middleware.context import ToolCallContext
+from app.agent_loop_lib.hooks.registry import HookRegistry
+from app.agent_loop_lib.tools.base import Tag, Tool, ToolOutput
 from app.agent_loop_lib.tools.executor import UNKNOWN_TOOL_ERROR_PREFIX, ToolExecutor
 from app.agent_loop_lib.tools.registry import ToolRegistry
 
@@ -90,3 +93,73 @@ class TestRepeatedNameRepair:
 
         assert result.is_error is True
         assert UNKNOWN_TOOL_ERROR_PREFIX in result.content
+
+
+class TestPreToolUseSeesResolvedTool:
+    """PRE_TOOL_USE must authorize against the tool the call actually
+    resolves to, not the raw hallucinated name — otherwise permission/
+    risk-tag middleware (keyed off `ctx.tool_path`/`ctx.tags`) either
+    misses a check that should apply to the real tool, or applies one
+    meant for a different tool entirely. Regression coverage for
+    `ToolExecutor._resolve_tool_name` running before `ToolCallContext`
+    is built (see its docstring in `tools/executor.py`)."""
+
+    def _capturing_kernel(self, seen: list[ToolCallContext]) -> HookRegistry:
+        kernel = HookRegistry()
+
+        async def _capture(ctx: ToolCallContext, next_fn) -> None:
+            seen.append(ctx)
+            await next_fn()
+
+        kernel.on(HookEvent.PRE_TOOL_USE).use(_capture)
+        return kernel
+
+    async def test_doubled_name_authorizes_against_resolved_path_and_tags(self) -> None:
+        registry = ToolRegistry()
+        registry.register_tool(_EchoTool("knowledgegraph__search"), extra_tags=(Tag("risk", "high"),))
+        seen: list[ToolCallContext] = []
+        executor = ToolExecutor(registry, self._capturing_kernel(seen))
+        call = ToolCall(
+            id="c1",
+            name="knowledgegraph__searchknowledgegraph__search",
+            arguments={},
+        )
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+        assert len(seen) == 1
+        assert seen[0].tool_path == "/toolsets/test/knowledgegraph__search"
+        assert Tag("risk", "high") in seen[0].tags
+
+    async def test_toolset_group_name_authorizes_against_resolved_path_and_tags(self) -> None:
+        registry = ToolRegistry()
+        registry.register_tool(_EchoTool("list_files"), extra_tags=(Tag("risk", "high"),))
+        registry.register_toolset("knowledgehub", "KnowledgeHub", ["list_files"])
+        seen: list[ToolCallContext] = []
+        executor = ToolExecutor(registry, self._capturing_kernel(seen))
+        call = ToolCall(id="c1", name="knowledgehub", arguments={})
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+        assert len(seen) == 1
+        assert seen[0].tool_path == "/toolsets/test/list_files"
+        assert Tag("risk", "high") in seen[0].tags
+
+    async def test_unresolvable_name_still_authorizes_against_unresolved_placeholder(self) -> None:
+        """No change in behavior for a genuinely unknown name: PRE_TOOL_USE
+        still sees the `/unresolved/<name>` placeholder with no tags, so a
+        default-deny-on-unresolved policy keeps working."""
+        registry = ToolRegistry()
+        registry.register_tool(_EchoTool("search"))
+        seen: list[ToolCallContext] = []
+        executor = ToolExecutor(registry, self._capturing_kernel(seen))
+        call = ToolCall(id="c1", name="totally_made_up_tool", arguments={})
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is True
+        assert len(seen) == 1
+        assert seen[0].tool_path == "/unresolved/totally_made_up_tool"
+        assert seen[0].tags == ()

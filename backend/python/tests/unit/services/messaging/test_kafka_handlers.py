@@ -50,6 +50,42 @@ class TestAiConfigEventService:
 
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_llm_configured_reloads_the_already_initialized_store(self):
+        """The store singleton is looked up with no arguments — it must
+        never be (re)created from `retrieval_service.config_service` here,
+        only read back if service startup already initialized it (see
+        `query_main.initialize_container`)."""
+        svc = self._make_service()
+        svc.retrieval_service.get_llm_instance = AsyncMock(return_value=MagicMock())
+        fake_store = AsyncMock()
+
+        with patch(
+            "app.services.messaging.kafka.handlers.ai_config.get_llm_api_mode_store",
+            return_value=fake_store,
+        ) as mock_get_store:
+            result = await svc.process_event("llmConfigured", {"provider": "openai"})
+
+        assert result is True
+        mock_get_store.assert_called_once_with()
+        fake_store.load.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_llm_configured_tolerates_uninitialized_store(self):
+        """Nothing to reload if service startup hasn't initialized the
+        singleton yet (e.g. this handler races startup in a test/edge
+        case) — must not raise."""
+        svc = self._make_service()
+        svc.retrieval_service.get_llm_instance = AsyncMock(return_value=MagicMock())
+
+        with patch(
+            "app.services.messaging.kafka.handlers.ai_config.get_llm_api_mode_store",
+            return_value=None,
+        ):
+            result = await svc.process_event("llmConfigured", {"provider": "openai"})
+
+        assert result is True
+
     # -- embeddingModelConfigured --
 
     @pytest.mark.asyncio

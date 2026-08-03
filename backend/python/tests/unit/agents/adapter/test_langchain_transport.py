@@ -631,8 +631,12 @@ class TestApiShapeFallbackStream:
     ) -> None:
         """`model_key` not threaded through yet (older call sites) must not
         block the in-request retry — only cross-request persistence is
-        skipped."""
-        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: None)
+        skipped. Keeps a real (non-`None`) store so this actually exercises
+        the `not self._model_key` branch of `_record_api_mode`'s short-
+        circuit, rather than the `store is None` branch a missing store
+        would also trigger regardless of `model_key`."""
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
 
         model = _FakeApiShapeModel(
             use_responses_api=True, reasoning={"effort": "high"},
@@ -644,6 +648,7 @@ class TestApiShapeFallbackStream:
         response = await transport.complete([UserMessage(content="hi")])
 
         assert response.message.text == "worked without reasoning"
+        assert store.recorded == []
 
 
 def _reasoning_mandatory_error() -> RuntimeError:
@@ -670,6 +675,7 @@ class _FakeReasoningMandatoryModel:
         response: AIMessage | None = None,
         stream_chunks: list[AIMessageChunk] | None = None,
         always_fail: bool = False,
+        error: Exception | None = None,
     ) -> None:
         self.reasoning = reasoning
         self.reasoning_effort = reasoning_effort
@@ -677,6 +683,12 @@ class _FakeReasoningMandatoryModel:
         self._response = response or AIMessage(content="ok")
         self._stream_chunks = stream_chunks
         self._always_fail = always_fail
+        # Overridable so a test can simulate a 400 that does NOT match the
+        # reasoning-mandatory marker at all (see
+        # `test_unrelated_error_does_not_trigger_fallback`), as distinct
+        # from the marker matching but there being nothing to bump (see
+        # `test_reasoning_already_enabled_has_nothing_to_bump`).
+        self._error = error or _reasoning_mandatory_error()
         self.bind_tools_calls: list[Any] = []
 
     def bind_tools(self, tools: list[Any]) -> "_FakeReasoningMandatoryModel":
@@ -685,12 +697,12 @@ class _FakeReasoningMandatoryModel:
 
     async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
         if self._always_fail or not self._already_retried:
-            raise _reasoning_mandatory_error()
+            raise self._error
         return self._response
 
     async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
         if self._always_fail or not self._already_retried:
-            raise _reasoning_mandatory_error()
+            raise self._error
         for chunk in self._stream_chunks or []:
             yield chunk
 
@@ -702,6 +714,7 @@ class _FakeReasoningMandatoryModel:
             response=self._response,
             stream_chunks=self._stream_chunks,
             always_fail=self._always_fail,
+            error=self._error,
         )
 
 
@@ -766,7 +779,18 @@ class TestReasoningMandatoryFallbackComplete:
             await transport.complete([UserMessage(content="hi")])
 
     async def test_unrelated_error_does_not_trigger_fallback(self) -> None:
-        transport = LangChainTransport(_FakeModel(raise_on_invoke=_requesty_conflict_error()))
+        """An error that matches neither the reasoning-mandatory nor the
+        API-shape conflict markers must not trigger any fallback, even on
+        a model with a disabled reasoning value that COULD be bumped —
+        distinct from `test_reasoning_already_enabled_has_nothing_to_bump`
+        (marker matches, nothing to bump) and from
+        `TestApiShapeFallbackComplete.test_non_openai_family_model_has_nothing_to_flip`
+        (API-shape marker matches, model can't flip it)."""
+        exc = RuntimeError("internal server error")
+        exc.status_code = 500
+        model = _FakeReasoningMandatoryModel(reasoning_effort="none", always_fail=True, error=exc)
+        transport = LangChainTransport(model, model_name="gemini-flash")
+
         with pytest.raises(TransportError):
             await transport.complete([UserMessage(content="hi")])
 

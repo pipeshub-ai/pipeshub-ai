@@ -428,13 +428,13 @@ class LangChainTransport(LLMTransport):
             if fallback is None:
                 raise self._wrap_error(exc, "complete") from exc
             fallback_llm, mode = fallback
-            fallback_bound = self._bind_tools(tools, llm=fallback_llm)
             logger.warning(
                 "LangChainTransport.complete: provider conflict for model=%s, "
                 "retrying once with api_mode=%s: %s",
                 self._model, mode, exc,
             )
             try:
+                fallback_bound = self._bind_tools(tools, llm=fallback_llm)
                 ai_message = await fallback_bound.ainvoke(lc_messages, config=self._langchain_config())
             except Exception as retry_exc:
                 logger.error(
@@ -653,7 +653,14 @@ class LangChainTransport(LLMTransport):
                     raise self._wrap_error(exc, "stream") from exc
                 original_exc = exc
                 fallback_llm, fallback_mode = fallback
-                current_llm = self._bind_tools(tools, llm=fallback_llm)
+                try:
+                    current_llm = self._bind_tools(tools, llm=fallback_llm)
+                except Exception:
+                    # Same rationale as `complete()`'s identical guard: a
+                    # bind failure on the fallback model must not replace
+                    # the original provider-conflict error with a less
+                    # useful "bind_tools() failed" one.
+                    raise self._wrap_error(exc, "stream") from exc
                 retried = True
                 logger.warning(
                     "LangChainTransport.stream: provider conflict for model=%s, "

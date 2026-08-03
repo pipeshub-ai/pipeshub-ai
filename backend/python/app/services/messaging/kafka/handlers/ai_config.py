@@ -46,10 +46,21 @@ class AiConfigEventService(BaseEventService):
             # Refresh the LLM instance with new configuration
             await self.retrieval_service.get_llm_instance(use_cache=False)
 
-            # Admin may have edited a model's provider/endpoint since a fact
-            # was learned for it — re-sync the snapshot rather than letting
-            # a stale learned mode outlive the config it was learned under.
-            store = get_llm_api_mode_store(self.retrieval_service.config_service)
+            # This pod's own learned facts are already in its in-process
+            # snapshot the instant `LangChainTransport._record_api_mode`
+            # writes them — reloading here is to pick up facts a *different*
+            # query-service pod learned and persisted to the shared KV store
+            # since this pod's last load (see `app/utils/llm_api_mode_store
+            # .py`). It does NOT invalidate/re-check a fact already learned
+            # under this model's previous provider/endpoint: entries are
+            # keyed only by (modelKey, model_name), which an admin edit
+            # doesn't change, so a stale fact still rides out its
+            # `_LEARNED_FACT_TTL_SECONDS` window regardless of this call.
+            # No `config_service` passed: the store is already initialized
+            # by service startup (`query_main.initialize_container`, which
+            # runs before Kafka consumers start), so this only ever reads
+            # the existing container-bound singleton.
+            store = get_llm_api_mode_store()
             if store is not None:
                 await store.load()
 

@@ -109,13 +109,44 @@ class LLMApiModeStore:
             stored = await self._config_service.get_config(
                 config_node_constants.AI_MODEL_API_MODES.value, use_cache=False,
             )
-            self._snapshot = stored or {}
+            self._snapshot = self._normalize(stored)
         except Exception:
             logger.exception(
                 "LLMApiModeStore: failed to load learned API modes from "
                 "%s; keeping previous snapshot",
                 config_node_constants.AI_MODEL_API_MODES.value,
             )
+
+    @staticmethod
+    def _normalize(stored: Any) -> dict[str, dict[str, dict[str, Any]]]:
+        """Drops anything that doesn't match the expected
+        ``{model_key: {model_name: {"mode": str, "learnedAt": float}}}``
+        shape.
+
+        `get()` runs synchronously on `get_generator_model()`'s hot path —
+        raising there fails model construction for every request rather
+        than degrading to the heuristic, so a KV entry that's missing,
+        corrupted, or from a future/incompatible schema version must be
+        normalized away here (where the failure is already contained by
+        `load()`'s `except`) instead of trusted at read time.
+        """
+        if not isinstance(stored, dict):
+            return {}
+        normalized: dict[str, dict[str, dict[str, Any]]] = {}
+        for model_key, models in stored.items():
+            if not isinstance(model_key, str) or not isinstance(models, dict):
+                continue
+            for model_name, entry in models.items():
+                if not isinstance(model_name, str) or not isinstance(entry, dict):
+                    continue
+                mode = entry.get("mode")
+                learned_at = entry.get("learnedAt")
+                if not isinstance(mode, str) or not isinstance(learned_at, (int, float)):
+                    continue
+                normalized.setdefault(model_key, {})[model_name] = {
+                    "mode": mode, "learnedAt": float(learned_at),
+                }
+        return normalized
 
     def get(self, model_key: str | None, model_name: str) -> str | None:
         """Synchronous snapshot read — see class docstring for why this

@@ -699,18 +699,35 @@ def _is_openai_gpt5_model(model_name: str | None) -> bool:
 
 def _default_temperature(
     configuration: dict[str, Any], config: dict[str, Any], model_name: str | None,
+    *, provider: str = "",
 ) -> float:
     """Default ``temperature`` for a provider's constructor kwargs.
 
-    OpenAI gpt-5.x reasoning models only accept ``temperature=1`` (any other
-    value 400s on both Chat Completions and the Responses API) — this is the
-    one check shared verbatim by every provider branch below that constructs
-    a LangChain client, so it lives here once instead of being copy-pasted
-    per branch (it previously was, with a plain ``"gpt-5" in model_name``
-    substring check that also mis-fired on ``gpt-5-chat-latest``, which has
-    no such restriction).
+    OpenAI gpt-5.x (and o-series) reasoning models only accept
+    ``temperature=1`` (any other value 400s on both Chat Completions and the
+    Responses API) — this is the one check shared verbatim by every provider
+    branch below that constructs a LangChain client, so it lives here once
+    instead of being copy-pasted per branch (it previously was, with a plain
+    ``"gpt-5" in model_name`` substring check that also mis-fired on
+    ``gpt-5-chat-latest``, which has no such restriction).
+
+    ``config["isReasoning"]`` alone is deliberately NOT enough to force
+    ``temperature=1`` — it's a platform flag meaning "this model reasons",
+    not "this model is OpenAI's own and has OpenAI's specific sampling
+    restriction". Providers/gateways such as Azure AI Foundry, LM Studio,
+    LiteLLM proxy, and OpenRouter route ``isReasoning=True`` requests to
+    plenty of non-OpenAI reasoning models (Llama, Mistral, DeepSeek, Qwen,
+    Gemini, ...) that have no such restriction and whose configured
+    temperature should be respected. It's only trusted as a fallback signal
+    (alongside ``_is_openai_gpt5_model``, which can miss a custom deployment
+    alias that doesn't literally contain "gpt-5", or an o-series model,
+    which that name check doesn't match at all) when ``provider`` guarantees
+    the backend actually is OpenAI's own API (``_RESPONSES_API_PROVIDERS``:
+    direct OpenAI or Azure OpenAI).
     """
-    is_reasoning_model = _is_openai_gpt5_model(model_name) or bool(config.get("isReasoning", False))
+    is_reasoning_model = _is_openai_gpt5_model(model_name) or (
+        provider in _RESPONSES_API_PROVIDERS and bool(config.get("isReasoning", False))
+    )
     return 1 if is_reasoning_model else configuration.get("temperature", 0.2)
 
 
@@ -806,8 +823,15 @@ def _reasoning_effort_kwargs(
       skip reasoning entirely (identical to ``isReasoning`` being off).
     - ``LLMApiMode.RESPONSES``: this model needs the Responses API even
       though the name/host heuristic didn't detect it — take that branch
-      unconditionally (still gated on ``effort != "none"`` like the
-      heuristic path, since reasoning-off never needs it).
+      whenever ``provider in _OPENAI_FAMILY`` (still gated on
+      ``effort != "none"`` like the heuristic path, since reasoning-off
+      never needs it). Gated on the provider family, not applied
+      unconditionally, because ``api_mode`` is looked up only by
+      ``(model_key, model_name)`` with no provider check — an unrelated
+      provider reusing the same pair (e.g. after reconfiguring a model
+      entry) must not have ``use_responses_api``/``reasoning`` (ChatOpenAI-
+      only kwargs) forced onto a non-OpenAI-family constructor like
+      ``ChatAnthropic`` or ``ChatGoogleGenerativeAI``.
     - ``LLMApiMode.REASONING_MANDATORY``: this model/gateway rejects an
       explicit ``"none"`` effort outright (some OpenRouter-proxied Gemini
       models: "Reasoning is mandatory for this endpoint and cannot be
@@ -850,11 +874,14 @@ def _reasoning_effort_kwargs(
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
     needs_responses_api = effort != "none" and (
-        api_mode == LLMApiMode.RESPONSES.value
-        or provider in _RESPONSES_API_PROVIDERS
+        provider in _RESPONSES_API_PROVIDERS
         or (
             provider in _OPENAI_FAMILY
-            and (_targets_openai_responses_api(base_url) or _is_openai_gpt5_model(model_name))
+            and (
+                api_mode == LLMApiMode.RESPONSES.value
+                or _targets_openai_responses_api(base_url)
+                or _is_openai_gpt5_model(model_name)
+            )
         )
     )
     if needs_responses_api:
@@ -1000,7 +1027,7 @@ def get_generator_model(
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
 
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
 
         is_claude_model = "claude" in model_name
         if is_claude_model:
@@ -1050,7 +1077,7 @@ def get_generator_model(
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
 
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         azure_openai_kwargs: Dict[str, Any] = dict(
             api_key=configuration["apiKey"],
             azure_endpoint=configuration["endpoint"],
@@ -1177,7 +1204,7 @@ def get_generator_model(
     elif provider == LLMProvider.OPENAI.value:
         from langchain_openai import ChatOpenAI
 
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1222,7 +1249,7 @@ def get_generator_model(
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         openai_compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1239,7 +1266,7 @@ def get_generator_model(
 
     elif provider == LLMProvider.LM_STUDIO.value:
         from langchain_openai import ChatOpenAI
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         lm_studio_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1256,7 +1283,7 @@ def get_generator_model(
 
     elif provider == LLMProvider.LITELLM_PROXY.value:
         from langchain_openai import ChatOpenAI
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         litellm_proxy_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1274,7 +1301,7 @@ def get_generator_model(
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
 
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         openrouter_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1305,7 +1332,7 @@ def get_generator_model(
                 "Please provide the Google Cloud project that hosts Vertex AI."
             )
         creds = _create_vertex_credentials(sa_json)
-        temperature = _default_temperature(configuration, config, model_name)
+        temperature = _default_temperature(configuration, config, model_name, provider=provider)
         vertex_llm_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,

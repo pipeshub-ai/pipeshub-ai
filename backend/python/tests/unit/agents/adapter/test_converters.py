@@ -158,6 +158,13 @@ class TestAssistantMessageFromLangchain:
         call = convert_tool_call_from_langchain({"name": "foo", "args": {}})
         assert call.id == ""
 
+    def test_tool_call_missing_name_defaults_to_unknown_tool(self) -> None:
+        """A malformed provider dict without a `name` key must not crash
+        the turn with a `KeyError` — matches `_recover_invalid_tool_call`'s
+        sentinel fallback for the same field."""
+        call = convert_tool_call_from_langchain({"args": {}, "id": "x1"})
+        assert call.name == "unknown_tool"
+
     def test_overlong_name_is_clamped_to_provider_limit(self) -> None:
         """A name over OpenAI's 128-char function-name cap must never enter
         `AssistantMessage.tool_calls` unclamped — see `_clamp_tool_call_name`'s
@@ -166,7 +173,17 @@ class TestAssistantMessageFromLangchain:
         overlong = "knowledgegraph__search" * 10  # 220 chars
         call = convert_tool_call_from_langchain({"name": overlong, "args": {}, "id": "x1"})
         assert len(call.name) == 128
-        assert call.name == overlong[:128]
+
+    def test_overlong_name_clamping_does_not_collide_with_a_real_tool_name(self) -> None:
+        """A plain `name[:128]` prefix could coincidentally equal a real,
+        shorter registered tool name — turning an invalid/hallucinated call
+        into a DIFFERENT tool actually executing instead of failing with
+        "unknown tool". The clamped name must not be a plain prefix of the
+        original."""
+        overlong = "knowledgegraph__search" * 10  # 220 chars
+        call = convert_tool_call_from_langchain({"name": overlong, "args": {}, "id": "x1"})
+        assert call.name != overlong[:128]
+        assert not overlong.startswith(call.name)
 
     def test_name_at_or_under_limit_is_untouched(self) -> None:
         call = convert_tool_call_from_langchain({"name": "a" * 128, "args": {}})
