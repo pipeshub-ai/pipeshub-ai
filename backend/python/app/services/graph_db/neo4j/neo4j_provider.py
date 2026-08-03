@@ -15192,7 +15192,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 base_query = """
             // App node depth>=2: find records under record groups + KB direct records
-            OPTIONAL MATCH (rg:RecordGroup {{connectorId: $parent_doc_id}})
+            OPTIONAL MATCH (rg:RecordGroup {connectorId: $parent_doc_id})
             WHERE rg.isDeleted <> true AND rg IN accessible_rgs
             OPTIONAL MATCH (rg_rec:Record)-[:BELONGS_TO]->(rg)
             WHERE rg_rec.orgId = $org_id
@@ -15200,7 +15200,7 @@ class Neo4jProvider(IGraphDBProvider):
                  collect(DISTINCT rg_rec) AS rg_records
 
             // KB apps: records directly attached to the app via BELONGS_TO
-            OPTIONAL MATCH (kb_rec:Record)-[:BELONGS_TO]->(app:App {{id: $parent_doc_id}})
+            OPTIONAL MATCH (kb_rec:Record)-[:BELONGS_TO]->(app:App {id: $parent_doc_id})
             WHERE kb_rec.orgId = $org_id
             WITH accessible_rgs, accessible_records, rg_records,
                  collect(DISTINCT kb_rec) AS kb_records

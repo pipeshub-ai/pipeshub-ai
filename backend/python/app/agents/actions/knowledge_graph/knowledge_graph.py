@@ -53,15 +53,12 @@ _NOT_FOUND_MSG = "Not found or no access."
 
 def _navigate_args_summary(args: dict[str, Any]) -> str | None:
     node_id = args.get("node_id")
-    name_filter = args.get("name_filter")
     page = args.get("page", 1)
     depth = args.get("depth", 1)
     if node_id:
         base = f"Navigated to node {node_id}"
     else:
         base = "Navigated to root"
-    if name_filter:
-        base += f" (filter: {name_filter!r})"
     if page and page > 1:
         base += f" — page {page}"
     if depth and depth > 1:
@@ -248,17 +245,17 @@ class KnowledgeGraph:
             "only this shows how they relate.\n\n"
             "Call with no arguments to see all connected apps.\n"
             "Pass node_id to open any node.\n"
-            "Pass name_filter to filter children by name (≥2 chars).\n"
-            "Pass node_types to filter children by type (app, recordGroup, record, folder).\n\n"
+            "Pass node_types to filter children by type (recordGroup, record, folder).\n\n"
             "node_id is tolerant: passing a URL or issue key (PA-1787) resolves it automatically.\n\n"
             "Opening a record shows its own metadata — for a ticket that includes status, assignee, "
             "priority and dates — so a question about one record is often answered by this call alone. "
             "For its content, pass the Record ID to knowledgegraph__fetch_record.\n\n"
             "Pass depth=2 or depth=3 to see multiple levels in ONE call instead of navigating one level "
-            "at a time — e.g. an epic's stories AND their subtasks. Results are returned as a flat list "
-            "sorted by creation date (latest first), with each row showing its level in the hierarchy. "
-            "Use this whenever the question needs an overview of a hierarchy rather than a single node "
-            "(status of a whole initiative, what a project contains end to end).\n\n"
+            "at a time — e.g. an app's spaces AND their pages, or an epic's stories AND their subtasks. "
+            "Results are returned as a flat list sorted by creation date (latest first), with each row "
+            "showing its level in the hierarchy. Use this whenever the question needs an overview of a "
+            "hierarchy rather than a single node (status of a whole initiative, what a project contains "
+            "end to end).\n\n"
             "Output always shows:\n"
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
@@ -278,13 +275,13 @@ class KnowledgeGraph:
                 name="node_types",
                 type=ParameterType.ARRAY,
                 description=(
-                    "Filter children by node type. Values: 'app' (connector), "
-                    "'recordGroup' (project/space/drive/channel), 'record', 'folder'. "
-                    "Omit to show all types. Use when you need only a specific level of "
-                    "the hierarchy — e.g. node_types=['record'] to skip record groups, "
-                    "or node_types=['recordGroup'] to see only projects/spaces under an app."
+                    "Optional filter on which child node types to return. Values: "
+                    "'recordGroup', 'record', 'folder'. Omit to return all children. "
+                    "Use when you only need a specific type — e.g. "
+                    "node_types=['recordGroup'] on an app to see only spaces/projects, "
+                    "or node_types=['record'] on a recordGroup to skip sub-groups."
                 ),
-                required=True,
+                required=False,
                 items={"type": "string"},
             ),
             ToolParameter(
@@ -295,12 +292,6 @@ class KnowledgeGraph:
                     "(record_id= or node_id=), from capability_summary, or paste a URL/issue-key "
                     "directly — navigate() resolves it. Omit to see root apps."
                 ),
-                required=False,
-            ),
-            ToolParameter(
-                name="name_filter",
-                type=ParameterType.STRING,
-                description="Optional substring filter on child names (≥2 chars).",
                 required=False,
             ),
             ToolParameter(
@@ -322,11 +313,12 @@ class KnowledgeGraph:
                 type=ParameterType.INTEGER,
                 description=(
                     "How many levels of children to return in this one call (1-3, default 1). "
-                    "depth=2 also fetches each child's own children; depth=3 goes one level "
-                    "deeper. Results are returned as a flat list sorted by creation date "
-                    "(latest first), with each row showing its level. Only applies on page=1 "
-                    "and for record/folder parents. Use depth=2/3 for hierarchy-overview "
-                    "questions instead of calling navigate() once per level."
+                    "depth=1 returns direct children only. depth=2 also fetches each child's "
+                    "own children. depth=3 goes one level deeper. Results are returned as a "
+                    "flat list sorted by creation date (latest first), with each row showing "
+                    "its level in the hierarchy. Works for any parent type (app, recordGroup, "
+                    "record, folder). Use depth=2/3 for hierarchy-overview questions instead "
+                    "of calling navigate() once per level."
                 ),
                 required=False,
                 default=1,
@@ -385,7 +377,6 @@ class KnowledgeGraph:
     async def navigate(
         self,
         node_id: str | None = None,
-        name_filter: str | None = None,
         page: int = 1,
         limit: int = 50,
         depth: int = 1,
@@ -409,9 +400,8 @@ class KnowledgeGraph:
 
         # Normalize
         node_id = node_id.strip() if node_id else None
-        name_filter = (name_filter.strip() if name_filter else None) or None
-        if name_filter and len(name_filter) < 2:
-            name_filter = None
+        node_types = node_types if node_types else None
+
         page = max(1, page)
         limit = min(max(1, limit), 100)
         depth = min(max(1, depth), 3)
@@ -504,7 +494,7 @@ class KnowledgeGraph:
         try:
             view = await navigator.navigate(
                 node_id=node_id,
-                name_filter=name_filter,
+                name_filter=None,
                 page=page,
                 limit=limit,
                 connector_ids=connector_ids or None,

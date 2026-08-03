@@ -698,8 +698,8 @@ class TestDepth2ContextEnrichment:
 
 class TestNavigateNameFilter:
     @pytest.mark.asyncio
-    async def test_name_filter_short_ignored(self):
-        """name_filter shorter than 2 chars is dropped."""
+    async def test_navigate_without_name_filter(self):
+        """navigate() works without name_filter (removed from public API)."""
         state = _make_state()
         graph_provider = state["graph_provider"]
         graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
@@ -711,7 +711,7 @@ class TestNavigateNameFilter:
             new=AsyncMock(return_value=mock_resp),
         ):
             tool = KnowledgeGraph(state=state)
-            success, _ = await tool.navigate(name_filter="a")
+            success, _ = await tool.navigate()
         assert success
 
 
