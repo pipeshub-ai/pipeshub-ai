@@ -305,9 +305,10 @@ class Record(BaseModel):
         if self.mime_type:
             lines.append(f"MIME Type: {self.mime_type}")
 
-        weburl = resolve_weburl(self.weburl, frontend_url)
-        if weburl:
-            lines.append(f"Web URL: {weburl}")
+        if not self.hide_weburl:
+            weburl = resolve_weburl(self.weburl, frontend_url)
+            if weburl:
+                lines.append(f"Web URL: {weburl}")
 
         if self.semantic_metadata:
             if include_full_semantic:
