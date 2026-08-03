@@ -4800,7 +4800,7 @@ class LinearConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            if record.is_placeholder:
+            if getattr(record, "is_placeholder", False) is True:
                 raise ValueError(
                     f"Cannot stream placeholder record {record.external_record_id}: "
                     "it is a stub for an out-of-scope ancestor and has no content"
