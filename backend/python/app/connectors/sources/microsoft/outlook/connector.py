@@ -2741,6 +2741,9 @@ class OutlookConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
             raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Message | None:
