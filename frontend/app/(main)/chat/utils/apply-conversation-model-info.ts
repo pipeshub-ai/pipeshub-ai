@@ -1,5 +1,6 @@
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext } from './fetch-models-for-context';
+import { normalizeReasoningEffort } from '@/chat/types';
 import type {
   AgentStrategy,
   AvailableLlmModel,
@@ -250,7 +251,9 @@ export function applyConversationModelInfoToStore(
   // Restore the effort the conversation was actually run with, so the
   // selector reflects saved state rather than the (possibly stale) choice
   // left over from whatever context the user was in before switching threads.
-  store.setReasoningEffortForCtx(ctxKey, modelInfo.reasoningEffort ?? null);
+  // Normalize a legacy 'none' — no longer offered as a UI choice — to what
+  // the backend actually floors it to, so the toolbar never shows "· none".
+  store.setReasoningEffortForCtx(ctxKey, normalizeReasoningEffort(modelInfo.reasoningEffort ?? null));
 
   void refreshSelectedModelFromCatalog(modelInfo, ctxKey);
 }

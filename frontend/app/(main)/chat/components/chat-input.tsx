@@ -274,6 +274,44 @@ export function ChatInput({
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
 
+  // Shared capability wiring for the desktop "+" popover (PlusMenuButton) and
+  // the mobile "+" sheet (PlusMenuSheet) — kept in one place so the two
+  // surfaces can't drift. `isAgentChat` and `agentId` come from the same
+  // `effectiveAgentId` at the only real call site today, but `ChatInput`
+  // still declares them as independent props, so a scoped chat without a
+  // resolved `agentId` disables the toggles instead of silently no-op'ing.
+  const plusMenuCapabilities = useMemo(() => {
+    const canPersistScoped = isAgentChat && Boolean(agentId);
+    return {
+      internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
+      webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
+      onToggleInternalSearch: (enabled: boolean) => {
+        if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
+        else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
+      },
+      onToggleWebSearch: (enabled: boolean) => {
+        if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { webSearch: enabled });
+        else if (!isAgentChat) setAgentCapabilities({ webSearch: enabled });
+      },
+      agentHasInternalSearch: isAgentChat
+        ? (agentHasInternalSearch && canPersistScoped ? undefined : false)
+        : undefined,
+      agentHasWebSearch: isAgentChat
+        ? (agentHasWebSearch && canPersistScoped ? undefined : false)
+        : undefined,
+    };
+  }, [
+    isAgentChat,
+    agentId,
+    scopedInternalSearch,
+    scopedWebSearch,
+    settings.agentCapabilities,
+    setScopedAgentCapabilities,
+    setAgentCapabilities,
+    agentHasInternalSearch,
+    agentHasWebSearch,
+  ]);
+
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
   // don't leak into agents and vice-versa.
@@ -1167,7 +1205,7 @@ export function ChatInput({
               color="gray"
               size="2"
               onClick={handleExpand}
-              aria-label={t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })}
+              aria-label={t('chat.expandComposer', { defaultValue: 'Expand composer' })}
               style={{ margin: 0, cursor: 'pointer', flexShrink: 0 }}
             >
               <MaterialIcon name="add" size={ICON_SIZES.PRIMARY} color={modeColors.icon} />
@@ -1748,27 +1786,10 @@ export function ChatInput({
 
       {/* Bottom controls */}
       <Flex align="center" justify="between">
-        {/* Left side — search-view toggle / agent badge, plus the "+" attach & capabilities button. */}
+        {/* Left side — search-view toggle (hidden for agent-scoped chats, which don't
+            support the keyword-search-results view), plus the "+" attach & capabilities button. */}
         <Flex align="center" gap="1">
-          {isAgentChat ? (
-            <Flex
-              align="center"
-              gap="2"
-              style={{
-                height: '32px',
-                borderRadius: 'var(--radius-2)',
-                background: 'var(--accent-3)',
-                paddingLeft: 'var(--space-3)',
-                paddingRight: 'var(--space-3)',
-                flexShrink: 0,
-              }}
-            >
-              <MaterialIcon name="bolt" size={ICON_SIZES.MINIMAL} color="var(--accent-11)" />
-              <Text size="2" weight="medium" style={{ color: 'var(--accent-11)', whiteSpace: 'nowrap' }}>
-                {t('chat.queryModes.agent.toolbarLabel', { defaultValue: 'Agent' })}
-              </Text>
-            </Flex>
-          ) : (
+          {!isAgentChat && (
             <Tooltip
               content={isSearchMode ? t('chat.backToChat', { defaultValue: 'Back to chat' }) : t('form.search')}
               side="top"
@@ -1778,6 +1799,11 @@ export function ChatInput({
                 color="gray"
                 size="2"
                 disabled={isRegenerateMode}
+                aria-label={
+                  isSearchMode
+                    ? t('chat.backToChat', { defaultValue: 'Back to chat' })
+                    : t('chat.searchToggle.ariaLabel', { defaultValue: 'Switch to search view' })
+                }
                 onClick={
                   isSearchMode
                     ? () => {
@@ -1832,24 +1858,7 @@ export function ChatInput({
                 disabled={isRegenerateMode}
                 activeIconColor={activeIconColor}
                 onAttachFiles={toggleUploadArea}
-                internalSearch={isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch}
-                webSearch={isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch}
-                onToggleInternalSearch={(enabled) => {
-                  if (isAgentChat) {
-                    if (agentId) setScopedAgentCapabilities(agentId, { internalSearch: enabled });
-                  } else {
-                    setAgentCapabilities({ internalSearch: enabled });
-                  }
-                }}
-                onToggleWebSearch={(enabled) => {
-                  if (isAgentChat) {
-                    if (agentId) setScopedAgentCapabilities(agentId, { webSearch: enabled });
-                  } else {
-                    setAgentCapabilities({ webSearch: enabled });
-                  }
-                }}
-                agentHasInternalSearch={isAgentChat ? (agentHasInternalSearch ? undefined : false) : undefined}
-                agentHasWebSearch={isAgentChat ? (agentHasWebSearch ? undefined : false) : undefined}
+                {...plusMenuCapabilities}
               />
             )
           )}
@@ -2257,24 +2266,7 @@ export function ChatInput({
       open={isMobilePlusMenuOpen}
       onOpenChange={setIsMobilePlusMenuOpen}
       onAttachFiles={toggleUploadArea}
-      internalSearch={isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch}
-      webSearch={isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch}
-      onToggleInternalSearch={(enabled) => {
-        if (isAgentChat) {
-          if (agentId) setScopedAgentCapabilities(agentId, { internalSearch: enabled });
-        } else {
-          setAgentCapabilities({ internalSearch: enabled });
-        }
-      }}
-      onToggleWebSearch={(enabled) => {
-        if (isAgentChat) {
-          if (agentId) setScopedAgentCapabilities(agentId, { webSearch: enabled });
-        } else {
-          setAgentCapabilities({ webSearch: enabled });
-        }
-      }}
-      agentHasInternalSearch={isAgentChat ? (agentHasInternalSearch ? undefined : false) : undefined}
-      agentHasWebSearch={isAgentChat ? (agentHasWebSearch ? undefined : false) : undefined}
+      {...plusMenuCapabilities}
     />
 
     {/* Overlay panel — collections (assistant) or agent resources (overlay mode) */}

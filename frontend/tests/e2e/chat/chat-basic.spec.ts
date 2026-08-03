@@ -151,13 +151,12 @@ test.describe('Chat — page structure', () => {
 
   test('plus button (attach files & capabilities) is visible in the toolbar', async ({ page }) => {
     // Attach files now lives inside the "+" menu instead of a standalone paperclip icon.
-    const plusIcon = page
-      .locator('span.material-icons-outlined')
-      .filter({ hasText: 'add' })
-      .first();
-    await expect(plusIcon).toBeVisible({ timeout: 5_000 });
+    // Queried by accessible name (not the icon ligature text) so icons like
+    // "add_circle" elsewhere on the page can't be matched by accident.
+    const plusButton = page.getByRole('button', { name: 'Attach files and capabilities' });
+    await expect(plusButton).toBeVisible({ timeout: 5_000 });
 
-    await plusIcon.click();
+    await plusButton.click();
     await expect(page.getByText('Attach files', { exact: true })).toBeVisible({ timeout: 5_000 });
   });
 
@@ -180,12 +179,10 @@ test.describe('Chat — toolbar', () => {
   test('search-view toggle icon is present', async ({ page }) => {
     // Agent is now the only chat mode (no more Agent/Internal Search/Web Search
     // picker); the toolbar just shows a small icon that switches to the separate
-    // keyword-search-results view.
-    const searchIcon = page
-      .locator('span.material-icons-outlined')
-      .filter({ hasText: 'search' })
-      .first();
-    await expect(searchIcon).toBeVisible({ timeout: 5_000 });
+    // keyword-search-results view. Queried by accessible name so icons like
+    // "manage_search" elsewhere on the page can't be matched by accident.
+    const searchToggle = page.getByRole('button', { name: 'Switch to search view' });
+    await expect(searchToggle).toBeVisible({ timeout: 5_000 });
   });
 });
 

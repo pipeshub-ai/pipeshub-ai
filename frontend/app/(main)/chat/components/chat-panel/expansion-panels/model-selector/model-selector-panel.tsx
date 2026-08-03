@@ -16,7 +16,13 @@ import {
 } from '@/chat/constants';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { resolveLlmProviderIconPath, AGENT_LLM_FALLBACK_ICON } from '@/lib/utils/llm-provider-icons';
-import { DEFAULT_REASONING_EFFORT, type AvailableLlmModel, type ModelOverride, type ReasoningEffort } from '@/chat/types';
+import {
+  DEFAULT_REASONING_EFFORT,
+  normalizeReasoningEffort,
+  type AvailableLlmModel,
+  type ModelOverride,
+  type ReasoningEffort,
+} from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
@@ -37,8 +43,9 @@ export const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; labelKey: strin
 ];
 
 export function getReasoningEffortLabel(t: TFunction, value: ReasoningEffort): string {
-  const option = REASONING_EFFORT_OPTIONS.find((o) => o.value === value);
-  return option ? t(option.labelKey, option.defaultLabel) : value;
+  const normalized = normalizeReasoningEffort(value) ?? value;
+  const option = REASONING_EFFORT_OPTIONS.find((o) => o.value === normalized);
+  return option ? t(option.labelKey, option.defaultLabel) : normalized;
 }
 
 interface ModelSelectorPanelProps {
@@ -80,7 +87,7 @@ export function ModelSelectorPanel({
   const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
   const models: AvailableLlmModel[] = cached?.models ?? [];
 
-  const reasoningEffort = useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null);
+  const reasoningEffort = normalizeReasoningEffort(useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null));
   const setReasoningEffortForCtx = useChatStore((s) => s.setReasoningEffortForCtx);
   const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
 

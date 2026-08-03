@@ -80,6 +80,8 @@ Object.defineProperty(window, 'localStorage', {
 
 const { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } = await import('../store');
 const { buildStreamChatRequestForSlot } = await import('../runtime');
+const { normalizeReasoningEffort } = await import('../types');
+const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
 
 const initialSettings = useChatStore.getState().settings;
 
@@ -141,6 +143,12 @@ describe('reasoningEffort store actions', () => {
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBeNull();
   });
 
+  it('hydrateReasoningEffortForCtx floors a legacy persisted "none" to "low" (matches backend flooring)', () => {
+    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'none');
+    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
+  });
+
   it('hydrateReasoningEffortForCtx does not overwrite an already-hydrated/explicit value', () => {
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'low');
     localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'high');
@@ -153,6 +161,38 @@ describe('reasoningEffort store actions', () => {
     useChatStore.getState().setReasoningEffortForCtx('agent-abc', 'high');
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('none');
     expect(useChatStore.getState().settings.reasoningEffort['agent-abc']).toBe('high');
+  });
+});
+
+describe('normalizeReasoningEffort', () => {
+  it('floors "none" to "low"', () => {
+    expect(normalizeReasoningEffort('none')).toBe('low');
+  });
+
+  it('passes through every other value (including null) unchanged', () => {
+    expect(normalizeReasoningEffort('low')).toBe('low');
+    expect(normalizeReasoningEffort('medium')).toBe('medium');
+    expect(normalizeReasoningEffort('high')).toBe('high');
+    expect(normalizeReasoningEffort('max')).toBe('max');
+    expect(normalizeReasoningEffort(null)).toBeNull();
+  });
+});
+
+describe('applyConversationModelInfoToStore — reasoningEffort normalization', () => {
+  it('floors a legacy "none" from conversation modelInfo to "low" (avoids showing "· none" in the toolbar)', () => {
+    applyConversationModelInfoToStore(
+      { modelKey: 'openai', modelName: 'gpt-5', reasoningEffort: 'none' },
+      ASSISTANT_CTX,
+    );
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
+  });
+
+  it('passes through a non-legacy reasoningEffort from conversation modelInfo unchanged', () => {
+    applyConversationModelInfoToStore(
+      { modelKey: 'openai', modelName: 'gpt-5', reasoningEffort: 'high' },
+      ASSISTANT_CTX,
+    );
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('high');
   });
 });
 

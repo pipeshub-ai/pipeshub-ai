@@ -190,7 +190,7 @@ describe('PlusMenuContent', () => {
 
   it('disables the internal search switch when agentHasInternalSearch=false', async () => {
     const Content = await importContent();
-    const { container } = renderContent(
+    renderContent(
       {
         onAttachFiles: vi.fn(),
         internalSearch: false,
@@ -201,13 +201,13 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
+    const internalSwitch = screen.getByRole('switch', { name: 'Internal Search' }) as HTMLButtonElement;
     expect(internalSwitch.disabled).toBe(true);
   });
 
   it('disables the web search switch when agentHasWebSearch=false', async () => {
     const Content = await importContent();
-    const { container } = renderContent(
+    renderContent(
       {
         onAttachFiles: vi.fn(),
         internalSearch: true,
@@ -218,14 +218,14 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const switches = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
-    expect(switches[1].disabled).toBe(true);
+    const webSwitch = screen.getByRole('switch', { name: 'Web Search' }) as HTMLButtonElement;
+    expect(webSwitch.disabled).toBe(true);
   });
 
   it('calls onToggleInternalSearch when the enabled switch is clicked', async () => {
     const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderContent(
+    renderContent(
       {
         onAttachFiles: vi.fn(),
         internalSearch: true,
@@ -235,15 +235,14 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
-    fireEvent.click(internalSwitch);
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
     expect(toggle).toHaveBeenCalled();
   });
 
   it('does NOT call onToggleInternalSearch when the capability is absent', async () => {
     const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderContent(
+    renderContent(
       {
         onAttachFiles: vi.fn(),
         internalSearch: false,
@@ -254,15 +253,14 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
-    fireEvent.click(internalSwitch);
+    fireEvent.click(screen.getByRole('switch', { name: 'Internal Search' }));
     expect(toggle).not.toHaveBeenCalled();
   });
 
   it('calls onToggleWebSearch when the enabled switch is clicked', async () => {
     const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderContent(
+    renderContent(
       {
         onAttachFiles: vi.fn(),
         internalSearch: true,
@@ -272,8 +270,7 @@ describe('PlusMenuContent', () => {
       },
       Content,
     );
-    const switches = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
-    fireEvent.click(switches[1]);
+    fireEvent.click(screen.getByRole('switch', { name: 'Web Search' }));
     expect(toggle).toHaveBeenCalled();
   });
 });

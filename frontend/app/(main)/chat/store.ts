@@ -14,6 +14,7 @@ import {
   type PendingAskUserQuestion,
   type AgentCapabilities,
   DEFAULT_AGENT_CAPABILITIES,
+  normalizeReasoningEffort,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
@@ -59,7 +60,7 @@ function lsGetReasoningEffort(ctxKey: string): import('./types').ReasoningEffort
     const raw = localStorage.getItem(`${LS_REASONING_EFFORT_KEY}:${ctxKey}`);
     if (!raw) return null;
     return (REASONING_EFFORT_VALUES as readonly string[]).includes(raw)
-      ? (raw as import('./types').ReasoningEffort)
+      ? normalizeReasoningEffort(raw as import('./types').ReasoningEffort)
       : null;
   } catch {
     return null;

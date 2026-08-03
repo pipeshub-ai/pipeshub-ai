@@ -8,6 +8,7 @@ import {
   findMergeTargetToolsetNode,
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
+import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -646,7 +647,12 @@ export function handleFlowCanvasDrop(
     data: {
       id: fallbackId,
       type: template.type,
-      label: normalizeDisplayName(template.label),
+      // Model names (e.g. "gpt-5.4-mini") already have their own official
+      // casing — normalizeDisplayName's snake_case title-casing would mangle
+      // them (-> "Gpt-5.4-mini"), so only apply it to identifier-style labels.
+      label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type)
+        ? template.label
+        : normalizeDisplayName(template.label),
       description: template.description,
       icon: template.icon,
       config: {

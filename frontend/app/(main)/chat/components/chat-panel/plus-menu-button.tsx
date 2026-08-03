@@ -38,7 +38,20 @@ function PlusMenuRow({
       align="center"
       justify="between"
       gap="3"
+      role={onClick ? 'menuitem' : undefined}
+      tabIndex={onClick && !disabled ? 0 : undefined}
+      aria-disabled={disabled || undefined}
       onClick={disabled ? undefined : onClick}
+      onKeyDown={
+        disabled || !onClick
+          ? undefined
+          : (e: React.KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+      }
       style={{
         padding: 'var(--space-2) var(--space-2)',
         borderRadius: 'var(--radius-2)',
@@ -74,6 +87,7 @@ function PlusMenuToggleRow({
       </Text>
       <Switch
         size="1"
+        aria-label={label}
         checked={checked && !disabled}
         disabled={disabled}
         onCheckedChange={onCheckedChange}

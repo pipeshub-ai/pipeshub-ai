@@ -33,6 +33,23 @@ export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
 
+/**
+ * What the backend actually floors a legacy `'none'` to
+ * (`REASONING_MANDATORY_FALLBACK_EFFORT` in `app/utils/llm_api_mode_store.py`).
+ */
+const REASONING_MANDATORY_FALLBACK_EFFORT: ReasoningEffort = 'low';
+
+/**
+ * Maps a persisted/legacy `'none'` to the value the backend actually runs
+ * with, so every UI surface (toolbar label, radio selection, regen payload)
+ * agrees with server behavior instead of echoing a choice that's no longer offered.
+ */
+export function normalizeReasoningEffort(
+  value: ReasoningEffort | null
+): ReasoningEffort | null {
+  return value === 'none' ? REASONING_MANDATORY_FALLBACK_EFFORT : value;
+}
+
 // Inline citation for display within answer text
 export interface InlineCitation {
   id: string;
