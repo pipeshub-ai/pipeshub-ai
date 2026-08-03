@@ -454,13 +454,13 @@ class TestGetBlockFileUrl:
 
 class TestStreamRecord:
     @pytest.mark.asyncio
-    async def test_no_datasource_raises_500(self):
+    async def test_no_datasource_raises_409(self):
         conn = _make_connector()
         conn.data_source = None
         record = _make_webpage_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_file_record_no_signed_url_raises_404(self):

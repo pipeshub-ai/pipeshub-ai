@@ -592,8 +592,9 @@ class TestGetSignedUrl:
     async def test_not_initialized(self, s3_connector):
         s3_connector.data_source = None
         record = MagicMock()
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket_name(self, s3_connector):
@@ -601,8 +602,9 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.external_record_group_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, s3_connector):
@@ -611,8 +613,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "mybucket"
         record.external_record_id = None
         record.id = "rec-1"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, s3_connector):

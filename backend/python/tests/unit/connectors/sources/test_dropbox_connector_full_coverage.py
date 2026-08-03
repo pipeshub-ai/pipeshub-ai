@@ -2714,8 +2714,12 @@ class TestGetSignedUrl:
     async def test_no_data_source(self, connector):
         connector.data_source = None
         record = MagicMock(id="r1")
-        result = await connector.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     async def test_no_user_with_permission(self, connector):
         record = MagicMock(id="r1")

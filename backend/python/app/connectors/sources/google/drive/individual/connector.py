@@ -1383,6 +1383,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Yield control back to event loop
                 await asyncio.sleep(0)
+        except HTTPException:
+            raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
             raise HTTPException(
