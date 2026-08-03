@@ -3762,7 +3762,8 @@ async def test_build_issue_records_promotes_placeholder():
     conn.data_source = MagicMock()
     conn.site_url = "https://jira.example"
     stub = _placeholder_ticket(external_id="10026", group_id="pid", revision="placeholder:1")
-    stub.source_updated_at = 999  # same as issue would skip without promotion
+    # Match issue updated so non-placeholder path would skip; promotion must still emit.
+    stub.source_updated_at = 1700000000000
     tx = MagicMock()
     tx.get_record_by_external_id = AsyncMock(return_value=stub)
     issue = {
@@ -3780,6 +3781,7 @@ async def test_build_issue_records_promotes_placeholder():
     mapper.map_status.return_value = "Open"
     mapper.map_priority.return_value = "Low"
     conn.value_mapper = mapper
+    conn._parse_jira_timestamp = MagicMock(return_value=1700000000000)  # type: ignore[method-assign]
     with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
         rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
     assert len(rows) == 1
