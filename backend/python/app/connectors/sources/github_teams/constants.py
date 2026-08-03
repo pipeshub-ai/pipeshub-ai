@@ -98,6 +98,15 @@ NOREPLY_EMAIL_SUFFIX = "@users.noreply.github.com"
 # often per connector instance.
 USER_EMAIL_RESYNC_INTERVAL_MS = 24 * 60 * 60 * 1000  # 1 day
 
+# Phase 3/4 both spend from GitHub's 30 req/min Search API pool (paced via
+# GITHUB_SEARCH_MIN_INTERVAL_SECONDS regardless of queue depth). Without a
+# cap, Phase 3 scales with unresolved org members and Phase 4 scales with the
+# entire PipesHub user directory -- both unbounded from this connector's
+# point of view. Cap each phase's input set per sweep; a cursor persisted on
+# the sync point rotates a different slice in on the next sweep.
+PHASE3_MAX_MEMBERS_PER_SYNC = 50
+PHASE4_MAX_CANDIDATE_EMAILS_PER_SYNC = 50
+
 # ---------------------------------------------------------------------------
 # Filter-options picker limits
 # ---------------------------------------------------------------------------

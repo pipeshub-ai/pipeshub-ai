@@ -22,12 +22,17 @@ from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUser, AppUserGroup
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import (
-    NOREPLY_EMAIL_SUFFIX,
-    PSEUDO_USER_GROUP_PREFIX,
     _GITHUB_USER_ENRICHMENT_CONCURRENCY,
+    NOREPLY_EMAIL_SUFFIX,
+    PHASE3_MAX_MEMBERS_PER_SYNC,
+    PHASE4_MAX_CANDIDATE_EMAILS_PER_SYNC,
+    PSEUDO_USER_GROUP_PREFIX,
+    USER_EMAIL_RESYNC_INTERVAL_MS,
 )
+from .models import GitHubLiterals
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -123,23 +128,9 @@ class UsersSync:
             unresolved_ids -= set(newly.keys())
             self.logger.info("Phase 2 (cached AppUsers): %s additional resolved", len(newly))
 
-        # ---- Phase 3: commit email extraction ----
+        # ---- Phase 3 & 4: Search-API-backed resolution (rate-limit budgeted) ----
         if unresolved_ids:
-            newly = await self._resolve_via_commit_emails(
-                {uid: dict_member[uid] for uid in unresolved_ids}, orgs,
-            )
-            resolved_email.update(newly)
-            unresolved_ids -= set(newly.keys())
-            self.logger.info("Phase 3 (commit email extraction): %s additional resolved", len(newly))
-
-        # ---- Phase 4: platform reverse lookup ----
-        if unresolved_ids:
-            newly = await self._reverse_lookup_platform_users(
-                {uid: dict_member[uid] for uid in unresolved_ids}, resolved_email, orgs,
-            )
-            resolved_email.update(newly)
-            unresolved_ids -= set(newly.keys())
-            self.logger.info("Phase 4 (platform reverse lookup): %s additional resolved", len(newly))
+            await self._run_search_backed_resolution(dict_member, unresolved_ids, resolved_email, orgs)
 
         # ---- Persist AppUsers for everyone resolved so far ----
         await self._persist_app_users(dict_member, resolved_email)
@@ -326,6 +317,90 @@ class UsersSync:
         return resolved
 
     # ------------------------------------------------------------------
+    # Phase 3 & 4: Search-API budget management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _select_with_cursor(items: list[str], cursor: str | None, budget: int) -> tuple[list[str], str | None]:
+        """Deterministically pick up to ``budget`` items from a pre-sorted list, resuming
+        just after ``cursor``.
+
+        Wraps around once the end of the list is reached so a different slice
+        is examined on each sweep instead of the same head-of-list subset
+        winning every time (starving the tail forever). Returns ``None`` as
+        the new cursor once a single sweep covers every item -- nothing left
+        to defer to the next run.
+        """
+        if not items:
+            return [], None
+        if len(items) <= budget:
+            return items, None
+        start = 0
+        if cursor is not None:
+            start = next((i for i, item in enumerate(items) if item > cursor), 0)
+        selected = (items[start:] + items[:start])[:budget]
+        return selected, selected[-1]
+
+    async def _run_search_backed_resolution(
+        self,
+        dict_member: dict[int, Any],
+        unresolved_ids: set[int],
+        resolved_email: dict[int, str],
+        orgs: list[str],
+    ) -> None:
+        """Runs Phase 3 (commit-email extraction) and Phase 4 (platform reverse
+        lookup) under an explicit Search API call budget.
+
+        Both phases draw from GitHub's 30 req/min Search API pool, paced by
+        ``RuntimeHelper.search_call`` regardless of how many calls are
+        queued -- an unbounded input set turns a sync into hours of pacing
+        alone. The whole sweep is throttled to once per
+        ``USER_EMAIL_RESYNC_INTERVAL_MS``, and each phase caps its input set
+        per sweep, persisting a cursor so a different slice gets a turn next time.
+        """
+        c = self.c
+        sync_point = c.user_sync_point
+        state = await sync_point.read_sync_point(GitHubLiterals.EMAIL_RESOLUTION_SWEEP.value) or {}
+        last_run_ms = state.get("last_run_ms")
+        now_ms = get_epoch_timestamp_in_ms()
+        if last_run_ms and (now_ms - last_run_ms) < USER_EMAIL_RESYNC_INTERVAL_MS:
+            self.logger.info(
+                "Skipping Phase 3/4 email-resolution sweep: last ran %.1fh ago (interval=%.0fh)",
+                (now_ms - last_run_ms) / 3_600_000, USER_EMAIL_RESYNC_INTERVAL_MS / 3_600_000,
+            )
+            return
+
+        # ---- Phase 3: commit email extraction (budgeted) ----
+        member_ids = sorted(str(uid) for uid in unresolved_ids)
+        selected_ids, phase3_cursor = self._select_with_cursor(
+            member_ids, state.get("phase3_cursor"), PHASE3_MAX_MEMBERS_PER_SYNC,
+        )
+        selected_uids = {int(s) for s in selected_ids}
+        newly = await self._resolve_via_commit_emails(
+            {uid: dict_member[uid] for uid in unresolved_ids if uid in selected_uids}, orgs,
+        )
+        resolved_email.update(newly)
+        unresolved_ids -= set(newly.keys())
+        self.logger.info(
+            "Phase 3 (commit email extraction): %s/%s member(s) examined, %s additional resolved",
+            len(selected_ids), len(member_ids), len(newly),
+        )
+
+        # ---- Phase 4: platform reverse lookup (budgeted) ----
+        newly, phase4_cursor = await self._reverse_lookup_platform_users(
+            {uid: dict_member[uid] for uid in unresolved_ids}, resolved_email, orgs,
+            state.get("phase4_cursor"),
+        )
+        resolved_email.update(newly)
+        unresolved_ids -= set(newly.keys())
+        self.logger.info("Phase 4 (platform reverse lookup): %s additional resolved", len(newly))
+
+        await sync_point.update_sync_point(
+            GitHubLiterals.EMAIL_RESOLUTION_SWEEP.value,
+            {"last_run_ms": now_ms, "phase3_cursor": phase3_cursor, "phase4_cursor": phase4_cursor},
+        )
+
+    # ------------------------------------------------------------------
     # Phase 4: platform reverse lookup
     # ------------------------------------------------------------------
 
@@ -334,14 +409,18 @@ class UsersSync:
         unresolved: dict[int, Any],
         resolved_email: dict[int, str],
         orgs: list[str],
-    ) -> dict[int, str]:
+        cursor: str | None = None,
+    ) -> tuple[dict[int, str], str | None]:
         """Reverse-lookup PipesHub-known emails against GitHub to resolve users whose
         GitHub profile email is private and who have no attributable commit history.
 
         For each candidate email (PipesHub org emails minus already-resolved
-        ones), tries commit-search first (works for hidden emails), falling
-        back to user-search (public emails only, single-match validated).
-        Early-exits once every unresolved member has been matched.
+        ones, capped at ``PHASE4_MAX_CANDIDATE_EMAILS_PER_SYNC`` starting
+        from ``cursor``), tries commit-search first (works for hidden
+        emails), falling back to user-search (public emails only,
+        single-match validated). Early-exits once every unresolved member
+        has been matched. Returns the resolved emails plus the cursor to
+        resume from on the next sweep.
         """
         c = self.c
         pipeshub_users = await c.data_entities_processor.get_all_active_users()
@@ -349,22 +428,26 @@ class UsersSync:
             u.email.lower() for u in pipeshub_users if getattr(u, "email", None)
         }
         already_resolved = {e.lower() for e in resolved_email.values()}
-        candidate_emails = pipeshub_emails - already_resolved
+        candidate_emails = sorted(pipeshub_emails - already_resolved)
         if not candidate_emails:
-            return {}
+            return {}, None
+
+        budgeted_emails, new_cursor = self._select_with_cursor(
+            candidate_emails, cursor, PHASE4_MAX_CANDIDATE_EMAILS_PER_SYNC,
+        )
 
         unresolved_by_login = {
             getattr(m, "login", None): uid for uid, m in unresolved.items() if getattr(m, "login", None)
         }
         newly_resolved: dict[int, str] = {}
-        for email in candidate_emails:
+        for email in budgeted_emails:
             if not unresolved_by_login:
                 break
             login = await self._try_resolve_email_to_login(email, orgs)
             if login and login in unresolved_by_login:
                 uid = unresolved_by_login.pop(login)
                 newly_resolved[uid] = email
-        return newly_resolved
+        return newly_resolved, new_cursor
 
     async def _try_resolve_email_to_login(self, email: str, orgs: list[str]) -> str | None:
         """Best-effort email -> GitHub login lookup. Commit-search first (works for
@@ -464,7 +547,7 @@ class UsersSync:
             except Exception as e:
                 self.logger.warning(
                     "Failed to migrate pseudo-group permissions for user %s: %s",
-                    user.email, e, exc_info=True,
+                    user.source_user_id, e, exc_info=True,
                 )
 
     # ------------------------------------------------------------------

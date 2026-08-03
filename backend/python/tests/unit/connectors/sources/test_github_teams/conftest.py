@@ -72,6 +72,11 @@ def make_mock_connector() -> MagicMock:
     rsp.update_sync_point = AsyncMock()
     c.record_sync_point = rsp
 
+    usp = MagicMock()
+    usp.read_sync_point = AsyncMock(return_value={})
+    usp.update_sync_point = AsyncMock()
+    c.user_sync_point = usp
+
     c.datetime_range_from_sync_filter = MagicMock(return_value=(None, None))
     c.creator_user_permission = MagicMock(return_value=None)
 

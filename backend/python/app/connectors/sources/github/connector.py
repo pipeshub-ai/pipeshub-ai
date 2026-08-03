@@ -71,12 +71,14 @@ class GitHubPersonalProjectsSync(ProjectsSync):
         permission = self.c.creator_user_permission()
         return [permission] if permission is not None else []
 
-    async def _resolve_repos_with_filters(self) -> list[Repository]:
+    async def _resolve_repos_with_filters(self) -> tuple[list[Repository], bool]:
         """Personal repo discovery: repos owned directly by the authenticated user.
 
         Applies the ``REPO_IDS`` filter only — there is no org filter for the
         personal connector (a personally-owned repo has exactly one, fixed
         owner: the connector's own account).
+
+        Returns ``(repos, discovery_complete)`` — see base ``ProjectsSync``.
         """
         c = self.c
         sf = c.sync_filters
@@ -88,17 +90,28 @@ class GitHubPersonalProjectsSync(ProjectsSync):
 
         if repo_in:
             by_id: dict[int, Repository] = {}
+            discovery_complete = True
             for full_name in repo_in:
                 if "/" not in full_name:
                     self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
+                    discovery_complete = False
                     continue
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
+                    discovery_complete = False
+                    continue
+                resolved_owner = getattr(getattr(res.data, "owner", None), "login", None)
+                if c._github_login and resolved_owner and resolved_owner.lower() != c._github_login.lower():
+                    self.logger.error(
+                        "Skipping repo filter value not owned by the authenticated user: %s (owner=%s)",
+                        full_name, resolved_owner,
+                    )
+                    discovery_complete = False
                     continue
                 by_id[int(res.data.id)] = res.data
-            return list(by_id.values())
+            return list(by_id.values()), discovery_complete
 
         res = await c.runtime.ds_call(c.data_source.list_user_repos, None, "owner")
         if not res.success:
@@ -107,7 +120,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
         if repo_not_in:
             excluded = set(repo_not_in)
             candidates = [r for r in candidates if getattr(r, "full_name", None) not in excluded]
-        return candidates
+        return candidates, True
 
 
 def _filter_op_val(f: object) -> str:

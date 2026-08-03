@@ -104,7 +104,7 @@ class TestSyncRepoMembers:
         sync._flush_org_record_groups = AsyncMock()
         sync._update_repo_inventory = AsyncMock()
         sync._detect_deleted_repos = AsyncMock()
-        sync._resolve_repos_with_filters = AsyncMock(return_value=[repo])
+        sync._resolve_repos_with_filters = AsyncMock(return_value=([repo], True))
 
         # Issues/code steps aren't under test here.
         c.issues.fetch_issues_batched = AsyncMock()

@@ -116,6 +116,7 @@ class TestProcessIssueToTicket:
         sync = IssuesSync(c)
         ru = await sync._process_issue_to_ticket(repo, issue)
 
+        assert ru is not None
         assert ru.is_new is False
         assert ru.is_updated is True
         assert ru.metadata_changed is True

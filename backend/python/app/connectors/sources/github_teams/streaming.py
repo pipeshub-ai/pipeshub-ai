@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import MimeTypes
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
 
 if TYPE_CHECKING:
@@ -82,7 +83,7 @@ class StreamingHelper:
             return StreamingResponse(
                 content=iter([blocks]),
                 media_type=MimeTypes.BLOCKS.value,
-                headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
+                headers=self._blocks_content_disposition(record),
             )
 
         if record.record_type == RecordType.PULL_REQUEST.value:
@@ -90,7 +91,7 @@ class StreamingHelper:
             return StreamingResponse(
                 content=iter([blocks]),
                 media_type=MimeTypes.BLOCKS.value,
-                headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
+                headers=self._blocks_content_disposition(record),
             )
 
         if record.record_type == RecordType.FILE.value:
@@ -120,6 +121,20 @@ class StreamingHelper:
             )
 
         raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+
+    @staticmethod
+    def _blocks_content_disposition(record: Record) -> dict[str, str]:
+        """Sanitized ``Content-Disposition`` header for the blocks-container branches.
+
+        Ticket/PR titles are arbitrary user text reaching this header
+        unsanitized: non-latin-1 characters crash header encoding, and
+        quotes/control characters are not otherwise escaped. Reuses the same
+        sanitizer ``create_stream_record_response`` applies for FILE/CODE_FILE.
+        """
+        safe_filename = sanitize_filename_for_content_disposition(
+            record.record_name or "", fallback=f"record_{record.id}"
+        )
+        return {"Content-Disposition": f'attachment; filename="{safe_filename}"'}
 
     # ------------------------------------------------------------------
     # Reindex

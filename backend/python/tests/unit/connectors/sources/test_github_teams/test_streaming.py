@@ -44,7 +44,7 @@ class TestStreamRecordDispatch:
         response = await helper.stream_record(_record("TICKET"))
 
         c.issues.build_ticket_blocks.assert_awaited_once()
-        assert response.media_type == "application/blocks+json" or "blocks" in response.media_type.lower() or True
+        assert response.media_type == "application/blocks"
 
     async def test_pull_request_streams_blocks_container(self) -> None:
         c = make_mock_connector()
@@ -54,6 +54,35 @@ class TestStreamRecordDispatch:
         await helper.stream_record(_record("PULL_REQUEST"))
 
         c.pull_requests.build_pull_request_blocks.assert_awaited_once()
+
+    async def test_ticket_content_disposition_sanitizes_non_latin1_title(self) -> None:
+        """Issue titles are arbitrary user text; a raw non-latin-1 title in the
+        header would raise UnicodeEncodeError when the ASGI server encodes it."""
+        c = make_mock_connector()
+        c.issues.build_ticket_blocks = AsyncMock(return_value="{}")
+        helper = StreamingHelper(c)
+        record = _record("TICKET", record_name="Fix caf\u00e9 crash \U0001F41B")
+
+        response = await helper.stream_record(record)
+
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in response.raw_headers}
+        header_value = headers["content-disposition"]
+        header_value.encode("latin-1")  # must not raise
+        assert "caf" in header_value
+
+    async def test_pull_request_content_disposition_escapes_quotes_and_control_chars(self) -> None:
+        c = make_mock_connector()
+        c.pull_requests.build_pull_request_blocks = AsyncMock(return_value="{}")
+        helper = StreamingHelper(c)
+        record = _record("PULL_REQUEST", record_name='Fix "bug"\r\nX-Injected: evil')
+
+        response = await helper.stream_record(record)
+
+        header_value = {
+            k.decode("latin-1"): v.decode("latin-1") for k, v in response.raw_headers
+        }["content-disposition"]
+        header_value.encode("latin-1")  # must not raise
+        assert "\r" not in header_value and "\n" not in header_value
 
     async def test_file_record_streams_attachment_content(self) -> None:
         c = make_mock_connector()

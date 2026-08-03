@@ -22,7 +22,6 @@ to extend ``GitHubTeamsConnector``, overriding only the permission hooks on
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any
@@ -83,8 +82,6 @@ from .users import UsersSync
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
-
-_GITHUB_EXECUTOR_MAX_WORKERS = 8
 
 
 @(
@@ -227,18 +224,19 @@ class GitHubTeamsConnector(BaseConnector):
         self._github_login: str | None = None
         self._code_file_timestamp_backfill_task = None
 
-        # Dedicated executor: isolates blocking PyGithub threads from the
-        # shared loop executor so a stuck call cannot freeze the service.
-        self._github_executor: ThreadPoolExecutor = ThreadPoolExecutor(
-            max_workers=_GITHUB_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"github-{connector_id[:8]}",
-        )
-
         # Sync point for checkpoint management
         self.record_sync_point = SyncPoint(
             connector_id=connector_id,
             org_id=data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=data_store_provider,
+        )
+        # Throttles/budgets the Search-API-backed email-resolution sweep (see
+        # UsersSync._run_search_backed_resolution).
+        self.user_sync_point = SyncPoint(
+            connector_id=connector_id,
+            org_id=data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.USERS,
             data_store_provider=data_store_provider,
         )
 
@@ -294,8 +292,8 @@ class GitHubTeamsConnector(BaseConnector):
                     self._github_user_id = uid
                     self._github_login = login
                     self.logger.info(
-                        "GitHub creator resolved: pipeshub_email=%r, github_user_id=%s, login=%s",
-                        self.creator_email, self._github_user_id, self._github_login,
+                        "GitHub creator resolved: creator_email_resolved=%s, github_user_id=%s, login=%s",
+                        bool(self.creator_email), self._github_user_id, self._github_login,
                     )
                     return
             self.logger.warning(
@@ -398,7 +396,7 @@ class GitHubTeamsConnector(BaseConnector):
         await self.repos.cancel_timestamp_backfill()
         self.data_source = None
         try:
-            self._github_executor.shutdown(wait=False, cancel_futures=True)
+            self.runtime.shutdown(wait=False)
         except Exception as e:
             self.logger.warning("GitHub executor shutdown raised; ignoring: %s", e)
 

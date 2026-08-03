@@ -34,14 +34,15 @@ class GitHubLiterals(str, Enum):
     UTF_8 = "utf-8"
     IMAGE = "image"
     ATTACHMENT = "attachment"
+    EMAIL_RESOLUTION_SWEEP = "email-resolution-sweep"
 
 
 class RecordUpdate(BaseModel):
     """Carries a Record together with the change flags needed by data_entities_processor.
 
-    All boolean flags default to False to make construction at call sites
-    explicit about what actually changed. Mirrors the GitLab connector's
-    contract so the same downstream helpers can be reused.
+    All boolean flags are required so every call site states explicitly what
+    changed. Mirrors the GitLab connector's contract so the same downstream
+    helpers can be reused.
     """
 
     record: Record

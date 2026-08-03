@@ -55,20 +55,36 @@ class GitHubDataSource:
             self._sdk: Github = client
             # NOTE : when can this be a case
         else:
-            get_sdk = getattr(client, "get_sdk", None)
-            if get_sdk is None or not callable(get_sdk):
-                raise TypeError("client must be a github.GithubClient or expose get_sdk() -> Github")
-            sdk = get_sdk()
-            if not isinstance(sdk, Github):
-                raise TypeError("get_sdk() must return a github.Github instance")
-            self._sdk = sdk
-            get_token = getattr(client, "get_token", None)
-            if get_token is None or not callable(get_token):
-                raise TypeError("client must be a github.GitHubClient or expose get_token() -> str")
-            token = get_token()
-            if not isinstance(token, str):
-                raise TypeError("get_token() must return a string")
-            self.token = token
+            self._bind_from_wrapper(client)
+
+    def _bind_from_wrapper(self, client: object) -> None:
+        get_sdk = getattr(client, "get_sdk", None)
+        if get_sdk is None or not callable(get_sdk):
+            raise TypeError("client must be a github.GithubClient or expose get_sdk() -> Github")
+        sdk = get_sdk()
+        if not isinstance(sdk, Github):
+            raise TypeError("get_sdk() must return a github.Github instance")
+        self._sdk = sdk
+        get_token = getattr(client, "get_token", None)
+        if get_token is None or not callable(get_token):
+            raise TypeError("client must be a github.GitHubClient or expose get_token() -> str")
+        token = get_token()
+        if not isinstance(token, str):
+            raise TypeError("get_token() must return a string")
+        self.token = token
+
+    def rebind_client(self, client: object) -> None:
+        """Re-point this data source at a freshly rebuilt SDK/token pair.
+
+        PyGithub binds ``Auth.Token`` at construction time, so rotating the
+        access token (``GitHubClientViaToken.set_token``) builds a brand new
+        ``Github`` instance rather than mutating one in place. Without this
+        call, every request made through this data source after a token
+        refresh -- SDK-backed calls via the stale ``self._sdk``, and the
+        direct-httpx image/attachment paths via the stale ``self.token`` --
+        would keep using the expired credential.
+        """
+        self._bind_from_wrapper(client)
 
     # -----------------------
     # Internal helpers
@@ -1081,13 +1097,22 @@ class GitHubDataSource:
     # Search (email reverse-lookup)
     # -----------------------
 
+    # Every caller of these three wrappers only needs the first usable hit
+    # (breaks on the first non-noreply commit email / linked login / exact
+    # email match) -- materializing the full ``PaginatedList`` instead issues
+    # one Search API HTTP request per page, which blows through GitHub's
+    # 30 req/min Search budget regardless of how ``RuntimeHelper.search_call``
+    # paces *logical* calls. ``get_page(0)`` bounds each call to exactly one
+    # HTTP request; slicing on top of that keeps the returned set small.
+    _SEARCH_FIRST_PAGE_SIZE = 30
+
     def search_users_by_email(self, email: str) -> GitHubResponse[list[NamedUser]]:
         """Search users by email. Only matches users with a *public* profile
         email — cannot resolve hidden emails (use ``search_commits_by_author_email``
         for that)."""
         try:
             query = f"{email} in:email"
-            users = list(self._sdk.search_users(query))
+            users = self._sdk.search_users(query).get_page(0)[: self._SEARCH_FIRST_PAGE_SIZE]
             return GitHubResponse(success=True, data=users)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -1105,7 +1130,7 @@ class GitHubDataSource:
             query = f"author-email:{email}"
             if org:
                 query += f" org:{org}"
-            commits = list(self._sdk.search_commits(query))
+            commits = self._sdk.search_commits(query).get_page(0)[: self._SEARCH_FIRST_PAGE_SIZE]
             return GitHubResponse(success=True, data=commits)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -1121,7 +1146,7 @@ class GitHubDataSource:
             query = f"author:{login}"
             if org:
                 query += f" org:{org}"
-            commits = list(self._sdk.search_commits(query))
+            commits = self._sdk.search_commits(query).get_page(0)[: self._SEARCH_FIRST_PAGE_SIZE]
             return GitHubResponse(success=True, data=commits)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))

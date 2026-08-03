@@ -112,6 +112,9 @@ class IssuesSync:
 
             if not is_pull_request and comments_enabled:
                 comment_attachments = await self._fetch_issue_comment_attachments(repo, issue, record_update.record)
+                if comment_attachments and not issues_enabled:
+                    for ru in comment_attachments:
+                        ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates.extend(comment_attachments)
 
         return record_updates

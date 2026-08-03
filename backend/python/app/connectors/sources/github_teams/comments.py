@@ -245,7 +245,9 @@ class CommentsHelper:
                 preview_renderable=True,
                 version=0,
                 size_in_bytes=0,
-                source_created_at=get_epoch_timestamp_in_ms(),
+                source_created_at=(
+                    getattr(existing_record, "source_created_at", None) or get_epoch_timestamp_in_ms()
+                ),
                 source_updated_at=get_epoch_timestamp_in_ms(),
             )
             list_records_new.append(RecordUpdate(
@@ -360,6 +362,7 @@ class CommentsHelper:
 
     async def build_pr_comment_and_diff_blocks(
         self, owner: str, repo: str, pr_number: int, pull_request: Any, parent_index: int, record: Record,
+        start_index: int | None = None,
     ) -> tuple[list[BlockGroup], list[Block], list[RecordUpdate]]:
         """Build conversation-comment BlockGroups, then one FULL_CODE_PATCH BlockGroup
         per changed file with that file's review comments attached as a single thread.
@@ -368,12 +371,22 @@ class CommentsHelper:
         for a path share one inner list) rather than one single-comment thread per
         comment — the personal connector's original ``review_comments_map[path].append([bc])``
         created a new 1-comment thread each time, which is the bug this fixes.
+
+        ``parent_index`` is the *semantic* parent group (the PR description,
+        ``bg_0``) that every produced group points back to via its own
+        ``parent_index`` field — it is independent of numbering. ``start_index``
+        is the first free ``index`` to hand out; it defaults to
+        ``parent_index + 1`` (the historical behaviour, valid only when no
+        other groups have already been allocated indices above the parent),
+        but callers that insert other groups (e.g. a commits section) between
+        the parent and these groups must pass the next free index explicitly
+        to avoid colliding with those groups.
         """
         c = self.c
         block_groups: list[BlockGroup] = []
         blocks: list[Block] = []
         remaining: list[RecordUpdate] = []
-        block_group_number = parent_index + 1
+        block_group_number = start_index if start_index is not None else parent_index + 1
 
         conversation_res = await c.runtime.ds_call(c.data_source.list_issue_comments, owner, repo, pr_number)
         if not conversation_res.success:
@@ -474,6 +487,7 @@ class CommentsHelper:
             file_threads = review_comments_map.get(filename, [])
             bg = BlockGroup(
                 index=block_group_number,
+                parent_index=parent_index,
                 name=f"File change: {filename}",
                 type=GroupType.FULL_CODE_PATCH,
                 format=DataFormat.MARKDOWN,

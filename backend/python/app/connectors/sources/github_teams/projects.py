@@ -95,9 +95,16 @@ class ProjectsSync:
         self._org_permission_accumulator = {}
         self._org_record_group_meta = {}
 
-        repos = await self._resolve_repos_with_filters()
+        repos, discovery_complete = await self._resolve_repos_with_filters()
         current_ids = {int(r.id) for r in repos}
-        await self._detect_deleted_repos(current_ids)
+        if discovery_complete:
+            await self._detect_deleted_repos(current_ids)
+        else:
+            self.logger.warning(
+                "GitHub repo discovery was incomplete this sync (one or more listing "
+                "calls failed); skipping deletion detection and inventory update so a "
+                "transient error cannot orphan records."
+            )
 
         if not repos:
             self.logger.warning("No GitHub repositories to sync after applying filters")
@@ -113,7 +120,8 @@ class ProjectsSync:
                 )
 
         await self._flush_org_record_groups()
-        await self._update_repo_inventory(current_ids)
+        if discovery_complete:
+            await self._update_repo_inventory(current_ids)
 
     async def _sync_repo(self, repo: Repository) -> None:
         """Sync one repo: permissions -> record group hierarchy -> issues/PRs/code."""
@@ -153,7 +161,7 @@ class ProjectsSync:
     # Repo resolution
     # ------------------------------------------------------------------
 
-    async def _resolve_repos_with_filters(self) -> list[Repository]:
+    async def _resolve_repos_with_filters(self) -> tuple[list[Repository], bool]:
         """Resolve repos to sync from sync filters.
 
         Semantics:
@@ -162,6 +170,12 @@ class ProjectsSync:
         - ``ORG_IDS IN`` (without ``REPO_IDS IN``): all repos under each listed org.
         - Neither filter: discover every org visible to the token.
         - ``NOT_IN`` variants are subtractive.
+
+        Returns ``(repos, discovery_complete)``. ``discovery_complete`` is False
+        whenever any lookup failed (malformed filter value, ``get_repo`` miss,
+        or ``list_org_repos`` failure) — callers must not treat the returned
+        set as authoritative for deletion detection in that case, since a
+        transient error would otherwise look identical to a real deletion.
         """
         c = self.c
         sf = c.sync_filters
@@ -178,16 +192,19 @@ class ProjectsSync:
         repo_not_in = repo_vals if repo_op == FilterOperator.NOT_IN else []
 
         by_id: dict[int, Repository] = {}
+        discovery_complete = True
 
         if repo_in:
             for full_name in repo_in:
                 if "/" not in full_name:
                     self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
+                    discovery_complete = False
                     continue
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
                 if not res.success or not res.data:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
+                    discovery_complete = False
                     continue
                 by_id[int(res.data.id)] = res.data
         else:
@@ -196,6 +213,7 @@ class ProjectsSync:
                 res = await c.runtime.ds_call(c.data_source.list_org_repos, org)
                 if not res.success:
                     self.logger.error("Could not list repos for org %s: %s", org, res.error)
+                    discovery_complete = False
                     continue
                 for r in res.data or []:
                     by_id[int(r.id)] = r
@@ -208,7 +226,7 @@ class ProjectsSync:
             excluded_orgs = set(org_not_in)
             candidates = [r for r in candidates if getattr(r.owner, "login", None) not in excluded_orgs]
 
-        return candidates
+        return candidates, discovery_complete
 
     # ------------------------------------------------------------------
     # Repo member / permission sync

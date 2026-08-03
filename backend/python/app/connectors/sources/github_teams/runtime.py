@@ -58,7 +58,6 @@ class RuntimeHelper:
             max_workers=_GITHUB_EXECUTOR_MAX_WORKERS,
             thread_name_prefix=f"github-{connector.connector_id[:8]}",
         )
-        connector._github_executor = self._executor
 
         # Search API has its own 30 req/min budget, wholly separate from the
         # 5,000 req/hr core budget. A semaphore plus a minimum inter-call gap
@@ -100,7 +99,14 @@ class RuntimeHelper:
     # ------------------------------------------------------------------
 
     def _apply_access_token_to_clients(self, access_token: str) -> None:
-        """Push a refreshed access token to the PyGithub-backed SDK client."""
+        """Push a refreshed access token to the PyGithub-backed SDK client.
+
+        ``set_token`` rebuilds a brand new ``Github`` instance (PyGithub
+        binds auth at construction time), so ``c.data_source`` -- which
+        holds its own reference to the SDK and a copy of the token, taken
+        once at construction -- must be explicitly rebound or it silently
+        keeps serving requests with the expired credential.
+        """
         if not access_token:
             return
         c = self.c
@@ -108,6 +114,8 @@ class RuntimeHelper:
             internal_client = c.external_client.get_client()
             if internal_client.get_token() != access_token:
                 internal_client.set_token(access_token)
+                if c.data_source:
+                    c.data_source.rebind_client(c.external_client)
 
     async def refresh_token_if_needed(self) -> None:
         """Sync the active client token from etcd when the background refresher has rotated it.

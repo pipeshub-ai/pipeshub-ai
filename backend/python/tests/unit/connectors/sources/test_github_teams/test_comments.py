@@ -68,7 +68,7 @@ class TestCleanGithubContent:
         assert len(attachments) == 1
         assert attachments[0]["type"] == "log"
         assert attachments[0]["filename"] == "crash.log"
-        assert "crash.log" not in cleaned or "[crash.log]" not in cleaned
+        assert "[crash.log](https://github.com/user-attachments/files/9/crash.log)" not in cleaned
 
     async def test_empty_text_returns_empty(self) -> None:
         c = make_mock_connector()

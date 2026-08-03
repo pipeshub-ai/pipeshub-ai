@@ -15,7 +15,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.connectors.sources.github_teams.comments import CommentsHelper
 from app.connectors.sources.github_teams.pull_requests import PullRequestsSync
+from app.models.blocks import BlocksContainer
 from app.models.entities import PullRequestRecord
 
 from .conftest import failed_response, make_mock_connector, make_repo, ok_response
@@ -75,6 +77,7 @@ class TestProcessPullRequestStub:
         sync = PullRequestsSync(c)
         ru = await sync.process_pull_request_stub(repo, SimpleNamespace(number=5))
 
+        assert ru is not None
         assert ru.record.status == "merged"
         assert ru.record.merged_by == "maintainer"
 
@@ -98,6 +101,7 @@ class TestProcessPullRequestStub:
         sync = PullRequestsSync(c)
         ru = await sync.process_pull_request_stub(repo, SimpleNamespace(number=5))
 
+        assert ru is not None
         assert ru.record.indexing_status == "AUTO_INDEX_OFF"
 
 
@@ -153,6 +157,61 @@ class TestReindexCheck:
         )
         result = await sync.check_and_fetch_updated_pr_for_reindex(record)
         assert result is None
+
+
+class TestBuildPullRequestBlocks:
+    async def test_commits_and_comments_have_distinct_block_group_indices(self) -> None:
+        """Regression test: when a PR has both a commits section and conversation
+        comments, the commits BlockGroup and the first comment BlockGroup must not
+        share an index — they previously both landed on index=1 because the comment
+        numbering started at parent_index + 1 (0 + 1) without accounting for the
+        commits group already occupying index 1."""
+        c = make_mock_connector()
+        c.comments = CommentsHelper(c)
+        repo = make_repo(repo_id=10)
+        pr = _pr(number=5)
+
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(repo),
+            "get_pull": ok_response(pr),
+            "get_pull_commits": ok_response([
+                SimpleNamespace(
+                    commit=SimpleNamespace(message="fix bug", committer=SimpleNamespace(date=None)),
+                    html_url="https://github.com/acme/widgets/commit/abc", sha="abc",
+                ),
+            ]),
+            "list_issue_comments": ok_response([
+                SimpleNamespace(
+                    body="looks good", user=SimpleNamespace(login="reviewer"),
+                    html_url="https://github.com/acme/widgets/pull/5#issuecomment-1",
+                    updated_at=None, id=1,
+                ),
+            ]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([]),
+        })
+
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="PR #5", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
+            weburl="https://github.com/acme/widgets/pull/5",
+        )
+
+        sync = PullRequestsSync(c)
+        blocks_json = await sync.build_pull_request_blocks(record)
+        container = BlocksContainer.model_validate_json(blocks_json)
+
+        indices = [bg.index for bg in container.block_groups]
+        assert len(indices) == len(set(indices)), f"duplicate block group indices: {indices}"
+
+        commits_bg = next(bg for bg in container.block_groups if bg.name == "Commits")
+        comment_bg = next(bg for bg in container.block_groups if bg.name and bg.name.startswith("Comment by"))
+        assert commits_bg.index != comment_bg.index
+        # Comments remain declared children of bg_0 (the description), not of
+        # the commits group, even though the commits group was numbered first.
+        assert comment_bg.parent_index == 0
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:

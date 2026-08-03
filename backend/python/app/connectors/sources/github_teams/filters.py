@@ -98,10 +98,11 @@ class FiltersHelper:
         has_more = len(orgs) > end
 
         opts = [
-            FilterOption(id=str(o.login), label=str(getattr(o, "name", None) or o.login))
+            FilterOption(id=login, label=str(getattr(o, "name", None) or login))
             for o in page_items
+            if (login := str(getattr(o, "login", "") or ""))
         ]
-        return FilterOptionsResponse(success=True, options=opts, page=page, limit=limit, has_more=has_more)
+        return FilterOptionsResponse(success=True, options=opts, page=page, limit=per_page, has_more=has_more)
 
     # ------------------------------------------------------------------
     # Repo picker
@@ -133,5 +134,9 @@ class FiltersHelper:
             repos = all_repos[start:end]
             has_more = len(all_repos) > end
 
-        opts = [FilterOption(id=str(r.full_name), label=str(r.full_name)) for r in repos]
-        return FilterOptionsResponse(success=True, options=opts, page=page, limit=limit, has_more=has_more)
+        opts = [
+            FilterOption(id=full_name, label=full_name)
+            for r in repos
+            if (full_name := str(getattr(r, "full_name", "") or ""))
+        ]
+        return FilterOptionsResponse(success=True, options=opts, page=page, limit=per_page, has_more=has_more)

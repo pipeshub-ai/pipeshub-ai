@@ -57,9 +57,10 @@ class TestResolveReposWithFilters:
         c.runtime.ds_call.return_value = ok_response(repos)
 
         sync = GitHubPersonalProjectsSync(c)
-        result = await sync._resolve_repos_with_filters()
+        result, discovery_complete = await sync._resolve_repos_with_filters()
 
         assert result == repos
+        assert discovery_complete is True
         args = c.runtime.ds_call.call_args.args
         assert args[0] is c.data_source.list_user_repos
         assert args[1:] == (None, "owner")
@@ -83,9 +84,10 @@ class TestResolveReposWithFilters:
         c.runtime.ds_call.side_effect = dispatch
 
         sync = GitHubPersonalProjectsSync(c)
-        result = await sync._resolve_repos_with_filters()
+        result, discovery_complete = await sync._resolve_repos_with_filters()
 
         assert {r.id for r in result} == {1, 2}
+        assert discovery_complete is True
 
     async def test_repo_ids_not_in_filter_excludes_from_candidates(self) -> None:
         c = make_mock_connector()
@@ -99,9 +101,10 @@ class TestResolveReposWithFilters:
         c.runtime.ds_call.return_value = ok_response([kept, excluded])
 
         sync = GitHubPersonalProjectsSync(c)
-        result = await sync._resolve_repos_with_filters()
+        result, discovery_complete = await sync._resolve_repos_with_filters()
 
         assert result == [kept]
+        assert discovery_complete is True
 
     async def test_malformed_filter_value_skipped(self) -> None:
         c = make_mock_connector()
@@ -112,9 +115,10 @@ class TestResolveReposWithFilters:
         c.sync_filters = {SyncFilterKey.REPO_IDS: repo_filter}
 
         sync = GitHubPersonalProjectsSync(c)
-        result = await sync._resolve_repos_with_filters()
+        result, discovery_complete = await sync._resolve_repos_with_filters()
 
         assert result == []
+        assert discovery_complete is False
 
     async def test_list_user_repos_failure_raises(self) -> None:
         c = make_mock_connector()

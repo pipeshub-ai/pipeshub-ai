@@ -29,7 +29,14 @@ from typing import TYPE_CHECKING, Any
 
 from github.Repository import Repository  # type: ignore
 
-from app.config.constants.arangodb import CollectionNames, Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+    get_mime_type_for_extension,
+)
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
@@ -224,12 +231,13 @@ class ReposSync:
         folders = [(p, s) for p, t, s, _sz in entries if t == "tree"]
         blobs = [(p, s, sz) for p, t, s, sz in entries if t == "blob"]
 
+        all_ok = True
         level_wise: dict[int, list[tuple[str, str]]] = {}
         for path, sha in folders:
             level_wise.setdefault(path.count("/"), []).append((path, sha))
         for _level, files in sorted(level_wise.items()):
             record_updates = [self._build_folder_record(repo, path, sha) for path, sha in files]
-            await self._process_records(record_updates)
+            all_ok = await self._process_records(record_updates) and all_ok
 
         code_files_enabled = self._code_files_indexing_enabled()
         batch: list[RecordUpdate] = []
@@ -241,16 +249,16 @@ class ReposSync:
                 continue
             batch.append(record_update)
             if len(batch) >= c.batch_size * 4:
-                await self._process_records(batch)
+                all_ok = await self._process_records(batch) and all_ok
                 batch = []
         if batch:
-            await self._process_records(batch)
+            all_ok = await self._process_records(batch) and all_ok
 
         self.logger.info(
             "Full code sync for %s: %s folder(s), %s file(s) persisted, %s skipped",
             repo.full_name, len(folders), len(blobs) - skipped, skipped,
         )
-        return True
+        return all_ok
 
     # ------------------------------------------------------------------
     # Incremental sync
@@ -431,7 +439,7 @@ class ReposSync:
             return True
         c = self.c
         new_paths = [new_p for _old, new_p, _sha in renames]
-        await self._ensure_folder_records_for_paths(repo, new_paths)
+        folders_ok = await self._ensure_folder_records_for_paths(repo, new_paths)
 
         code_files_enabled = self._code_files_indexing_enabled()
         moves: list[tuple[str, Any, list[Any]]] = []
@@ -443,24 +451,33 @@ class ReposSync:
             old_external_id = _blob_external_id(repo.id, old_path)
             moves.append((old_external_id, new_record, []))
 
+        moves_ok = True
         if moves:
-            await c.data_entities_processor.on_records_moved(moves)
-        return True
+            try:
+                await c.data_entities_processor.on_records_moved(moves)
+            except Exception as e:
+                # Caught here (rather than left to propagate) so a rename failure
+                # is reported as all_ok=False, letting `run` fall back to a full
+                # sync this cycle instead of raising past the checkpoint decision.
+                self.logger.error("Failed to apply GitHub code renames for %s: %s", repo.full_name, e, exc_info=True)
+                moves_ok = False
+        return folders_ok and moves_ok
 
     async def _upsert_code_files(self, repo: Repository, path_to_sha: dict[str, str]) -> bool:
         """Upsert (add/modify) code file records for the given repo-relative paths."""
         if not path_to_sha:
             return True
-        await self._ensure_folder_records_for_paths(repo, list(path_to_sha.keys()))
+        folders_ok = await self._ensure_folder_records_for_paths(repo, list(path_to_sha.keys()))
         code_files_enabled = self._code_files_indexing_enabled()
         record_updates: list[RecordUpdate] = []
         for path, sha in path_to_sha.items():
             record_update = self._build_code_file_record_update(repo, path, sha, None, code_files_enabled)
             if record_update is not None:
                 record_updates.append(record_update)
+        records_ok = True
         if record_updates:
-            await self._process_records(record_updates)
-        return True
+            records_ok = await self._process_records(record_updates)
+        return folders_ok and records_ok
 
     async def _delete_code_files_by_paths(self, repo: Repository, paths: list[str]) -> None:
         c = self.c
@@ -474,7 +491,7 @@ class ReposSync:
     # Folder management
     # ------------------------------------------------------------------
 
-    async def _ensure_folder_records_for_paths(self, repo: Repository, file_paths: list[str]) -> None:
+    async def _ensure_folder_records_for_paths(self, repo: Repository, file_paths: list[str]) -> bool:
         """Create missing folder records for the parent-directory chain of changed files.
 
         No API call is needed: a file existing at ``a/b/c.py`` implies ``a`` and
@@ -488,7 +505,7 @@ class ReposSync:
             for i in range(1, len(parts)):
                 prefixes.add("/".join(parts[:i]))
         if not prefixes:
-            return
+            return True
 
         record_updates: list[RecordUpdate] = []
         for prefix in sorted(prefixes, key=lambda p: p.count("/")):
@@ -499,7 +516,8 @@ class ReposSync:
             record_updates.append(self._build_folder_record(repo, prefix, sha=None))
 
         if record_updates:
-            await self._process_records(record_updates)
+            return await self._process_records(record_updates)
+        return True
 
     async def _cleanup_emptied_folders(self, repo: Repository, removed_paths: list[str]) -> None:
         """Delete folder records that became empty after deletes/renames (bottom-up)."""
@@ -558,7 +576,7 @@ class ReposSync:
         c = self.c
         name = path.rsplit("/", 1)[-1]
         extension = name.rsplit(".", 1)[-1] if "." in name else ""
-        mime_type = getattr(MimeTypes, extension.upper(), MimeTypes.PLAIN_TEXT).value if extension else MimeTypes.PLAIN_TEXT.value
+        mime_type = get_mime_type_for_extension(extension, fallback=MimeTypes.PLAIN_TEXT.value)
         preview_renderable = extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
         external_id = _blob_external_id(repo.id, path)
         parent_path = path.rpartition("/")[0] if "/" in path else None
@@ -595,14 +613,18 @@ class ReposSync:
             old_permissions=[], new_permissions=[], external_record_id=record.external_record_id,
         )
 
-    async def _process_records(self, records: list[RecordUpdate]) -> None:
+    async def _process_records(self, records: list[RecordUpdate]) -> bool:
+        """Persist a batch; returns False on failure so callers can withhold
+        checkpoint advancement instead of silently losing the batch."""
         if not records:
-            return
+            return True
         batch_sent = [(ru.record, ru.new_permissions) for ru in records]
         try:
             await self.c.data_entities_processor.on_new_records(batch_sent)
+            return True
         except Exception as e:
             self.logger.error("Error persisting GitHub code repo records: %s", e, exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # Content streaming
@@ -630,7 +652,18 @@ class ReposSync:
         if not content_res.success or content_res.data is None:
             raise Exception(f"Failed to fetch content for {file_path} in {repo.full_name}: {content_res.error}")
         content_file = content_res.data
-        decoded = getattr(content_file, "decoded_content", None)
+        # Incrementally-added/modified files skip the full-sync size guard
+        # (Compare Commits entries carry no blob size), so this is the only
+        # remaining checkpoint before an oversized file's content would be indexed.
+        blob_size = getattr(content_file, "size", None)
+        if blob_size is not None and blob_size > CODE_FILE_MAX_SIZE_BYTES:
+            raise Exception(
+                f"Refusing to stream oversized blob {file_path!r} ({blob_size} bytes) in {repo.full_name}"
+            )
+        try:
+            decoded = content_file.decoded_content
+        except Exception:
+            decoded = None
         if decoded is not None:
             return decoded
         raw = getattr(content_file, "content", None)
@@ -667,7 +700,7 @@ class ReposSync:
         c = self.c
         try:
             await c.runtime.refresh_token_if_needed()
-            repos = await c.projects._resolve_repos_with_filters()
+            repos, _discovery_complete = await c.projects._resolve_repos_with_filters()
             for repo in repos:
                 await self._run_code_file_timestamp_backfill(repo)
         except Exception as e:

@@ -175,8 +175,13 @@ class PullRequestsSync:
             next_index += 1
 
         if self._comments_indexing_enabled():
+            # parent_index=0 keeps these groups' declared parent as bg_0 (the
+            # description) regardless of whether a commits section preceded
+            # them; start_index is the actual next free slot so their indices
+            # never collide with the commits BlockGroup allocated above.
             comment_bgs, diff_blocks, comment_remaining = await c.comments.build_pr_comment_and_diff_blocks(
                 owner, repo_name, pr_number, pull_request, parent_index=0, record=record,
+                start_index=next_index,
             )
             block_groups.extend(comment_bgs)
             blocks.extend(diff_blocks)

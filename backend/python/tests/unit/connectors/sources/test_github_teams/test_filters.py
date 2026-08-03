@@ -4,7 +4,8 @@ Covers:
 - ORG_IDS picker: search filtering, pagination, has_more.
 - REPO_IDS picker: search delegates to search_repositories; no-search
   delegates to list_user_repos with in-memory pagination.
-- Unsupported filter key raises ValueError -> caught -> failure response.
+- Unsupported filter key raises ValueError to the caller (not converted into a
+  failure response).
 - Uninitialized data source short-circuits with a failure response.
 """
 from __future__ import annotations

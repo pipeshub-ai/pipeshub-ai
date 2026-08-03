@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.connectors.sources.github_teams import users as users_mod
+from app.connectors.sources.github_teams.models import GitHubLiterals
 from app.connectors.sources.github_teams.users import UsersSync, _is_noreply_email
 
 from .conftest import failed_response, make_mock_connector, make_named_user, ok_response
@@ -220,6 +222,157 @@ class TestSyncUsersPhases:
 
         with pytest.raises(RuntimeError):
             await sync.sync_users()
+
+
+class TestSelectWithCursor:
+    """Unit tests for the Phase 3/4 budget-selection helper."""
+
+    def test_no_cursor_takes_from_start(self) -> None:
+        items = ["a", "b", "c", "d"]
+        selected, cursor = UsersSync._select_with_cursor(items, None, 2)
+        assert selected == ["a", "b"]
+        assert cursor == "b"
+
+    def test_resumes_after_cursor(self) -> None:
+        items = ["a", "b", "c", "d"]
+        selected, cursor = UsersSync._select_with_cursor(items, "b", 2)
+        assert selected == ["c", "d"]
+        assert cursor == "d"
+
+    def test_wraps_around_when_cursor_near_end(self) -> None:
+        items = ["a", "b", "c", "d"]
+        selected, cursor = UsersSync._select_with_cursor(items, "d", 2)
+        assert selected == ["a", "b"]
+        assert cursor == "b"
+
+    def test_budget_covering_everything_clears_cursor(self) -> None:
+        items = ["a", "b"]
+        selected, cursor = UsersSync._select_with_cursor(items, "a", 5)
+        assert selected == ["a", "b"]
+        assert cursor is None
+
+    def test_empty_items_returns_empty(self) -> None:
+        selected, cursor = UsersSync._select_with_cursor([], "a", 5)
+        assert selected == []
+        assert cursor is None
+
+
+class TestSearchBackedResolutionBudget:
+    """Covers throttling and per-phase budgeting of the Search-API sweep
+    (Phase 3: commit-email extraction, Phase 4: platform reverse lookup)."""
+
+    async def test_sweep_skipped_when_last_run_is_recent(self) -> None:
+        c = make_mock_connector()
+        partial = make_named_user(user_id=10, login="grace", email=None, completed=False)
+        c.runtime.ds_call.side_effect = _ds_call_by_method(c, {
+            "list_org_members": ok_response([partial]),
+            "get_user": failed_response("not found"),
+        })
+        c.data_entities_processor.get_all_active_users.return_value = []
+        c.user_sync_point.read_sync_point.return_value = {
+            "last_run_ms": users_mod.get_epoch_timestamp_in_ms(),
+        }
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(["acme"])
+
+        await sync.sync_users()
+
+        c.runtime.search_call.assert_not_called()
+        # Member stayed unresolved through the throttled sweep -> pseudo-grouped.
+        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
+
+    async def test_phase3_examines_at_most_the_configured_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(users_mod, "PHASE3_MAX_MEMBERS_PER_SYNC", 1)
+        c = make_mock_connector()
+        members = [
+            make_named_user(user_id=uid, login=f"user{uid}", email=None, completed=False)
+            for uid in (20, 21, 22)
+        ]
+        c.runtime.ds_call.side_effect = _ds_call_by_method(c, {
+            "list_org_members": ok_response(members),
+            "get_user": failed_response("not found"),
+        })
+        c.runtime.search_call.return_value = failed_response("no matches")
+        c.data_entities_processor.get_all_active_users.return_value = []
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(["acme"])
+
+        await sync.sync_users()
+
+        # One search_call per (member, org) for the single budgeted member;
+        # the other two members must not have triggered any search at all.
+        assert c.runtime.search_call.await_count == 1
+
+    async def test_phase4_examines_at_most_the_configured_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(users_mod, "PHASE4_MAX_CANDIDATE_EMAILS_PER_SYNC", 1)
+        c = make_mock_connector()
+        partial = make_named_user(user_id=30, login="henry", email=None, completed=False)
+        c.runtime.ds_call.side_effect = _ds_call_by_method(c, {
+            "list_org_members": ok_response([partial]),
+            "get_user": failed_response("not found"),
+        })
+        c.runtime.search_call.return_value = failed_response("no matches")
+        c.data_entities_processor.get_all_active_users.return_value = [
+            SimpleNamespace(email="a@example.com"),
+            SimpleNamespace(email="b@example.com"),
+            SimpleNamespace(email="c@example.com"),
+        ]
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(["acme"])
+
+        await sync.sync_users()
+
+        # Phase 3 tries 1 (member) x 1 (org) = 1 call, then Phase 4 is
+        # budgeted to exactly 1 candidate email x (1 org commit-search + 1
+        # user-search fallback) = 2 more calls => 3 total.
+        assert c.runtime.search_call.await_count == 3
+
+    async def test_sweep_persists_cursor_and_timestamp(self) -> None:
+        c = make_mock_connector()
+        partial = make_named_user(user_id=40, login="ivy", email=None, completed=False)
+        c.runtime.ds_call.side_effect = _ds_call_by_method(c, {
+            "list_org_members": ok_response([partial]),
+            "get_user": failed_response("not found"),
+        })
+        c.runtime.search_call.return_value = failed_response("no matches")
+        c.data_entities_processor.get_all_active_users.return_value = []
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(["acme"])
+
+        await sync.sync_users()
+
+        c.user_sync_point.read_sync_point.assert_awaited_once_with(
+            GitHubLiterals.EMAIL_RESOLUTION_SWEEP.value
+        )
+        c.user_sync_point.update_sync_point.assert_awaited_once()
+        key, payload = c.user_sync_point.update_sync_point.call_args.args
+        assert key == GitHubLiterals.EMAIL_RESOLUTION_SWEEP.value
+        assert isinstance(payload["last_run_ms"], int)
+
+
+class TestPseudoGroupMigrationLogging:
+    """PII: migration-failure logs must not leak the user's email address."""
+
+    async def test_migration_failure_logs_source_user_id_not_email(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = ok_response([
+            make_named_user(user_id=50, login="jack", email="jack@example.com", completed=True),
+        ])
+        c.data_entities_processor.migrate_group_to_user_by_external_id.side_effect = RuntimeError("boom")
+
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(["acme"])
+
+        await sync.sync_users()
+
+        c.logger.warning.assert_called_once()
+        args = c.logger.warning.call_args.args
+        assert "jack@example.com" not in args
+        assert "50" in args
 
 
 def MagicMock_async(return_value: object) -> object:

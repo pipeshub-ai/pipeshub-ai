@@ -75,8 +75,7 @@ class TestDsCall:
             await runtime.ds_call(async_method)
 
     async def test_ds_call_auth_retry_then_success(self) -> None:
-        c, runtime = _make_runtime()
-        c.runtime = runtime  # allow force_refresh_oauth_token to call through real logic if needed
+        _c, runtime = _make_runtime()
         calls = {"n": 0}
 
         def flaky_method() -> GitHubResponse:
@@ -102,6 +101,64 @@ class TestDsCall:
         res = await runtime.ds_call(failing_method)
         assert res.success is False
         runtime.force_refresh_oauth_token.assert_not_awaited()
+
+
+class TestApplyAccessTokenToClients:
+    """Covers rebinding ``c.data_source`` after a token rotation.
+
+    ``GitHubClientViaToken.set_token`` rebuilds a brand new ``Github``
+    instance (PyGithub binds auth at construction time), so without an
+    explicit rebind, ``c.data_source`` would keep serving requests through
+    the stale SDK instance and an expired token.
+    """
+
+    def test_rebinds_data_source_when_token_changes(self) -> None:
+        c, runtime = _make_runtime()
+        internal_client = MagicMock()
+        internal_client.get_token.return_value = "old-token"
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value = internal_client
+        c.data_source = MagicMock()
+
+        runtime._apply_access_token_to_clients("new-token")
+
+        internal_client.set_token.assert_called_once_with("new-token")
+        c.data_source.rebind_client.assert_called_once_with(c.external_client)
+
+    def test_noop_when_token_unchanged(self) -> None:
+        c, runtime = _make_runtime()
+        internal_client = MagicMock()
+        internal_client.get_token.return_value = "same-token"
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value = internal_client
+        c.data_source = MagicMock()
+
+        runtime._apply_access_token_to_clients("same-token")
+
+        internal_client.set_token.assert_not_called()
+        c.data_source.rebind_client.assert_not_called()
+
+    def test_noop_when_access_token_empty(self) -> None:
+        c, runtime = _make_runtime()
+        c.external_client = MagicMock()
+        c.data_source = MagicMock()
+
+        runtime._apply_access_token_to_clients("")
+
+        c.external_client.get_client.assert_not_called()
+        c.data_source.rebind_client.assert_not_called()
+
+    def test_no_data_source_does_not_raise(self) -> None:
+        c, runtime = _make_runtime()
+        internal_client = MagicMock()
+        internal_client.get_token.return_value = "old-token"
+        c.external_client = MagicMock()
+        c.external_client.get_client.return_value = internal_client
+        c.data_source = None
+
+        runtime._apply_access_token_to_clients("new-token")
+
+        internal_client.set_token.assert_called_once_with("new-token")
 
 
 class TestDsCallAsync:
