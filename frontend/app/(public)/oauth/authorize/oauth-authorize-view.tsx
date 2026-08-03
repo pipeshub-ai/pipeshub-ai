@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
 import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';

@@ -5,7 +5,7 @@ import {
   connectNotificationSocket,
   disconnectNotificationSocket,
 } from '@/lib/socket/notification-socket';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
 

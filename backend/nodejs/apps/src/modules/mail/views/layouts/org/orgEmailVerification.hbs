@@ -1,0 +1,60 @@
+
+<!DOCTYPE html>
+
+<html>
+  {{>head}}
+  <main>
+    <body>
+      <table
+ {{{containerstyle}}}
+    
+      >
+        <tr> 
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td> 
+            <table
+              class="mobile-width"
+ {{{bodytablestyle}}}
+              
+            >
+              <tr>
+                <td>
+                  <div {{{divstyle}}}>
+                    <p>Dear {{name}},</p>
+                    <p>
+                      Thank you for registering <b>{{orgName}}</b> on PipesHub.
+                      To activate your organization, please verify your email address by clicking the button below.
+                    </p>
+                    <p>This link expires in <b>24 hours</b>.</p>
+                  </div>
+
+                  <div {{{divstyle}}}>
+                    <p {{{pstyle}}}>
+                      <a href="{{verificationLink}}" target="_blank">
+                        <button {{{buttonstyle}}}>
+                          Verify Email Address
+                        </button>
+                      </a>
+                    </p>
+                  </div>
+
+                  <div {{{divstyle}}}>
+                    <p style="font-size:12px;color:#888;">
+                      If you did not create this account, you can safely ignore this email.
+                    </p>
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </body>
+  </main>
+</html>

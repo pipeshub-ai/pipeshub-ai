@@ -13,18 +13,19 @@ import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
 import { SWRConfig } from "swr"
 import { axiosFetcher } from "@/lib/api"
-import { logoutAndRedirect } from "@/lib/store/auth-store"
+import { logoutAndRedirect } from "@/config"
 import { UploadProgressTracker } from "../components/upload-progress-tracker"
 import { ToastContainer } from "../components/feedback"
 import { I18nextProvider, useTranslation } from 'react-i18next'
 import i18n from '@/lib/i18n/config'
 import { useLanguageStore } from '@/lib/store/language-store'
 import { UserProfileInitializer } from './components/user-profile-initializer'
+import { OrgProfileInitializer } from './components/org-profile-initializer'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
 import { useOnboardingStore } from "./onboarding/store"
 import { getOnboardingStatus } from "./onboarding/api"
-import { useAuthStore } from "@/lib/store/auth-store"
+import { useAuthStore } from "@/config"
 import { useMobileSidebarStore } from "@/lib/store/mobile-sidebar-store"
 import { useSidebarWidthStore } from "@/lib/store/sidebar-width-store"
 import { useIsMobile } from "@/lib/hooks/use-is-mobile"
@@ -187,6 +188,7 @@ function AppLayout({
       <NotificationsPanel />
       {/* Hydrates user profile (name, email, isAdmin, avatar) once auth is ready */}
       <UserProfileInitializer />
+      <OrgProfileInitializer />
       <Flex
         style={{
           height: '100vh',

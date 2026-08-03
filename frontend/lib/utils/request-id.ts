@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 
 /**

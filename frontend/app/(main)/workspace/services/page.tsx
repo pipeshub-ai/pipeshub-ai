@@ -24,7 +24,7 @@ import {
   type ServiceStatus,
   type AppServices,
 } from '@/lib/store/services-health-store';
-import { apiClient } from '@/lib/api/axios-instance';
+import { apiClient } from '@/lib/api';
 
 // ========================================
 // Service metadata
