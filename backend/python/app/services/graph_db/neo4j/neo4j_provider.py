@@ -7599,6 +7599,10 @@ class Neo4jProvider(IGraphDBProvider):
                     WHERE direct.id IN $node_ids
                     RETURN direct.id AS id, 1 AS level
                     UNION ALL
+                    MATCH (kb_rec:Record)-[:BELONGS_TO]->(app:App {{id: $parent_id}})
+                    WHERE kb_rec.id IN $node_ids
+                    RETURN kb_rec.id AS id, 1 AS level
+                    UNION ALL
                     MATCH (rg2:RecordGroup {{connectorId: $parent_id}})
                     WHERE rg2.isDeleted <> true
                     MATCH (top:Record)-[:BELONGS_TO]->(rg2)
@@ -7622,7 +7626,12 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.execute_query(
                 query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
             )
-            return {row["id"]: row["level"] for row in (results or [])}
+            depth_map: dict[str, int] = {}
+            for row in results or []:
+                rid, lvl = row["id"], row["level"]
+                if rid not in depth_map or lvl < depth_map[rid]:
+                    depth_map[rid] = lvl
+            return depth_map
         except Exception as e:
             self.logger.error(f"get_node_depths_batch failed: {e}")
             return {}
@@ -15164,12 +15173,60 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Cypher string to insert into the main query
         """
-        if not parent_id or parent_type not in ("recordGroup", "record", "folder"):
-            # No children intersection needed - use accessible nodes as-is
+        if not parent_id or parent_type not in ("app", "recordGroup", "record", "folder"):
             return """
             // No children intersection - use accessible nodes directly
             WITH accessible_rgs AS final_accessible_rgs,
                  accessible_records AS final_accessible_records
+            """
+
+        if parent_type == "app" and depth is not None:
+            if depth <= 1:
+                return """
+            // App node depth<=1: show only record groups
+            WITH accessible_rgs AS final_accessible_rgs,
+                 [] AS final_accessible_records
+            """
+            else:
+                remaining = max(1, depth - 2)
+                child_clause = ""
+                combine = "rg_records + kb_records"
+                if depth >= 3:
+                    child_clause = f"""
+            // Depth>=3: also find children of direct records via RECORD_RELATION
+            OPTIONAL MATCH (direct_rec)-[:RECORD_RELATION*1..{remaining}]->(child:Record)
+            WHERE direct_rec IN rg_records + kb_records
+              AND child.orgId = $org_id
+              AND ALL(rel IN relationships((direct_rec)-[:RECORD_RELATION*1..{remaining}]->(child))
+                      WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            WITH accessible_rgs, accessible_records, rg_records, kb_records,
+                 collect(DISTINCT child) AS child_records
+            """
+                    combine = "rg_records + kb_records + child_records"
+                else:
+                    child_clause = """
+            WITH accessible_rgs, accessible_records, rg_records, kb_records,
+                 [] AS child_records
+            """
+
+                return f"""
+            // App node depth>=2: find records under record groups + KB direct records
+            OPTIONAL MATCH (rg:RecordGroup {{connectorId: $parent_doc_id}})
+            WHERE rg.isDeleted <> true AND rg IN accessible_rgs
+            OPTIONAL MATCH (rg_rec:Record)-[:BELONGS_TO]->(rg)
+            WHERE rg_rec.orgId = $org_id
+            WITH accessible_rgs, accessible_records,
+                 collect(DISTINCT rg_rec) AS rg_records
+
+            // KB apps: records directly attached to the app via BELONGS_TO
+            OPTIONAL MATCH (kb_rec:Record)-[:BELONGS_TO]->(app:App {{id: $parent_doc_id}})
+            WHERE kb_rec.orgId = $org_id
+            WITH accessible_rgs, accessible_records, rg_records,
+                 collect(DISTINCT kb_rec) AS kb_records
+            {child_clause}
+            // Intersect with accessible records
+            WITH accessible_rgs AS final_accessible_rgs,
+                 [r IN {combine} WHERE r IN accessible_records AND r IS NOT NULL] AS final_accessible_records
             """
 
         if parent_type == "recordGroup":

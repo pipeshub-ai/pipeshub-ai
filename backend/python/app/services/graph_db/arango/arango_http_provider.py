@@ -980,13 +980,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER rg.isDeleted != true
                         RETURN rg._id
                 )
-                LET direct_ids = (
+                LET rg_direct_ids = (
                     FOR rg_id IN rg_ids
                         FOR v IN 1..1 INBOUND rg_id {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION("records", v)
                             FILTER v._key IN @node_ids
                             RETURN v._key
                 )
+                LET kb_direct_ids = (
+                    FOR edge IN {CollectionNames.BELONGS_TO.value}
+                        FILTER edge._to == CONCAT("apps/", @parent_id)
+                        FILTER STARTS_WITH(edge._from, "records/")
+                        LET rec = DOCUMENT(edge._from)
+                        FILTER rec != null AND rec.isDeleted != true
+                        FILTER rec._key IN @node_ids
+                        RETURN rec._key
+                )
+                LET direct_ids = UNION_DISTINCT(rg_direct_ids, kb_direct_ids)
                 LET deeper = (
                     FOR rg_id IN rg_ids
                         FOR top IN 1..1 INBOUND rg_id {CollectionNames.BELONGS_TO.value}
@@ -1019,7 +1029,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 results = await self.execute_query(
                     query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
                 )
-            return {row["id"]: row["level"] for row in (results or [])}
+            depth_map: dict[str, int] = {}
+            for row in results or []:
+                rid, lvl = row["id"], row["level"]
+                if rid not in depth_map or lvl < depth_map[rid]:
+                    depth_map[rid] = lvl
+            return depth_map
         except Exception as e:
             self.logger.error(f"get_node_depths_batch failed: {e}")
             return {}
@@ -17769,13 +17784,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET final_accessible_rgs = accessible_rgs
 
         LET rg_doc_ids = (FOR rg IN accessible_rgs RETURN rg._id)
-        LET direct_record_ids = (
+        LET rg_record_ids = (
             FOR rg_id IN rg_doc_ids
                 FOR v IN 1..1 INBOUND rg_id belongsTo
                     FILTER IS_SAME_COLLECTION("records", v)
                     FILTER v != null AND v.isDeleted != true
                     RETURN v._id
         )
+        LET kb_record_ids = (
+            FOR edge IN belongsTo
+                FILTER edge._to == CONCAT("apps/", @parent_doc_id)
+                FILTER STARTS_WITH(edge._from, "records/")
+                LET rec = DOCUMENT(edge._from)
+                FILTER rec != null AND rec.isDeleted != true
+                RETURN rec._id
+        )
+        LET direct_record_ids = UNION_DISTINCT(rg_record_ids, kb_record_ids)
         {child_traversal}
         LET allowed_record_ids = {union_expr}
 
