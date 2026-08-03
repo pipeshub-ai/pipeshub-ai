@@ -351,9 +351,8 @@ class TestRowTimestampRendering:
         assert "created:" not in text
         assert "1970" not in text
 
-    def test_only_created_at_rendered_not_modified_at(self):
-        """Only source_created_at is surfaced per row today (Phase 2 scope) —
-        source_modified_at is stored on the model but not yet rendered."""
+    def test_modified_at_rendered_when_different_from_created(self):
+        """source_modified_at is shown when it differs from source_created_at."""
         created_ms = int(datetime(2026, 7, 15, tzinfo=timezone.utc).timestamp() * 1000)
         modified_ms = int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp() * 1000)
         row = _row(
@@ -366,7 +365,22 @@ class TestRowTimestampRendering:
         )
         text = render_navigation_view(view, page=1)
         assert "| created: 2026-07-15" in text
-        assert "2026-08-01" not in text
+        assert "| modified: 2026-08-01" in text
+
+    def test_modified_at_suppressed_when_same_as_created(self):
+        """source_modified_at is omitted when it matches source_created_at."""
+        same_ms = int(datetime(2026, 7, 15, tzinfo=timezone.utc).timestamp() * 1000)
+        row = _row(
+            "rec1", "PA-1787", "record", "TICKET",
+            source_created_at=same_ms, source_modified_at=same_ms,
+        )
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "| created: 2026-07-15" in text
+        assert "modified" not in text
 
     def test_byte_budget_not_exceeded_with_dates_on_large_listing(self):
         rows = [
