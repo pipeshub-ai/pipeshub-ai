@@ -93,7 +93,9 @@ from app.sources.client.dropbox.dropbox_ import (
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response, stream_content
@@ -2829,7 +2831,7 @@ class DropboxConnector(BaseConnector):
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             user_with_permission = await self.data_entities_processor.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
             file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
@@ -2849,6 +2851,16 @@ class DropboxConnector(BaseConnector):
                 team_folder_id = record.external_record_group_id
 
             response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
+            if not response.success or not response.data:
+                self.logger.error(
+                    f"Failed to get temporary link for record {record.id}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
+            )
             return response.data.link
         except HTTPException:
             raise

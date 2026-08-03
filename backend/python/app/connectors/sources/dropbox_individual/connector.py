@@ -81,7 +81,9 @@ from app.sources.client.dropbox.dropbox_ import (
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     not_found_at_source,
+    raise_for_stream_fetch,
     to_stream_error,
 )
 from app.utils.streaming import create_stream_record_response, stream_content
@@ -1072,7 +1074,7 @@ class DropboxIndividualConnector(BaseConnector):
         Simplified for individual accounts.
         """
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             # Dropbox uses path or file ID for temporary links. ID is more robust.
             target_identifier = record.external_record_id
@@ -1083,7 +1085,16 @@ class DropboxIndividualConnector(BaseConnector):
                 self.logger.warning(f"Cannot generate signed URL: Record {record.id} missing external_id")
                 return None
             response = await self.data_source.files_get_temporary_link(path=target_identifier)
-
+            if not response.success or not response.data:
+                self.logger.error(
+                    f"Failed to get temporary link for record {record.id}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
+            )
             return response.data.link
         except HTTPException:
             raise

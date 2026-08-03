@@ -1385,7 +1385,9 @@ class TestGetSignedUrl95:
     @pytest.mark.asyncio
     async def test_not_initialized(self, connector):
         connector.data_source = None
-        assert await connector.get_signed_url(MagicMock()) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket(self, connector):

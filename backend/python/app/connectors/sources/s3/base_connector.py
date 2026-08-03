@@ -60,7 +60,9 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     map_source_status,
+    not_downloadable,
     not_found_at_source,
     to_stream_error,
 )
@@ -1132,17 +1134,23 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a presigned URL for an S3 object."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             bucket_name = record.external_record_group_id
             if not bucket_name:
                 self.logger.warning(f"No bucket name found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing the bucket it belongs to and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             external_record_id = record.external_record_id
             if not external_record_id:
                 self.logger.warning(f"No external_record_id found for record: {record.id}")
-                return None
+                raise not_downloadable(
+                    "This item is missing its object key and cannot be downloaded.",
+                    connector=self.display_name,
+                )
 
             if external_record_id.startswith(f"{bucket_name}/"):
                 key = external_record_id[len(f"{bucket_name}/"):]
