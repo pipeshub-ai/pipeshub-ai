@@ -543,19 +543,20 @@ class TestIssueLinkAndEpicDiscoveryGaps:
         assert len(rows) == 1
 
     @pytest.mark.asyncio
-    async def test_discover_epic_link_field_http_error(self):
+    async def test_discover_hierarchy_link_field_http_error(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
         ds.get_fields_v2 = AsyncMock(return_value=MagicMock(status=500))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            await conn._discover_epic_link_field_id()
+            await conn._discover_hierarchy_link_field_ids()
 
         assert conn._epic_link_field_id == ""
+        assert conn._parent_link_field_id == ""
 
     @pytest.mark.asyncio
-    async def test_discover_epic_link_field_from_schema(self):
+    async def test_discover_hierarchy_link_field_from_schema(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
@@ -568,9 +569,10 @@ class TestIssueLinkAndEpicDiscoveryGaps:
         ]))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            await conn._discover_epic_link_field_id()
+            await conn._discover_hierarchy_link_field_ids()
 
         assert conn._epic_link_field_id == "customfield_10014"
+        assert conn._parent_link_field_id == ""
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_roles_processing_error_skipped(self):

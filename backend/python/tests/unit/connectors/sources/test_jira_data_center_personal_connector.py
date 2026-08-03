@@ -45,7 +45,10 @@ def _make_deps():
     dep.on_new_record_groups = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -288,6 +291,37 @@ class TestPersonalRunSyncOrchestration:
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
         conn._sync_all_project_issues.assert_awaited_once()
+
+    async def test_run_sync_calls_placeholder_sweep(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.creator_email = "owner@example.com"
+        project = MagicMock()
+        project.external_group_id = "10000"
+        conn._fetch_projects = AsyncMock(return_value=([(project, [])], []))
+        conn._sync_all_project_issues = AsyncMock(
+            return_value={
+                "total_synced": 1,
+                "new_count": 1,
+                "updated_count": 0,
+                "full_sync_project_ids": {"10000"},
+            }
+        )
+        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn._sweep_placeholder_records = AsyncMock(return_value=0)
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center_personal.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await conn.run_sync()
+
+        conn._sweep_placeholder_records.assert_awaited_once_with(
+            synced_project_ids={"10000"},
+            full_sync_project_ids={"10000"},
+        )
 
 
 # -----------------------------------------------------------------------------
