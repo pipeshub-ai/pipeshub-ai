@@ -79,6 +79,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.gcs.gcs import GCSClient
 from app.sources.external.gcs.gcs import GCSDataSource
 from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
     map_source_status,
     not_found_at_source,
     to_stream_error,
@@ -1282,7 +1283,7 @@ class GCSConnector(BaseConnector):
     async def get_signed_url(self, record: Record) -> str | None:
         """Generate a signed URL for a GCS object."""
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             bucket_name = record.external_record_group_id
             if not bucket_name:
