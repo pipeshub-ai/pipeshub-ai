@@ -2195,8 +2195,7 @@ class TestLinearPlaceholderSweep:
         assert out[1]["id"] == "b"
         ds.issue.assert_awaited_once_with(id="b")
 
-    @pytest.mark.asyncio
-    async def test_build_ancestor_stub_soft_fails_without_team(self):
+    def test_build_ancestor_stub_soft_fails_without_team(self):
         c = _make_connector()
         stub = _placeholder_ticket()
         stub.external_record_group_id = None

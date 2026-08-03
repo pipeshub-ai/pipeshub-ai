@@ -106,6 +106,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 # Placeholder ancestor sweep (parent sub-issue hierarchy left out of sync filters)
 PLACEHOLDER_SWEEP_BATCH: int = 50
 PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
+PLACEHOLDER_SWEEP_CONCURRENCY: int = 10
 PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
 
 
@@ -1138,7 +1139,7 @@ class LinearConnector(BaseConnector):
         if not issue_ids:
             return {}
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(PLACEHOLDER_SWEEP_CONCURRENCY)
         results: dict[str, dict[str, Any]] = {}
 
         async def fetch_one(issue_id: str) -> None:
