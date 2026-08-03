@@ -19,7 +19,6 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore } from '@/chat/store';
 import { CollectionRow } from './connectors-collections/collection-row';
-import { AgentCapabilitiesBar } from './agent-capabilities-bar';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -253,17 +252,14 @@ export function AgentScopedResourcesPanel({
   const setTools = useChatStore((s) => s.setAgentStreamTools);
 
   const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const agentHasWebSearch = useChatStore((s) => s.agentHasWebSearch);
   const kbIds = useChatStore((s) => s.agentChatKbIds);
   const agentHasInternalSearch = connectors.length > 0 || kbIds.length > 0;
 
   const scopedCaps = useChatStore((s) =>
     agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
   );
-  const setScopedCaps = useChatStore((s) => s.setScopedAgentCapabilities);
 
   const internalSearchEnabled = agentHasInternalSearch ? scopedCaps.internalSearch : false;
-  const webSearchEnabled = agentHasWebSearch ? scopedCaps.webSearch : false;
 
   const eff = useMemo(() => effectiveKnowledge(scope, defaults), [scope, defaults]);
 
@@ -475,20 +471,6 @@ export function AgentScopedResourcesPanel({
       gap="3"
       style={{ flex: 1, minHeight: 0, height: '100%', overflow: 'hidden' }}
     >
-      {/* Capabilities toggles */}
-      <AgentCapabilitiesBar
-        internalSearch={internalSearchEnabled}
-        webSearch={webSearchEnabled}
-        onToggleInternalSearch={(enabled) => {
-          if (agentId) setScopedCaps(agentId, { internalSearch: enabled });
-        }}
-        onToggleWebSearch={(enabled) => {
-          if (agentId) setScopedCaps(agentId, { webSearch: enabled });
-        }}
-        agentHasInternalSearch={agentHasInternalSearch ? undefined : false}
-        agentHasWebSearch={agentHasWebSearch ? undefined : false}
-      />
-
       <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>
         <AgentFilterTablist
           value={tab}

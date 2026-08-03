@@ -22,8 +22,8 @@ export interface AgentStrategyModeSwitcherProps {
 }
 
 /**
- * Toolbar pill for agent-scoped chat: same chrome as {@link ModeSwitcher}'s
- * primary (left) control — opens the card-style {@link AgentStrategyModePanel}.
+ * Toolbar pill for agent-scoped chat — opens the card-style
+ * {@link AgentStrategyModePanel}.
  */
 export function AgentStrategyModeSwitcher({
   activeStrategy,

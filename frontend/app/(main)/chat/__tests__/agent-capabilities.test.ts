@@ -1,6 +1,6 @@
 /**
- * Unit tests for the agent capabilities localStorage helpers and
- * AgentCapabilitiesBar component.
+ * Unit tests for the agent capabilities localStorage helpers and the
+ * "+" menu's PlusMenuContent (attach files + capability toggles).
  */
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -139,82 +139,101 @@ describe('localStorage agent capabilities helpers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// AgentCapabilitiesBar component
+// PlusMenuContent ("+" menu body — attach files + capability toggles)
 // ---------------------------------------------------------------------------
 
-describe('AgentCapabilitiesBar', () => {
-  async function importBar() {
-    const mod = await import(
-      '../components/chat-panel/expansion-panels/agent-capabilities-bar'
-    );
-    return mod.AgentCapabilitiesBar;
+describe('PlusMenuContent', () => {
+  async function importContent() {
+    const mod = await import('../components/chat-panel/plus-menu-button');
+    return mod.PlusMenuContent;
   }
 
-  type BarProps = Parameters<Awaited<ReturnType<typeof importBar>>>[0];
+  type ContentProps = Parameters<Awaited<ReturnType<typeof importContent>>>[0];
 
-  function renderBar(props: BarProps, Bar: Awaited<ReturnType<typeof importBar>>) {
-    return render(h(Theme, null, h(Bar, props)));
+  function renderContent(props: ContentProps, Content: Awaited<ReturnType<typeof importContent>>) {
+    return render(h(Theme, null, h(Content, props)));
   }
 
-  it('renders Capabilities label, Internal Search and Web Search text', async () => {
-    const Bar = await importBar();
-    renderBar(
+  it('renders Attach files, Internal Search and Web Search rows', async () => {
+    const Content = await importContent();
+    renderContent(
       {
+        onAttachFiles: vi.fn(),
         internalSearch: true,
         webSearch: true,
         onToggleInternalSearch: vi.fn(),
         onToggleWebSearch: vi.fn(),
       },
-      Bar,
+      Content,
     );
-    expect(screen.getByText('Capabilities')).toBeTruthy();
+    expect(screen.getByText('Attach files')).toBeTruthy();
     expect(screen.getByText('Internal Search')).toBeTruthy();
     expect(screen.getByText('Web Search')).toBeTruthy();
   });
 
-  it('disables the internal search switch when agentHasInternalSearch=false', async () => {
-    const Bar = await importBar();
-    const { container } = renderBar(
+  it('calls onAttachFiles when the attach files row is clicked', async () => {
+    const Content = await importContent();
+    const onAttachFiles = vi.fn();
+    renderContent(
       {
+        onAttachFiles,
+        internalSearch: true,
+        webSearch: true,
+        onToggleInternalSearch: vi.fn(),
+        onToggleWebSearch: vi.fn(),
+      },
+      Content,
+    );
+    fireEvent.click(screen.getByText('Attach files'));
+    expect(onAttachFiles).toHaveBeenCalled();
+  });
+
+  it('disables the internal search switch when agentHasInternalSearch=false', async () => {
+    const Content = await importContent();
+    const { container } = renderContent(
+      {
+        onAttachFiles: vi.fn(),
         internalSearch: false,
         webSearch: true,
         onToggleInternalSearch: vi.fn(),
         onToggleWebSearch: vi.fn(),
         agentHasInternalSearch: false,
       },
-      Bar,
+      Content,
     );
     const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
     expect(internalSwitch.disabled).toBe(true);
   });
 
   it('disables the web search switch when agentHasWebSearch=false', async () => {
-    const Bar = await importBar();
-    const { container } = renderBar(
+    const Content = await importContent();
+    const { container } = renderContent(
       {
+        onAttachFiles: vi.fn(),
         internalSearch: true,
         webSearch: false,
         onToggleInternalSearch: vi.fn(),
         onToggleWebSearch: vi.fn(),
         agentHasWebSearch: false,
       },
-      Bar,
+      Content,
     );
     const switches = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
     expect(switches[1].disabled).toBe(true);
   });
 
   it('calls onToggleInternalSearch when the enabled switch is clicked', async () => {
-    const Bar = await importBar();
+    const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderBar(
+    const { container } = renderContent(
       {
+        onAttachFiles: vi.fn(),
         internalSearch: true,
         webSearch: true,
         onToggleInternalSearch: toggle,
         onToggleWebSearch: vi.fn(),
       },
-      Bar,
+      Content,
     );
     const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
     fireEvent.click(internalSwitch);
@@ -222,17 +241,18 @@ describe('AgentCapabilitiesBar', () => {
   });
 
   it('does NOT call onToggleInternalSearch when the capability is absent', async () => {
-    const Bar = await importBar();
+    const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderBar(
+    const { container } = renderContent(
       {
+        onAttachFiles: vi.fn(),
         internalSearch: false,
         webSearch: true,
         onToggleInternalSearch: toggle,
         onToggleWebSearch: vi.fn(),
         agentHasInternalSearch: false,
       },
-      Bar,
+      Content,
     );
     const [internalSwitch] = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
     fireEvent.click(internalSwitch);
@@ -240,16 +260,17 @@ describe('AgentCapabilitiesBar', () => {
   });
 
   it('calls onToggleWebSearch when the enabled switch is clicked', async () => {
-    const Bar = await importBar();
+    const Content = await importContent();
     const toggle = vi.fn();
-    const { container } = renderBar(
+    const { container } = renderContent(
       {
+        onAttachFiles: vi.fn(),
         internalSearch: true,
         webSearch: true,
         onToggleInternalSearch: vi.fn(),
         onToggleWebSearch: toggle,
       },
-      Bar,
+      Content,
     );
     const switches = container.querySelectorAll<HTMLButtonElement>('button[role="switch"]');
     fireEvent.click(switches[1]);

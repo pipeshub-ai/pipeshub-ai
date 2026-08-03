@@ -29,7 +29,6 @@ import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
-import { AgentCapabilitiesBar } from './agent-capabilities-bar';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -330,7 +329,6 @@ export function UniversalAgentResourcesPanel({
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
-  const setAgentCapabilities = useChatStore((s) => s.setAgentCapabilities);
   const agentCapabilities = settings.agentCapabilities;
 
   const toolGroups = useChatStore((s) => s.universalAgentToolGroups);
@@ -627,14 +625,6 @@ export function UniversalAgentResourcesPanel({
           </Callout.Text>
         </Callout.Root>
       )}
-
-      {/* Capabilities toggles */}
-      <AgentCapabilitiesBar
-        internalSearch={agentCapabilities.internalSearch}
-        webSearch={agentCapabilities.webSearch}
-        onToggleInternalSearch={(enabled) => setAgentCapabilities({ internalSearch: enabled })}
-        onToggleWebSearch={(enabled) => setAgentCapabilities({ webSearch: enabled })}
-      />
 
       {/* Header: tabs + expand/collapse toggle */}
       <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>

@@ -3,7 +3,6 @@ export {
   ChatComposer,
   ChatInputWrapper,
   ChatInputExpansionPanel,
-  QueryModePanel,
   ConnectorsCollectionsPanel,
   CollectionsTab,
   CollectionRow,
