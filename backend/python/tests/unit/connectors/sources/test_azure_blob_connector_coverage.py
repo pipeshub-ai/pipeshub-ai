@@ -697,8 +697,9 @@ class TestGetSignedUrl:
     @pytest.mark.asyncio
     async def test_not_initialized(self, azure_connector):
         azure_connector.data_source = None
-        result = await azure_connector.get_signed_url(MagicMock())
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_container(self, azure_connector):

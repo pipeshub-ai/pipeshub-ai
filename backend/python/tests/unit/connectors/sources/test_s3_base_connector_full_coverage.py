@@ -285,19 +285,25 @@ class TestGetSignedUrl:
     async def test_no_data_source(self, connector):
         connector.data_source = None
         rec = _record()
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket_name(self, connector):
         connector.data_source = MagicMock()
         rec = _record(external_record_group_id=None)
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, connector):
         connector.data_source = MagicMock()
         rec = _record(external_record_id=None)
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, connector):
