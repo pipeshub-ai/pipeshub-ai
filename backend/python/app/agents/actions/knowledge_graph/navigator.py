@@ -15,6 +15,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     FOLDER_MIME_TYPES,
     KnowledgeHubService,
 )
+from app.models.entities import resolve_weburl
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from .models import NavigationView, NodeRef, NodeRow, PaginationInfo
@@ -208,10 +209,7 @@ class GraphNavigator:
                 continue
             record = typed_records[row.id]
             if not row.web_url and getattr(record, "weburl", None):
-                weburl = record.weburl
-                if weburl and not weburl.startswith("http") and self._frontend_url:
-                    weburl = f"{self._frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
-                row.web_url = weburl
+                row.web_url = resolve_weburl(record.weburl, self._frontend_url)
             if not row.source_modified_at and getattr(record, "source_updated_at", None):
                 row.source_modified_at = record.source_updated_at
             try:

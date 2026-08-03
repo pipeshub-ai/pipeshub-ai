@@ -262,7 +262,7 @@ class SkillManagerConfig(BaseModel):
 
     auto_approve: bool = False       # auto-approve learning-loop candidates (skips human review)
     write_approval: bool = False     # require governance approval for every write, not just learning-loop ones
-    learning_enabled: bool = True
+    learning_enabled: bool = False
     max_candidates: int = 50
     catalog_render_limit: int = 40   # above this many skills, the prompt shows categories + a skill_search hint instead of the full list
 

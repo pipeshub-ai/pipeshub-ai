@@ -54,7 +54,7 @@ class TestSearchTimeRangeForwarding:
         retrieval_service.search_with_filters.assert_awaited_once()
         kwargs = retrieval_service.search_with_filters.await_args.kwargs
         assert "time_range" in kwargs
-        assert list(kwargs["time_range"].keys()) == ["source_created_after_ms"]
+        assert kwargs["time_range"] == {"source_created_after_ms": 1767225600000}
 
     @pytest.mark.asyncio
     async def test_modified_params_forwarded(self) -> None:
@@ -64,7 +64,7 @@ class TestSearchTimeRangeForwarding:
         await execute_search(state, query="test", modified_after="2026-06-01")
 
         kwargs = retrieval_service.search_with_filters.await_args.kwargs
-        assert list(kwargs["time_range"].keys()) == ["source_updated_after_ms"]
+        assert kwargs["time_range"] == {"source_updated_after_ms": 1780272000000}
 
     @pytest.mark.asyncio
     async def test_omitted_params_pass_none_time_range(self) -> None:
@@ -90,10 +90,10 @@ class TestSearchTimeRangeForwarding:
         )
 
         kwargs = retrieval_service.search_with_filters.await_args.kwargs
-        assert set(kwargs["time_range"].keys()) == {
-            "source_created_after_ms",
-            "source_created_before_ms",
-            "source_updated_after_ms",
+        assert kwargs["time_range"] == {
+            "source_created_after_ms": 1767225600000,
+            "source_created_before_ms": 1775001599999,
+            "source_updated_after_ms": 1769904000000,
         }
 
     @pytest.mark.asyncio
@@ -114,10 +114,7 @@ class TestSearchTimeRangeForwarding:
         retrieval_service.search_with_filters.assert_awaited_once()
         kwargs = retrieval_service.search_with_filters.await_args.kwargs
         assert kwargs["filter_groups"].get("apps") == ["app-1"]
-        assert kwargs["time_range"] == {
-            "source_created_after_ms": kwargs["time_range"]["source_created_after_ms"]
-        }
-        assert "source_created_after_ms" in kwargs["time_range"]
+        assert kwargs["time_range"] == {"source_created_after_ms": 1767225600000}
 
 
 class TestSearchTimeRangeValidationErrors:
@@ -223,13 +220,13 @@ class TestSearchTimeRangeFanOut:
             )
 
         assert retrieval_service.search_with_filters.await_count == 2
+        called_apps = set()
         for call in retrieval_service.search_with_filters.await_args_list:
             time_range = call.kwargs["time_range"]
             assert time_range == {
-                "source_created_after_ms": time_range["source_created_after_ms"],
-                "source_created_before_ms": time_range["source_created_before_ms"],
+                "source_created_after_ms": 1767225600000,
+                "source_created_before_ms": 1782863999999,
             }
-            assert set(time_range.keys()) == {
-                "source_created_after_ms",
-                "source_created_before_ms",
-            }
+            fg = call.kwargs.get("filter_groups", {})
+            called_apps.update(fg.get("apps", []))
+        assert called_apps == {"app-1", "app-2"}

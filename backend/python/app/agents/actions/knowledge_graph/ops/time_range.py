@@ -170,12 +170,13 @@ def parse_time_range(
     if range_error is not None:
         return None, range_error
 
-    if "created_after" in epoch_values:
-        future_error = _validate_not_future(
-            epoch_values["created_after"], field_label="created_after"
-        )
-        if future_error is not None:
-            return None, future_error
+    for after_field in ("created_after", "modified_after"):
+        if after_field in epoch_values:
+            future_error = _validate_not_future(
+                epoch_values[after_field], field_label=after_field
+            )
+            if future_error is not None:
+                return None, future_error
 
     time_range = {
         _TIME_RANGE_KEYS[field]: epoch_ms for field, epoch_ms in epoch_values.items()

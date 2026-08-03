@@ -221,19 +221,19 @@ class TestEmptyListing:
 
 class TestTruncation:
     def test_very_long_output_is_capped(self):
-        rows = [_row(f"rec{i}", f"Record with a very long name that goes on and on {'x' * 50} #{i}", "record", "TICKET") for i in range(200)]
+        rows = [_row(f"rec{i}", f"Record with a very long name that goes on and on {'x' * 80} #{i}", "record", "TICKET") for i in range(300)]
         view = NavigationView(
             current=_ref("rg1", "Big Group", "recordGroup"),
             breadcrumbs=[],
             rows=rows,
             related=[],
-            pagination=_pag(total=200),
+            pagination=_pag(total=300),
             web_url=None,
             indexing_status=None,
             connector=None,
         )
         text = render_navigation_view(view, page=1)
-        assert len(text.encode("utf-8")) <= 12_300  # slightly over cap due to truncation line
+        assert len(text.encode("utf-8")) <= 25_200  # _MAX_RESPONSE_BYTES + truncation line
         assert "truncated" in text.lower()
 
 
@@ -394,7 +394,7 @@ class TestRowTimestampRendering:
             pagination=_pag(total=200), web_url=None, indexing_status=None, connector=None,
         )
         text = render_navigation_view(view, page=1)
-        assert len(text.encode("utf-8")) <= 12_300  # slightly over cap due to truncation line
+        assert len(text.encode("utf-8")) <= 25_200  # _MAX_RESPONSE_BYTES + truncation line
 
 
 class TestSiblingHint:

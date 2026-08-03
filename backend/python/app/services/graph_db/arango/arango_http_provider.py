@@ -18311,7 +18311,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["sourceCreatedAfterMs"] = c_after
             if c_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs"
+                    "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs"
                 )
                 bind_vars["sourceCreatedBeforeMs"] = c_before
             if u_after is not None:
@@ -18321,7 +18321,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["sourceUpdatedAfterMs"] = u_after
             if u_before is not None:
                 time_filter_lines.append(
-                    "FILTER record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                    "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
                 )
                 bind_vars["sourceUpdatedBeforeMs"] = u_before
 

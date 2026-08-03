@@ -30,6 +30,20 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 EnumType = TypeVar('EnumType', bound=Enum)
 
 
+def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
+    """Normalize a record's weburl into an absolute URL.
+
+    Relative paths are prefixed with *frontend_url*; already-absolute URLs
+    pass through unchanged.  Returns ``None`` when *weburl* is falsy.
+    """
+    if not weburl:
+        return None
+    if weburl.startswith("http"):
+        return weburl
+    base = frontend_url or "http://localhost:3000"
+    return f"{base.rstrip('/')}/{weburl.lstrip('/')}"
+
+
 class LlmTextContent(BaseModel):
     """A single LLM message-content item produced by ``to_llm_full_context``."""
 
@@ -291,13 +305,8 @@ class Record(BaseModel):
         if self.mime_type:
             lines.append(f"MIME Type: {self.mime_type}")
 
-        if self.weburl:
-            if not self.weburl.startswith("http"):
-                base_url = frontend_url or "http://localhost:3000"
-                weburl = f"{base_url.rstrip('/')}/{self.weburl.lstrip('/')}"
-            else:
-                weburl = self.weburl
-
+        weburl = resolve_weburl(self.weburl, frontend_url)
+        if weburl:
             lines.append(f"Web URL: {weburl}")
 
         if self.semantic_metadata:

@@ -325,7 +325,7 @@ def create_fetch_full_record_tool(
         whatever was actually asked.
 
         Pass every record_id you need in ONE call, taken from a candidate list, a
-        'Record ID' field or a record_id= shown by navigation — never invent IDs.
+        'Record ID' field, a record_id= or node_id= shown by navigation — never invent IDs.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.

@@ -1669,17 +1669,14 @@ class TestSearchWithFiltersBranches:
 
 class TestSearchWithFiltersTimeRange:
     @pytest.mark.asyncio
-    async def test_no_time_range_omits_kwarg(self, retrieval_service, mock_graph_provider):
+    async def test_no_time_range_passes_none(self, retrieval_service, mock_graph_provider):
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
         await retrieval_service.search_with_filters(
             queries=["test"], user_id="u1", org_id="o1"
         )
-        assert (
-            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs.get(
-                "time_range"
-            )
-            is None
-        )
+        passed = mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs
+        assert "time_range" in passed
+        assert passed["time_range"] is None
 
     @pytest.mark.asyncio
     async def test_time_range_forwarded_to_graph_provider(

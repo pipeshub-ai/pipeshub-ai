@@ -17706,7 +17706,7 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
-        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
         assert bind_vars["sourceCreatedAfterMs"] == 1000
         assert bind_vars["sourceCreatedBeforeMs"] == 2000
 
@@ -17719,7 +17719,7 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
-        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" not in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" not in query
         assert "sourceCreatedBeforeMs" not in bind_vars
 
     @pytest.mark.asyncio
@@ -17730,7 +17730,7 @@ class TestSourceCreatedTimeRangeFilters:
         )
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
-        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
         assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" not in query
         assert "sourceCreatedAfterMs" not in bind_vars
 
@@ -17757,7 +17757,7 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
-        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
         assert bind_vars["sourceCreatedAfterMs"] == 1000
         assert bind_vars["sourceCreatedBeforeMs"] == 2000
 
@@ -17780,7 +17780,7 @@ class TestSourceCreatedTimeRangeFilters:
         )
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
-        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
         assert "sourceCreatedAfterMs" not in bind_vars
 
     # --- updated_after / updated_before (sourceLastModifiedTimestamp) ---
@@ -17808,7 +17808,7 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
-        assert "FILTER record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
         assert bind_vars["sourceUpdatedAfterMs"] == 5000
         assert bind_vars["sourceUpdatedBeforeMs"] == 9000
 
@@ -17828,9 +17828,9 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
-        assert "sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
         assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
-        assert "sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert "sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
         assert bind_vars["sourceCreatedAfterMs"] == 1000
         assert bind_vars["sourceUpdatedAfterMs"] == 5000
 
@@ -17852,7 +17852,7 @@ class TestSourceCreatedTimeRangeFilters:
         query = connected_provider.execute_query.call_args[0][0]
         bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
         assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
-        assert "sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert "sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
         assert bind_vars["sourceUpdatedAfterMs"] == 7777
         assert bind_vars["sourceUpdatedBeforeMs"] == 9999
 

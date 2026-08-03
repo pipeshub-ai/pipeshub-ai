@@ -415,15 +415,24 @@ class FakeGraphProvider:
         def _record_matches_time_range(rec: dict[str, object]) -> bool:
             if not time_range:
                 return True
-            ts = rec.get("sourceCreatedAtTimestamp")
-            if ts is None:
-                return False
-            after_ms = time_range.get("source_created_after_ms")
-            before_ms = time_range.get("source_created_before_ms")
-            if after_ms is not None and ts < after_ms:
-                return False
-            if before_ms is not None and ts > before_ms:
-                return False
+            created_ts = rec.get("sourceCreatedAtTimestamp")
+            modified_ts = rec.get("sourceLastModifiedTimestamp")
+            c_after = time_range.get("source_created_after_ms")
+            c_before = time_range.get("source_created_before_ms")
+            u_after = time_range.get("source_updated_after_ms")
+            u_before = time_range.get("source_updated_before_ms")
+            if c_after is not None:
+                if created_ts is None or created_ts < c_after:
+                    return False
+            if c_before is not None:
+                if created_ts is None or created_ts > c_before:
+                    return False
+            if u_after is not None:
+                if modified_ts is None or modified_ts < u_after:
+                    return False
+            if u_before is not None:
+                if modified_ts is None or modified_ts > u_before:
+                    return False
             return True
 
         def _add_record(rec: dict[str, object]) -> None:

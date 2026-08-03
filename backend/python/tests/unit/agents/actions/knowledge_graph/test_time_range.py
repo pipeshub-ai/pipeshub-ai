@@ -96,12 +96,13 @@ class TestParseTimeRange:
         assert time_range is not None
         assert "source_created_before_ms" in time_range
 
-    def test_future_modified_after_allowed(self) -> None:
+    def test_future_modified_after_rejected(self) -> None:
         future = (datetime.now(timezone.utc) + timedelta(days=365)).strftime("%Y-%m-%d")
         time_range, error = parse_time_range(modified_after=future)
-        assert error is None
-        assert time_range is not None
-        assert "source_updated_after_ms" in time_range
+        assert time_range is None
+        assert error is not None
+        parsed = json.loads(error)
+        assert "future" in parsed["message"].lower()
 
     def test_clock_skew_grace_window_allows_near_future(self) -> None:
         near_future = datetime.now(timezone.utc) + timedelta(minutes=2)
