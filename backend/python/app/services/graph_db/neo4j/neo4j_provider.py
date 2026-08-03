@@ -15197,7 +15197,13 @@ class Neo4jProvider(IGraphDBProvider):
                  accessible_records AS final_accessible_records
             """
 
-        if parent_type == "app" and depth is not None:
+        if parent_type == "app":
+            if depth is None:
+                return """
+            // App parent without explicit depth: pass through accessible nodes
+            WITH accessible_rgs AS final_accessible_rgs,
+                 accessible_records AS final_accessible_records
+            """
             if depth <= 1:
                 return """
             // App node depth<=1: show only record groups
@@ -15337,7 +15343,11 @@ class Neo4jProvider(IGraphDBProvider):
             WITH final_accessible_rgs,
                  [r IN final_accessible_records_list WHERE r IS NOT NULL] AS final_accessible_records
             """
-        return None
+        return """
+            // Fallback: pass through accessible nodes unchanged
+            WITH accessible_rgs AS final_accessible_rgs,
+                 accessible_records AS final_accessible_records
+            """
 
     def _build_permission_paths_cypher(
         self,
