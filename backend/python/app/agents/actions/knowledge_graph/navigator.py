@@ -350,6 +350,7 @@ class GraphNavigator:
                     parent_id=node_id,
                     node_ids=record_ids,
                     max_depth=depth,
+                    parent_type=parent_type,
                 )
                 for row in rows:
                     if row.id in depth_map:

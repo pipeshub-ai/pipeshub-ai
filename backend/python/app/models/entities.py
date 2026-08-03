@@ -284,6 +284,7 @@ class Record(BaseModel):
             f"Created At: {self._format_timestamp(self.source_created_at)}",
             f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
             f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
+            f"External Parent ID: {self.parent_external_record_id if self.parent_external_record_id else 'N/A'}",
         ]
         if self.location:
             lines.append(f"Location: {self.location}")

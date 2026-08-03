@@ -664,7 +664,8 @@ class TestLearnFromExecution:
         extractor = FakeExtractor(candidates)
         governor = FakeGovernor(approve=True)
         manager = _manager(
-            extractor=extractor, governor=governor, config=SkillManagerConfig(max_candidates=2),
+            extractor=extractor, governor=governor,
+            config=SkillManagerConfig(max_candidates=2, learning_enabled=True),
         )
 
         result = await manager.learn_from_execution(_result())
@@ -675,7 +676,10 @@ class TestLearnFromExecution:
         extractor = FakeExtractor([_candidate("cand-1", "rejected-skill"), _candidate("cand-2", "kept-skill")])
         evaluator = FakeEvaluator(reject_names={"rejected-skill"})
         governor = FakeGovernor(approve=True)
-        manager = _manager(extractor=extractor, evaluator=evaluator, governor=governor)
+        manager = _manager(
+            extractor=extractor, evaluator=evaluator, governor=governor,
+            config=SkillManagerConfig(learning_enabled=True),
+        )
 
         result = await manager.learn_from_execution(_result())
 
@@ -684,7 +688,10 @@ class TestLearnFromExecution:
     async def test_governor_approval_marks_approved_and_does_not_queue(self) -> None:
         extractor = FakeExtractor([_candidate()])
         governor = FakeGovernor(approve=True)
-        manager = _manager(extractor=extractor, governor=governor)
+        manager = _manager(
+            extractor=extractor, governor=governor,
+            config=SkillManagerConfig(learning_enabled=True),
+        )
 
         result = await manager.learn_from_execution(_result())
 
@@ -696,7 +703,8 @@ class TestLearnFromExecution:
         extractor = FakeExtractor([_candidate()])
         governor = FakeGovernor(approve=False)
         manager = _manager(
-            extractor=extractor, governor=governor, config=SkillManagerConfig(skills_dir=str(tmp_path)),
+            extractor=extractor, governor=governor,
+            config=SkillManagerConfig(skills_dir=str(tmp_path), learning_enabled=True),
         )
 
         result = await manager.learn_from_execution(_result())
@@ -708,7 +716,10 @@ class TestLearnFromExecution:
     async def test_source_session_id_is_stamped_onto_every_candidate(self) -> None:
         extractor = FakeExtractor([_candidate()])
         governor = FakeGovernor(approve=True)
-        manager = _manager(extractor=extractor, governor=governor)
+        manager = _manager(
+            extractor=extractor, governor=governor,
+            config=SkillManagerConfig(learning_enabled=True),
+        )
 
         result = await manager.learn_from_execution(_result(), session_id="sess-42")
 

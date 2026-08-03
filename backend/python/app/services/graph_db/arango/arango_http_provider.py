@@ -965,23 +965,60 @@ class ArangoHTTPProvider(IGraphDBProvider):
         parent_id: str,
         node_ids: list[str],
         max_depth: int = 3,
+        parent_type: str | None = None,
     ) -> dict[str, int]:
         if not node_ids:
             return {}
         safe_depth = max(1, min(int(max_depth), 10))
         try:
-            query = f"""
-            LET parent = DOCUMENT(CONCAT("records/", @parent_id))
-            FILTER parent != null
-            FOR v, e, p IN 1..{safe_depth} OUTBOUND parent {CollectionNames.RECORD_RELATIONS.value}
-                OPTIONS {{bfs: true, uniqueVertices: "global"}}
-                FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
-                FILTER v._key IN @node_ids
-                RETURN {{id: v._key, level: LENGTH(p.edges)}}
-            """
-            results = await self.execute_query(
-                query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
-            )
+            if parent_type == "app":
+                record_depth = max(1, safe_depth - 1)
+                query = f"""
+                LET rg_ids = (
+                    FOR rg IN {CollectionNames.RECORD_GROUPS.value}
+                        FILTER rg.connectorId == @parent_id
+                        FILTER rg.isDeleted != true
+                        RETURN rg._id
+                )
+                LET direct_ids = (
+                    FOR rg_id IN rg_ids
+                        FOR v IN 1..1 INBOUND rg_id {CollectionNames.BELONGS_TO.value}
+                            FILTER IS_SAME_COLLECTION("records", v)
+                            FILTER v._key IN @node_ids
+                            RETURN v._key
+                )
+                LET deeper = (
+                    FOR rg_id IN rg_ids
+                        FOR top IN 1..1 INBOUND rg_id {CollectionNames.BELONGS_TO.value}
+                            FILTER IS_SAME_COLLECTION("records", top)
+                            FOR v, e, p IN 1..{record_depth} OUTBOUND top {CollectionNames.RECORD_RELATIONS.value}
+                                OPTIONS {{bfs: true, uniqueVertices: "global"}}
+                                FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                                FILTER v._key IN @node_ids
+                                RETURN {{id: v._key, level: LENGTH(p.edges) + 1}}
+                )
+                RETURN APPEND(
+                    (FOR d IN direct_ids RETURN {{id: d, level: 1}}),
+                    deeper
+                )
+                """
+                raw = await self.execute_query(
+                    query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
+                )
+                results = raw[0] if raw else []
+            else:
+                query = f"""
+                LET parent = DOCUMENT(CONCAT("records/", @parent_id))
+                FILTER parent != null
+                FOR v, e, p IN 1..{safe_depth} OUTBOUND parent {CollectionNames.RECORD_RELATIONS.value}
+                    OPTIONS {{bfs: true, uniqueVertices: "global"}}
+                    FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                    FILTER v._key IN @node_ids
+                    RETURN {{id: v._key, level: LENGTH(p.edges)}}
+                """
+                results = await self.execute_query(
+                    query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
+                )
             return {row["id"]: row["level"] for row in (results or [])}
         except Exception as e:
             self.logger.error(f"get_node_depths_batch failed: {e}")
@@ -17702,6 +17739,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET final_accessible_records = (
             FOR record IN accessible_records
                 FILTER record._id IN parent_descendant_record_ids
+                RETURN record
+        )
+        """
+        elif parent_type == "app" and depth is not None:
+            if depth <= 1:
+                return """
+        LET final_accessible_rgs = accessible_rgs
+        LET final_accessible_records = []
+        """
+            else:
+                remaining = max(1, depth - 2)
+                child_traversal = ""
+                union_expr = "direct_record_ids"
+                if depth >= 3:
+                    child_traversal = f"""
+        LET child_record_ids = (
+            FOR rec_id IN direct_record_ids
+                FOR v, e IN 1..{remaining} OUTBOUND rec_id recordRelations
+                    FILTER e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                    FILTER IS_SAME_COLLECTION("records", v)
+                    FILTER v != null AND v.isDeleted != true
+                    RETURN v._id
+        )
+        """
+                    union_expr = "UNION_DISTINCT(direct_record_ids, child_record_ids)"
+
+                return f"""
+        LET final_accessible_rgs = accessible_rgs
+
+        LET rg_doc_ids = (FOR rg IN accessible_rgs RETURN rg._id)
+        LET direct_record_ids = (
+            FOR rg_id IN rg_doc_ids
+                FOR v IN 1..1 INBOUND rg_id belongsTo
+                    FILTER IS_SAME_COLLECTION("records", v)
+                    FILTER v != null AND v.isDeleted != true
+                    RETURN v._id
+        )
+        {child_traversal}
+        LET allowed_record_ids = {union_expr}
+
+        LET final_accessible_records = (
+            FOR record IN accessible_records
+                FILTER record._id IN allowed_record_ids
                 RETURN record
         )
         """

@@ -275,6 +275,19 @@ class KnowledgeGraph:
         ),
         parameters=[
             ToolParameter(
+                name="node_types",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Filter children by node type. Values: 'app' (connector), "
+                    "'recordGroup' (project/space/drive/channel), 'record', 'folder'. "
+                    "Omit to show all types. Use when you need only a specific level of "
+                    "the hierarchy — e.g. node_types=['record'] to skip record groups, "
+                    "or node_types=['recordGroup'] to see only projects/spaces under an app."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
                 name="node_id",
                 type=ParameterType.STRING,
                 description=(
@@ -363,19 +376,6 @@ class KnowledgeGraph:
                     "Pair with modified_after for a modification date window."
                 ),
                 required=False,
-            ),
-            ToolParameter(
-                name="node_types",
-                type=ParameterType.ARRAY,
-                description=(
-                    "Filter children by node type. Values: 'app' (connector), "
-                    "'recordGroup' (project/space/drive/channel), 'record', 'folder'. "
-                    "Omit to show all types. Use when you need only a specific level of "
-                    "the hierarchy — e.g. node_types=['record'] to skip record groups, "
-                    "or node_types=['recordGroup'] to see only projects/spaces under an app."
-                ),
-                required=False,
-                items={"type": "string"},
             ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],

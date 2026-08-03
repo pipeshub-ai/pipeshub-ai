@@ -201,12 +201,18 @@ class IGraphDBProvider(ABC):
         parent_id: str,
         node_ids: list[str],
         max_depth: int = 3,
+        parent_type: str | None = None,
     ) -> dict[str, int]:
         """Compute traversal depth for each node relative to a parent.
 
-        Traverses recordRelations (PARENT_CHILD / ATTACHMENT) edges from
-        parent_id and returns ``{node_id: depth}`` for every node_id that
-        is reachable within max_depth hops. Unreachable IDs are omitted.
+        For record/folder parents: traverses recordRelations
+        (PARENT_CHILD / ATTACHMENT) edges.
+
+        For app parents: records directly under the connector's record
+        groups are level 1; their children via recordRelations are level 2+.
+
+        Returns ``{node_id: depth}`` for every reachable node_id.
+        Unreachable IDs are omitted.
         """
         pass
 
