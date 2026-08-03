@@ -304,7 +304,7 @@ class KnowledgeGraph:
             ToolParameter(
                 name="limit",
                 type=ParameterType.INTEGER,
-                description="Children per page (1–100, default 50).",
+                description="Children per page (50–200, default 50).",
                 required=False,
                 default=50,
             ),
@@ -403,7 +403,7 @@ class KnowledgeGraph:
         node_types = node_types if node_types else None
 
         page = max(1, page)
-        limit = min(max(1, limit), 100)
+        limit = min(max(50, limit), 200)
         depth = min(max(1, depth), 3)
 
         # Same parser knowledgegraph__search uses for its own

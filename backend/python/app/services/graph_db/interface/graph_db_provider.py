@@ -208,6 +208,9 @@ class IGraphDBProvider(ABC):
         For record/folder parents: traverses recordRelations
         (PARENT_CHILD / ATTACHMENT) edges.
 
+        For recordGroup parents: records belonging to the group are
+        level 1; their children via recordRelations are level 2+.
+
         For app parents: records directly under the connector's record
         groups are level 1; their children via recordRelations are level 2+.
 

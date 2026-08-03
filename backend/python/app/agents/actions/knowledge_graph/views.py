@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 
 _MAX_NAME_LEN = 80
 # Raised alongside navigate()'s default/max `limit` (see navigator.py's
-# _MAX_LIMIT) so a full page of 50-100 condensed rows renders without
+# _MAX_LIMIT) so a full page of 50-200 condensed rows renders without
 # hitting the hard-truncation fallback below.
-_MAX_RESPONSE_BYTES = 12_000
+_MAX_RESPONSE_BYTES = 25_000
 # Cap on ids named in one read hint. Matches `build_candidates`' max_candidates
 # so both paths offer the model the same number of records to read at once.
 _MAX_READ_HINT_IDS = 8

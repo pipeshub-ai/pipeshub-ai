@@ -7614,6 +7614,23 @@ class Neo4jProvider(IGraphDBProvider):
                 }}
                 RETURN id, level
                 """
+            elif parent_type == "recordGroup":
+                record_depth = max(1, safe_depth - 1)
+                query = f"""
+                CALL {{
+                    MATCH (direct:Record)-[:BELONGS_TO]->(rg:RecordGroup {{id: $parent_id}})
+                    WHERE direct.id IN $node_ids
+                    RETURN direct.id AS id, 1 AS level
+                    UNION ALL
+                    MATCH (top:Record)-[:BELONGS_TO]->(rg2:RecordGroup {{id: $parent_id}})
+                    MATCH path = (top)-[:RECORD_RELATION*1..{record_depth}]->(desc:Record)
+                    WHERE ALL(rel IN relationships(path)
+                              WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                    AND desc.id IN $node_ids
+                    RETURN desc.id AS id, length(path) + 1 AS level
+                }}
+                RETURN id, level
+                """
             else:
                 query = f"""
                 MATCH (parent:Record {{id: $parent_id}})

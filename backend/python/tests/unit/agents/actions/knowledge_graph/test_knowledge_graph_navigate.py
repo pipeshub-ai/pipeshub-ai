@@ -522,9 +522,9 @@ class TestNavigateDepthSingleQuery:
 
     @pytest.mark.asyncio
     async def test_navigate_depth2_app_parent_clamps_to_depth1(self):
-        """An app/recordGroup parent with depth>1 never reaches the
-        level-backfill step — `get_node_depths_batch()` only makes sense
-        for record/folder parents, so it must not be called at all."""
+        """An app parent with depth>1 never reaches the level-backfill
+        step — its rows are recordGroups (is_record=False), so
+        `get_node_depths_batch()` is not called."""
         state = _make_state()
         gp = state["graph_provider"]
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})

@@ -1016,6 +1016,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
                 )
                 results = raw[0] if raw else []
+            elif parent_type == "recordGroup":
+                record_depth = max(1, safe_depth - 1)
+                query = f"""
+                LET rg_doc_id = CONCAT("{CollectionNames.RECORD_GROUPS.value}/", @parent_id)
+                LET direct_ids = (
+                    FOR v IN 1..1 INBOUND rg_doc_id {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("records", v)
+                        FILTER v._key IN @node_ids
+                        RETURN v._key
+                )
+                LET deeper = (
+                    FOR top IN 1..1 INBOUND rg_doc_id {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("records", top)
+                        FOR v, e, p IN 1..{record_depth} OUTBOUND top {CollectionNames.RECORD_RELATIONS.value}
+                            OPTIONS {{bfs: true, uniqueVertices: "global"}}
+                            FILTER ALL(edge IN p.edges, edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"])
+                            FILTER v._key IN @node_ids
+                            RETURN {{id: v._key, level: LENGTH(p.edges) + 1}}
+                )
+                RETURN APPEND(
+                    (FOR d IN direct_ids RETURN {{id: d, level: 1}}),
+                    deeper
+                )
+                """
+                raw = await self.execute_query(
+                    query, bind_vars={"parent_id": parent_id, "node_ids": node_ids}
+                )
+                results = raw[0] if raw else []
             else:
                 query = f"""
                 LET parent = DOCUMENT(CONCAT("records/", @parent_id))

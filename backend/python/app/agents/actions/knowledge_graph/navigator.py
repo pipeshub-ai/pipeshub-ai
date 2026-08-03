@@ -33,7 +33,8 @@ _CROSS_REF_RELATIONS = [
 ]
 
 _MAX_RELATED = 10
-_MAX_LIMIT = 100
+_MIN_LIMIT = 50
+_MAX_LIMIT = 200
 _MAX_DEPTH = 3
 
 
@@ -245,7 +246,7 @@ class GraphNavigator:
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
         "lte": epoch_ms|None}` filters on the child's source timestamps.
         """
-        limit = min(max(1, limit), _MAX_LIMIT)
+        limit = min(max(_MIN_LIMIT, limit), _MAX_LIMIT)
         page = max(1, page)
         depth = min(max(1, depth), _MAX_DEPTH)
 
