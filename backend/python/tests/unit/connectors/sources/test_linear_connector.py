@@ -1956,8 +1956,9 @@ class TestLinearStreamRecord:
         record.record_type = RecordType.LINK
         record.weburl = None
         record.external_record_id = "att-1"
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1978,8 +1979,9 @@ class TestLinearStreamRecord:
         record = MagicMock()
         record.record_type = "UNKNOWN"
         record.external_record_id = "x"
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===================================================================
@@ -3185,8 +3187,9 @@ class TestStreamRecord:
         record.external_record_id = "link-1"
         record.weburl = None
 
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_webpage(self):
@@ -3241,8 +3244,9 @@ class TestStreamRecord:
         record.external_record_id = None
         record.id = "rec-1"
 
-        with pytest.raises(ValueError, match="missing external_record_id"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self):
@@ -3253,8 +3257,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN_TYPE"
         record.external_record_id = "unknown-1"
 
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_inits_datasource_if_none(self):

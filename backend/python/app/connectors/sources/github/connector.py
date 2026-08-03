@@ -273,8 +273,6 @@ class GithubConnector(BaseConnector):
     async def stream_record(self, record: Record) -> StreamingResponse:
         try:
             if record.record_type == RecordType.TICKET:
-                self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-
                 blocks_container= await self._build_ticket_blocks(record)
 
                 async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
@@ -292,8 +290,6 @@ class GithubConnector(BaseConnector):
                     },
                 )
             elif record.record_type == RecordType.PULL_REQUEST:
-                self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-
                 block_container= await self._build_pull_request_blocks(record)
 
 
@@ -312,7 +308,6 @@ class GithubConnector(BaseConnector):
                     },
                 )
             elif record.record_type == RecordType.FILE:
-                self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
                 record_url = record.weburl
                 file_data_res = await self.data_source.get_attachment_files_content(record_url)
                 if not file_data_res.success or not file_data_res.data:

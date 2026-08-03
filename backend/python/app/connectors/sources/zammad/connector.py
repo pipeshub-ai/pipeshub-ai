@@ -2947,15 +2947,15 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
+            if not response.success or response.data is None:
                 self.logger.warning(
                     "Failed to download KB answer attachment %s: %s",
                     attachment_id,
                     response.message,
                 )
                 raise_for_stream_fetch(
-                    success=False,
-                    has_payload=False,
+                    success=response.success,
+                    has_payload=response.data is not None,
                     connector=self.display_name,
                     status=response.status_code,
                     message=response.message or response.error,
@@ -2984,15 +2984,15 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
+            if not response.success or response.data is None:
                 self.logger.warning(
                     "Failed to download ticket attachment %s: %s",
                     attachment_id,
                     response.message,
                 )
                 raise_for_stream_fetch(
-                    success=False,
-                    has_payload=False,
+                    success=response.success,
+                    has_payload=response.data is not None,
                     connector=self.display_name,
                     status=response.status_code,
                     message=response.message or response.error,
