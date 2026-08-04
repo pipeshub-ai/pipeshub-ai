@@ -155,6 +155,7 @@ async def test_upload_csv_dispatches_to_lightweight_parser():
     mock_csv.assert_awaited_once()
     assert len(out["attachments"]) == 1
     assert out["attachments"][0]["extension"] == "csv"
+    assert out["attachments"][0]["parseMode"] == "csv_lightweight"
     assert out["attachments"][0]["ocrMode"] == "csv_lightweight"
     orch.index.assert_awaited()
 
@@ -211,6 +212,7 @@ async def test_upload_xlsx_dispatches_to_lightweight_parser():
 
     mock_xlsx.assert_awaited_once()
     assert out["attachments"][0]["extension"] == "xlsx"
+    assert out["attachments"][0]["parseMode"] == "excel_lightweight"
     assert out["attachments"][0]["ocrMode"] == "excel_lightweight"
 
 
@@ -266,4 +268,5 @@ async def test_upload_docx_dispatches_to_docling():
 
     mock_docx.assert_awaited_once()
     assert out["attachments"][0]["extension"] == "docx"
+    assert out["attachments"][0]["parseMode"] == "docling"
     assert out["attachments"][0]["ocrMode"] == "docling"
