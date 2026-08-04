@@ -14,7 +14,7 @@ import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
-from langchain_aws import ChatBedrock
+from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -997,7 +997,7 @@ async def call_aiter_llm_stream_simple(
         return
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
         if isinstance(llm, ChatAnthropic):
@@ -1012,7 +1012,7 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
             additional_kwargs["stream"] = True
 
-        if not isinstance(llm, ChatBedrock):
+        if not isinstance(llm, (ChatBedrock, ChatBedrockConverse)):
             additional_kwargs["method"] = "json_schema"
 
         try:

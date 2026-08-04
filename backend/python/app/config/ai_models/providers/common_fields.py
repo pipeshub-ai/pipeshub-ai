@@ -170,7 +170,9 @@ BEDROCK_PROVIDER = AIModelField(
     default_value="anthropic",
     options=[
         {"value": "anthropic", "label": "Anthropic (Claude)"},
+        {"value": "openai", "label": "OpenAI (GPT-OSS)"},
         {"value": "mistral", "label": "Mistral"},
+        {"value": "meta", "label": "Meta (Llama)"},
         {"value": "qwen", "label": "Qwen"},
         {"value": "deepseek", "label": "DeepSeek"},
         {"value": "cohere", "label": "Cohere"},

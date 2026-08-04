@@ -817,7 +817,7 @@ class TestGetGeneratorModel:
         assert call_kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
 
     @patch("app.utils.aimodels._create_bedrock_client")
-    @patch("langchain_aws.ChatBedrock")
+    @patch("langchain_aws.ChatBedrockConverse")
     def test_bedrock(self, mock_cls, mock_create_client):
         mock_cls.return_value = MagicMock()
         mock_create_client.return_value = MagicMock()
@@ -827,7 +827,7 @@ class TestGetGeneratorModel:
         assert result is mock_cls.return_value
 
     @patch("app.utils.aimodels._create_bedrock_client")
-    @patch("langchain_aws.ChatBedrock")
+    @patch("langchain_aws.ChatBedrockConverse")
     def test_bedrock_auto_detects_mistral(self, mock_cls, mock_create_client):
         mock_cls.return_value = MagicMock()
         mock_create_client.return_value = MagicMock()

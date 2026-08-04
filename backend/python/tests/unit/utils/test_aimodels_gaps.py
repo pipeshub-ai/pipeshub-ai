@@ -113,7 +113,7 @@ class TestAnthropicNoSamplingTemperature:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_cls:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_cls:
                 mock_cls.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert "temperature" not in mock_cls.call_args.kwargs

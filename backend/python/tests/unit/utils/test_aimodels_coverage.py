@@ -323,14 +323,13 @@ class TestBedrockAnthropicClaude45:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
-                model_kwargs = mock_chat.call_args.kwargs.get("model_kwargs", {})
-                assert model_kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+                assert mock_chat.call_args.kwargs["max_tokens"] == MAX_OUTPUT_TOKENS_CLAUDE_4_5
 
-    def test_bedrock_non_anthropic_empty_model_kwargs(self):
-        """Non-Anthropic models in Bedrock should have empty model_kwargs."""
+    def test_bedrock_non_anthropic_omits_max_tokens(self):
+        """Non-Anthropic models in Bedrock should not set max_tokens."""
         config = {
             "configuration": {
                 "model": "meta.llama3-70b",
@@ -339,11 +338,11 @@ class TestBedrockAnthropicClaude45:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
-                model_kwargs = mock_chat.call_args.kwargs.get("model_kwargs", {})
-                assert model_kwargs == {}
+                assert "max_tokens" not in mock_chat.call_args.kwargs
+                assert "model_kwargs" not in mock_chat.call_args.kwargs
 
 
 # ============================================================================
@@ -622,7 +621,7 @@ class TestBedrockJambaDetection:
             "isDefault": True,
         }
         with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
-            with patch("langchain_aws.ChatBedrock") as mock_chat:
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
                 mock_chat.return_value = MagicMock()
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert mock_chat.call_args.kwargs["provider"] == "ai21"
