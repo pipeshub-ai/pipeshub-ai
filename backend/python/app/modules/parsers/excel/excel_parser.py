@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 
 from app.services.parsing.interface import ParseResult
@@ -296,7 +296,7 @@ def _resolve_ambiguous_format(format_str: str) -> str:
     return python_format
 
 
-def format_excel_datetime(dt_value: datetime | str | int | float | None, number_format: str) -> str | int | float | None:
+def format_excel_datetime(dt_value: datetime | time | str | int | float | None, number_format: str) -> str | int | float | None:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
 
@@ -316,8 +316,9 @@ def format_excel_datetime(dt_value: datetime | str | int | float | None, number_
     Returns:
         Formatted string if datetime with valid format, otherwise original value
     """
-    # Early returns for non-datetime values
-    if not isinstance(dt_value, datetime):
+    # Early returns for non-datetime values. openpyxl represents time-only
+    # cells (e.g. number_format "h:mm:ss") as datetime.time, not datetime.datetime.
+    if not isinstance(dt_value, (datetime, time)):
         return dt_value
 
     if not number_format or number_format == "General":
@@ -544,7 +545,7 @@ class ExcelParser:
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     def _json_default(self, obj: object) -> str:
-        if isinstance(obj, datetime):
+        if isinstance(obj, (datetime, time)):
             return obj.isoformat()
         return str(obj)
 
@@ -913,8 +914,8 @@ class ExcelParser:
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
-                        # Apply datetime formatting if applicable
-                        if isinstance(merged_value, datetime) and hasattr(top_left_cell, 'number_format'):
+                        # Apply datetime/time formatting if applicable
+                        if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
                             merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
                         break
 
@@ -930,9 +931,9 @@ class ExcelParser:
                 }
 
             # If not a merged cell, process normally.
-            # Apply datetime formatting if the cell contains a datetime value
+            # Apply datetime/time formatting if the cell contains such a value
             cell_value = cell.value
-            if isinstance(cell_value, datetime) and hasattr(cell, 'number_format'):
+            if isinstance(cell_value, (datetime, time)) and hasattr(cell, 'number_format'):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
 
             return {
@@ -1308,7 +1309,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 {
                     cell["header"]: (
                         cell["value"].isoformat()
-                        if isinstance(cell["value"], datetime)
+                        if isinstance(cell["value"], (datetime, time))
                         else cell["value"]
                     )
                     for cell in row
@@ -1343,7 +1344,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 {
                     cell["header"]: (
                         cell["value"].isoformat()
-                        if isinstance(cell["value"], datetime)
+                        if isinstance(cell["value"], (datetime, time))
                         else cell["value"]
                     )
                     for cell in row
