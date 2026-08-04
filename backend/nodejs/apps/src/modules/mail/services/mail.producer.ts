@@ -33,10 +33,7 @@ export class MailProducer {
     return this.producer.isConnected();
   }
 
-  /**
-   * Unlike the notification producer this rethrows: the caller reports the
-   * failure to the user, and swallowing it would silently drop the email.
-   */
+  /** Rethrows, unlike NotificationProducer: swallowing would drop the email. */
   async publishEvent(event: MailEvent): Promise<void> {
     const message: StreamMessage<MailEventPayload> = {
       key: event.payload.orgId ?? event.payload.mail.emailTemplateType,
@@ -47,8 +44,7 @@ export class MailProducer {
       },
     };
 
-    // A shared singleton producer can be disconnected by another module's
-    // stop(); start() is idempotent and reconnects so the job is not lost.
+    // Another module's stop() may have disconnected the shared producer.
     await this.start();
     await this.producer.publish(this.topic, message);
     this.logger.info(

@@ -15,22 +15,17 @@ import { MailEventPayload, MailSendResult } from '../types/mail-event.types';
 const MAX_ATTEMPTS = 4;
 const BASE_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
-// One bad SMTP server during a 1000-address import would otherwise raise a
-// notification per recipient, per admin. Collapse them into one per org per
-// window and carry the suppressed count on the next one.
+// Without this, one bad SMTP server during a 1000-address import raises a
+// notification per recipient, per admin.
 const FAILURE_NOTIFY_WINDOW_MS = 5 * 60_000;
 
 /**
- * Consumes mail jobs and delivers them off the request path.
- *
- * Retries transient failures with exponential backoff in-handler rather than
- * relying on redelivery: the shared consumer base auto-commits offsets and
- * swallows handler errors, so a thrown error would drop the job instead of
- * replaying it.
+ * Delivers mail jobs off the request path. Retries in-handler rather than by
+ * redelivery: the consumer base auto-commits offsets and swallows handler
+ * errors, so throwing would drop the job instead of replaying it.
  */
 @injectable()
 export class MailConsumer {
-  /** Per-org throttle state for failure notifications. */
   private readonly failureNotifyState = new Map<
     string,
     { last: number; suppressed: number }
@@ -94,11 +89,10 @@ export class MailConsumer {
     });
   }
 
-  /** Delivers one job, retrying transient failures before giving up. */
   private async deliver(payload: MailEventPayload): Promise<void> {
     const smtpConfig = this.sender.getSmtpConfig();
     if (!smtpConfig) {
-      // Not retryable: nothing can be delivered until an admin configures SMTP.
+      // Not retryable until an admin configures SMTP.
       this.logger.error('Mail event dropped: SMTP configuration not set');
       await this.notifyFailure(payload, 'SMTP configuration not set');
       return;
@@ -170,11 +164,7 @@ export class MailConsumer {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /**
-   * Tells org admins the mail never went out. Requires an orgId — the
-   * notification pipeline drops events without one — so jobs published without
-   * an org (e.g. pre-login flows) are logged only.
-   */
+  /** Needs an orgId: the notification pipeline drops events without one. */
   private async notifyFailure(
     payload: MailEventPayload,
     error: string,

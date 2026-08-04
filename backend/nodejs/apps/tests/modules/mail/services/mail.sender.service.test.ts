@@ -40,8 +40,7 @@ describe('MailSenderService', () => {
   afterEach(() => sinon.restore());
 
   it('reads SMTP config through the provider so a rebind is picked up', () => {
-    // The service is a singleton but AppConfig is rebound when an admin
-    // updates SMTP settings; capturing the config would go stale.
+    // AppConfig is rebound on an SMTP update; a captured config would go stale.
     let current: any = { smtp: { host: 'old-host', port: 25, fromEmail: 'a@b.c' } };
     const sender = new MailSenderService(() => current, mockLogger);
 
@@ -137,8 +136,6 @@ describe('MailSenderService', () => {
       await clock.tickAsync(120_000 + 1);
       const result = await promise;
 
-      // socketTimeout only measures inactivity, so without this an unbounded
-      // send would wedge the consumer and stop all later mail.
       expect(result.status).to.equal('transient');
       expect(String((result as { error?: string }).error)).to.contain('deadline');
       // The stuck connection must not be handed to the next message.
