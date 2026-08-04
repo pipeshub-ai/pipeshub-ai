@@ -267,6 +267,9 @@ def main() -> int:
         if result.get("isError"):
             raise RuntimeError(text)
         print("PASS  pipeshub_sources")
+    except UnreachableError as exc:
+        print(f"SKIP  pipeshub_sources: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  pipeshub_sources: {exc}")
         fails += 1
@@ -285,6 +288,9 @@ def main() -> int:
         if result.get("isError"):
             raise RuntimeError(text)
         print("PASS  pipeshub_directory (whoami)")
+    except UnreachableError as exc:
+        print(f"SKIP  pipeshub_directory: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  pipeshub_directory: {exc}")
         fails += 1
@@ -298,6 +304,9 @@ def main() -> int:
         if result.get("isError"):
             raise RuntimeError(text)
         print("PASS  pipeshub_agents")
+    except UnreachableError as exc:
+        print(f"SKIP  pipeshub_agents: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  pipeshub_agents: {exc}")
         fails += 1
@@ -325,6 +334,9 @@ def main() -> int:
             record_id = hits[0].get("recordId")
         hit_count = len(hits) if isinstance(hits, list) else 0
         print(f"PASS  pipeshub_search (hits={hit_count})")
+    except UnreachableError as exc:
+        print(f"SKIP  pipeshub_search: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  pipeshub_search: {exc}")
         fails += 1
@@ -348,6 +360,9 @@ def main() -> int:
             if result.get("isError"):
                 raise RuntimeError(text)
             print("PASS  pipeshub_download_record")
+        except UnreachableError as exc:
+            print(f"SKIP  pipeshub_download_record: {exc}")
+            return 2
         except RuntimeError as exc:
             print(f"FAIL  pipeshub_download_record: {exc}")
             fails += 1
@@ -374,6 +389,9 @@ def main() -> int:
             if not text.strip():
                 raise RuntimeError("empty chat result")
             print("PASS  pipeshub_chat")
+        except UnreachableError as exc:
+            print(f"SKIP  pipeshub_chat: {exc}")
+            return 2
         except RuntimeError as exc:
             print(f"FAIL  pipeshub_chat: {exc}")
             fails += 1

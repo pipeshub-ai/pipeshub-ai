@@ -139,7 +139,8 @@ def check_mcp_check_defaults() -> None:
     tools = re.findall(r'"(pipeshub_[a-z0-9_]+)"', match.group(1))
     if tools != EXPECTED_TOOLS:
         _fail(f"mcp-check.py REQUIRED_TOOLS={tools!r} expected {EXPECTED_TOOLS!r}")
-    if "nargs" not in text:
+    require_tool = re.search(r'(?s)add_argument\(\s*"--require-tool".*?\)', text)
+    if not require_tool or "nargs" not in require_tool.group(0):
         _fail("mcp-check.py must accept multiple --require-tool values (nargs)")
     _pass("mcp-check.py defaults include all MCP tools")
 

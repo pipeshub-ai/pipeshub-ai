@@ -148,11 +148,14 @@ try:
     payload = json.loads(base64.urlsafe_b64decode(parts[1] + pad))
 except Exception:
     raise SystemExit(1)
-exp = payload.get("exp")
-if exp is None:
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+try:
+    exp = float(payload.get("exp"))
+except (TypeError, ValueError):
     raise SystemExit(1)
 # expire a minute early to avoid racing the request
-raise SystemExit(0 if time.time() >= (float(exp) - 60) else 1)
+raise SystemExit(0 if time.time() >= (exp - 60) else 1)
 PY
 }
 

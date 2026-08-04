@@ -86,7 +86,7 @@ def _parse_body(raw: str) -> Any:
         raise SystemExit(f"MCP response was not valid JSON: {exc}") from None
 
 
-def _rpc_result(data: Any, *, label: str) -> Any:
+def _rpc_result(data: Any, *, label: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise SystemExit(f"{label}: expected JSON object, got {type(data).__name__}")
     if "error" in data and data["error"]:
@@ -98,7 +98,10 @@ def _rpc_result(data: Any, *, label: str) -> Any:
         raise SystemExit(f"{label} failed: {msg}")
     if "result" not in data:
         raise SystemExit(f"{label}: missing result field: {json.dumps(data)[:300]}")
-    return data["result"]
+    result = data["result"]
+    if not isinstance(result, dict):
+        raise SystemExit(f"{label}: result must be a JSON object")
+    return result
 
 
 def main() -> int:
@@ -156,11 +159,18 @@ def main() -> int:
         session_id=session_id,
     )
     list_result = _rpc_result(list_data, label="tools/list")
-    tools = list_result.get("tools") if isinstance(list_result, dict) else None
+    tools = list_result.get("tools")
     if not isinstance(tools, list):
         raise SystemExit("tools/list did not return a tools array")
 
-    names = [t.get("name") for t in tools if isinstance(t, dict) and t.get("name")]
+    names: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            raise SystemExit("tools/list returned a non-object tool entry")
+        name = tool.get("name")
+        if not isinstance(name, str) or not name:
+            raise SystemExit("tools/list returned a tool without a string name")
+        names.append(name)
     missing = [tool for tool in require_tools if tool not in names]
     if missing:
         raise SystemExit(
@@ -170,10 +180,11 @@ def main() -> int:
         )
 
     server_name = None
-    if isinstance(init_result, dict):
-        info = init_result.get("serverInfo") or {}
-        if isinstance(info, dict):
-            server_name = info.get("name")
+    info = init_result.get("serverInfo") or {}
+    if isinstance(info, dict):
+        name = info.get("name")
+        if isinstance(name, str):
+            server_name = name
 
     payload = {
         "ok": True,

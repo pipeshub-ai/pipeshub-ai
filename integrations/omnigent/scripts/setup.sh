@@ -200,6 +200,9 @@ try:
 except Exception:
   print("authentication failed")
   raise SystemExit
+if not isinstance(data, dict):
+  print("authentication failed")
+  raise SystemExit
 print(data.get("message") or data.get("error") or "authentication failed")
 PY
 )"

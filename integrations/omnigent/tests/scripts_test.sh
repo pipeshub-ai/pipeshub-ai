@@ -166,12 +166,17 @@ else
 fi
 
 # --- OAuth scopes cover conversation/agent/directory needs ---
+missing_scopes=()
 for scope in semantic:write kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read; do
-  if [[ "${OAUTH_SCOPES}" != *"${scope}"* ]]; then
-    fail "OAUTH_SCOPES missing ${scope}"
+  if [[ " ${OAUTH_SCOPES} " != *" ${scope} "* ]]; then
+    missing_scopes+=("$scope")
   fi
 done
-pass "OAUTH_SCOPES cover full MCP surface"
+if [[ "${#missing_scopes[@]}" -eq 0 ]]; then
+  pass "OAUTH_SCOPES cover full MCP surface"
+else
+  fail "OAUTH_SCOPES missing: ${missing_scopes[*]}"
+fi
 
 # --- mcp-check accepts multiple --require-tool values (regression) ---
 if out="$(python3 "${ROOT}/scripts/mcp-check.py" \

@@ -168,4 +168,5 @@ if [[ "$want_resume" -eq 0 ]]; then
 fi
 
 info "Starting Omnigent with PipesHub tools (default: pipeshub__pipeshub_chat) ..."
-omnigent run "${TMP_AGENT}" "${EXTRA_ARGS[@]}" "$@"
+# Bash 3.2 (macOS) + set -u treats empty "${arr[@]}" as unbound.
+omnigent run "${TMP_AGENT}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
