@@ -37,7 +37,11 @@ case "$ACTION" in
     $DOCKER cp "$HERE/instr/apply_instrumentation.py" "$CONTAINER:/tmp/apply_instrumentation.py"
 
     echo "== patching phase marks into the request path"
-    in_container python3 /tmp/apply_instrumentation.py || {
+    # The patcher takes both request-path targets; called bare it prints usage
+    # and exits 2, which meant the phase patch silently never applied.
+    in_container python3 /tmp/apply_instrumentation.py \
+      /app/python/app/api/routes/chatbot.py \
+      /app/python/app/agents/chat_modes/bridge.py || {
       echo "!! phase patch failed — throughput/latency will be unavailable"; }
 
     echo "== wiring the backend-latency probe"
@@ -67,16 +71,33 @@ PY
     in_container python3 - <<'PY'
 p = "/app/python/app/utils/runtime_threads.py"
 src = open(p).read()
-out = "\n".join(l for l in src.splitlines()
-                if "backend_timing" not in l and "recfetch_probe" not in l) + "\n"
+# Drop the whole injected block. Filtering only the lines mentioning the module
+# left a bare `try:` / `except Exception:` behind -- invalid Python, which the
+# compile() below then rejected, so `off` failed and left the probe wired.
+block = (
+    "try:\n"
+    "    from app.utils import backend_timing as _backend_timing  # noqa: F401\n"
+    "except Exception:\n"
+    "    pass\n"
+    "\n"
+)
+if block in src:
+    out = src.replace(block, "")
+elif "backend_timing" not in src:
+    print("   not wired")
+    raise SystemExit(0)
+else:
+    print("   !! probe block not in its expected shape -- leaving the file alone")
+    raise SystemExit(1)
 compile(out, p, "exec")
 open(p, "w").write(out)
 print("   unwired")
 PY
     in_container sh -c 'rm -f /app/python/app/utils/backend_timing.py' || true
-    $DOCKER cp "$HERE/instr/apply_instrumentation.py" "$CONTAINER:/tmp/apply_instrumentation.py"
-    in_container python3 /tmp/apply_instrumentation.py --revert 2>/dev/null || \
-      echo "   (phase marks: revert not supported by this patcher — recreate the container to clear)"
+    in_container sh -c 'rm -f /app/python/app/utils/query_phase_timing.py' || true
+    # The patcher is forward-only. Phase marks stay until the container is
+    # recreated; say so rather than pretending a revert ran.
+    echo "   (phase marks remain — recreate the container to clear them)"
     bash "$HERE/restart_query.sh"
     ;;
 

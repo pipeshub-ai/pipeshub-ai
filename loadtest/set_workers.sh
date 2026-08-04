@@ -40,7 +40,7 @@ if [ "$N" = "restore" ]; then
     want=1
 else
     echo "== Setting query service to $N uvicorn worker(s)"
-    sed -i "s|    python -m app.query_main &|    python -m uvicorn app.query_main:app --host 0.0.0.0 --port 8000 --workers $N \&|" "$TMP"
+    sed -i "s|    python -m app.query_main &|    python -m uvicorn app.query_main:app --host 0.0.0.0 --port ${PIPESHUB_QUERY_PORT} --workers $N \&|" "$TMP"
     grep -q -- "--workers $N" "$TMP" || { echo "sed did not match the launch line" >&2; exit 1; }
     want=$N
 fi
@@ -54,7 +54,7 @@ $DOCKER restart "$CONTAINER" >/dev/null
 echo -n "== waiting for /health "
 for _ in $(seq 1 120); do
     code=$($DOCKER exec "$CONTAINER" curl -s -o /dev/null -w '%{http_code}' \
-           http://localhost:8000/health 2>/dev/null || true)
+           http://localhost:${PIPESHUB_QUERY_PORT}/health 2>/dev/null || true)
     [ "$code" = "200" ] && break
     printf '.'; sleep 5
 done

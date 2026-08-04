@@ -91,7 +91,8 @@ the application.
 
 ### Requirements
 
-- **A POSIX shell** — Linux, macOS, WSL, or Git Bash.
+- **Bash** — Linux, macOS, WSL, or Git Bash. The entry points use arrays and
+  `mapfile`, so run them with `bash`, not `sh`.
 - **Python 3.8+** as `python3` or `python`.
 - **Docker** (docker mode only). Access is probed with and without `sudo`, so
   Docker Desktop, rootless and stock Linux daemons all work.
@@ -241,8 +242,10 @@ elsewhere and use this only to collect:
   returned `0 MB` and `throughput.sh` `0.0 req/min` when there was no container
   to talk to — indistinguishable from a real measurement of a quiet system.
   Every script now checks first and refuses to produce a number it cannot back.
-  If PipesHub runs natively here, that check is telling you the truth: use a
-  container deployment, or drive load only and collect nothing.
+  A native deployment is still measurable — CPU and memory work as they are, and
+  load generation is unaffected; only the log-derived sections (throughput, turn
+  latency, backend calls) need `PIPESHUB_QUERY_LOG` pointed at the query
+  service's output.
 - **`docker compose up -d` wipes the probes.** It recreates the container.
   `docker restart` keeps them. Re-run `./instrument.sh on` after a compose up.
 - **Don't `docker cp` a source file from a branch newer than the running

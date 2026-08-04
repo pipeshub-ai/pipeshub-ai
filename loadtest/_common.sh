@@ -15,10 +15,16 @@ _LT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PYTHONIOENCODING=${PYTHONIOENCODING:-utf-8}
 
 if [ -f "$_LT_DIR/.env" ]; then
+    # Snapshot what the caller already exported and restore it afterwards.
+    # Sourcing alone lets the FILE win, which is backwards: it silently ignores
+    # `PIPESHUB_QUERY= ./perftest.sh ...` and every other one-off override.
+    _lt_preset=$(declare -p $(env | sed -n 's/^\(PIPESHUB_[A-Z_]*\|TOKEN\)=.*/\1/p') 2>/dev/null || true)
     set -a
     # shellcheck disable=SC1091
     . "$_LT_DIR/.env"
     set +a
+    [ -n "$_lt_preset" ] && eval "$_lt_preset"
+    unset _lt_preset
 fi
 
 PIPESHUB_MODE=${PIPESHUB_MODE:-auto}

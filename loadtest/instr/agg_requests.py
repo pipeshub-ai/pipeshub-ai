@@ -11,6 +11,7 @@ failed is not a measurement, and should not be averaged into a matrix.
 from __future__ import annotations
 
 import csv
+import math
 import statistics as st
 import sys
 
@@ -58,10 +59,12 @@ def main() -> int:
     if times:
         times.sort()
         # Client-side, so this includes queueing the server never sees.
+        # Nearest-rank: ceil(0.95 * n) - 1. Truncating instead returned the
+        # maximum whenever n was small enough for int() to round up to n-1.
+        p95 = times[max(math.ceil(0.95 * len(times)) - 1, 0)]
         print(
             f"  turn seconds    : p50={st.median(times):.1f} "
-            f"p95={times[min(int(len(times) * 0.95), len(times) - 1)]:.1f} "
-            f"max={times[-1]:.1f}"
+            f"p95={p95:.1f} max={times[-1]:.1f}"
         )
     if rate > INVALID_ABOVE:
         print(f"  ** INVALID: {rate * 100:.1f}% of requests failed (>{INVALID_ABOVE * 100:.0f}%)")

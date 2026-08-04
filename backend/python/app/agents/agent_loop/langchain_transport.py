@@ -250,10 +250,16 @@ class LangChainTransport(LLMTransport):
         # query-service CPU) for output identical whenever the tool set is. Names
         # key it safely: one name resolves to one registry entry per request, and
         # `fetch_tools` granting more tools changes the names, forcing a rebind.
+        # Only bindings onto `self._llm` are cached. An `llm` override is the
+        # API-shape fallback retrying on a differently-configured model, and
+        # handing it the cached original made the retry re-raise the very error
+        # it was retrying.
+        cacheable = llm is self._llm
         cache_key = tuple(tool_names)
-        cached = self._bound_by_tools.get(cache_key)
-        if cached is not None:
-            return cached
+        if cacheable:
+            cached = self._bound_by_tools.get(cache_key)
+            if cached is not None:
+                return cached
 
         lc_tools = convert_tool_schemas_to_langchain(tools)
         try:
@@ -272,7 +278,8 @@ class LangChainTransport(LLMTransport):
             "LangChainTransport: bound %d tool(s) to LLM call: %s",
             len(tool_names), tool_names,
         )
-        self._bound_by_tools[cache_key] = bound
+        if cacheable:
+            self._bound_by_tools[cache_key] = bound
         return bound
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
@@ -471,6 +478,9 @@ class LangChainTransport(LLMTransport):
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            # Entries were bound onto the old model; keeping them would serve
+            # the shape that just failed for the rest of the run.
+            self._bound_by_tools.clear()
             await self._record_api_mode(mode)
             logger.info(
                 "LangChainTransport.complete: retry succeeded — pinned api_mode=%s for "
@@ -697,6 +707,7 @@ class LangChainTransport(LLMTransport):
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            self._bound_by_tools.clear()
             await self._record_api_mode(fallback_mode)
             logger.info(
                 "LangChainTransport.stream: retry succeeded — pinned api_mode=%s for "

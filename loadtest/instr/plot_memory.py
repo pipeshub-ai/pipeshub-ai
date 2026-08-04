@@ -31,15 +31,17 @@ def main() -> int:
     xs = [t - t0 for t, _ in pts]
     ys = [v for _, v in pts]
     lo, hi = min(ys), max(ys)
-    if hi - lo < 1:
-        hi = lo + 1
+    # Separate scaling bound from the reported peak: widening `hi` for a flat
+    # run kept the line off the top edge, but also made the caption claim a peak
+    # 1 MB above reality and growth of +1 MB where there was none.
+    top = hi if hi - lo >= 1 else lo + 1
     span = xs[-1] or 1
 
     def px(x: float) -> float:
         return PAD + (x / span) * (W - 2 * PAD)
 
     def py(y: float) -> float:
-        return H - PAD - ((y - lo) / (hi - lo)) * (H - 2 * PAD)
+        return H - PAD - ((y - lo) / (top - lo)) * (H - 2 * PAD)
 
     line = " ".join(f"{px(x):.1f},{py(y):.1f}" for x, y in zip(xs, ys))
     area = f"{px(0):.1f},{H - PAD} {line} {px(xs[-1]):.1f},{H - PAD}"
@@ -48,7 +50,7 @@ def main() -> int:
     # Five gridlines, labelled in MB; x labelled in seconds from load start.
     grid = []
     for i in range(5):
-        v = lo + (hi - lo) * i / 4
+        v = lo + (top - lo) * i / 4
         y = py(v)
         grid.append(f'<line x1="{PAD}" y1="{y:.1f}" x2="{W - PAD}" y2="{y:.1f}" '
                     f'stroke="#e3e3e3" stroke-width="1"/>')

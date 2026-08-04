@@ -17,6 +17,9 @@ LABEL=${1:?usage: TOKEN=<jwt> ./perftest.sh <label> [users] [seconds] [workers]}
 USERS=${2:-8}
 SECS=${3:-300}
 WORKERS=${4:-}
+case "$SECS" in
+    ''|*[!0-9]*|0) echo "seconds must be a positive integer, got '$SECS'" >&2; exit 1 ;;
+esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTDIR="$HERE/results/$LABEL"
@@ -44,7 +47,10 @@ if [ "$USERS" -gt 0 ]; then
   probe=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/api/v1/conversations/stream" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" -d "{\"query\":\"ping\",\"chatMode\":\"internal_search\"}" \
-    --max-time 60 2>/dev/null || echo 000)
+    --max-time 60 2>/dev/null) || true
+  # curl already prints 000 when it never got a response; appending a fallback
+  # to the same capture produced "HTTP 000000".
+  [ -n "$probe" ] || probe=000
   if [ "$probe" != "200" ]; then
     say "ABORT: auth probe returned HTTP $probe (expected 200). Refresh TOKEN."
     exit 1
@@ -135,7 +141,11 @@ for u in $(seq 1 "$USERS"); do
         -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
         -H "Accept: text/event-stream" \
         -d "${BODIES[$qi]}" \
-        --max-time 300 2>/dev/null) || true
+        --max-time 300 2>/dev/null)
+      # Immediately, and with no `|| true` in between: that would make this the
+      # exit status of `true` and record every request as curl_exit=0, losing
+      # exactly the timeouts (28) this column exists to surface. Safe without a
+      # guard because the script does not run under `set -e`.
       rc=$?
       echo "$u,$turn,$qi,${res:-000 0} $rc" | tr ' ' ',' >> "$OUTDIR/requests.csv"
       turn=$((turn + 1))
