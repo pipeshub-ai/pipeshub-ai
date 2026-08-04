@@ -67,9 +67,9 @@ on:
           - kafka
           - redis
       pytest_workers:
-        description: 'pytest-xdist worker count. Connector suites are grouped onto a single worker to keep their ordering; enterprise-search tests spread across all workers. 1 disables parallelism.'
+        description: 'pytest-xdist worker count. Connector suites are grouped onto a single worker to keep their ordering; enterprise-search tests spread across all workers. 1 disables parallelism. Each worker is a separate interpreter costing ~1 GB, and the runner has ~15.7 GB shared with the whole Docker stack — raising this risks OOM-killing the runner.'
         required: true
-        default: '5'
+        default: '2'
         type: choice
         options:
           - '1'
@@ -95,7 +95,7 @@ concurrency:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
-  PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '5' }}
+  PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
 
 jobs:
   integration-tests:
