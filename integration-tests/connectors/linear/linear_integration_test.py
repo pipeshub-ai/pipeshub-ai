@@ -72,6 +72,7 @@ from connectors.linear.linear_test_utils import (  # noqa: E402
     count_linear_users_with_email,
     fetch_ancestor_chain,
     get_linear_issue_updated_ms,
+    parse_linear_timestamp,
     resolve_issue_by_identifier,
     wait_until_linear_condition,
     wait_until_record_indexing_completed,
@@ -742,10 +743,11 @@ class TestLinearPlaceholders:
         parent back from Linear and expands a second level. Depth 1 would not prove the loop ran.
         """
         cut = LINEAR_PH_MODIFIED_CUT_MS
+        # LINEAR_TEST_API_TOKEN is already guaranteed by the linear_datasource fixture.
         api_token = os.getenv("LINEAR_TEST_API_TOKEN")
         all_team_ids = [t.strip() for t in os.getenv("LINEAR_TEST_TEAM_IDS", "").split(",") if t.strip()]
-        if not api_token or not all_team_ids:
-            pytest.skip("LINEAR_TEST_API_TOKEN / LINEAR_TEST_TEAM_IDS not set")
+        if not all_team_ids:
+            pytest.skip("LINEAR_TEST_TEAM_IDS not set")
 
         child = await resolve_issue_by_identifier(linear_datasource, LINEAR_PH_CHILD_IDENTIFIER)
         assert child, f"TC-LINEAR-PH-001 setup: issue {LINEAR_PH_CHILD_IDENTIFIER!r} not found"
@@ -760,7 +762,7 @@ class TestLinearPlaceholders:
                 f"{team_id!r}, which is not in LINEAR_TEST_TEAM_IDS {all_team_ids}"
             )
 
-        child_updated_ms = await get_linear_issue_updated_ms(linear_datasource, child_id)
+        child_updated_ms = parse_linear_timestamp(child.get("updatedAt"))
         if child_updated_ms <= cut:
             pytest.fail(
                 f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} updatedAt="
@@ -773,11 +775,11 @@ class TestLinearPlaceholders:
         # first ancestor above it syncs for real and bounds the sweep.
         ancestors: list[str] = []
         boundary_id: str | None = None
-        for ancestor_id in await fetch_ancestor_chain(linear_datasource, child_id):
-            if await get_linear_issue_updated_ms(linear_datasource, ancestor_id) > cut:
-                boundary_id = ancestor_id
+        for ancestor in await fetch_ancestor_chain(linear_datasource, child_id):
+            if parse_linear_timestamp(ancestor.get("updatedAt")) > cut:
+                boundary_id = ancestor["id"]
                 break
-            ancestors.append(ancestor_id)
+            ancestors.append(ancestor["id"])
 
         if len(ancestors) < 2:
             pytest.fail(
@@ -861,11 +863,18 @@ class TestLinearPlaceholders:
                     "sync as a real record, not a stub"
                 )
 
-            unswept = [
-                stub.external_record_id
+            # Scoped to TICKET: the sweep seeds only tickets (a Linear project has no parent
+            # project), so a PROJECT stub from unrelated workspace data is not this test's business.
+            ticket_stubs = [
+                stub
                 for stub in await graph_provider.get_placeholder_records(connector_id)
-                if stub.external_revision_id is None
+                if stub.record_type == RecordType.TICKET
             ]
+            assert {s.external_record_id for s in ticket_stubs} == set(ancestors), (
+                "phase1: TICKET placeholders must be exactly the out-of-window ancestors; "
+                f"expected {sorted(ancestors)}, got {sorted(s.external_record_id for s in ticket_stubs)}"
+            )
+            unswept = [s.external_record_id for s in ticket_stubs if s.external_revision_id is None]
             assert not unswept, f"phase1: stubs never backfilled by the sweep: {unswept}"
 
             chain = [child_id] + ancestors + ([boundary_id] if boundary_id else [])
@@ -902,11 +911,12 @@ class TestLinearPlaceholders:
                     f"phase2: ancestor {ancestor_id} was replaced (node {promoted.id}) instead "
                     f"of promoted in place (node {stub_node_ids[ancestor_id]})"
                 )
-                assert not str(promoted.external_revision_id).startswith(
+                promoted_revision = promoted.external_revision_id
+                assert promoted_revision and not str(promoted_revision).startswith(
                     PLACEHOLDER_REVISION_PREFIX
                 ), (
-                    f"phase2: ancestor {ancestor_id} kept its stub revision "
-                    f"{promoted.external_revision_id!r}"
+                    f"phase2: ancestor {ancestor_id} must carry the real issue revision, "
+                    f"got {promoted_revision!r}"
                 )
 
                 expected = await LinearExpected.ticket_record(
@@ -943,8 +953,10 @@ class TestLinearPlaceholders:
                         timeout=int(os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", "300")),
                     )
                 except Exception as e:
-                    logger.warning(
-                        "TC-LINEAR-PH-001 cleanup: failed to remove connector %s: %s",
+                    # Not re-raised: it would mask a real assertion failure from the body.
+                    # Logged at error because a leaked connector keeps polling the workspace.
+                    logger.error(
+                        "TC-LINEAR-PH-001 cleanup: connector %s leaked, delete it manually: %s",
                         connector_id, e,
                     )
 

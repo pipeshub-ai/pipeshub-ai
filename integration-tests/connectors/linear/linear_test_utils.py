@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
+from app.connectors.sources.linear.connector import (  # type: ignore[import-not-found]
+    PLACEHOLDER_SWEEP_MAX_DEPTH,
+)
 from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.linear.linear import (
     LinearDataSource,  # type: ignore[import-not-found]
@@ -501,31 +504,39 @@ async def fetch_ancestor_chain(
     datasource: LinearDataSource,
     issue_id: str,
     *,
-    max_depth: int = 10,
-) -> List[str]:
-    """Return ancestor issue ids for ``issue_id``, nearest parent first.
+    max_depth: int = PLACEHOLDER_SWEEP_MAX_DEPTH,
+) -> List[Dict[str, Any]]:
+    """Return ancestor issues for ``issue_id``, nearest parent first.
 
     Walked one hop at a time: ``issue(id:)`` exposes only a single level of
-    ``parent``, so reaching the grandparent needs a second call. ``max_depth``
-    bounds a cyclic or pathologically deep chain.
+    ``parent``, so reaching the grandparent needs a second call. Returns the full
+    issue nodes rather than ids so callers can read ``updatedAt`` without a second
+    round-trip per ancestor. ``max_depth`` mirrors the connector's own sweep cap so
+    the walk cannot claim ancestors the sweep would never reach.
     """
-    chain: List[str] = []
+    chain: List[Dict[str, Any]] = []
     seen: Set[str] = {issue_id}
-    current = issue_id
+
+    resp = await _api_call_with_retry(
+        datasource.issue, id=issue_id,
+        context=f"fetch_ancestor_chain({issue_id})",
+    )
+    current = (resp.data or {}).get("issue") or {}
 
     for _ in range(max_depth):
-        resp = await _api_call_with_retry(
-            datasource.issue, id=current,
-            context=f"fetch_ancestor_chain({current})",
-        )
-        issue = (resp.data or {}).get("issue") or {}
-        parent = issue.get("parent") or {}
-        parent_id = parent.get("id")
+        parent_id = (current.get("parent") or {}).get("id")
         if not parent_id or parent_id in seen:
             break
-        chain.append(str(parent_id))
         seen.add(parent_id)
-        current = parent_id
+
+        resp = await _api_call_with_retry(
+            datasource.issue, id=parent_id,
+            context=f"fetch_ancestor_chain({parent_id})",
+        )
+        current = (resp.data or {}).get("issue") or {}
+        if not current.get("id"):
+            break
+        chain.append(current)
 
     return chain
 
