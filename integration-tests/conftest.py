@@ -533,9 +533,8 @@ def pytest_collection_modifyitems(
     module-scoped fixtures that drive a whole connector sync, both of which
     assume a single process. Most enterprise-search tests hold no shared state --
     each builds its own conversation and the autouse setup only wires clients
-    onto ``self`` -- so they are safe to distribute per test. A module that does
-    share state declares its own ``xdist_group`` (see the search suite, which
-    shares one per-user search history), which this hook leaves alone.
+    onto ``self`` -- so they are safe to distribute per test. One that does share
+    state declares its own ``xdist_group``, which this hook leaves alone.
 
     Under ``--dist loadgroup`` all tests carrying the same ``xdist_group`` mark
     run on one worker, so this keeps the connectors serial and in order while
@@ -700,16 +699,8 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Write integration test HTML report under reports/ with timestamp.
-
-    Controller only. This hook fires in every xdist worker too, and each worker
-    holds just the shard it ran -- so an unguarded write emits one partial report
-    per worker alongside the real one, several of them claiming a green verdict
-    for a run that failed elsewhere. Workers also exit as their queue drains, and
-    the filename is only second-resolution, so two finishing in the same second
-    silently overwrite each other. The controller sees every worker's
-    ``pytest_runtest_logreport``, so its report is already the complete run.
-    """
+    """Write integration test HTML report under reports/ with timestamp."""
+    # Controller only -- this fires in every worker too, each holding a partial run.
     if hasattr(session.config, "workerinput"):
         return
 

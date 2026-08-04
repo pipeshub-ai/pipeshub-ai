@@ -724,6 +724,8 @@ jobs:
           FILE_SIZE=$(stat -c%s reports.zip)
           UPLOAD_OUT="$RUNNER_TEMP/slack-upload.out"
 
+          # Unchecked, a failed upload still completes as ok:true with no bytes
+          # behind it. Retry from a fresh URL -- a consumed one cannot be reused.
           FILE_ID=""
           for attempt in 1 2 3; do
             RESPONSE=$(curl -sS -X POST "https://slack.com/api/files.getUploadURLExternal" \
@@ -736,8 +738,7 @@ jobs:
               sleep 5
               continue
             fi
-            # `strings` drops nulls and non-string types, so a malformed ok:true
-            # response is reported here rather than as a confusing curl failure.
+            # `strings` yields nothing for null/non-string, so both are caught below.
             UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url | strings')
             CANDIDATE_ID=$(echo "$RESPONSE" | jq -r '.file_id | strings')
             if [ -z "$UPLOAD_URL" ] || [ -z "$CANDIDATE_ID" ]; then

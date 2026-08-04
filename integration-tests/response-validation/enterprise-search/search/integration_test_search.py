@@ -34,11 +34,8 @@ SEARCH_QUERY = "every year asana undertakes which exercise?"
 # CONNECTOR_APP_ID = "ed6d6cc4-70bd-4838-9aeb-488e910c833a"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
 
-# Search history is one shared per-user collection, and
-# test_delete_search_history_response_matches_spec wipes all of it. Spread across
-# xdist workers that wipe deletes rows other tests are mid-way through using, so
-# the whole module shares one group and stays on a single worker. Conversations
-# and agents still fan out; nothing outside this file touches search history.
+# Search history is shared per user and the delete-history test wipes all of it,
+# so this module stays on one worker.
 pytestmark = pytest.mark.xdist_group("search-history")
 
 
