@@ -51,6 +51,18 @@ else
   pass "requires https for non-localhost"
 fi
 
+if (normalize_pipeshub_url "https://host.example/path" >/dev/null 2>&1); then
+  fail "should reject non-origin path"
+else
+  pass "rejects non-origin path"
+fi
+
+if (normalize_pipeshub_url "https://user:pass@host.example" >/dev/null 2>&1); then
+  fail "should reject userinfo in URL"
+else
+  pass "rejects userinfo in URL"
+fi
+
 # --- credentials + config write ---
 write_credentials "http://localhost:3000" "test-token-value" "refresh-value" "token"
 mode="$(stat -c '%a' "${CREDENTIALS_FILE}" 2>/dev/null || stat -f '%OLp' "${CREDENTIALS_FILE}")"

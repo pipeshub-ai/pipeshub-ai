@@ -69,14 +69,21 @@ def _parse_body(raw: str) -> Any:
     if not raw:
         return None
     # Streamable HTTP may return a single JSON object or SSE-framed JSON.
-    if raw.startswith("event:") or "data:" in raw.splitlines()[0:3]:
-        for line in raw.splitlines():
+    lines = raw.splitlines()
+    if raw.startswith("event:") or any(line.startswith("data:") for line in lines):
+        for line in lines:
             if line.startswith("data:"):
                 chunk = line[5:].strip()
                 if chunk and chunk != "[DONE]":
-                    return json.loads(chunk)
+                    try:
+                        return json.loads(chunk)
+                    except json.JSONDecodeError as exc:
+                        raise SystemExit(f"MCP SSE data was not valid JSON: {exc}") from None
         raise SystemExit(f"MCP SSE response contained no data payload: {raw[:300]}")
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"MCP response was not valid JSON: {exc}") from None
 
 
 def _rpc_result(data: Any, *, label: str) -> Any:

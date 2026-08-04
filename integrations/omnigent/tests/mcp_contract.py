@@ -42,16 +42,50 @@ def _pass(msg: str) -> None:
     print(f"PASS  {msg}")
 
 
-def _tools_in_yaml_block(text: str) -> list[str]:
-    """Extract ordered tool names under a `tools:` list in YAML-ish text."""
-    # Match list items like `      - pipeshub_chat`
-    return re.findall(r"(?m)^\s*-\s+(pipeshub_[a-z0-9_]+)\s*$", text)
+def _tools_under_key(text: str, key: str = "tools") -> list[str]:
+    """Extract ordered pipeshub_* names from the first `key:` YAML list block."""
+    match = re.search(
+        rf"(?ms)^(?P<indent>\s*){re.escape(key)}:\s*\n(?P<body>(?:^(?P=indent)\s+.*\n?)*)",
+        text,
+    )
+    if not match:
+        return []
+    body = match.group("body")
+    return re.findall(r"(?m)^\s*-\s+(pipeshub_[a-z0-9_]+)\s*$", body)
+
+
+def _assignment_values(text: str, name: str) -> list[str]:
+    """Parse space-separated values from NAME=\"${NAME:-a b c}\" defaults."""
+    match = re.search(
+        rf'(?m)^{re.escape(name)}="\$\{{{re.escape(name)}:-([^}}]*)\}}"',
+        text,
+    )
+    if not match:
+        match = re.search(rf"(?m)^{re.escape(name)}='([^']*)'", text)
+    if not match:
+        match = re.search(rf'(?m)^{re.escape(name)}="([^"]*)"', text)
+    if not match:
+        return []
+    return [part for part in match.group(1).split() if part]
 
 
 def check_config_example() -> None:
     path = ROOT / "agent" / "config.yaml.example"
     text = path.read_text(encoding="utf-8")
-    tools = _tools_in_yaml_block(text)
+    # Inline MCP block uses tools.pipeshub.tools list; take the nested tools list
+    # under the pipeshub server entry (second tools: key in the file).
+    blocks = list(
+        re.finditer(
+            r"(?ms)^(?P<indent>\s*)tools:\s*\n(?P<body>(?:^(?P=indent)\s+.*\n?)*)",
+            text,
+        )
+    )
+    tools: list[str] = []
+    for block in blocks:
+        found = re.findall(r"(?m)^\s*-\s+(pipeshub_[a-z0-9_]+)\s*$", block.group("body"))
+        if found:
+            tools = found
+            break
     if tools != EXPECTED_TOOLS:
         _fail(f"config.yaml.example tools={tools!r} expected {EXPECTED_TOOLS!r}")
     if "__PIPESHUB_MCP_URL__" not in text:
@@ -66,7 +100,7 @@ def check_config_example() -> None:
 def check_directory_mcp_example() -> None:
     path = ROOT / "agent" / "tools" / "mcp" / "pipeshub.yaml.example"
     text = path.read_text(encoding="utf-8")
-    tools = _tools_in_yaml_block(text)
+    tools = _tools_under_key(text, "tools")
     if tools != EXPECTED_TOOLS:
         _fail(f"pipeshub.yaml.example tools={tools!r} expected {EXPECTED_TOOLS!r}")
     _pass("pipeshub.yaml.example allowlists all MCP tools")
@@ -87,32 +121,35 @@ def check_agents_md() -> None:
 
 def check_lib_scopes_and_required_tools() -> None:
     text = (ROOT / "scripts" / "lib.sh").read_text(encoding="utf-8")
-    for scope in EXPECTED_OAUTH_SCOPES:
-        if scope not in text:
-            _fail(f"lib.sh OAUTH_SCOPES missing {scope}")
-    for tool in EXPECTED_TOOLS:
-        if tool not in text:
-            _fail(f"lib.sh REQUIRED_TOOLS missing {tool}")
+    scopes = _assignment_values(text, "OAUTH_SCOPES")
+    tools = _assignment_values(text, "REQUIRED_TOOLS")
+    if scopes != EXPECTED_OAUTH_SCOPES:
+        # Allow default-expansion form; compare as sets only if order differs? Prefer exact.
+        _fail(f"lib.sh OAUTH_SCOPES={scopes!r} expected {EXPECTED_OAUTH_SCOPES!r}")
+    if tools != EXPECTED_TOOLS:
+        _fail(f"lib.sh REQUIRED_TOOLS={tools!r} expected {EXPECTED_TOOLS!r}")
     _pass("lib.sh OAuth scopes and REQUIRED_TOOLS cover full MCP surface")
 
 
 def check_mcp_check_defaults() -> None:
     text = (ROOT / "scripts" / "mcp-check.py").read_text(encoding="utf-8")
-    for tool in EXPECTED_TOOLS:
-        if f'"{tool}"' not in text and f"'{tool}'" not in text:
-            _fail(f"mcp-check.py REQUIRED_TOOLS missing {tool}")
-    if "nargs=" not in text and 'nargs="' not in text and "nargs='" not in text:
-        # ensure multi-tool CLI still present
-        if "nargs" not in text:
-            _fail("mcp-check.py must accept multiple --require-tool values (nargs)")
+    match = re.search(r"REQUIRED_TOOLS\s*=\s*\((.*?)\)", text, re.S)
+    if not match:
+        _fail("mcp-check.py missing REQUIRED_TOOLS tuple")
+    tools = re.findall(r'"(pipeshub_[a-z0-9_]+)"', match.group(1))
+    if tools != EXPECTED_TOOLS:
+        _fail(f"mcp-check.py REQUIRED_TOOLS={tools!r} expected {EXPECTED_TOOLS!r}")
+    if "nargs" not in text:
+        _fail("mcp-check.py must accept multiple --require-tool values (nargs)")
     _pass("mcp-check.py defaults include all MCP tools")
 
 
 def check_readme() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
+    # README tool table should list each namespaced tool explicitly.
     for tool in EXPECTED_TOOLS:
-        if f"pipeshub__{tool}" not in text and tool not in text:
-            _fail(f"README.md does not mention {tool}")
+        if f"pipeshub__{tool}" not in text:
+            _fail(f"README.md missing namespaced tool pipeshub__{tool}")
     _pass("README mentions the full MCP tool surface")
 
 

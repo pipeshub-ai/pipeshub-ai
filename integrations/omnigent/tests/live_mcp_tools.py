@@ -52,18 +52,29 @@ def _load_credentials(path: Path) -> dict[str, str]:
     return env
 
 
+class UnreachableError(RuntimeError):
+    """MCP endpoint could not be reached (treat as live-test skip)."""
+
+
 def _parse_body(raw: str) -> Any:
     raw = raw.strip()
     if not raw:
         return None
-    if raw.startswith("event:") or "data:" in raw.splitlines()[0:3]:
-        for line in raw.splitlines():
+    lines = raw.splitlines()
+    if raw.startswith("event:") or any(line.startswith("data:") for line in lines):
+        for line in lines:
             if line.startswith("data:"):
                 chunk = line[5:].strip()
                 if chunk and chunk != "[DONE]":
-                    return json.loads(chunk)
+                    try:
+                        return json.loads(chunk)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(f"SSE data was not valid JSON: {exc}") from None
         raise RuntimeError(f"SSE response had no data payload: {raw[:200]}")
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"response was not valid JSON: {exc}") from None
 
 
 def _rpc(
@@ -72,11 +83,14 @@ def _rpc(
     method: str,
     params: dict[str, Any] | None = None,
     *,
-    rpc_id: int = 1,
+    rpc_id: int | None = 1,
     session_id: str | None = None,
     timeout: float = 120.0,
+    allow_empty: bool = False,
 ) -> tuple[Any, str | None]:
-    payload: dict[str, Any] = {"jsonrpc": "2.0", "id": rpc_id, "method": method}
+    payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if rpc_id is not None:
+        payload["id"] = rpc_id
     if params is not None:
         payload["params"] = params
     headers = {
@@ -97,14 +111,21 @@ def _rpc(
         body = exc.read().decode("utf-8", errors="replace")[:400]
         raise RuntimeError(f"HTTP {exc.code} on {method}: {body}") from None
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"unreachable {url}: {exc.reason}") from None
+        raise UnreachableError(f"unreachable {url}: {exc.reason}") from None
+
+    if allow_empty and not raw.strip():
+        return None, sid or session_id
+
     data = _parse_body(raw)
+    if data is None and allow_empty:
+        return None, sid or session_id
     if not isinstance(data, dict):
         raise RuntimeError(f"{method}: bad response type {type(data).__name__}")
     if data.get("error"):
         raise RuntimeError(f"{method} error: {data['error']}")
+    if "result" not in data and not allow_empty:
+        raise RuntimeError(f"{method}: missing result field")
     return data.get("result"), sid or session_id
-
 
 def _tool_text(result: Any, *, limit: int | None = 2000) -> str:
     if not isinstance(result, dict):
@@ -122,8 +143,8 @@ def _tool_text(result: Any, *, limit: int | None = 2000) -> str:
 
 def _call_tool(
     url: str, token: str, session_id: str | None, name: str, arguments: dict[str, Any], rpc_id: int
-) -> tuple[Any, str | None]:
-    return _rpc(
+) -> tuple[dict[str, Any], str | None]:
+    result, sid = _rpc(
         url,
         token,
         "tools/call",
@@ -131,6 +152,9 @@ def _call_tool(
         rpc_id=rpc_id,
         session_id=session_id,
     )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"tools/call {name}: expected object result, got {type(result).__name__}")
+    return result, sid
 
 
 def main() -> int:
@@ -180,17 +204,41 @@ def main() -> int:
             rpc_id=1,
         )
         print("PASS  initialize")
+    except UnreachableError as exc:
+        print(f"SKIP  initialize: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  initialize: {exc}")
         return 1
+
+    # Match mcp-check.py / MCP Streamable HTTP clients: notify before tools/list.
+    try:
+        _rpc(
+            url,
+            token,
+            "notifications/initialized",
+            {},
+            rpc_id=None,
+            session_id=session_id,
+            allow_empty=True,
+        )
+    except UnreachableError as exc:
+        print(f"SKIP  notifications/initialized: {exc}")
+        return 2
+    except RuntimeError:
+        # Best-effort on fully stateless servers.
+        pass
 
     try:
         listed, session_id = _rpc(
             url, token, "tools/list", {}, rpc_id=2, session_id=session_id
         )
+        if not isinstance(listed, dict):
+            print(f"FAIL  tools/list: expected object result, got {type(listed).__name__}")
+            return 1
         names = [
             t.get("name")
-            for t in (listed or {}).get("tools", [])
+            for t in listed.get("tools", [])
             if isinstance(t, dict) and t.get("name")
         ]
         missing = [t for t in EXPECTED_TOOLS if t not in names]
@@ -198,6 +246,9 @@ def main() -> int:
             print(f"FAIL  tools/list missing {missing}; available={names}")
             return 1
         print(f"PASS  tools/list includes all {len(EXPECTED_TOOLS)} expected tools")
+    except UnreachableError as exc:
+        print(f"SKIP  tools/list: {exc}")
+        return 2
     except RuntimeError as exc:
         print(f"FAIL  tools/list: {exc}")
         return 1

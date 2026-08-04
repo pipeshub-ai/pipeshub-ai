@@ -78,8 +78,30 @@ if jwt_is_expired "${PIPESHUB_MCP_TOKEN}"; then
       -H "Authorization: Bearer ${PIPESHUB_REFRESH_TOKEN}" \
       -H 'Content-Type: application/json' || true)"
     if [[ "$HTTP_CODE" == "200" ]]; then
-      NEW_TOKEN="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("accessToken") or d.get("access_token") or "")' "$REFRESH_BODY")"
-      NEW_REFRESH="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("refreshToken") or d.get("refresh_token") or "")' "$REFRESH_BODY")"
+      NEW_TOKEN="$(python3 - "$REFRESH_BODY" <<'PY'
+import json,sys
+try:
+  d=json.load(open(sys.argv[1]))
+except Exception:
+  raise SystemExit(1)
+if not isinstance(d, dict):
+  raise SystemExit(1)
+token=d.get("accessToken") or d.get("access_token") or ""
+print(token if isinstance(token, str) else "")
+PY
+)" || true
+      NEW_REFRESH="$(python3 - "$REFRESH_BODY" <<'PY'
+import json,sys
+try:
+  d=json.load(open(sys.argv[1]))
+except Exception:
+  raise SystemExit(1)
+if not isinstance(d, dict):
+  raise SystemExit(1)
+token=d.get("refreshToken") or d.get("refresh_token") or ""
+print(token if isinstance(token, str) else "")
+PY
+)" || true
       rm -f "$REFRESH_BODY"
       if [[ -n "$NEW_TOKEN" ]]; then
         write_credentials "$ORIGIN" "$NEW_TOKEN" "${NEW_REFRESH:-$PIPESHUB_REFRESH_TOKEN}" "${PIPESHUB_AUTH_METHOD:-token}"

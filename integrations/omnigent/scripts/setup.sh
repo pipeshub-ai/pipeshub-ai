@@ -167,11 +167,18 @@ case "$AUTH_METHOD" in
     SESSION_TOKEN="$(awk -F': ' 'tolower($1)=="x-session-token"{gsub(/\r/,"",$2); print $2}' "$INIT_HEADERS")"
     ALLOWED="$(python3 - "$INIT_BODY" <<'PY'
 import json,sys
-data=json.load(open(sys.argv[1]))
+try:
+  data=json.load(open(sys.argv[1]))
+except Exception:
+  raise SystemExit("initAuth response was not valid JSON")
+if not isinstance(data, dict):
+  raise SystemExit("initAuth response was not a JSON object")
 methods=data.get("allowedMethods") or []
+if methods and (not isinstance(methods, list) or any(not isinstance(m, str) for m in methods)):
+  raise SystemExit("initAuth allowedMethods must be a list of strings")
 print(",".join(methods) if isinstance(methods, list) else "")
 PY
-)"
+)" || die "initAuth response was malformed"
     rm -f "$INIT_HEADERS" "$INIT_BODY"
     [[ -n "$SESSION_TOKEN" ]] || die "initAuth did not return x-session-token"
     if [[ -n "$ALLOWED" && ",${ALLOWED}," != *",password,"* ]]; then
@@ -200,19 +207,28 @@ PY
       die "authenticate failed with HTTP ${HTTP_CODE}: ${msg}"
     fi
     eval "$(python3 - "$AUTH_BODY" <<'PY'
-import json,sys
-data=json.load(open(sys.argv[1]))
+import json,sys,shlex
+try:
+  data=json.load(open(sys.argv[1]))
+except Exception:
+  print('die "authenticate response was not valid JSON"')
+  raise SystemExit
+if not isinstance(data, dict):
+  print('die "authenticate response was not a JSON object"')
+  raise SystemExit
 if data.get("nextStep") and not data.get("accessToken"):
     print('die "org requires multi-step or SSO authentication; use --auth token or --auth oauth"')
     raise SystemExit
 token=data.get("accessToken") or ""
 refresh=data.get("refreshToken") or ""
-if not token:
+if not isinstance(token, str) or not token:
     print('die "authenticate response did not include accessToken"')
     raise SystemExit
-import shlex
+if refresh is not None and not isinstance(refresh, str):
+    print('die "authenticate response refreshToken was malformed"')
+    raise SystemExit
 print(f"ACCESS_TOKEN={shlex.quote(token)}")
-print(f"REFRESH_TOKEN={shlex.quote(refresh)}")
+print(f"REFRESH_TOKEN={shlex.quote(refresh or '')}")
 PY
 )"
     rm -f "$AUTH_BODY"
@@ -237,7 +253,20 @@ PY
       rm -f "$TOKEN_BODY"
       die "oauth token request failed with HTTP ${HTTP_CODE}"
     fi
-    ACCESS_TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("access_token") or "")' "$TOKEN_BODY")"
+    ACCESS_TOKEN="$(python3 - "$TOKEN_BODY" <<'PY'
+import json,sys
+try:
+  data=json.load(open(sys.argv[1]))
+except Exception:
+  raise SystemExit("oauth response was not valid JSON")
+if not isinstance(data, dict):
+  raise SystemExit("oauth response was not a JSON object")
+token=data.get("access_token") or ""
+if not isinstance(token, str) or not token:
+  raise SystemExit("oauth response did not include access_token")
+print(token)
+PY
+)" || die "oauth response was malformed"
     rm -f "$TOKEN_BODY"
     [[ -n "$ACCESS_TOKEN" ]] || die "oauth response did not include access_token"
     info "Note: client_credentials results use the OAuth app owner's permissions, not each end user's."

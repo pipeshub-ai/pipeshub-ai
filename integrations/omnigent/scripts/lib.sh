@@ -54,6 +54,10 @@ from urllib.parse import urlparse
 u = urlparse(sys.argv[1])
 if u.scheme not in ("http", "https") or not u.netloc:
     raise SystemExit("invalid URL; expected http(s)://host[:port]")
+if u.username or u.password:
+    raise SystemExit("URL must not contain user information")
+if u.path not in ("", "/") or u.query or u.fragment:
+    raise SystemExit("URL must be a site origin without a path, query, or fragment")
 print(u.hostname or "")
 PY
 )" || die "invalid PipesHub URL: ${url}"

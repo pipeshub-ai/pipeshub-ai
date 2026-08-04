@@ -104,8 +104,11 @@ def main() -> int:
         agent_dir.mkdir()
         (agent_dir / "config.yaml").write_text(rendered, encoding="utf-8")
         shutil.copyfile(AGENTS_MD, agent_dir / "AGENTS.md")
+        # Only fall back when Omnigent itself is unavailable. ImportErrors from
+        # parse()/validate() of a broken install should still fail validation.
         try:
-            validate_with_omnigent(agent_dir)
+            import omnigent.spec.parser  # noqa: F401
+            import omnigent.spec.validator  # noqa: F401
         except ImportError:
             if args.require_omnigent:
                 raise SystemExit(
@@ -113,6 +116,8 @@ def main() -> int:
                     "Install with: uv pip install 'omnigent==0.7.0'"
                 ) from None
             validate_structure(text)
+        else:
+            validate_with_omnigent(agent_dir)
     return 0
 
 
