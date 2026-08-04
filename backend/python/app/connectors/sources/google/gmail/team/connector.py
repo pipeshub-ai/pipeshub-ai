@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
@@ -86,6 +87,13 @@ from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+
+# Dedicated executor capacity for this connector's blocking Google API calls.
+# Every GoogleGmailDataSource / GoogleAdminDataSource instance this connector
+# constructs (service-account and per-user impersonated alike) borrows this
+# same pool; the connector owns creation and shutdown so a large workspace
+# sync never spins up one pool per user.
+_GMAIL_TEAM_EXECUTOR_MAX_WORKERS = 4
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -235,6 +243,14 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.config: Optional[Dict] = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
+        # Dedicated executor for this connector's blocking Google API calls.
+        # The connector owns creation and shutdown so cleanup() can guarantee
+        # no orphaned threads.
+        self._gmail_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=_GMAIL_TEAM_EXECUTOR_MAX_WORKERS,
+            thread_name_prefix=f"gmail-team-{connector_id[:8]}",
+        )
+
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
 
@@ -285,7 +301,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Create Google Admin Data Source from the client
                 self.admin_data_source = GoogleAdminDataSource(
-                    self.admin_client.get_client()
+                    self.admin_client.get_client(),
+                    executor=self._gmail_executor,
                 )
 
                 self.logger.info(
@@ -311,7 +328,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Create Google Gmail Data Source from the client
                 self.gmail_data_source = GoogleGmailDataSource(
-                    self.gmail_client.get_client()
+                    self.gmail_client.get_client(),
+                    executor=self._gmail_executor,
                 )
 
                 self.logger.info(
@@ -746,11 +764,16 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     drive_service = user_drive_client.get_client()
 
-                    # Fetch file metadata
-                    file_metadata = drive_service.files().get(
+                    # Fetch file metadata. get_media()/execute() is a synchronous HTTP
+                    # call, so run it off the event loop to avoid blocking other work.
+                    metadata_request = drive_service.files().get(
                         fileId=drive_file_id,
                         fields="id,name,mimeType,size"
-                    ).execute()
+                    )
+                    loop = asyncio.get_running_loop()
+                    file_metadata = await loop.run_in_executor(
+                        self._gmail_executor, metadata_request.execute
+                    )
 
                     if file_metadata:
                         filename = file_metadata.get("name", "unnamed_attachment")
@@ -1715,7 +1738,8 @@ class GoogleGmailTeamConnector(BaseConnector):
             )
 
             user_gmail_data_source = GoogleGmailDataSource(
-                user_gmail_client.get_client()
+                user_gmail_client.get_client(),
+                executor=self._gmail_executor,
             )
 
             return user_gmail_data_source
@@ -2354,9 +2378,15 @@ class GoogleGmailTeamConnector(BaseConnector):
                         )
                         downloader = MediaIoBaseDownload(f, request)
 
+                        loop = asyncio.get_running_loop()
                         done = False
                         while not done:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await loop.run_in_executor(
+                                self._gmail_executor, downloader.next_chunk
+                            )
                             self.logger.info(
                                 f"Download {int(status.progress() * 100)}%."
                             )
@@ -2383,12 +2413,18 @@ class GoogleGmailTeamConnector(BaseConnector):
                     )
                     downloader = MediaIoBaseDownload(buffer, request)
                     done = False
+                    loop = asyncio.get_running_loop()
 
                     self.logger.info(f"Starting Drive file stream for {drive_file_id}")
 
                     while not done:
                         try:
-                            status, done = downloader.next_chunk()
+                            # next_chunk() performs the HTTP range request synchronously, so
+                            # calling it here would freeze the event loop for the whole
+                            # round-trip and stall every other request in the process.
+                            status, done = await loop.run_in_executor(
+                                self._gmail_executor, downloader.next_chunk
+                            )
                             progress = int(status.progress() * 100)
                             self.logger.info(
                                 f"Download {progress}%."
@@ -2538,13 +2574,15 @@ class GoogleGmailTeamConnector(BaseConnector):
         record: Record
     ) -> StreamingResponse:
         try:
-            # 1. Fetch message
-            message = (
+            # 1. Fetch message. execute() is a synchronous HTTP call, so run it off
+            # the event loop to avoid blocking other work.
+            request = (
                 gmail_service.users()
                 .messages()
                 .get(userId="me", id=message_id, format="full")
-                .execute()
             )
+            loop = asyncio.get_running_loop()
+            message = await loop.run_in_executor(self._gmail_executor, request.execute)
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
@@ -2663,12 +2701,13 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 # Fetch the message to get the actual attachment ID
                 try:
-                    message = (
+                    request = (
                         gmail_service.users()
                         .messages()
                         .get(userId="me", id=message_id, format="full")
-                        .execute()
                     )
+                    loop = asyncio.get_running_loop()
+                    message = await loop.run_in_executor(self._gmail_executor, request.execute)
                 except HttpError as access_error:
                     if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.error(f"Message not found with ID {message_id}")
@@ -2702,13 +2741,14 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         # Try to get the attachment from Gmail
         try:
-            attachment = (
+            request = (
                 gmail_service.users()
                 .messages()
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
-                .execute()
             )
+            loop = asyncio.get_running_loop()
+            attachment = await loop.run_in_executor(self._gmail_executor, request.execute)
 
             # Decode the attachment data
             file_data = base64.urlsafe_b64decode(attachment["data"])
@@ -3254,6 +3294,12 @@ class GoogleGmailTeamConnector(BaseConnector):
         """Cleanup resources when shutting down the connector."""
         try:
             self.logger.info("Cleaning up Google Gmail workspace connector resources")
+
+            # Stop accepting new work before dropping the data source references that
+            # borrow this pool. Pending futures are cancelled rather than awaited, so
+            # any in-flight datasource call raises RuntimeError instead of hanging.
+            if hasattr(self, '_gmail_executor') and self._gmail_executor:
+                self._gmail_executor.shutdown(wait=False, cancel_futures=True)
 
             # Clear data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:
