@@ -25,7 +25,8 @@ Counts are BELONGS_TO-guarded (see the IT graph providers).
   order 16 TC-FILTER-001      — in [A,B,(C)]
   order 17 TC-FILTER-002      — not_in [A] (primary absent)
   order 18 TC-FILTER-DATE-001 — created after/before windows
-  order 19 TC-FILTER-003      — empty = all (last)
+  order 19 TC-FILTER-003      — empty = all (last shared-connector)
+  order 20 TC-JIRA-PH-001     — placeholder ancestors: minted → swept → promoted
 """
 
 import logging
@@ -42,6 +43,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
+from app.connectors.sources.atlassian.jira_cloud.connector import (  # type: ignore[import-not-found]  # noqa: E402
+    PLACEHOLDER_REVISION_PREFIX,
+)
 from app.connectors.utils.value_mapper import map_relationship_type  # type: ignore[import-not-found]  # noqa: E402
 from app.models.entities import FileRecord, RecordType  # type: ignore[import-not-found]  # noqa: E402
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
@@ -57,6 +61,8 @@ from validation.graph_entity_validator import (  # noqa: E402
 from connectors.jira.constants import (  # noqa: E402
     JIRA_FILTER_DATE_CUT_MS,
     JIRA_INDEXING_WAIT_SEC,
+    JIRA_PH_CHILD_KEY,
+    JIRA_PH_CREATED_CUT_MS,
     JIRA_USERS_GROUP_NAME,
 )
 from connectors.jira.jira_block_utils import (  # noqa: E402
@@ -72,7 +78,9 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     count_jira_group_synced_members,
     count_jira_site_groups_bulk,
     count_jira_users_with_visible_email,
+    fetch_ancestor_chain,
     get_jira_issue_updated_ms,
+    issue_exists_in_project,
     jira_api_call_with_retry,
     parse_jira_timestamp,
     preview_jira_browse_projects_permission_edges_to_record_group,
@@ -1005,7 +1013,7 @@ class TestJiraFilters:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILTER-003 (last): empty project_keys → all visible projects; ≥ every configured IT key."""
+        """TC-FILTER-003 (last shared-connector): empty project_keys → all visible projects."""
         connector_id = jira_connector["connector_id"]
         keys = jira_connector["project_keys"]
         project_id_by_key = jira_connector["project_id_by_key"]
@@ -1019,3 +1027,182 @@ class TestJiraFilters:
             rg = await graph_provider.get_record_group_by_external_id(connector_id, project_id_by_key[key])
             assert rg is not None, f"configured IT project {key} must be present under empty=all"
         logger.info("TC-FILTER-003 passed: %d RecordGroups", rgs)
+
+
+# =============================================================================
+# TestJiraPlaceholders — parent stubs: minted, swept, promoted
+# =============================================================================
+
+
+def _jira_ph_env() -> tuple[str, str, str, str]:
+    """Return ``(base_url, email, api_token, primary_key)`` or fail the test."""
+    base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+    email = os.getenv("JIRA_TEST_EMAIL") or ""
+    api_token = os.getenv("JIRA_TEST_API_TOKEN") or ""
+    primary_key = next(
+        (k.strip() for k in (os.getenv("JIRA_TEST_PROJECT_KEYS") or "").split(",") if k.strip()),
+        "",
+    )
+    if not (base_url and email and api_token and primary_key):
+        pytest.fail(
+            "TC-JIRA-PH-001: JIRA_TEST_BASE_URL / EMAIL / API_TOKEN / PROJECT_KEYS must be set"
+        )
+    return base_url, email, api_token, primary_key
+
+
+async def _jira_ph_out_of_window_ancestors(
+    datasource: JiraDataSource, child_key: str, cut: int,
+) -> tuple[str, list[str]]:
+    """Resolve child id + ancestor ids with ``created <= cut``. Requires depth >= 2."""
+    child_resp = await jira_api_call_with_retry(
+        datasource.get_issue, issueIdOrKey=child_key, fields="created",
+        context=f"ph child {child_key}",
+    )
+    assert child_resp.status == 200, f"get_issue({child_key}) HTTP {child_resp.status}"
+    child = child_resp.json() or {}
+    child_id = str(child.get("id") or "")
+    assert child_id, f"{child_key} has no id"
+    if parse_jira_timestamp((child.get("fields") or {}).get("created")) <= cut:
+        pytest.fail(f"TC-JIRA-PH-001: {child_key} created must be after cut={cut}")
+
+    ancestors: list[str] = []
+    for ancestor in await fetch_ancestor_chain(datasource, child_key):
+        created_ms = parse_jira_timestamp((ancestor.get("fields") or {}).get("created"))
+        ancestor_id = str(ancestor.get("id") or "")
+        if not ancestor_id:
+            continue
+        if created_ms > cut:
+            break
+        ancestors.append(ancestor_id)
+
+    if len(ancestors) < 2:
+        pytest.fail(
+            f"TC-JIRA-PH-001: {child_key} has {len(ancestors)} ancestor(s) with "
+            f"created <= cut={cut}; >= 2 required (BFS proof)"
+        )
+    return child_id, ancestors
+
+
+async def _cleanup_ph_connector(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str | None,
+) -> None:
+    if not connector_id:
+        return
+    try:
+        pipeshub_client.toggle_sync(connector_id, enable=False)
+        pipeshub_client.delete_connector(connector_id)
+        pipeshub_client.wait(25)
+        await graph_provider.assert_all_records_cleaned(
+            connector_id,
+            timeout=int(os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", "300")),
+        )
+    except Exception as e:
+        logger.error("TC-JIRA-PH-001 cleanup: connector %s leaked: %s", connector_id, e)
+
+
+class TestJiraPlaceholders:
+    """Placeholder ancestor lifecycle driven by the ``created`` sync filter."""
+
+    @pytest.mark.order(20)
+    async def test_tc_jira_ph_001_placeholder_sweep_and_promotion(
+        self,
+        jira_datasource: JiraDataSource,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-JIRA-PH-001: dedicated connector — stubs swept, then promoted on widen.
+
+        Dedicated connector required: narrowing the shared fixture after a full sync
+        finds ancestors already as real records, so no stubs are minted. Depth >= 2
+        proves BFS (grandparent only appears after the parent stub is swept).
+        """
+        cut = JIRA_PH_CREATED_CUT_MS
+        base_url, email, api_token, primary_key = _jira_ph_env()
+
+        if not await issue_exists_in_project(jira_datasource, JIRA_PH_CHILD_KEY, primary_key):
+            pytest.fail(
+                f"TC-JIRA-PH-001: {JIRA_PH_CHILD_KEY!r} not in {primary_key!r} — "
+                "update constants or provision Sub-task → parent → grandparent"
+            )
+
+        child_id, ancestors = await _jira_ph_out_of_window_ancestors(
+            jira_datasource, JIRA_PH_CHILD_KEY, cut,
+        )
+
+        stub_node_ids: dict[str, str] = {}
+        connector_id: str | None = None
+        try:
+            # Phase 1 — first sync already narrowed so parents mint as stubs
+            instance = pipeshub_client.create_connector(
+                connector_type="Jira",
+                instance_name=f"jira-ph-test-{uuid.uuid4().hex[:8]}",
+                scope="team",
+                config={
+                    "auth": {
+                        "authType": "API_TOKEN",
+                        "baseUrl": base_url,
+                        "email": email,
+                        "apiToken": api_token,
+                    },
+                    "filters": _sync_filters(
+                        project_keys=_pk("in", [primary_key]),
+                        created={
+                            "type": "datetime",
+                            "operator": "is_after",
+                            "value": {"start": cut, "end": None},
+                        },
+                    ),
+                },
+                auth_type="API_TOKEN",
+            )
+            connector_id = instance.connector_id
+            assert connector_id
+
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id, min_records=1, timeout=240,
+            )
+
+            child = await graph_provider.get_typed_record_by_external_id(connector_id, child_id)
+            assert child is not None and child.is_placeholder is False
+
+            for depth, ancestor_id in enumerate(ancestors, start=1):
+                stub = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, ancestor_id,
+                )
+                assert stub is not None, (
+                    f"phase1: ancestor {ancestor_id} (depth {depth}) absent — BFS stalled"
+                )
+                assert stub.is_placeholder is True, f"phase1: {ancestor_id} must stay a stub"
+                assert stub.external_revision_id and str(stub.external_revision_id).startswith(
+                    PLACEHOLDER_REVISION_PREFIX
+                ), f"phase1: {ancestor_id} unswept (revision={stub.external_revision_id!r})"
+                stub_node_ids[ancestor_id] = stub.id
+
+            # Phase 2 — widen filter; stubs promote in place
+            await _apply_filter_full_sync(
+                pipeshub_client, graph_provider, connector_id,
+                _sync_filters(project_keys=_pk("in", [primary_key])),
+            )
+
+            for ancestor_id in ancestors:
+                promoted = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, ancestor_id,
+                )
+                assert promoted is not None
+                assert promoted.is_placeholder is False, f"phase2: {ancestor_id} not promoted"
+                assert promoted.id == stub_node_ids[ancestor_id], (
+                    f"phase2: {ancestor_id} replaced instead of promoted in place"
+                )
+                assert promoted.external_revision_id and not str(
+                    promoted.external_revision_id
+                ).startswith(PLACEHOLDER_REVISION_PREFIX), (
+                    f"phase2: {ancestor_id} still has stub revision "
+                    f"{promoted.external_revision_id!r}"
+                )
+
+            logger.info("TC-JIRA-PH-001 passed: %d ancestor(s) swept + promoted", len(ancestors))
+        finally:
+            await _cleanup_ph_connector(pipeshub_client, graph_provider, connector_id)

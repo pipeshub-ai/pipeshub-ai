@@ -17,6 +17,9 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
+from app.connectors.sources.atlassian.jira_cloud.connector import (  # type: ignore[import-not-found]
+    PLACEHOLDER_SWEEP_MAX_DEPTH,
+)
 from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.jira.jira import (
     JiraDataSource,  # type: ignore[import-not-found]
@@ -933,6 +936,65 @@ async def issue_exists_in_project(
         return False
     proj = ((resp.json() or {}).get("fields") or {}).get("project") or {}
     return str(proj.get("key")) == str(project_key)
+
+
+async def fetch_ancestor_chain(
+    datasource: JiraDataSource,
+    issue_id_or_key: str,
+    *,
+    max_depth: int = PLACEHOLDER_SWEEP_MAX_DEPTH,
+) -> list[dict[str, Any]]:
+    """Return ancestor issues for ``issue_id_or_key``, nearest parent first.
+
+    Walked one hop at a time via ``fields.parent``. Returns full issue payloads
+    (not ids) so callers can read ``created`` without a second round-trip per
+    ancestor. ``max_depth`` mirrors the connector's own sweep cap so the walk
+    cannot claim ancestors the sweep would never reach.
+    """
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = {str(issue_id_or_key)}
+
+    resp = await jira_api_call_with_retry(
+        datasource.get_issue,
+        issueIdOrKey=issue_id_or_key,
+        fields="parent,created,updated,summary",
+        context=f"fetch_ancestor_chain({issue_id_or_key})",
+    )
+    if resp.status != 200:
+        return chain
+    current = resp.json() or {}
+    if current.get("id"):
+        seen.add(str(current["id"]))
+    if current.get("key"):
+        seen.add(str(current["key"]))
+
+    for _ in range(max_depth):
+        parent = ((current.get("fields") or {}).get("parent")) or {}
+        parent_id = parent.get("id")
+        parent_key = parent.get("key")
+        if not parent_id:
+            break
+        parent_token = str(parent_id)
+        if parent_token in seen or (parent_key and str(parent_key) in seen):
+            break
+        seen.add(parent_token)
+        if parent_key:
+            seen.add(str(parent_key))
+
+        resp = await jira_api_call_with_retry(
+            datasource.get_issue,
+            issueIdOrKey=parent_token,
+            fields="parent,created,updated,summary",
+            context=f"fetch_ancestor_chain({parent_token})",
+        )
+        if resp.status != 200:
+            break
+        current = resp.json() or {}
+        if not current.get("id"):
+            break
+        chain.append(current)
+
+    return chain
 
 
 async def discover_epic_and_child(

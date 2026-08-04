@@ -109,7 +109,7 @@ async def wait_for_sync_completion(
     sync_start_timeout: int = 30,
 ) -> int:
     """
-    Wait for sync to complete by polling connector status until IDLE, then read record count.
+    Wait for sync to complete by polling connector status until IDLE, then read record counts.
 
     Uses a two-phase approach to avoid a race where the first poll sees the
     pre-sync IDLE state before the backend has transitioned to SYNCING/FULL_SYNCING:
@@ -118,7 +118,8 @@ async def wait_for_sync_completion(
        If it never leaves, assume the sync was fast enough to complete between the
        enable call and the first poll.
     2. **Phase 2** — wait for status to return to IDLE (the real post-sync IDLE).
-    3. Query graph record count and optionally assert *min_records*.
+    3. Query total + scoped record counts; log both when they differ (filter narrowing
+       drops ``BELONGS_TO`` but leaves nodes). ``min_records`` applies to the total.
 
     Args:
         pipeshub_client: Client for accessing connector API
@@ -126,11 +127,12 @@ async def wait_for_sync_completion(
         connector_id: Connector ID to monitor
         timeout: Maximum seconds to wait for completion (default 300)
         poll_interval: Seconds between status polls (default 5)
-        min_records: Minimum record count threshold (optional)
+        min_records: Minimum total record-node threshold (optional)
         sync_start_timeout: Max seconds to wait for sync to start (default 30)
 
     Returns:
-        Record count after connector reports IDLE
+        Total record-node count for the connector (unscoped). Callers that need
+        filter-aware counts should use ``count_records(..., scoped=True)``.
 
     Raises:
         TimeoutError: If sync doesn't complete within timeout
@@ -174,12 +176,21 @@ async def wait_for_sync_completion(
     else:
         raise TimeoutError(f"Connector did not reach IDLE status within {timeout}s")
 
-    final_count = await graph_provider.count_records(connector_id)
+    # Unscoped = every Record node (survives filter narrowing). Scoped = live
+    # BELONGS_TO→RecordGroup only — what filter ITs mean by "in scope".
+    total_count = await graph_provider.count_records(connector_id)
+    scoped_count = await graph_provider.count_records(connector_id, scoped=True)
 
-    if min_records is not None and final_count < min_records:
+    if min_records is not None and total_count < min_records:
         raise AssertionError(
-            f"Expected at least {min_records} records, got {final_count}"
+            f"Expected at least {min_records} records, got {total_count}"
         )
 
-    logger.info("✅ Sync complete: %d records", final_count)
-    return final_count
+    if scoped_count != total_count:
+        logger.info(
+            "✅ Sync complete: %d in-scope records (%d total nodes)",
+            scoped_count, total_count,
+        )
+    else:
+        logger.info("✅ Sync complete: %d records", total_count)
+    return total_count
