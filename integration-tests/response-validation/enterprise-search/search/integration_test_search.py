@@ -62,7 +62,13 @@ class SearchTestBase:
         """Return active (non-archived) search history rows."""
         resp = self.search.list_history(limit=100, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        return resp.json().get("searchHistory") or []
+        body = resp.json()
+        # Callers index into these rows, and this also covers the post-archive
+        # and post-unarchive responses that no other test validates.
+        assert_response_matches_openapi_operation(
+            body, "searchHistory", status_code="200"
+        )
+        return body.get("searchHistory") or []
 
 
 # ============================================================================
