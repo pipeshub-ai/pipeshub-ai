@@ -657,3 +657,52 @@ class TestLookupResultSummary:
     def test_no_content_returns_no_results(self):
         summary = _lookup_result_summary({}, _StubToolResult(""))
         assert summary == "No results"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: edge paths in lookup_record
+# ---------------------------------------------------------------------------
+
+
+class TestLookupEdgePaths:
+    @pytest.mark.asyncio
+    async def test_user_not_found_returns_error(self):
+        """Line 594: _get_user_key returns None."""
+        state = _make_state()
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value=None)
+        tool = KnowledgeGraph(state=state)
+        success, text = await tool.lookup_record(identifiers=["PA-1"])
+        assert not success
+        assert "User not found" in text
+
+    @pytest.mark.asyncio
+    async def test_empty_catalog_no_knowledge_returns_not_configured(self):
+        """Line 606: catalog empty + has_knowledge is falsy."""
+        state = _make_state()
+        gp = state["graph_provider"]
+        gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
+        state["agent_knowledge"] = []
+        state.pop("has_knowledge", None)
+        tool = KnowledgeGraph(state=state)
+        success, text = await tool.lookup_record(identifiers=["PA-1"])
+        assert not success
+        assert "No knowledge sources configured" in text
+
+    @pytest.mark.asyncio
+    async def test_resolve_many_exception_returns_not_found(self):
+        """Lines 632-634: resolver.resolve_many raises."""
+        state = _make_state()
+        gp = state["graph_provider"]
+        rec = _mock_record("r1", "PA-1787 issue")
+        gp.get_record_by_issue_key = AsyncMock(return_value=rec)
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=_access_node("r1", "PA-1787"))
+
+        tool = KnowledgeGraph(state=state)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "app.agents.actions.knowledge_graph.resolver.RecordResolver.resolve_many",
+                AsyncMock(side_effect=RuntimeError("db timeout")),
+            )
+            success, text = await tool.lookup_record(identifiers=["PA-1787"])
+        assert not success
+        assert "Not found" in text or "no access" in text.lower()

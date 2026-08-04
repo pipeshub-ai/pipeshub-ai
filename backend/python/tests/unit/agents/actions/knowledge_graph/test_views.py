@@ -12,17 +12,28 @@ Tests:
 """
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
 from app.agents.actions.knowledge_graph.models import (
+    LookupMatch,
+    LookupResult,
     NavigationView,
     NodeRef,
     NodeRow,
     PaginationInfo,
 )
-from app.agents.actions.knowledge_graph.views import render_navigation_view, render_lookup_result
-from app.agents.actions.knowledge_graph.models import LookupMatch, LookupResult
+from app.agents.actions.knowledge_graph.views import (
+    _compact_date,
+    _read_hint,
+    _render_match,
+    _row_line,
+    _short,
+    _trunc,
+    render_lookup_result,
+    render_navigation_view,
+)
 
 
 def _ref(id: str, name: str, node_type: str, sub_type: str | None = None) -> NodeRef:
@@ -501,3 +512,355 @@ class TestLookupResultRenderer:
         )
         text = render_lookup_result(result)
         assert "Multiple" in text or "ambiguous" in text.lower() or "navigate" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Direct helper tests — boost coverage of functions not exercised above
+# ---------------------------------------------------------------------------
+
+
+def _make_shortener() -> MagicMock:
+    s = MagicMock()
+    s.get_or_create_short_id = MagicMock(side_effect=lambda x: f"R:{x}")
+    s.shorten_record_ids_in_text = MagicMock(side_effect=lambda t: t.replace("FULL", "SHORT"))
+    return s
+
+
+class TestTrunc:
+    def test_short_string_unchanged(self) -> None:
+        assert _trunc("abc") == "abc"
+
+    def test_exact_length_unchanged(self) -> None:
+        s = "x" * 80
+        assert _trunc(s) == s
+
+    def test_longer_truncated(self) -> None:
+        s = "x" * 100
+        result = _trunc(s)
+        assert len(result) == 80
+        assert result.endswith("…")
+
+    def test_custom_limit(self) -> None:
+        result = _trunc("abcdef", n=4)
+        assert len(result) == 4
+        assert result.endswith("…")
+
+
+class TestCompactDate:
+    def test_none_returns_none(self) -> None:
+        assert _compact_date(None) is None
+
+    def test_zero_returns_none(self) -> None:
+        assert _compact_date(0) is None
+
+    def test_valid_epoch(self) -> None:
+        ms = int(datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        assert _compact_date(ms) == "2026-03-15"
+
+
+class TestShort:
+    def test_no_shortener_passthrough(self) -> None:
+        assert _short("abc123", None) == "abc123"
+
+    def test_with_shortener(self) -> None:
+        s = _make_shortener()
+        assert _short("abc123", s) == "R:abc123"
+        s.get_or_create_short_id.assert_called_once_with("abc123")
+
+
+class TestReadHint:
+    def test_single_id(self) -> None:
+        hint = _read_hint(["rec-1"])
+        assert 'knowledgegraph__fetch_record(record_ids=["rec-1"])' in hint
+
+    def test_multiple_ids(self) -> None:
+        hint = _read_hint(["r1", "r2"])
+        assert '"r1"' in hint
+        assert '"r2"' in hint
+
+    def test_with_shortener(self) -> None:
+        s = _make_shortener()
+        hint = _read_hint(["x"], s)
+        assert '"R:x"' in hint
+
+
+class TestRowLine:
+    def test_basic(self) -> None:
+        row = _row("r1", "MyDoc", "record", "TICKET")
+        line = _row_line(row)
+        assert "- [record/TICKET] MyDoc" in line
+        assert "record_id=r1" in line
+
+    def test_web_url(self) -> None:
+        row = _row("r1", "MyDoc", "record", "TICKET")
+        row.web_url = "https://example.com"
+        line = _row_line(row)
+        assert "url=https://example.com" in line
+
+    def test_indent(self) -> None:
+        row = _row("r1", "MyDoc", "record", "TICKET")
+        line = _row_line(row, indent=2)
+        assert line.startswith("    - ")
+
+    def test_with_shortener(self) -> None:
+        s = _make_shortener()
+        row = _row("r1", "MyDoc", "record", "TICKET")
+        line = _row_line(row, shortener=s)
+        assert "record_id=R:r1" in line
+
+    def test_no_sub_type_uses_question_mark(self) -> None:
+        row = _row("r1", "MyDoc", "record", None)
+        line = _row_line(row)
+        assert "[record/?]" in line
+
+
+class TestRenderNavigationViewContextBlock:
+    def test_context_block_rendered_on_page1(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787", "record", "TICKET"),
+            breadcrumbs=[], rows=[], related=[],
+            pagination=None, web_url=None, indexing_status=None, connector=None,
+            context_block="Record ID: rec1\nName: PA-1787\n* Status: OPEN",
+        )
+        text = render_navigation_view(view, page=1)
+        assert "* Status: OPEN" in text
+        assert "Node:" not in text
+
+    def test_context_block_with_shortener(self) -> None:
+        s = _make_shortener()
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787", "record", "TICKET"),
+            breadcrumbs=[], rows=[], related=[],
+            pagination=None, web_url=None, indexing_status=None, connector=None,
+            context_block="Record ID: FULL\nName: PA-1787",
+        )
+        text = render_navigation_view(view, page=1, shortener=s)
+        assert "SHORT" in text
+        s.shorten_record_ids_in_text.assert_called_once()
+
+    def test_context_block_with_non_completed_indexing(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787", "record", "TICKET"),
+            breadcrumbs=[], rows=[], related=[],
+            pagination=None, web_url=None, indexing_status="IN_PROGRESS", connector=None,
+            context_block="Record ID: rec1\nName: PA-1787",
+        )
+        text = render_navigation_view(view, page=1)
+        assert "Indexed: IN_PROGRESS" in text
+
+    def test_context_block_completed_indexing_not_shown(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "PA-1787", "record", "TICKET"),
+            breadcrumbs=[], rows=[], related=[],
+            pagination=None, web_url=None, indexing_status="COMPLETED", connector=None,
+            context_block="Record ID: rec1\nName: PA-1787",
+        )
+        text = render_navigation_view(view, page=1)
+        assert "Indexed:" not in text
+
+
+class TestPaginationHints:
+    def test_has_next_hint(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=_pag(page=1, total=50, has_next=True),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "page=2" in text
+        assert "for more" in text
+
+    def test_has_prev_hint_page3(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=_pag(page=3, total=50, has_prev=True),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=3)
+        assert "page=2" in text
+        assert "to go back" in text
+
+    def test_has_prev_hint_not_on_page2(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=_pag(page=2, total=50, has_prev=True),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=2)
+        assert "to go back" not in text
+
+    def test_children_without_pagination(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=None,
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "\nChildren:" in text
+
+    def test_pagination_with_zero_total(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=PaginationInfo(page=1, limit=20, total=0, has_next=False, has_prev=False),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "Children 1-1:" in text
+
+
+class TestRenderMatchDirect:
+    def test_with_context_block(self) -> None:
+        m = LookupMatch(
+            id="r1", name="PA-1787", record_type="TICKET", connector_name="JIRA",
+            web_url=None, indexing_status=None, identifier_used="PA-1787",
+            context_block="Record ID: r1\n* Status: OPEN",
+        )
+        lines = _render_match(m)
+        assert any("* Status: OPEN" in l for l in lines)
+        assert not any("Found:" in l for l in lines)
+
+    def test_with_context_block_and_shortener(self) -> None:
+        s = _make_shortener()
+        m = LookupMatch(
+            id="r1", name="PA-1787", record_type="TICKET", connector_name="JIRA",
+            web_url=None, indexing_status=None, identifier_used="PA-1787",
+            context_block="Record ID: FULL",
+        )
+        lines = _render_match(m, shortener=s)
+        assert any("SHORT" in l for l in lines)
+
+    def test_without_context_block_fallback(self) -> None:
+        m = LookupMatch(
+            id="r1", name="PA-1787", record_type="TICKET", connector_name="JIRA",
+            web_url="https://jira.example.com", indexing_status=None,
+            identifier_used="PA-1787", external_id="PA-1787",
+        )
+        lines = _render_match(m)
+        assert any("Found: PA-1787" in l for l in lines)
+        assert any("Record ID: r1" in l for l in lines)
+        assert any("External ID: PA-1787" in l for l in lines)
+        assert any("URL: https://jira.example.com" in l for l in lines)
+        assert any("Connector: JIRA" in l for l in lines)
+
+    def test_without_connector_name(self) -> None:
+        m = LookupMatch(
+            id="r1", name="Doc", record_type="FILE", connector_name=None,
+            web_url=None, indexing_status=None, identifier_used="Doc",
+        )
+        lines = _render_match(m)
+        assert not any("Connector:" in l for l in lines)
+
+    def test_indexing_status_not_completed(self) -> None:
+        m = LookupMatch(
+            id="r1", name="Doc", record_type="FILE", connector_name=None,
+            web_url=None, indexing_status="IN_PROGRESS", identifier_used="Doc",
+        )
+        lines = _render_match(m)
+        assert any("Indexed: IN_PROGRESS" in l for l in lines)
+
+    def test_indexing_status_completed_not_shown(self) -> None:
+        m = LookupMatch(
+            id="r1", name="Doc", record_type="FILE", connector_name=None,
+            web_url=None, indexing_status="COMPLETED", identifier_used="Doc",
+        )
+        lines = _render_match(m)
+        assert not any("Indexed:" in l for l in lines)
+
+    def test_no_record_type_uses_question_mark(self) -> None:
+        m = LookupMatch(
+            id="r1", name="Doc", record_type=None, connector_name=None,
+            web_url=None, indexing_status=None, identifier_used="Doc",
+        )
+        lines = _render_match(m)
+        assert any("Type: ?" in l for l in lines)
+
+
+class TestRenderLookupResultTruncation:
+    def test_byte_cap_on_very_long_result(self) -> None:
+        matches = [
+            LookupMatch(
+                id=f"r{i}", name="x" * 200, record_type="FILE",
+                connector_name="JIRA", web_url=None, indexing_status=None,
+                identifier_used=f"id-{i}",
+            )
+            for i in range(100)
+        ]
+        result = LookupResult(matches=matches, ambiguous=False, not_found_identifiers=[])
+        text = render_lookup_result(result)
+        assert "truncated" in text.lower()
+
+    def test_empty_result(self) -> None:
+        result = LookupResult(matches=[], ambiguous=False, not_found_identifiers=[])
+        text = render_lookup_result(result)
+        assert text == ""
+
+    def test_not_found_without_searched_connectors(self) -> None:
+        result = LookupResult(
+            matches=[], ambiguous=False, not_found_identifiers=["unknown"],
+        )
+        text = render_lookup_result(result)
+        assert "Not found (or no access): unknown" in text
+        assert "searched" not in text.lower()
+
+    def test_with_shortener(self) -> None:
+        s = _make_shortener()
+        result = LookupResult(
+            matches=[LookupMatch(
+                id="r1", name="Doc", record_type="FILE", connector_name=None,
+                web_url=None, indexing_status=None, identifier_used="Doc",
+            )],
+            ambiguous=False, not_found_identifiers=[],
+        )
+        text = render_lookup_result(result, shortener=s)
+        assert "R:r1" in text
+
+
+class TestNavigationViewWithShortener:
+    def test_breadcrumbs_shortened(self) -> None:
+        s = _make_shortener()
+        view = NavigationView(
+            current=_ref("rec1", "Doc", "record", "TICKET"),
+            breadcrumbs=[_ref("app1", "Jira", "app", "JIRA")],
+            rows=[], related=[],
+            pagination=None, web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1, shortener=s)
+        assert "R:app1" in text
+        assert "R:rec1" in text
+
+    def test_row_ids_shortened(self) -> None:
+        s = _make_shortener()
+        view = NavigationView(
+            current=_ref("p1", "Parent", "folder"),
+            breadcrumbs=[], rows=[_row("c1", "Child", "record", "FILE")],
+            related=[], pagination=_pag(total=1),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1, shortener=s)
+        assert "R:c1" in text
+
+
+class TestCurrentReadableHint:
+    def test_current_record_included_in_read_hint_page1(self) -> None:
+        view = NavigationView(
+            current=_ref("rec1", "Doc", "record", "TICKET"),
+            breadcrumbs=[], rows=[], related=[],
+            pagination=None, web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert 'knowledgegraph__fetch_record(record_ids=["rec1"])' in text
+
+    def test_current_non_record_not_in_read_hint(self) -> None:
+        view = NavigationView(
+            current=_ref("app1", "Jira", "app", "JIRA"),
+            breadcrumbs=[], rows=[_row("rg1", "Project", "recordGroup", "PROJECT")],
+            related=[], pagination=_pag(total=1),
+            web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "fetch_record" not in text
