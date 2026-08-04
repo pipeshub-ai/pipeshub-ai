@@ -12,6 +12,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
 )
+from app.connectors.sources.linear.connector import PLACEHOLDER_REVISION_PREFIX
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.entities import (
     AppMetadata,
@@ -162,6 +163,93 @@ class LinearExpected:
             creator_name=creator_name,
             creator_email=creator_email,
             assignee_email=assignee_email,
+        )
+
+    @staticmethod
+    async def placeholder_stub(
+        issue_id: str,
+        *,
+        connector_id: str,
+        datasource: Any,
+        team_id: str,
+        value_mapper: ValueMapper | None = None,
+    ) -> TicketRecord:
+        """Build the stub the placeholder sweep should have left behind.
+
+        Mirrors ``LinearConnector._build_ancestor_stub``: the sweep refreshes a stub's
+        metadata from source but keeps ``is_placeholder`` set, and namespaces the
+        revision so it can never collide with the real issue's revision.
+        """
+        vm = value_mapper or ValueMapper()
+
+        resp = await _api_call_with_retry(
+            datasource.issue, id=issue_id,
+            context=f"LinearExpected.placeholder_stub({issue_id})",
+        )
+        issue: Dict[str, Any] = (resp.data or {}).get("issue", {})
+
+        identifier = issue.get("identifier") or ""
+        title = issue.get("title") or ""
+        if identifier and title:
+            record_name = f"[{identifier}] {title}"
+        elif identifier:
+            record_name = identifier
+        elif title:
+            record_name = title
+        else:
+            record_name = issue_id
+
+        priority_num = issue.get("priority")
+        if priority_num is None:
+            priority_str = None
+        elif priority_num == 0:
+            priority_str = "none"
+        else:
+            priority_str = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}.get(priority_num)
+        priority = vm.map_priority(priority_str)
+
+        state = issue.get("state") or {}
+        status = vm.map_status(state.get("name"))
+        if status and not isinstance(status, Status):
+            status = vm.map_status(state.get("type"))
+
+        parent = issue.get("parent") or {}
+        parent_external_id = parent.get("id") if isinstance(parent, dict) else None
+
+        assignee = issue.get("assignee") or {}
+        creator = issue.get("creator") or {}
+        created_at = parse_linear_timestamp(issue.get("createdAt"))
+        updated_at = parse_linear_timestamp(issue.get("updatedAt"))
+
+        return TicketRecord(
+            id="",
+            org_id="",
+            record_name=record_name,
+            record_type=RecordType.TICKET,
+            external_record_id=issue.get("id", issue_id),
+            external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{updated_at}",
+            external_record_group_id=team_id,
+            record_group_type=RecordGroupType.PROJECT,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=RecordType.TICKET if parent_external_id else None,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR,
+            connector_id=connector_id,
+            mime_type=MimeTypes.UNKNOWN.value,
+            weburl=issue.get("url"),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            status=status,
+            priority=priority,
+            type=ItemType.SUB_ISSUE if parent_external_id else ItemType.ISSUE,
+            assignee=assignee.get("displayName") or assignee.get("name"),
+            assignee_email=assignee.get("email"),
+            creator_email=creator.get("email"),
+            creator_name=creator.get("displayName") or creator.get("name"),
+            inherit_permissions=True,
+            preview_renderable=False,
+            is_placeholder=True,
         )
 
     @staticmethod

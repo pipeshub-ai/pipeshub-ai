@@ -11,3 +11,6 @@ LINEAR_INDEXING_WAIT_SEC = int(os.getenv("LINEAR_INDEXING_WAIT_SEC", "180"))
 # Pinned (not "first issue returned by the API") so the reference issue doesn't drift
 # across runs based on whichever issue was most recently updated.
 LINEAR_REFERENCE_ISSUE_IDENTIFIER = "ENG-2"
+
+LINEAR_PH_CHILD_IDENTIFIER = "ENG-328"
+LINEAR_PH_MODIFIED_CUT_MS = 1785787800000
