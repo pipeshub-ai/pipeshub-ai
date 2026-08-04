@@ -43,34 +43,47 @@ export class MailServiceContainer {
     appConfig: AppConfig,
   ): Promise<void> {
     try {
-      // Producer for failure notifications, consumer for mail jobs. The mail
-      // topic gets its own consumer group so it tracks offsets independently
-      // of the notification consumer.
-      const messageProducer = createMessageProducer(
-        resolveMessageBrokerConfig(appConfig),
-        container.get('Logger'),
-      );
-      await messageProducer.connect();
-      container
-        .bind<IMessageProducer>('MessageProducer')
-        .toConstantValue(messageProducer);
-
-      const messageConsumer: IMessageConsumer = createMailMessageConsumer(
-        appConfig,
-        container.get('Logger'),
-      );
-      container
-        .bind<IMessageConsumer>('MessageConsumer')
-        .toConstantValue(messageConsumer);
-
       container
         .bind<() => AppConfig>('AppConfigProvider')
         .toConstantValue(() => container.get<AppConfig>('AppConfig'));
 
       container.bind(MailSenderService).toSelf().inSingletonScope();
-      container.bind(MailProducer).toSelf().inSingletonScope();
-      container.bind(NotificationProducer).toSelf().inSingletonScope();
-      container.bind(MailConsumer).toSelf().inSingletonScope();
+
+      try {
+        // Producer for failure notifications, consumer for mail jobs. The mail
+        // topic gets its own consumer group so it tracks offsets independently
+        // of the notification consumer.
+        const messageProducer = createMessageProducer(
+          resolveMessageBrokerConfig(appConfig),
+          container.get('Logger'),
+        );
+        await messageProducer.connect();
+        container
+          .bind<IMessageProducer>('MessageProducer')
+          .toConstantValue(messageProducer);
+
+        const messageConsumer: IMessageConsumer = createMailMessageConsumer(
+          appConfig,
+          container.get('Logger'),
+        );
+        container
+          .bind<IMessageConsumer>('MessageConsumer')
+          .toConstantValue(messageConsumer);
+
+        container.bind(MailProducer).toSelf().inSingletonScope();
+        container.bind(NotificationProducer).toSelf().inSingletonScope();
+        container.bind(MailConsumer).toSelf().inSingletonScope();
+      } catch (brokerError) {
+        container.get<Logger>('Logger').warn(
+          'Mail broker unavailable; async delivery is disabled until restart',
+          {
+            error:
+              brokerError instanceof Error
+                ? brokerError.message
+                : String(brokerError),
+          },
+        );
+      }
 
       container.bind<MailController>('MailController').toDynamicValue(() => {
         return new MailController(

@@ -607,11 +607,17 @@ export class Application {
         const mailConsumer =
           this.mailServiceContainer.get<MailConsumer>(MailConsumer);
         await mailConsumer.stop();
+      } catch (err) {
+        this.logger.warn('MailConsumer not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
         this.mailServiceContainer
           .get<MailSenderService>(MailSenderService)
           .close();
       } catch (err) {
-        this.logger.warn('MailConsumer not available during shutdown', {
+        this.logger.warn('MailSenderService not available during shutdown', {
           error: err instanceof Error ? err.message : String(err),
         });
       }
