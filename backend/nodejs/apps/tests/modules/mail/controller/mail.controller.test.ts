@@ -32,6 +32,24 @@ describe('mail/controller/mail.controller', () => {
     sinon.restore()
   })
 
+  describe('emailSender', () => {
+    it('sends with a deadline below the caller HTTP timeout', async () => {
+      // auth/services/mail.service.ts waits this long on the route below.
+      const CALLER_HTTP_TIMEOUT_MS = 30_000
+      const send = sinon.stub().resolves({ status: 'sent' })
+      const c = new MailController(mockConfig, mockLogger, { send } as any)
+
+      await c.emailSender(
+        { emailTemplateType: 'appuserInvite', templateData: {} } as any,
+        mockConfig.smtp,
+      )
+
+      expect(send.firstCall.args[2])
+        .to.be.a('number')
+        .and.to.be.below(CALLER_HTTP_TIMEOUT_MS)
+    })
+  })
+
   describe('sendMail', () => {
     it('should throw NotFoundError when smtp is not configured', async () => {
       controller = new MailController({ smtp: null }, mockLogger)
