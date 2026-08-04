@@ -99,7 +99,7 @@ class Health:
         Checks either etcd or Redis depending on the configured store type.
         """
         logger = container.logger()
-        kv_store_type = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        kv_store_type = os.getenv("KV_STORE_TYPE", "redis").lower()
         logger.info(f"🔍 Starting KV store health check (type: {kv_store_type})...")
 
         if kv_store_type == "redis":

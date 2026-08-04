@@ -97,7 +97,7 @@ class MessagingEnvConfig:
 
     @property
     def message_broker_type(self) -> MessageBrokerType:
-        raw = os.getenv("MESSAGE_BROKER", MessageBrokerType.KAFKA.value).lower()
+        raw = os.getenv("MESSAGE_BROKER", MessageBrokerType.REDIS.value).lower()
         try:
             return MessageBrokerType(raw)
         except ValueError:

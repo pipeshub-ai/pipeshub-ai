@@ -17,9 +17,9 @@ from app.services.messaging.config import (
 
 
 class TestGetMessageBrokerType:
-    def test_defaults_to_kafka(self, monkeypatch):
+    def test_defaults_to_redis(self, monkeypatch):
         monkeypatch.delenv("MESSAGE_BROKER", raising=False)
-        assert get_message_broker_type() == MessageBrokerType.KAFKA
+        assert get_message_broker_type() == MessageBrokerType.REDIS
 
     def test_returns_kafka(self, monkeypatch):
         monkeypatch.setenv("MESSAGE_BROKER", "kafka")
