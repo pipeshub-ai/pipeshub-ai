@@ -5,7 +5,6 @@
 # container itself is never touched.
 set -euo pipefail
 
-CONTAINER=${CONTAINER:-${PIPESHUB_CONTAINER:-pipeshub-ai}}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 require_target || exit 1
 [ "$PIPESHUB_MODE" = "docker" ] || { echo "$(basename "$0") needs PIPESHUB_MODE=docker (it restarts the container)."; exit 1; }
@@ -27,7 +26,8 @@ while :; do
         exit 1
     fi
     code=$($DOCKER exec "$CONTAINER" \
-        curl -s -o /dev/null -w '%{http_code}' "http://localhost:${PORT}/health" 2>/dev/null || true)
+        curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 10 \
+        "http://localhost:${PORT}/health" 2>/dev/null || true)
     new=$($DOCKER exec "$CONTAINER" pgrep -f 'app\.query_main' | head -1 || true)
     # The pid MUST have changed. Polling health alone returns 200 from the
     # still-running old process before the kill lands, which reports success

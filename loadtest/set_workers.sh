@@ -23,8 +23,15 @@ case "$N" in
     ''|*[!0-9]*) echo "usage: set_workers.sh <N|restore> -- worker count must be a positive integer, got '$N'" >&2; exit 1 ;;
     0) echo "usage: set_workers.sh <N|restore> -- worker count must be > 0" >&2; exit 1 ;;
 esac
-CONTAINER=${CONTAINER:-${PIPESHUB_CONTAINER:-pipeshub-ai}}
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+# The port is interpolated into a launcher line that runs inside the container,
+# so anything but a plain port number would be executed there.
+case "$PIPESHUB_QUERY_PORT" in
+    ''|*[!0-9]*) echo "PIPESHUB_QUERY_PORT must be 1-65535, got '$PIPESHUB_QUERY_PORT'" >&2; exit 1 ;;
+esac
+[ "$PIPESHUB_QUERY_PORT" -ge 1 ] && [ "$PIPESHUB_QUERY_PORT" -le 65535 ] || {
+    echo "PIPESHUB_QUERY_PORT must be 1-65535, got '$PIPESHUB_QUERY_PORT'" >&2; exit 1; }
+
 require_target || exit 1
 [ "$PIPESHUB_MODE" = "docker" ] || { echo "$(basename "$0") needs PIPESHUB_MODE=docker (it restarts the container)."; exit 1; }
 ORIG=${ORIG:-$HOME/lt-backup/process_monitor.sh.orig}
@@ -53,8 +60,11 @@ $DOCKER restart "$CONTAINER" >/dev/null
 
 echo -n "== waiting for /health "
 for _ in $(seq 1 120); do
+    # Bounded: an unresponsive service would otherwise let a single curl hang
+    # past the whole 120-iteration budget.
     code=$($DOCKER exec "$CONTAINER" curl -s -o /dev/null -w '%{http_code}' \
-           http://localhost:${PIPESHUB_QUERY_PORT}/health 2>/dev/null || true)
+           --connect-timeout 3 --max-time 10 \
+           "http://localhost:${PIPESHUB_QUERY_PORT}/health" 2>/dev/null || true)
     [ "$code" = "200" ] && break
     printf '.'; sleep 5
 done
@@ -64,6 +74,9 @@ echo " ok"
 if [ "$N" = "restore" ]; then
     got=$($DOCKER exec "$CONTAINER" sh -c "ps -eo args | grep -c '[p]ython -m app.query_main'" || echo 0)
     echo "== launcher processes: $got (expect 1)"
+    # Checked like the other branches: 0 means the restore did not take, and
+    # anything above 1 means duplicate launchers are competing for the port.
+    [ "$got" = "1" ] || { echo "LAUNCHER COUNT MISMATCH -- restore did not take" >&2; exit 1; }
 elif [ "$N" = "1" ]; then
     # uvicorn only starts the multiprocess supervisor when workers > 1; at
     # --workers 1 the parent serves the app itself and spawns no children.

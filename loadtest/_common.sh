@@ -18,13 +18,20 @@ if [ -f "$_LT_DIR/.env" ]; then
     # Snapshot what the caller already exported and restore it afterwards.
     # Sourcing alone lets the FILE win, which is backwards: it silently ignores
     # `PIPESHUB_QUERY= ./perftest.sh ...` and every other one-off override.
-    _lt_preset=$(declare -p $(env | sed -n 's/^\(PIPESHUB_[A-Z_]*\|TOKEN\)=.*/\1/p') 2>/dev/null || true)
+    # One `declare -p` per name. Passing the whole list at once dumps the ENTIRE
+    # environment when the list is empty — the common case on a fresh shell —
+    # and eval would then replay ~130 unrelated declarations. The class allows
+    # digits so a name like PIPESHUB_WORKER_2 is not silently dropped.
+    _lt_preset=""
+    for _lt_name in $(env | sed -n 's/^\(PIPESHUB_[A-Z0-9_]*\|TOKEN\)=.*/\1/p'); do
+        _lt_preset+="$(declare -p "$_lt_name" 2>/dev/null)"$'\n'
+    done
     set -a
     # shellcheck disable=SC1091
     . "$_LT_DIR/.env"
     set +a
-    [ -n "$_lt_preset" ] && eval "$_lt_preset"
-    unset _lt_preset
+    [ -n "${_lt_preset//[[:space:]]/}" ] && eval "$_lt_preset"
+    unset _lt_preset _lt_name
 fi
 
 PIPESHUB_MODE=${PIPESHUB_MODE:-auto}
