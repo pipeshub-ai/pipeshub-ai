@@ -1,8 +1,11 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 from app.sources.client.google.google import GoogleClient
+
+
+T = TypeVar("T")
 
 
 class GoogleDriveDataSource:
@@ -31,10 +34,14 @@ class GoogleDriveDataSource:
         # not thread-safe, so at most one in-flight request per datasource instance.
         self._execute_lock = asyncio.Lock()
 
-    async def _execute(self, request: Any) -> Dict[str, Any]:
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
         async with self._execute_lock:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._executor, request.execute)
+            return await loop.run_in_executor(self._executor, operation)
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(request.execute)
 
     async def operations_get(
         self,

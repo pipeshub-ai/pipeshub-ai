@@ -14,7 +14,7 @@ class GoogleAdminDataSource:
     """
     def __init__(
         self,
-        client: GoogleClient,
+        client: object,
         *,
         executor: Optional[ThreadPoolExecutor] = None
     ) -> None:

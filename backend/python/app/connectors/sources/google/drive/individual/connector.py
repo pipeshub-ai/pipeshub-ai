@@ -3,7 +3,6 @@ import io
 import os
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
@@ -63,6 +62,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
@@ -259,7 +259,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # (sync via GoogleDriveDataSource, plus MediaIoBaseDownload chunk reads
         # in the streaming/download paths below). The connector owns creation
         # and shutdown so cleanup() can guarantee no orphaned threads.
-        self._drive_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+        self._drive_executor = TrackedThreadPoolExecutor(
             max_workers=_DRIVE_INDIVIDUAL_EXECUTOR_MAX_WORKERS,
             thread_name_prefix=f"gdrive-individual-{connector_id[:8]}",
         )
@@ -1368,7 +1368,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
         Yields:
             bytes: File content from the request
         """
-        loop = asyncio.get_running_loop()
         buffer = io.BytesIO()
         try:
             downloader = MediaIoBaseDownload(buffer, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
@@ -1379,8 +1378,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     # next_chunk() performs the HTTP range request synchronously, so
                     # calling it here would freeze the event loop for the whole
                     # round-trip and stall every other request in the process.
-                    _, done = await loop.run_in_executor(
-                        self._drive_executor, downloader.next_chunk
+                    _, done = await self.drive_data_source.execute(
+                        downloader.next_chunk
                     )
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
@@ -1484,8 +1483,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 fileId=file_id,
                 fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
             )
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._drive_executor, metadata_request.execute)
+            return await self.drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
             if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -1597,11 +1595,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                             request = drive_service.files().get_media(fileId=file_id)
                             downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
 
-                            loop = asyncio.get_running_loop()
                             done = False
                             while not done:
-                                status, done = await loop.run_in_executor(
-                                    self._drive_executor, downloader.next_chunk
+                                status, done = await self.drive_data_source.execute(
+                                    downloader.next_chunk
                                 )
                                 self.logger.info(
                                     f"Download {int(status.progress() * 100)}%."
@@ -1757,11 +1754,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Drive connector resources")
 
-            # Stop accepting new work before dropping the data source references that
-            # borrow this pool. Pending futures are cancelled rather than awaited, so
-            # any in-flight datasource call raises RuntimeError instead of hanging.
             if hasattr(self, '_drive_executor') and self._drive_executor:
-                self._drive_executor.shutdown(wait=False, cancel_futures=True)
+                await self._drive_executor.shutdown_and_drain()
+                self._drive_executor = None
 
             # Clear client and data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:

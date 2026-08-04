@@ -5,7 +5,6 @@ import os
 import re
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
@@ -65,6 +64,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -80,7 +80,8 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
@@ -222,7 +223,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Dedicated executor for this connector's blocking Google API calls.
         # The connector owns creation and shutdown so cleanup() can guarantee
         # no orphaned threads.
-        self._gmail_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+        self._gmail_executor = TrackedThreadPoolExecutor(
             max_workers=_GMAIL_INDIVIDUAL_EXECUTOR_MAX_WORKERS,
             thread_name_prefix=f"gmail-individual-{connector_id[:8]}",
         )
@@ -826,9 +827,12 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         fileId=drive_file_id,
                         fields="id,name,mimeType,size"
                     )
-                    loop = asyncio.get_running_loop()
-                    file_metadata = await loop.run_in_executor(
-                        self._gmail_executor, metadata_request.execute
+                    drive_data_source = GoogleDriveDataSource(
+                        drive_service,
+                        executor=self._gmail_executor,
+                    )
+                    file_metadata = await drive_data_source.execute(
+                        metadata_request.execute
                     )
 
                     if file_metadata:
@@ -1198,8 +1202,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 credentials = service_account.Credentials.from_service_account_info(
                     credentials_json
                 )
-                drive_service = build("drive", "v3", credentials=credentials)
+                drive_service = configure_google_http_timeout(
+                    build("drive", "v3", credentials=credentials)
+                )
                 self.logger.info("Using service account credentials for Drive access")
+
+            drive_data_source = GoogleDriveDataSource(
+                drive_service,
+                executor=self._gmail_executor,
+            )
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
@@ -1212,14 +1223,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         )
                         downloader = MediaIoBaseDownload(f, request)
 
-                        loop = asyncio.get_running_loop()
                         done = False
                         while not done:
                             # next_chunk() performs the HTTP range request synchronously, so
                             # calling it here would freeze the event loop for the whole
                             # round-trip and stall every other request in the process.
-                            status, done = await loop.run_in_executor(
-                                self._gmail_executor, downloader.next_chunk
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
                             )
                             self.logger.info(
                                 f"Download {int(status.progress() * 100)}%."
@@ -1247,7 +1257,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
                     )
                     downloader = MediaIoBaseDownload(buffer, request)
                     done = False
-                    loop = asyncio.get_running_loop()
 
                     self.logger.info(f"Starting Drive file stream for {drive_file_id}")
 
@@ -1256,8 +1265,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                             # next_chunk() performs the HTTP range request synchronously, so
                             # calling it here would freeze the event loop for the whole
                             # round-trip and stall every other request in the process.
-                            status, done = await loop.run_in_executor(
-                                self._gmail_executor, downloader.next_chunk
+                            status, done = await drive_data_source.execute(
+                                downloader.next_chunk
                             )
                             progress = int(status.progress() * 100)
                             self.logger.info(
@@ -1339,8 +1348,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 .messages()
                 .get(userId="me", id=message_id, format="full")
             )
-            loop = asyncio.get_running_loop()
-            message = await loop.run_in_executor(self._gmail_executor, request.execute)
+            message = await self.gmail_data_source.execute(request.execute)
 
             # 2. Extract payload (HTML)
             mail_content_base64 = self._extract_body_from_payload(message.get("payload", {}))
@@ -1461,8 +1469,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         .messages()
                         .get(userId="me", id=message_id, format="full")
                     )
-                    loop = asyncio.get_running_loop()
-                    message = await loop.run_in_executor(self._gmail_executor, request.execute)
+                    message = await self.gmail_data_source.execute(request.execute)
                 except HttpError as access_error:
                     if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
                         self.logger.error(f"Message not found with ID {message_id}")
@@ -1499,8 +1506,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 .attachments()
                 .get(userId="me", messageId=message_id, id=actual_attachment_id)
             )
-            loop = asyncio.get_running_loop()
-            attachment = await loop.run_in_executor(self._gmail_executor, request.execute)
+            attachment = await self.gmail_data_source.execute(request.execute)
 
             # Decode the attachment data
             file_data = base64.urlsafe_b64decode(attachment["data"])
@@ -2439,11 +2445,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Gmail connector resources")
 
-            # Stop accepting new work before dropping the data source references that
-            # borrow this pool. Pending futures are cancelled rather than awaited, so
-            # any in-flight datasource call raises RuntimeError instead of hanging.
             if hasattr(self, '_gmail_executor') and self._gmail_executor:
-                self._gmail_executor.shutdown(wait=False, cancel_futures=True)
+                await self._gmail_executor.shutdown_and_drain()
+                self._gmail_executor = None
 
             # Clear client and data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:

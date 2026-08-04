@@ -4,7 +4,6 @@ import logging
 import os
 import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
@@ -69,6 +68,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     PLACEHOLDER_SWEEP_SAFETY_MAX,
@@ -301,7 +301,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # connector constructs (service-account and per-user impersonated
         # alike) borrows this same pool; the connector owns creation and
         # shutdown so a large workspace sync never spins up one pool per user.
-        self._drive_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+        self._drive_executor = TrackedThreadPoolExecutor(
             max_workers=_DRIVE_TEAM_EXECUTOR_MAX_WORKERS,
             thread_name_prefix=f"gdrive-team-{connector_id[:8]}",
         )
@@ -2858,7 +2858,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Get a signed URL for a specific record."""
         raise NotImplementedError("get_signed_url is not yet implemented for Google Drive enterprise")
 
-    async def _stream_google_api_request(self, request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+    async def _stream_google_api_request(
+        self,
+        request,
+        error_context: str = "download",
+        drive_data_source: Optional[GoogleDriveDataSource] = None,
+    ) -> AsyncGenerator[bytes, None]:
         """
         Helper function to stream data from a Google API request.
 
@@ -2868,7 +2873,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         Yields:
             bytes: File content from the request
         """
-        loop = asyncio.get_running_loop()
+        drive_data_source = drive_data_source or self.drive_data_source
+        if not drive_data_source:
+            raise RuntimeError("Drive data source is not initialized")
         buffer = io.BytesIO()
         try:
             downloader = MediaIoBaseDownload(buffer, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
@@ -2879,8 +2886,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # next_chunk() performs the HTTP range request synchronously, so
                     # calling it here would freeze the event loop for the whole
                     # round-trip and stall every other request in the process.
-                    _, done = await loop.run_in_executor(
-                        self._drive_executor, downloader.next_chunk
+                    _, done = await drive_data_source.execute(
+                        downloader.next_chunk
                     )
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
@@ -2968,7 +2975,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error during conversion: {str(conv_error)}")
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
-    async def _get_file_metadata_from_drive(self, file_id: str, drive_service) -> Dict:
+    async def _get_file_metadata_from_drive(
+        self,
+        file_id: str,
+        drive_service,
+        drive_data_source: Optional[GoogleDriveDataSource] = None,
+    ) -> Dict:
         """
         Get file metadata from Google Drive API.
 
@@ -2980,13 +2992,23 @@ class GoogleDriveTeamConnector(BaseConnector):
             Dictionary with file metadata including mimeType
         """
         try:
+            if not drive_data_source:
+                if (
+                    self.drive_data_source
+                    and drive_service is self.drive_data_source.client
+                ):
+                    drive_data_source = self.drive_data_source
+                else:
+                    drive_data_source = GoogleDriveDataSource(
+                        drive_service,
+                        executor=self._drive_executor,
+                    )
             metadata_request = drive_service.files().get(
                 fileId=file_id,
                 fields="id,name,mimeType",
                 supportsAllDrives=True  # ADD THIS for Shared Drive support
             )
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._drive_executor, metadata_request.execute)
+            return await drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
             if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
@@ -3096,9 +3118,23 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
             drive_service = await self._get_drive_service_for_user(user_email)
+            if (
+                self.drive_data_source
+                and drive_service is self.drive_data_source.client
+            ):
+                drive_data_source = self.drive_data_source
+            else:
+                drive_data_source = GoogleDriveDataSource(
+                    drive_service,
+                    executor=self._drive_executor,
+                )
 
             # Get file metadata with Shared Drive support
-            file_metadata = await self._get_file_metadata_from_drive(file_id, drive_service)
+            file_metadata = await self._get_file_metadata_from_drive(
+                file_id,
+                drive_service,
+                drive_data_source,
+            )
             mime_type = file_metadata.get("mimeType", "application/octet-stream")
 
             google_workspace_export_formats = {
@@ -3117,7 +3153,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # Note: export_media doesn't need supportsAllDrives
                 )
                 return create_stream_record_response(
-                    self._stream_google_api_request(request, error_context="PDF export"),
+                    self._stream_google_api_request(
+                        request,
+                        error_context="PDF export",
+                        drive_data_source=drive_data_source,
+                    ),
                     filename=file_name,
                     mime_type="application/pdf",
                     fallback_filename=f"record_{record.id}",
@@ -3144,7 +3184,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 file_name_with_ext = file_name if file_name.endswith(file_ext) else f"{file_name}{file_ext}"
 
                 return create_stream_record_response(
-                    self._stream_google_api_request(request, error_context="Google Workspace file export"),
+                    self._stream_google_api_request(
+                        request,
+                        error_context="Google Workspace file export",
+                        drive_data_source=drive_data_source,
+                    ),
                     filename=file_name_with_ext,
                     mime_type=response_media_type,
                     fallback_filename=f"record_{record.id}",
@@ -3165,11 +3209,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                             )
                             downloader = MediaIoBaseDownload(f, request, chunksize=_DRIVE_DOWNLOAD_CHUNK_SIZE)
 
-                            loop = asyncio.get_running_loop()
                             done = False
                             while not done:
-                                status, done = await loop.run_in_executor(
-                                    self._drive_executor, downloader.next_chunk
+                                status, done = await drive_data_source.execute(
+                                    downloader.next_chunk
                                 )
                                 self.logger.info(f"Download {int(status.progress() * 100)}%.")
                     except HttpError as http_error:
@@ -3214,7 +3257,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 supportsAllDrives=True  # ADDED - This is the key fix!
             )
             return create_stream_record_response(
-                self._stream_google_api_request(request, error_context="file download"),
+                self._stream_google_api_request(
+                    request,
+                    error_context="file download",
+                    drive_data_source=drive_data_source,
+                ),
                 filename=file_name,
                 mime_type=mime_type,
                 fallback_filename=f"record_{record.id}",
@@ -3394,11 +3441,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Drive enterprise connector resources")
 
-            # Stop accepting new work before dropping the data source references that
-            # borrow this pool. Pending futures are cancelled rather than awaited, so
-            # any in-flight datasource call raises RuntimeError instead of hanging.
             if hasattr(self, '_drive_executor') and self._drive_executor:
-                self._drive_executor.shutdown(wait=False, cancel_futures=True)
+                await self._drive_executor.shutdown_and_drain()
+                self._drive_executor = None
 
             # Clear data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:

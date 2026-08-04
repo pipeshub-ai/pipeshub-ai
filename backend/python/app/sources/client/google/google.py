@@ -20,6 +20,17 @@ from app.connectors.sources.google.common.scopes import (
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
 
+GOOGLE_HTTP_TIMEOUT_SECONDS = 60
+
+
+def configure_google_http_timeout(client: object) -> object:
+    authorized_http = getattr(client, "_http", None)
+    http = getattr(authorized_http, "http", authorized_http)
+    if http is not None:
+        http.timeout = GOOGLE_HTTP_TIMEOUT_SECONDS
+    return client
+
+
 try:
     from google.oauth2 import service_account  # type: ignore
     from google.oauth2.credentials import Credentials  # type: ignore
@@ -52,7 +63,7 @@ class GoogleClient(IClient):
 
     def __init__(self, client: object) -> None:
         """Initialize with a Google Drive client object"""
-        self.client = client
+        self.client = configure_google_http_timeout(client)
 
     def get_client(self) -> object:
         """Return the Google Drive client object"""
