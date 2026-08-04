@@ -8,7 +8,10 @@ import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { getEmailContent } from '../utils/email-content';
-import { MailSenderService } from '../services/mail.sender.service';
+import {
+  MailSenderService,
+  SMTP_SYNC_SEND_DEADLINE_MS,
+} from '../services/mail.sender.service';
 
 @injectable()
 export class MailController {
@@ -54,7 +57,13 @@ export class MailController {
    * itself lives in MailSenderService, shared with the broker consumer.
    */
   async emailSender(bodyData: MailBody, smtpConfig: SmtpConfig) {
-    const result = await this.sender.send(bodyData, smtpConfig);
+    // Shorter deadline than the consumer's: this path has an HTTP caller
+    // waiting, and it must fail here before that caller times out.
+    const result = await this.sender.send(
+      bodyData,
+      smtpConfig,
+      SMTP_SYNC_SEND_DEADLINE_MS,
+    );
     return result.status === 'sent'
       ? { status: true, data: 'Email sent' }
       : { status: false, data: result.error };

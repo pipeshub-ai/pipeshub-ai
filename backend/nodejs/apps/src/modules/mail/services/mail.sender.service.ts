@@ -11,7 +11,8 @@ const SMTP_DNS_TIMEOUT_MS = 30_000;
 const SMTP_CONNECTION_TIMEOUT_MS = 30_000;
 const SMTP_GREETING_TIMEOUT_MS = 30_000;
 const SMTP_SOCKET_TIMEOUT_MS = 60_000;
-const SMTP_SEND_DEADLINE_MS = 120_000;
+export const SMTP_SEND_DEADLINE_MS = 120_000;
+export const SMTP_SYNC_SEND_DEADLINE_MS = 25_000;
 const SMTP_POOL_MAX_CONNECTIONS = 5;
 const SMTP_POOL_MAX_MESSAGES = 100;
 
@@ -85,16 +86,15 @@ export class MailSenderService {
   private async sendWithDeadline(
     transporter: nodemailer.Transporter,
     message: Parameters<nodemailer.Transporter['sendMail']>[0],
+    deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         timedOut = true;
-        reject(
-          new Error(`SMTP send exceeded ${SMTP_SEND_DEADLINE_MS}ms deadline`),
-        );
-      }, SMTP_SEND_DEADLINE_MS);
+        reject(new Error(`SMTP send exceeded ${deadlineMs}ms deadline`));
+      }, deadlineMs);
     });
 
     try {
@@ -113,20 +113,28 @@ export class MailSenderService {
    * Sends one message. Never throws for delivery problems — the outcome is
    * returned so the caller can decide between retrying and giving up.
    */
-  async send(bodyData: MailBody, smtpConfig: SmtpConfig): Promise<MailSendResult> {
+  async send(
+    bodyData: MailBody,
+    smtpConfig: SmtpConfig,
+    deadlineMs: number = SMTP_SEND_DEADLINE_MS,
+  ): Promise<MailSendResult> {
     try {
       const emailContent = getEmailContent(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
-      await this.sendWithDeadline(this.getTransporter(smtpConfig), {
-        from: smtpConfig.fromEmail,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo,
-        subject: bodyData.subject,
-        html: emailContent,
-        attachments: bodyData.attachments || [],
-      });
+      await this.sendWithDeadline(
+        this.getTransporter(smtpConfig),
+        {
+          from: smtpConfig.fromEmail,
+          to: bodyData.sendEmailTo,
+          cc: bodyData.sendCcTo,
+          subject: bodyData.subject,
+          html: emailContent,
+          attachments: bodyData.attachments || [],
+        },
+        deadlineMs,
+      );
 
       // The message is already delivered at this point, so a failure to write
       // the audit row must not be reported as a send failure — the caller
