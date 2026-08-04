@@ -531,9 +531,10 @@ def pytest_collection_modifyitems(
 
     The connector suites depend on ``--order-scope=module`` ordering and on
     module-scoped fixtures that drive a whole connector sync, both of which
-    assume a single process. Enterprise-search tests hold no shared state --
+    assume a single process. Most enterprise-search tests hold no shared state --
     each builds its own conversation and the autouse setup only wires clients
-    onto ``self`` -- so they are safe to distribute per test.
+    onto ``self`` -- so they are safe to distribute per test. One that does share
+    state declares its own ``xdist_group``, which this hook leaves alone.
 
     Under ``--dist loadgroup`` all tests carrying the same ``xdist_group`` mark
     run on one worker, so this keeps the connectors serial and in order while
@@ -699,6 +700,10 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Write integration test HTML report under reports/ with timestamp."""
+    # Controller only -- this fires in every worker too, each holding a partial run.
+    if hasattr(session.config, "workerinput"):
+        return
+
     by_nodeid: Dict[str, TestReportEntry] | None = getattr(
         session.config, "_integration_test_reports_by_nodeid", None,
     )

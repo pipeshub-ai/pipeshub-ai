@@ -722,30 +722,60 @@ jobs:
           fi
           THREAD_TS=$(echo "$MESSAGE_RESPONSE" | jq -r '.ts // empty')
           FILE_SIZE=$(stat -c%s reports.zip)
+          UPLOAD_OUT="$RUNNER_TEMP/slack-upload.out"
 
-          RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
-            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
-            -d "length=$FILE_SIZE")
-          OK=$(echo "$RESPONSE" | jq -r '.ok')
-          if [ "$OK" != "true" ]; then
-            echo "::warning::Failed to get Slack upload URL: $RESPONSE"
+          # Unchecked, a failed upload still completes as ok:true with no bytes
+          # behind it. Retry from a fresh URL -- a consumed one cannot be reused.
+          FILE_ID=""
+          for attempt in 1 2 3; do
+            RESPONSE=$(curl -sS -X POST "https://slack.com/api/files.getUploadURLExternal" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              --connect-timeout 10 --max-time 30 \
+              -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
+              -d "length=$FILE_SIZE") || RESPONSE=""
+            if [ "$(echo "$RESPONSE" | jq -r '.ok // empty')" != "true" ]; then
+              echo "::warning::attempt $attempt: files.getUploadURLExternal failed: $RESPONSE"
+              sleep 5
+              continue
+            fi
+            # `strings` yields nothing for null/non-string, so both are caught below.
+            UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url | strings')
+            CANDIDATE_ID=$(echo "$RESPONSE" | jq -r '.file_id | strings')
+            if [ -z "$UPLOAD_URL" ] || [ -z "$CANDIDATE_ID" ]; then
+              echo "::warning::attempt $attempt: files.getUploadURLExternal returned ok without a usable upload_url/file_id: $RESPONSE"
+              sleep 5
+              continue
+            fi
+
+            HTTP_CODE=$(curl -sS -o "$UPLOAD_OUT" -w '%{http_code}' \
+              --connect-timeout 30 --max-time 300 \
+              -X POST "$UPLOAD_URL" -F "file=@reports.zip") || HTTP_CODE="000"
+            if [ "$HTTP_CODE" = "200" ]; then
+              FILE_ID="$CANDIDATE_ID"
+              break
+            fi
+            echo "::warning::attempt $attempt: uploading reports.zip failed (HTTP $HTTP_CODE): $(head -c 300 "$UPLOAD_OUT")"
+            sleep 5
+          done
+
+          if [ -z "$FILE_ID" ]; then
+            echo "::warning::Could not upload reports.zip to Slack after 3 attempts; use the reports-${{ matrix.graph_db }} run artifact instead"
             exit 0
           fi
-          UPLOAD_URL=$(echo "$RESPONSE" | jq -r '.upload_url')
-          FILE_ID=$(echo "$RESPONSE" | jq -r '.file_id')
-
-          curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
           COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
           COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD}"
-          curl -s -X POST "https://slack.com/api/files.completeUploadExternal" \
+          COMPLETE=$(curl -sS -X POST "https://slack.com/api/files.completeUploadExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "$COMPLETE_PAYLOAD"
+            --connect-timeout 10 --max-time 30 \
+            -d "$COMPLETE_PAYLOAD") || COMPLETE=""
+          if [ "$(echo "$COMPLETE" | jq -r '.ok // empty')" != "true" ]; then
+            echo "::warning::files.completeUploadExternal failed: $COMPLETE"
+          fi
 
       - name: Send failed tests list to Slack thread
         if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
