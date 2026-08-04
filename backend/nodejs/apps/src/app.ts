@@ -63,6 +63,7 @@ import {
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { MailConsumer } from './modules/mail/services/mail.consumer';
+import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import {
@@ -744,6 +745,9 @@ export class Application {
         const mailConsumer =
           this.mailServiceContainer.get<MailConsumer>(MailConsumer);
         await mailConsumer.stop();
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
       } catch (err) {
         this.logger.warn('MailConsumer not available during shutdown', {
           error: err instanceof Error ? err.message : String(err),

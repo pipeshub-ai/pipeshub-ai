@@ -84,11 +84,7 @@ export class UserManagerContainer {
       // MailService publishes to the mail topic instead of sending inline.
       const mailProducer = new MailProducer(messageProducer, container.get('Logger'));
       container.bind<MailProducer>(MailProducer).toConstantValue(mailProducer);
-      const mailService = new MailService(
-        appConfig,
-        container.get('Logger'),
-        mailProducer,
-      );
+      const mailService = new MailService(container.get('Logger'), mailProducer);
       container
         .bind<MailService>('MailService')
         .toDynamicValue(() => mailService);
