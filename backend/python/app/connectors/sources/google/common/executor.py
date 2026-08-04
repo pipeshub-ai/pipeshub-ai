@@ -17,8 +17,8 @@ class TrackedThreadPoolExecutor(ThreadPoolExecutor):
         *args: Any,
         **kwargs: Any,
     ) -> Future[Any]:
-        future = super().submit(fn, *args, **kwargs)
         with self._futures_lock:
+            future = super().submit(fn, *args, **kwargs)
             self._futures.add(future)
         future.add_done_callback(self._discard_future)
         return future
@@ -28,8 +28,8 @@ class TrackedThreadPoolExecutor(ThreadPoolExecutor):
             self._futures.discard(future)
 
     async def shutdown_and_drain(self) -> None:
-        self.shutdown(wait=False, cancel_futures=True)
         with self._futures_lock:
+            self.shutdown(wait=False, cancel_futures=True)
             futures = tuple(self._futures)
         if futures:
             await asyncio.gather(
