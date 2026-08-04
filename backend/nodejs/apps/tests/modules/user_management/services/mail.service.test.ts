@@ -29,7 +29,7 @@ describe('MailService', () => {
       isConnected: sinon.stub().returns(true),
     };
 
-    mailService = new MailService(mockConfig, mockLogger, mockMailProducer);
+    mailService = new MailService(mockLogger, mockMailProducer);
   });
 
   afterEach(() => {
@@ -141,14 +141,10 @@ describe('MailService', () => {
       expect(result.data).to.equal('emailTemplateType is empty');
     });
 
-    it('should handle axios error and return statusCode 500', async () => {
-      // Force an error by using an invalid URL
-      const service = new MailService(
-        { communicationBackend: 'http://invalid-host-that-does-not-exist:99999' } as any,
-        mockLogger,
-      );
+    it('should return statusCode 500 when publishing the mail event fails', async () => {
+      mockMailProducer.publishEvent.rejects(new Error('broker unreachable'));
 
-      const result = await service.sendMail({
+      const result = await mailService.sendMail({
         emailTemplateType: 'appuserInvite',
         initiator: { jwtAuthToken: 'test-token' },
         usersMails: ['user@test.com'],
@@ -157,57 +153,25 @@ describe('MailService', () => {
 
       expect(result.statusCode).to.equal(500);
       expect(result.data).to.be.a('string');
+      expect(mockLogger.error.called).to.be.true;
     });
 
-    it('should include attachments when provided', async () => {
-      const service = new MailService(
-        { communicationBackend: 'http://invalid-host:99999' } as any,
-        mockLogger,
-      );
-
-      const result = await service.sendMail({
+    it('should carry attachments and ccEmails onto the published event', async () => {
+      const result = await mailService.sendMail({
         emailTemplateType: 'appuserInvite',
         initiator: { jwtAuthToken: 'test-token' },
         usersMails: ['user@test.com'],
         subject: 'Test Subject',
         attachedDocuments: [{ filename: 'test.pdf', content: 'data' }],
-      });
-
-      // Will fail due to invalid URL but validates params are accepted
-      expect(result.statusCode).to.equal(500);
-    });
-
-    it('should include ccEmails when provided', async () => {
-      const service = new MailService(
-        { communicationBackend: 'http://invalid-host:99999' } as any,
-        mockLogger,
-      );
-
-      const result = await service.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: { jwtAuthToken: 'test-token' },
-        usersMails: ['user@test.com'],
-        subject: 'Test Subject',
         ccEmails: ['cc@test.com'],
       });
 
-      expect(result.statusCode).to.equal(500);
-    });
-
-    it('should log debug message when sending mail', async () => {
-      const service = new MailService(
-        { communicationBackend: 'http://invalid-host:99999' } as any,
-        mockLogger,
-      );
-
-      await service.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: { jwtAuthToken: 'test-token' },
-        usersMails: ['user@test.com'],
-        subject: 'Test Subject',
-      });
-
-      expect(mockLogger.debug.calledWith('sending mail ...')).to.be.true;
+      expect(result.statusCode).to.equal(200);
+      const { mail } = mockMailProducer.publishEvent.firstCall.args[0].payload;
+      expect(mail.attachments).to.deep.equal([
+        { filename: 'test.pdf', content: 'data' },
+      ]);
+      expect(mail.sendCcTo).to.deep.equal(['cc@test.com']);
     });
   });
 });

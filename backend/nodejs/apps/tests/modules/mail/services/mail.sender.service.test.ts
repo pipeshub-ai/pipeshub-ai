@@ -32,6 +32,7 @@ describe('MailSenderService', () => {
     sendMailStub = sinon.stub().resolves({ messageId: 'm1' });
     sinon.stub(nodemailer, 'createTransport').returns({
       sendMail: sendMailStub,
+      close: sinon.stub(),
     } as any);
     sinon.stub(MailModel.prototype, 'save').resolves({} as any);
   });
@@ -101,5 +102,49 @@ describe('MailSenderService', () => {
 
     expect(result.status).to.equal('permanent');
     expect(sendMailStub.called).to.be.false;
+  });
+
+  it('reuses one pooled transporter with every SMTP stage bounded', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    await sender.send(body, smtp);
+    await sender.send(body, smtp);
+
+    const createTransport = nodemailer.createTransport as sinon.SinonStub;
+    // Reused: 1000 invites must not mean 1000 connections and handshakes.
+    expect(createTransport.calledOnce).to.be.true;
+
+    const opts = createTransport.firstCall.args[0];
+    expect(opts.pool, 'pool').to.be.true;
+    expect(opts.dnsTimeout, 'dnsTimeout').to.equal(30_000);
+    expect(opts.connectionTimeout, 'connectionTimeout').to.equal(30_000);
+    expect(opts.greetingTimeout, 'greetingTimeout').to.equal(30_000);
+    expect(opts.socketTimeout, 'socketTimeout').to.equal(60_000);
+    // No username configured, so no credentials are offered at all.
+    expect(opts.auth, 'auth').to.equal(undefined);
+  });
+
+  it('abandons a stalled send at the deadline and drops the pool', async () => {
+    const clock = sinon.useFakeTimers();
+    const closeStub = sinon.stub();
+    try {
+      (nodemailer.createTransport as sinon.SinonStub).returns({
+        sendMail: sinon.stub().returns(new Promise(() => {})),
+        close: closeStub,
+      } as any);
+      const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+      const promise = sender.send(body, smtp);
+      await clock.tickAsync(120_000 + 1);
+      const result = await promise;
+
+      // socketTimeout only measures inactivity, so without this an unbounded
+      // send would wedge the consumer and stop all later mail.
+      expect(result.status).to.equal('transient');
+      expect(String((result as { error?: string }).error)).to.contain('deadline');
+      // The stuck connection must not be handed to the next message.
+      expect(closeStub.calledOnce).to.be.true;
+    } finally {
+      clock.restore();
+    }
   });
 });
