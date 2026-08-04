@@ -92,3 +92,67 @@ class TestValidationErrorUsageHint:
 
         assert result.is_error is False
         assert "Correct usage of" not in str(result.content)
+
+
+class TestOptionalParameterExplicitNull:
+    """A model's tool call JSON can carry an explicit `null` for an optional
+    parameter it doesn't intend to set (e.g. `"sandbox_id": null`) rather
+    than omitting the key. `json.loads` turns that into Python `None`, so
+    the key IS present in `kwargs` — `validate()` must treat it the same as
+    the key being absent (apply the declared default), not reject it as a
+    type mismatch. See `Tool.validate()` in `tools/base.py`."""
+
+    async def test_optional_string_param_with_none_value_uses_default(self) -> None:
+        executor = ToolExecutor(_registry_with(_RunCodeLikeTool()))
+        call = ToolCall(
+            id="c1", name="run_code", arguments={"code": "print(1)", "language": None},
+        )
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+
+    async def test_optional_array_param_with_none_value_uses_default(self) -> None:
+        executor = ToolExecutor(_registry_with(_RunCodeLikeTool()))
+        call = ToolCall(
+            id="c1", name="run_code", arguments={"code": "print(1)", "packages": None},
+        )
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+
+    async def test_required_param_with_none_value_still_fails(self) -> None:
+        executor = ToolExecutor(_registry_with(_RunCodeLikeTool()))
+        call = ToolCall(id="c1", name="run_code", arguments={"code": None})
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is True
+        assert "expected type 'string'" in result.content
+        assert "Correct usage of `run_code`:" in result.content
+
+    async def test_optional_param_explicit_null_reaches_execute_as_default(self) -> None:
+        """End-to-end: a tool whose `execute()` records the kwargs it
+        actually received confirms the None -> default substitution happens
+        before `execute()` is called, not just that validation passes."""
+
+        class _RecordingTool(_RunCodeLikeTool):
+            def __init__(self) -> None:
+                self.received: dict[str, Any] | None = None
+
+            async def execute(self, **kwargs: Any) -> ToolOutput:
+                self.received = kwargs
+                return ToolOutput(success=True, data="ran")
+
+        tool = _RecordingTool()
+        executor = ToolExecutor(_registry_with(tool))
+        call = ToolCall(
+            id="c1", name="run_code", arguments={"code": "print(1)", "language": None},
+        )
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+        assert tool.received is not None
+        assert tool.received["language"] == "typescript"
