@@ -417,7 +417,21 @@ class ExcelParser:
             if self.workbook:
                 self.workbook.close()
 
-    def _build_basic_block_container(self) -> BlocksContainer:
+    async def create_blocks_lightweight(self, max_rows: int | None = None) -> BlocksContainer:
+        """Create blocks from a loaded workbook without LLM enrichment.
+
+        Must call ``load_workbook_from_binary()`` first. Used by chat attachment
+        upload where latency matters and the chat LLM will see the raw blocks.
+        """
+        self.logger.info("Starting lightweight (no-LLM) block creation from workbook")
+        try:
+            return await asyncio.to_thread(self._build_basic_block_container, max_rows)
+        finally:
+            if self.workbook:
+                self.logger.info("Closing workbook")
+                self.workbook.close()
+
+    def _build_basic_block_container(self, max_rows: int | None = None) -> BlocksContainer:
         """Build a BlocksContainer from the loaded workbook without LLM calls.
 
         Mirrors the structure of ``get_blocks_from_workbook`` but treats each
@@ -429,9 +443,14 @@ class ExcelParser:
 
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
+        rows_emitted = 0
 
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
-            sheet_data = self._process_sheet(self.workbook[sheet_name])
+            if max_rows is not None and rows_emitted >= max_rows:
+                break
+
+            remaining = None if max_rows is None else max_rows - rows_emitted
+            sheet_data = self._process_sheet(self.workbook[sheet_name], max_data_rows=remaining)
             headers: list = sheet_data.get("headers") or []
             rows: list = sheet_data.get("data") or []
 
@@ -515,6 +534,7 @@ class ExcelParser:
             block_groups[sg_idx].children = BlockGroupChildren.from_indices(
                 block_group_indices=[tg_idx]
             )
+            rows_emitted += len(rows)
 
         self.logger.info(
             "Basic (no-LLM) workbook parsing complete: %d blocks, %d block groups",
@@ -528,8 +548,15 @@ class ExcelParser:
             return obj.isoformat()
         return str(obj)
 
-    def _process_sheet(self, sheet: Worksheet) -> dict[str, list[list[dict[str, Any]]]]:
-        """Process individual sheet and extract cell data"""
+    def _process_sheet(
+        self, sheet: Worksheet, max_data_rows: int | None = None
+    ) -> dict[str, list[list[dict[str, Any]]]]:
+        """Process individual sheet and extract cell data.
+
+        ``max_data_rows`` bounds how many data rows are read from ``iter_rows``,
+        so callers with a row cap (e.g. chat attachment uploads) don't pay the
+        cost of building every row of a large sheet just to truncate it after.
+        """
         try:
             self.logger.info(f"Processing sheet: {sheet.title}")
             sheet_data = {"headers": [], "data": []}
@@ -541,6 +568,8 @@ class ExcelParser:
 
             # Start from second row
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
+                if max_data_rows is not None and len(sheet_data["data"]) >= max_data_rows:
+                    break
                 row_data = []
 
                 for col_idx, cell in enumerate(row, 1):

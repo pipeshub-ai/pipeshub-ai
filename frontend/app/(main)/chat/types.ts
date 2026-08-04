@@ -1,6 +1,7 @@
 import type { CitationOrigin } from './components/message-area/response-tabs/citations';
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import { ACCEPTED_MIME_TYPES, SUPPORTED_FILE_TYPES } from './utils/attachment-file-types';
 
 // Chat types following project conventions
 
@@ -387,7 +388,9 @@ export interface UploadedFile {
   errorMessage?: string;
 }
 
-export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
+/** Derived from `SUPPORTED_FILE_TYPES`/`ACCEPTED_MIME_TYPES` in `utils/attachment-file-types.ts`
+ * (the single source of truth) so the two allowlists cannot drift apart. */
+export type SupportedFileType = (typeof SUPPORTED_FILE_TYPES)[number];
 
 /** Returned by the attachment upload endpoint; forwarded verbatim in the SSE stream body. */
 export interface AttachmentRef {
@@ -399,14 +402,7 @@ export interface AttachmentRef {
 }
 
 /** MIME types accepted by the chat attachment upload endpoint. */
-export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = [
-  'application/pdf',
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'text/plain',
-  'text/markdown',
-] as const;
+export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = Object.keys(ACCEPTED_MIME_TYPES);
 
 /** Maximum file size for a single chat attachment (5 MB). */
 export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;

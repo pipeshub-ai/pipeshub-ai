@@ -39,6 +39,13 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model_async
+from app.utils.attachment_mime_types import (
+    DELIMITED_MIME_TYPES,
+    DOCX_MIME_TYPES,
+    SPREADSHEET_MIME_TYPES,
+    SUPPORTED_ATTACHMENT_MIME_TYPES,
+    TEXT_ATTACHMENT_MIME_TYPES,
+)
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -156,6 +163,53 @@ async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
         text = file_content.decode("latin-1")
     parser = MarkdownItParser()
     return await parser.parse_to_blocks(text.strip())
+
+
+async def _build_docx_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+) -> BlocksContainer:
+    """Parse a DOCX file into blocks via in-process Docling (same path as FileContentParser)."""
+    from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+
+    processor = DoclingProcessor(logger=logger, config=config_service)
+    stem = Path(file_name).stem if file_name else "document"
+    doc_name = file_name if file_name.lower().endswith(".docx") else f"{stem}.docx"
+    doc = await processor.parse_document(doc_name, file_content)
+    return await processor.create_blocks(doc)
+
+
+async def _build_excel_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+) -> BlocksContainer:
+    """Parse an XLSX file into blocks without LLM enrichment (chat upload path)."""
+    from app.modules.parsers.excel.excel_parser import ExcelParser
+
+    parser = ExcelParser(logger=logger, config_service=config_service)
+    await asyncio.to_thread(parser.load_workbook_from_binary, file_content)
+    return await parser.create_blocks_lightweight(max_rows=_CHAT_ATTACHMENT_MAX_TABLE_ROWS)
+
+
+async def _build_csv_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+    mime_type: str,
+) -> BlocksContainer:
+    """Parse a CSV/TSV file into blocks without LLM enrichment, capped at max rows."""
+    from app.modules.parsers.csv.csv_parser import CSVParser
+
+    delimiter = "\t" if mime_type.lower() == "text/tab-separated-values" else ","
+    # Extension-based fallback when MIME is generic but filename says .tsv.
+    if delimiter == "," and Path(file_name).suffix.strip().lower() == ".tsv":
+        delimiter = "\t"
+    parser = CSVParser(config_service=config_service, delimiter=delimiter)
+    return await parser.parse_to_blocks_lightweight(
+        file_content, max_rows=_CHAT_ATTACHMENT_MAX_TABLE_ROWS
+    )
 
 
 # Dependency injection functions
@@ -295,22 +349,12 @@ async def get_llm_for_chat(
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
 
-_SUPPORTED_ATTACHMENT_MIME_TYPES = {
-    "application/pdf",
-    "image/jpeg",
-    "image/jpg",
-    "image/png",
-    "text/plain",
-    "text/markdown",
-    "text/mdx",
-}
-
-_TEXT_ATTACHMENT_MIME_TYPES = {"text/plain", "text/markdown", "text/mdx"}
-_DOC_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | {"application/pdf"}
+# Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
+_CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
-    return mime_type.lower() in _SUPPORTED_ATTACHMENT_MIME_TYPES
+    return mime_type.lower() in SUPPORTED_ATTACHMENT_MIME_TYPES
 
 
 def _is_image_attachment(mime_type: str) -> bool:
@@ -318,7 +362,19 @@ def _is_image_attachment(mime_type: str) -> bool:
 
 
 def _is_text_attachment(mime_type: str) -> bool:
-    return mime_type.lower() in _TEXT_ATTACHMENT_MIME_TYPES
+    return mime_type.lower() in TEXT_ATTACHMENT_MIME_TYPES
+
+
+def _is_docx_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in DOCX_MIME_TYPES
+
+
+def _is_spreadsheet_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in SPREADSHEET_MIME_TYPES
+
+
+def _is_delimited_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in DELIMITED_MIME_TYPES
 
 
 def _attachment_extension(file_name: str, mime_type: str) -> str:
@@ -338,6 +394,14 @@ def _attachment_extension(file_name: str, mime_type: str) -> str:
         return "md"
     if mime_lower == "text/mdx":
         return "mdx"
+    if mime_lower in DOCX_MIME_TYPES:
+        return "docx"
+    if mime_lower in SPREADSHEET_MIME_TYPES:
+        return "xlsx"
+    if mime_lower == "text/csv":
+        return "csv"
+    if mime_lower == "text/tab-separated-values":
+        return "tsv"
     return "bin"
 
 
@@ -413,7 +477,10 @@ async def upload_chat_attachments(
         if not _is_supported_attachment_mime(item.mimeType):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported attachment type '{item.mimeType}': {item.fileName}. Supported: PDF, JPEG, PNG, TXT, MD, MDX.",
+                detail=(
+                    f"Unsupported attachment type '{item.mimeType}': {item.fileName}. "
+                    "Supported: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV."
+                ),
             )
         if item.size <= 0:
             raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
@@ -423,6 +490,9 @@ async def upload_chat_attachments(
         extension = _attachment_extension(item.fileName, item.mimeType)
         is_image = _is_image_attachment(item.mimeType)
         is_text = _is_text_attachment(item.mimeType)
+        is_docx = _is_docx_attachment(item.mimeType)
+        is_spreadsheet = _is_spreadsheet_attachment(item.mimeType)
+        is_delimited = _is_delimited_attachment(item.mimeType)
 
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
@@ -464,18 +534,44 @@ async def upload_chat_attachments(
         }
 
         needs_ocr = False
+        parse_mode = "pdfplumber"
         if is_image:
             try:
                 block_containers = _build_image_blocks(file_binary, item.mimeType)
                 parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "image_direct"
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
                 parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "text"
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
+        elif is_docx:
+            try:
+                block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "docling"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse DOCX attachment {item.fileName}: {str(e)}")
+        elif is_spreadsheet:
+            try:
+                block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "excel_lightweight"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse Excel attachment {item.fileName}: {str(e)}")
+        elif is_delimited:
+            try:
+                block_containers = await _build_csv_blocks(
+                    file_binary, item.fileName, config_service, item.mimeType
+                )
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "csv_lightweight"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse CSV attachment {item.fileName}: {str(e)}")
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -493,9 +589,11 @@ async def upload_chat_attachments(
                         _build_pdf_image_blocks, file_binary
                     )
                     ocr_image_pages_used += page_count
+                    parse_mode = "image_direct"
                 else:
                     parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
                     block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                    parse_mode = "pdfplumber"
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
@@ -521,7 +619,11 @@ async def upload_chat_attachments(
                 "mimeType": item.mimeType,
                 "extension": extension,
                 "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
-                "ocrMode": "image_direct" if needs_ocr else "pdfplumber",
+                "parseMode": parse_mode,
+                # Deprecated: kept for backward compatibility with clients still
+                # reading `ocrMode`. `parse_mode` covers non-OCR parse paths too
+                # (e.g. csv_lightweight, docling) so `parseMode` is the canonical field.
+                "ocrMode": parse_mode,
             }
         )
 

@@ -305,6 +305,7 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
+        ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
         // `undefined` (runtime.ts omits the field entirely when every tool
         // is selected) must NOT become `[]` here — an empty array means
         // "no tools" to the backend (agent.py treats `None`/missing as
