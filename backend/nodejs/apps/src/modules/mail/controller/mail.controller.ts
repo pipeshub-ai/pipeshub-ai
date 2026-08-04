@@ -52,13 +52,9 @@ export class MailController {
     return getEmailContent(emailTemplateType, templateData);
   }
 
-  /**
-   * Retained so the direct HTTP route keeps its existing contract; delivery
-   * itself lives in MailSenderService, shared with the broker consumer.
-   */
+  /** Kept so the direct HTTP route keeps its existing contract. */
   async emailSender(bodyData: MailBody, smtpConfig: SmtpConfig) {
-    // Shorter deadline than the consumer's: this path has an HTTP caller
-    // waiting, and it must fail here before that caller times out.
+    // Must fail before the HTTP caller waiting on this route times out.
     const result = await this.sender.send(
       bodyData,
       smtpConfig,

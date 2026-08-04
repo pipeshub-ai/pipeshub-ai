@@ -63,10 +63,8 @@ export class MailService {
         data.sendCcTo = ccEmails;
       }
 
-      // Delivery is handed to the mail topic instead of being awaited here, so
-      // a slow or unreachable SMTP server can no longer stall the request. A
-      // 200 now means "accepted for delivery"; failures reach admins via the
-      // notification published by MailConsumer.
+      // 200 now means "accepted for delivery", not "sent" — MailConsumer
+      // notifies admins if delivery ultimately fails.
       await this.mailProducer.publishEvent({
         eventType: MailEventType.SendMailEvent,
         timestamp: Date.now(),
@@ -74,8 +72,7 @@ export class MailService {
       });
       return { statusCode: 200, data: { message: 'Email queued for delivery' } };
     } catch (error: any) {
-      // Kept at 500 regardless of the underlying error so existing callers,
-      // which only branch on `statusCode !== 200`, behave exactly as before.
+      // Always 500: callers only branch on `statusCode !== 200`.
       this.logger.error('Error queueing mail', { error: error?.message });
       return {
         statusCode: 500,

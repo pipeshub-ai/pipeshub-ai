@@ -50,9 +50,7 @@ export class MailServiceContainer {
       container.bind(MailSenderService).toSelf().inSingletonScope();
 
       try {
-        // Producer for failure notifications, consumer for mail jobs. The mail
-        // topic gets its own consumer group so it tracks offsets independently
-        // of the notification consumer.
+        // Own consumer group, so mail offsets track independently of notifications.
         const messageProducer = createMessageProducer(
           resolveMessageBrokerConfig(appConfig),
           container.get('Logger'),

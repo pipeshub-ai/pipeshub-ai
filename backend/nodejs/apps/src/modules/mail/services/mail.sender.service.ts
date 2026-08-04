@@ -16,17 +16,13 @@ export const SMTP_SYNC_SEND_DEADLINE_MS = 25_000;
 const SMTP_POOL_MAX_CONNECTIONS = 5;
 const SMTP_POOL_MAX_MESSAGES = 100;
 
-/**
- * Owns the actual SMTP delivery. Shared by the HTTP route and the broker
- * consumer so both paths send mail through exactly one implementation.
- */
+/** SMTP delivery, shared by the HTTP route and the broker consumer. */
 @injectable()
 export class MailSenderService {
   private pooled?: { key: string; transporter: nodemailer.Transporter };
 
   constructor(
-    // Resolved per call, not captured: updating SMTP settings rebinds
-    // AppConfig, and this service outlives that rebind as a singleton.
+    // Resolved per call: an SMTP update rebinds AppConfig, and this outlives it.
     @inject('AppConfigProvider')
     private readonly getAppConfig: () => AppConfig,
     @inject('Logger') private readonly logger: Logger,
@@ -109,10 +105,7 @@ export class MailSenderService {
     }
   }
 
-  /**
-   * Sends one message. Never throws for delivery problems — the outcome is
-   * returned so the caller can decide between retrying and giving up.
-   */
+  /** Returns the outcome instead of throwing, so the caller decides on retry. */
   async send(
     bodyData: MailBody,
     smtpConfig: SmtpConfig,
@@ -136,9 +129,7 @@ export class MailSenderService {
         deadlineMs,
       );
 
-      // The message is already delivered at this point, so a failure to write
-      // the audit row must not be reported as a send failure — the caller
-      // would retry and the recipient would get a duplicate email.
+      // Already delivered: a failed audit write must not trigger a duplicate send.
       try {
         const mailEntry = new MailModel({
           subject: bodyData.subject,
@@ -165,8 +156,7 @@ export class MailSenderService {
           : typeof error === 'string'
             ? error
             : 'Failed to send email';
-      // An unknown template is a caller bug, not an SMTP problem — replaying it
-      // would fail identically, so never classify it as transient.
+      // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
       this.logger.error('Mail send error', { error: message, kind });

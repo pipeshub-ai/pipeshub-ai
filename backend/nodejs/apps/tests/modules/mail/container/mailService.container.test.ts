@@ -86,7 +86,6 @@ describe('MailServiceContainer - coverage', () => {
 
       const container = await MailServiceContainer.initialize(appConfig)
 
-      // MailController should be resolvable
       const mailController = container.get('MailController')
       expect(mailController).to.exist
 
@@ -107,7 +106,6 @@ describe('MailServiceContainer - coverage', () => {
     it('should do nothing when instance is already null', async () => {
       ;(MailServiceContainer as any).instance = null
       await MailServiceContainer.dispose()
-      // Should not throw
     })
   })
 
