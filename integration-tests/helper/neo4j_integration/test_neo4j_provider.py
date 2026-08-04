@@ -87,8 +87,10 @@ class TestNeo4jProvider(Neo4jProvider):
         With ``scoped=True`` only records with a live ``BELONGS_TO`` → RecordGroup edge are
         counted (not ``IS_OF_TYPE``): a full sync wipes and recreates sync edges
         (``delete_connector_sync_edges``) but leaves nodes and ``IS_OF_TYPE`` intact, so records
-        for a project that left the filter scope keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``;
-        scoped counting also excludes placeholder stubs. Default (``False``) counts every record
+        for a project that left the filter scope keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``.
+        This does *not* exclude placeholder stubs — connectors that anchor stubs to a RecordGroup
+        (e.g. Linear) leave them with a live ``BELONGS_TO``; use :meth:`get_placeholder_records`
+        to isolate those. Default (``False``) counts every record
         for the connector — required by suites whose records have no RecordGroup (e.g. KB uploads).
         """
         if not self.client:
@@ -913,6 +915,31 @@ class TestNeo4jProvider(Neo4jProvider):
             return None
         pid = result[0].get("pid")
         return str(pid) if pid is not None else None
+
+    async def get_placeholder_records(self, connector_id: str) -> List[Record]:
+        """Return every placeholder stub for a connector.
+
+        ``= true`` rather than truthiness: records written before ``isPlaceholder``
+        existed have no such property, and ``null <> true`` is the intended behaviour.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid})
+            WHERE r.isPlaceholder = true
+            RETURN r
+            """,
+            {"cid": connector_id},
+        )
+        records: List[Record] = []
+        for row in result or []:
+            node = row.get("r")
+            if not node:
+                continue
+            record_dict = self._neo4j_to_arango_node(dict(node), CollectionNames.RECORDS.value)
+            records.append(Record.from_arango_base_record(record_dict))
+        return records
 
     async def get_typed_record_by_external_id(
         self, connector_id: str, external_record_id: str

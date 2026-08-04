@@ -482,6 +482,54 @@ async def fetch_first_project_in_team(
 # ---------------------------------------------------------------------------
 
 
+async def resolve_issue_by_identifier(
+    datasource: LinearDataSource,
+    identifier: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the issue JSON for a human identifier (``ENG-2``) or a UUID.
+
+    Linear's ``issue(id:)`` accepts either form.
+    """
+    resp = await datasource.issue(id=identifier)
+    if not resp.success:
+        return None
+    issue = (resp.data or {}).get("issue")
+    return issue if issue and issue.get("id") else None
+
+
+async def fetch_ancestor_chain(
+    datasource: LinearDataSource,
+    issue_id: str,
+    *,
+    max_depth: int = 10,
+) -> List[str]:
+    """Return ancestor issue ids for ``issue_id``, nearest parent first.
+
+    Walked one hop at a time: ``issue(id:)`` exposes only a single level of
+    ``parent``, so reaching the grandparent needs a second call. ``max_depth``
+    bounds a cyclic or pathologically deep chain.
+    """
+    chain: List[str] = []
+    seen: Set[str] = {issue_id}
+    current = issue_id
+
+    for _ in range(max_depth):
+        resp = await _api_call_with_retry(
+            datasource.issue, id=current,
+            context=f"fetch_ancestor_chain({current})",
+        )
+        issue = (resp.data or {}).get("issue") or {}
+        parent = issue.get("parent") or {}
+        parent_id = parent.get("id")
+        if not parent_id or parent_id in seen:
+            break
+        chain.append(str(parent_id))
+        seen.add(parent_id)
+        current = parent_id
+
+    return chain
+
+
 async def get_linear_issue_updated_ms(
     datasource: LinearDataSource,
     issue_id: str,
