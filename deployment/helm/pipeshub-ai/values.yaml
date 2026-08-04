@@ -423,9 +423,9 @@ etcd:
       drop:
       - ALL
 
-# Message broker: "kafka" (default) or "redis" (uses Redis Streams)
+# Message broker: "kafka" or "redis" (uses Redis Streams, default)
 messageBroker:
-  type: kafka
+  type: redis
   redisStreamsMaxLen: "500000"
 
 zookeeper:

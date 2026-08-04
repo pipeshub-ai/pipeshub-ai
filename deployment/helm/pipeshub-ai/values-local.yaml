@@ -107,6 +107,9 @@ redis:
     # password MUST be supplied via --set.
 
 # ----- Kafka + Zookeeper: 1 broker each, single-replica topics -----
+messageBroker:
+  type: kafka
+
 kafka:
   replicaCount: 1
   config:

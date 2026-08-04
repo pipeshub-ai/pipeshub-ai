@@ -167,13 +167,15 @@ spec:
             
             # Message broker config
             - name: MESSAGE_BROKER
-              value: {{ .Values.messageBroker.type | default "kafka" | quote }}
+              value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
 
+            {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config
             - name: KAFKA_BROKERS
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
+            {{- end }}
             
             # Redis config
             {{- /*
