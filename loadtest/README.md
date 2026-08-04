@@ -25,8 +25,21 @@ pip3 install --user py-spy            # optional, for the CPU flame graph
 `TOKEN` is a bearer JWT — browser devtools, any API request, the
 `Authorization` header. Everything else in `.env` has a working default.
 
-That writes `results/baseline/` with a `report.txt`, a `cpu.svg` flame graph
-and `memory.csv`. The report is also printed to the terminal.
+That writes `results/baseline/`, printing the report to the terminal too:
+
+| file | what it is |
+|---|---|
+| `report.txt` | the printed report |
+| `cpu.svg` / `cpu.raw.gz` | flame graph, and the raw profile for re-analysis |
+| `memory.svg` / `memory.csv` | RSS over the run |
+| `requests.csv` | every request: HTTP code, duration, curl exit |
+| `summary.json` | machine-readable, consumed by `aggregate.py` |
+
+Comparing many configurations:
+
+```bash
+./aggregate.py results        # median + min-max per config, writes matrix.csv
+```
 
 To compare a change, run it again with a different label and diff the reports:
 
@@ -97,6 +110,13 @@ rather than reporting a number it could not have observed.
   completed turns : 88
   window          : 316s
   throughput      : 16.7 req/min  (0.278/s)
+  steady-state    : 84 turns in the 300s load window  (16.8 req/min)
+
+==================== REQUESTS (client-side) ====================
+  requests        : 88
+  succeeded (200) : 88
+  failed          : 0  (0.0%)
+  turn seconds    : p50=24.1 p95=34.9 max=41.2
 
 ==================== TURN LATENCY (per phase, ms) ====================
   turn total  mean=24313  p50=23575  p95=34280
@@ -128,6 +148,14 @@ rather than reporting a number it could not have observed.
 - *Throughput* is counted **server-side**, one per completed turn. Client-side
   counting drops turns that are still streaming when the run stops, which
   penalises exactly the slow configs you are comparing.
+- *steady-state* counts only turns finished while load was still being offered.
+  The line above it divides by elapsed time **including the drain** after load
+  stops, so a config whose last turns take two minutes reports a lower rate for
+  the same work. When the two disagree, the drain is doing the talking.
+- *Requests* is the client's view. A run that mostly failed used to be
+  indistinguishable from a slow one — both just showed low throughput. Above a
+  5% error rate the run is marked `** INVALID` and `aggregate.py` drops it from
+  the medians.
 - *CPU by subsystem* counts a sample for every subsystem in its stack, so
   nested cost lands on whatever caused it. The by-function list underneath is
   the raw leaf view.
@@ -158,7 +186,8 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 | `PIPESHUB_QUERY_LOG` | — | native mode: where query console output goes |
 | `PIPESHUB_QUERY_PORT` | `8000` | native mode: used to find the pid |
 | `PIPESHUB_QUERY_PID` | — | native mode: skip the pid lookup |
-| `PIPESHUB_QUERY` | a generic question | ask something your corpus can answer |
+| `PIPESHUB_QUERY_FILE` | `queries.txt` | the query set users rotate through |
+| `PIPESHUB_QUERY` | — | force a single query instead of the file |
 | `PIPESHUB_THINK_TIME` | `3` | seconds between a user's turns |
 
 `perftest.sh` probes the token before starting and aborts if it is not
@@ -197,6 +226,8 @@ elsewhere and use this only to collect:
 | `set_workers.sh` | change the uvicorn worker count (restarts the container) |
 | `restart_query.sh` | restart only the query process, leaving the container up |
 | `locustfile_play.py` | optional locust scenario, if you prefer locust's latency percentiles |
+| `queries.txt` | the query set users draw from — **edit this for your corpus** |
+| `aggregate.py` | rolls many runs' `summary.json` into one table + `matrix.csv` |
 | `_common.sh` | sourced by the rest: finds docker (with/without sudo), finds Python, checks the container is up |
 | `instr/` | the probes copied into the container, plus the report aggregators |
 
@@ -228,5 +259,14 @@ elsewhere and use this only to collect:
 - **One trial is ±10%.** Treat a single run as directional. For a claim worth
   publishing, run 3–4 trials per config and compare medians; CPU-profile
   percentages are far more stable than throughput.
+- **One repeated query is not a workload.** Identical prompt prefixes hit the
+  provider's prefix cache and retrieval stays warm, so a single fixed question
+  overstates throughput substantially — and a question the corpus cannot answer
+  returns a fast empty turn that inflates the rate further. Use `queries.txt`;
+  reach for `PIPESHUB_QUERY` only to pin one query so both arms of an A/B carry
+  the same bias, never to quote a capacity number.
+- **Check the answers, not just the rate.** Turns returning 0 citations are
+  measuring the not-found path, not retrieval. A run can look healthy on
+  req/min while most of its answers are empty.
 - **A growing corpus biases comparisons.** Load tests create records. If a
   baseline and its comparison are days apart, note the record counts.

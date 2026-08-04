@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import time
 
 from locust import HttpUser, LoadTestShape, constant, events, task
@@ -49,14 +50,19 @@ HEALTH_SLA_MS = float(os.environ.get("PIPESHUB_HEALTH_SLA_MS", "100"))
 STREAM_TIMEOUT = float(os.environ.get("PIPESHUB_STREAM_TIMEOUT", "300"))
 THINK_TIME = float(os.environ.get("PIPESHUB_THINK_TIME", "3"))
 
-QUESTIONS = [
-    "What are the key features described in the documents?",
-    "Summarise the main points from the most recent files.",
-    "How is access control and permissions handled?",
-    "What integrations are mentioned across the documents?",
-    "Explain the deployment options that are documented.",
-    "What are the known limitations or open issues?",
-]
+def _load_questions() -> list[str]:
+    """Shared with `perftest.sh` so both harnesses ask the same thing; the
+    inline list is the fallback when this file is run from elsewhere."""
+    path = Path(os.environ.get("PIPESHUB_QUERY_FILE", Path(__file__).with_name("queries.txt")))
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ["What are the key features described in the documents?"]
+    found = [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    return found or ["What are the key features described in the documents?"]
+
+
+QUESTIONS = _load_questions()
 
 # Questions phrased to push an agent toward using its tools rather than
 # answering from retrieved context alone.

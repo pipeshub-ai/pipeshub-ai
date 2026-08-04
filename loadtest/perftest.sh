@@ -23,7 +23,7 @@ OUTDIR="$HERE/results/$LABEL"
 # shellcheck source=_common.sh
 . "$HERE/_common.sh"
 HOST=${PIPESHUB_HOST}
-QUERY=${PIPESHUB_QUERY:-"What are the key features described in the documents?"}
+QUERY_FILE=${PIPESHUB_QUERY_FILE:-$HERE/queries.txt}
 # users=0 is the collect-only mode (someone else drives the load): no requests
 # are sent from here, so no credential is needed.
 if [ "$USERS" -gt 0 ]; then
@@ -57,7 +57,25 @@ if [ -n "$WORKERS" ]; then
   bash "$HERE/set_workers.sh" "$WORKERS" >>"$REPORT" 2>&1
 fi
 
-say "== $LABEL: $USERS users, ${SECS}s, host $HOST, mode $PIPESHUB_MODE"
+# One request body per query, JSON-encoded once here rather than per request:
+# the previous inline `python -c json.dumps` forked a process for every single
+# request, adding load to the host being measured.
+if [ -n "${PIPESHUB_QUERY:-}" ]; then
+  QUERIES=("$PIPESHUB_QUERY")
+elif [ -f "$QUERY_FILE" ]; then
+  mapfile -t QUERIES < <(grep -v '^[[:space:]]*#' "$QUERY_FILE" | grep -v '^[[:space:]]*$')
+else
+  say "ABORT: no query file at $QUERY_FILE and PIPESHUB_QUERY is unset."
+  exit 1
+fi
+[ ${#QUERIES[@]} -gt 0 ] || { say "ABORT: $QUERY_FILE contains no queries."; exit 1; }
+mapfile -t BODIES < <(printf '%s\n' "${QUERIES[@]}" | "$PYTHON" -c '
+import json, sys
+for line in sys.stdin.read().splitlines():
+    print(json.dumps({"query": line, "chatMode": "internal_search"}))
+')
+
+say "== $LABEL: $USERS users, ${SECS}s, ${#QUERIES[@]} quer$([ ${#QUERIES[@]} -eq 1 ] && echo y || echo ies), host $HOST, mode $PIPESHUB_MODE"
 say "== started $(date -u +%H:%M:%SZ)"
 START=$(log_mark)
 WALL_START=$(date -u +%s)
@@ -88,17 +106,39 @@ fi
   done ) &
 MEM_PID=$!
 
+# Query order per user, drawn from a PRNG seeded on (label, user index): random
+# across users but reproducible, so two arms of an A/B see the SAME sequence
+# rather than merely the same distribution.
+mapfile -t USER_SEQ < <("$PYTHON" -c '
+import random, sys
+label, users, nq, turns = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+for u in range(1, users + 1):
+    rng = random.Random(f"{label}:{u}")
+    print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
+' "$LABEL" "$USERS" "${#BODIES[@]}" 500)
+
 # --- load: each user asks, reads the whole answer, thinks, repeats
 THINK=${PIPESHUB_THINK_TIME:-3}
 END=$(( $(date +%s) + SECS ))
+echo "user,turn,query_index,http_code,time_total,curl_exit" > "$OUTDIR/requests.csv"
 LOAD_PIDS=()
-for _ in $(seq 1 "$USERS"); do
-  ( while [ "$(date +%s)" -lt "$END" ]; do
-      curl -s -N -o /dev/null -X POST "$HOST/api/v1/conversations/stream" \
+for u in $(seq 1 "$USERS"); do
+  ( turn=0
+    read -r -a seq <<< "${USER_SEQ[$((u - 1))]}"
+    while [ "$(date +%s)" -lt "$END" ]; do
+      qi=${seq[$(( turn % ${#seq[@]} ))]}
+      # Record the outcome of every request. Previously this was `-o /dev/null
+      # || true`, so a run where every request 500'd was indistinguishable from
+      # one that was merely slow.
+      res=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
+        -X POST "$HOST/api/v1/conversations/stream" \
         -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
         -H "Accept: text/event-stream" \
-        -d "{\"query\":$(printf '%s' "$QUERY" | "$PYTHON" -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"chatMode\":\"internal_search\"}" \
-        --max-time 300 || true
+        -d "${BODIES[$qi]}" \
+        --max-time 300 2>/dev/null) || true
+      rc=$?
+      echo "$u,$turn,$qi,${res:-000 0} $rc" | tr ' ' ',' >> "$OUTDIR/requests.csv"
+      turn=$((turn + 1))
       sleep "$THINK"
     done ) &
   LOAD_PIDS+=($!)
@@ -113,12 +153,25 @@ else
 fi
 FINISH=$(log_mark)
 WALL_SECS=$(( $(date -u +%s) - WALL_START ))
+LOAD_CUTOFF=$(( WALL_START + SECS ))
 kill "$MEM_PID" 2>/dev/null || true
 sleep 3
 
 say ""
 say "==================== THROUGHPUT ===================="
 PIPESHUB_WINDOW_SECONDS=$WALL_SECS bash "$HERE/throughput.sh" "$START" "$FINISH" | tee -a "$REPORT"
+# Turns finished while load was still being OFFERED. The figure above divides by
+# elapsed time including the drain after load stops, so a config whose last
+# turns run long reports a lower rate for the same work. When the two disagree,
+# the drain is doing the talking.
+if [ "$PIPESHUB_MODE" = "docker" ]; then
+  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -ac 'AnswerFinalizer:' || true)
+  say "  steady-state    : $SS_TURNS turns in the ${SECS}s load window  ($("$PYTHON" -c "print(f'{$SS_TURNS*60/$SECS:.1f}')") req/min)"
+fi
+
+say ""
+say "==================== REQUESTS (client-side) ===================="
+"$PYTHON" "$HERE/instr/agg_requests.py" "$OUTDIR/requests.csv" | tee -a "$REPORT"
 
 say ""
 say "==================== TURN LATENCY (per phase, ms) ===================="
@@ -147,6 +200,9 @@ if [ -s "$OUTDIR/memory.csv" ]; then
          s=""; step=(NR>60?int(NR/60)+1:1)
          for(i=1;i<=NR;i+=step){ s=s g[int((v[i]-lo)*7/(m-lo))+1] }
          print "  " s }' "$OUTDIR/memory.csv" | tee -a "$REPORT"
+  "$PYTHON" "$HERE/instr/plot_memory.py" "$OUTDIR/memory.csv" "$OUTDIR/memory.svg" \
+    "$LABEL — ${WORKERS:-?} workers, $USERS users" 2>/dev/null \
+    && say "   memory graph: $OUTDIR/memory.svg"
 else
   say "   (no samples)"
 fi
@@ -160,6 +216,18 @@ if log_available; then
 else
   say "   (no log source - set PIPESHUB_QUERY_LOG in .env; see .env.example)"
 fi
+
+# Machine-readable, so `aggregate.py` can roll many runs into one table without
+# re-parsing the human report. PIPESHUB_ARM/TRIAL are set by the matrix driver.
+"$PYTHON" "$HERE/instr/make_summary.py" \
+  --outdir "$OUTDIR" --label "$LABEL" --users "$USERS" --secs "$SECS" \
+  --workers "${WORKERS:-}" --arm "${PIPESHUB_ARM:-}" --trial "${PIPESHUB_TRIAL:-}" \
+  --wall "$WALL_SECS" --queries "${#QUERIES[@]}" 2>/dev/null \
+  && say "   summary: $OUTDIR/summary.json"
+
+# ~19MB of the ~23MB a run writes. Kept (not deleted) so a profile can be
+# re-analysed later, but not at full size 54 times over.
+[ -s "$OUTDIR/cpu.raw" ] && gzip -f "$OUTDIR/cpu.raw" 2>/dev/null || true
 
 say ""
 say "== done. full report: $REPORT"
