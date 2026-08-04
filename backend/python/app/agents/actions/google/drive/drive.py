@@ -8,9 +8,14 @@ from googleapiclient.http import MediaIoBaseDownload
 from pydantic import BaseModel, Field
 
 from app.agents.actions.util.parse_file import FileContentParser
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    error_message,
+    list_summary,
+    parse_json_maybe,
+)
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -56,6 +61,20 @@ _STRUCTURED_QUERY_OPERATORS = frozenset([
 # filtering). Kept as a single source of truth used in both the detection and
 # the post-call filtering branches.
 _SIZE_OPERATORS = ('size=', 'size =', 'size>', 'size<', 'size>=', 'size<=')
+
+
+def _drive_file_label(entry: dict) -> str:
+    return entry.get("name") or entry.get("id") or "?"
+
+
+def _get_file_content_result_summary(_args: dict, result: Any) -> Optional[str]:
+    """Unlike the other Drive tools, a successful response here is a bare
+    JSON list of parsed content chunks (see `FileContentParser.parse`), not
+    a `{"error"/"files": ...}` dict — so `list_summary`/`entity_summary`
+    don't apply; only the error path needs the shared JSON parsing."""
+    if result.is_error:
+        return f"Failed: {error_message(parse_json_maybe(result.content))}"
+    return "Fetched file content"
 
 
 def _raw_drive_service(data_source: GoogleDriveDataSource) -> object:
@@ -263,27 +282,37 @@ class GoogleDrive:
         return await asyncio.to_thread(_execute_media_download, request)
 
     @tool(
-        app_name="drive",
-        tool_name="get_files_list",
-        description="Get list of files in Google Drive",
-        args_schema=GetFilesListInput,
-        when_to_use=[
-            "User mentions 'Drive' or 'Google Drive'",
-            "List/browse file requests",
-            "'my files' with Drive context"
+        path="/tools/drive/get_files_list",
+        short_description="List files in Google Drive",
+        description=(
+            "Get list of files in Google Drive with optional filtering, pagination, and folder scoping. "
+            "Supports Google Drive query syntax for filtering by name, MIME type, modified time, etc. "
+            "Use parent_folder_id to list direct children of a specific folder."
+        ),
+        parameters=[
+            ToolParameter(name="corpora", type=ParameterType.STRING, description="Bodies of items to query", required=False),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="ID of the shared drive to search", required=False),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="Sort keys", required=False),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of files to return per page", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token for pagination", required=False),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query for filtering files", required=False),
+            ToolParameter(name="spaces", type=ParameterType.STRING, description="Spaces to query", required=False),
+            ToolParameter(
+                name="parent_folder_id",
+                type=ParameterType.STRING,
+                description=(
+                    "ID (not name) of the folder whose direct children you want to list. "
+                    "When provided, the tool automatically adds \"'<id>' in parents\" to the query. "
+                    "Use get_file_details or search_files to resolve a folder name to its ID first."
+                ),
+                required=False,
+            ),
         ],
-        when_not_to_use=[
-            "No Drive mention (use retrieval)",
-            "Search by content (use drive.search_files)",
-            "Create files (use other tools)"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me my Drive files",
-            "List all files in my Drive",
-            "What files do I have in Drive?"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searching Drive: "{args["query"]}"' if args.get("query") else "Listing Drive files"
+        ),
+        result_summary=list_summary(("files",), _drive_file_label, "file"),
     )
     async def get_files_list(
         self,
@@ -435,28 +464,18 @@ class GoogleDrive:
             return files
 
     @tool(
-        app_name="drive",
-        tool_name="get_file_details",
-        description="Get detailed information about a file",
-        args_schema=GetFileDetailsInput,
-        when_to_use=[
-            "User wants details about a specific file",
-            "User mentions 'Drive' + has file ID",
-            "User asks about file metadata"
+        path="/tools/drive/get_file_details",
+        short_description="Get metadata for a specific Drive file",
+        description=(
+            "Get detailed information about a specific file in Google Drive by its file ID. "
+            "Returns metadata including name, MIME type, size, dates, owners, parents, and sharing status."
+        ),
+        parameters=[
+            ToolParameter(name="fileId", type=ParameterType.STRING, description="The ID of the file to get details for", required=False),
+            ToolParameter(name="acknowledge_abuse", type=ParameterType.BOOLEAN, description="Whether to acknowledge risk of downloading malware", required=False),
+            ToolParameter(name="supports_all_drives", type=ParameterType.BOOLEAN, description="Whether requesting app supports both My Drives and shared drives", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list files (use get_files_list)",
-            "User wants to search files (use search_files)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details for file ID",
-            "Show file information",
-            "What is this file?"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_file_details(
         self,
@@ -494,28 +513,26 @@ class GoogleDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="drive",
-        tool_name="create_folder",
-        description="Create a new folder in Google Drive",
-        args_schema=CreateFolderInput,
-        when_to_use=[
-            "User wants to create a folder",
-            "User mentions 'Drive' + wants to create folder",
-            "User asks to make a new folder"
+        path="/tools/drive/create_folder",
+        short_description="Create a new folder in Google Drive",
+        description=(
+            "Create a new folder in Google Drive. Optionally specify a parent folder ID "
+            "to create it inside a specific folder or Shared Drive."
+        ),
+        parameters=[
+            ToolParameter(name="folderName", type=ParameterType.STRING, description="The name of the folder to create", required=False),
+            ToolParameter(
+                name="parent_folder_id",
+                type=ParameterType.STRING,
+                description=(
+                    "ID (not name) of the parent folder. Required when creating inside a "
+                    "specific folder or Shared Drive. Use search_files or get_file_details "
+                    "to resolve a folder name to its ID first."
+                ),
+                required=False,
+            ),
         ],
-        when_not_to_use=[
-            "User wants to list files (use get_files_list)",
-            "User wants to search files (use search_files)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create folder in Drive",
-            "Make a new folder",
-            "Add folder to Drive"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="write")],
     )
     async def create_folder(
         self,
@@ -576,27 +593,21 @@ class GoogleDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="drive",
-        tool_name="search_files",
-        description="Search for files in Google Drive using query syntax",
-        args_schema=SearchFilesInput,
-        when_to_use=[
-            "User wants to search for files by name/content in Drive",
-            "User mentions 'Drive' + wants to search files",
-            "User asks to find files matching criteria"
+        path="/tools/drive/search_files",
+        short_description="Search for files in Google Drive",
+        description=(
+            "Search for files in Google Drive using query syntax. Supports Google Drive query operators "
+            "such as 'name contains', 'mimeType=', 'modifiedTime>', etc. Simple text queries are "
+            "automatically converted to 'name contains \"<query>\"'."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query (e.g., 'name contains \"report\"', 'mimeType=\"application/pdf\"')", required=True),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="Sort order", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list all files (use get_files_list)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search for files named 'report' in Drive",
-            "Find PDF files in my Drive",
-            "Search Drive for documents"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Google Drive: "{query}"', "query"),
+        result_summary=list_summary(("files",), _drive_file_label, "file"),
     )
     async def search_files(
         self,
@@ -640,27 +651,14 @@ class GoogleDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="drive",
-        tool_name="get_drive_info",
-        description="Get information about the user's Drive",
-        when_to_use=[
-            "User wants Drive account/storage info",
-            "User mentions 'Drive' + wants account details",
-            "User asks about Drive storage/quota"
-        ],
-        when_not_to_use=[
-            "User wants files (use get_files_list)",
-            "User wants to search files (use search_files)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get my Drive info",
-            "Show Drive storage quota",
-            "What's my Drive account info?"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        path="/tools/drive/get_drive_info",
+        short_description="Get Drive account and storage info",
+        description=(
+            "Get information about the user's Google Drive account, including storage quota, "
+            "max upload size, user profile, and supported export/import formats."
+        ),
+        parameters=[],
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_drive_info(self) -> tuple[bool, str]:
         """Get information about the user's Drive"""
@@ -685,28 +683,14 @@ class GoogleDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="drive",
-        tool_name="get_shared_drives",
-        description="Get list of shared drives",
-        args_schema=GetSharedDrivesInput,
-        when_to_use=[
-            "User wants to list shared/team drives",
-            "User mentions 'Drive' + wants shared drives",
-            "User asks for team drives"
+        path="/tools/drive/get_shared_drives",
+        short_description="List shared/team drives",
+        description="Get list of shared drives (team drives) available to the user, with optional search filtering.",
+        parameters=[
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of drives to return per page", required=False),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query for shared drives", required=False),
         ],
-        when_not_to_use=[
-            "User wants files (use get_files_list)",
-            "User wants to search files (use search_files)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List shared drives",
-            "Show team drives in Drive",
-            "Get all shared drives"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_shared_drives(
         self,
@@ -738,28 +722,14 @@ class GoogleDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="drive",
-        tool_name="get_file_permissions",
-        description="Get permissions for a specific file",
-        args_schema=GetFilePermissionsInput,
-        when_to_use=[
-            "User wants to see file permissions/sharing",
-            "User mentions 'Drive' + wants file permissions",
-            "User asks who has access to file"
+        path="/tools/drive/get_file_permissions",
+        short_description="Get sharing permissions for a file",
+        description="Get the list of permissions (who has access) for a specific file in Google Drive.",
+        parameters=[
+            ToolParameter(name="file_id", type=ParameterType.STRING, description="The ID of the file to get permissions for", required=True),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of permissions to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants file details (use get_file_details)",
-            "User wants to list files (use get_files_list)",
-            "User wants info ABOUT Drive (use retrieval)",
-            "No Drive mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get permissions for file",
-            "Show who has access to file",
-            "What are file permissions?"
-        ],
-        category=ToolCategory.FILE_STORAGE
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
     )
     async def get_file_permissions(
         self,
@@ -792,27 +762,20 @@ class GoogleDrive:
 
 
     @tool(
-        app_name="drive",
-        tool_name="get_file_content",
-        description="Download and return the text content of a Google Drive file.",
-        args_schema=GetFileContentInput,
-        when_to_use=[
-            "User wants to read, summarise, or ask questions about a Drive file",
-            "User says 'read this file', 'what's in this document', or 'summarise this spreadsheet'",
-            "File is a format: PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, or a Google Workspace document (Docs, Sheets, Slides)",
+        path="/tools/drive/get_file_content",
+        short_description="Read text content of a Drive file",
+        description=(
+            "Download and return the text content of a Google Drive file. "
+            "Supports PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, "
+            "and Google Workspace documents (Docs, Sheets, Slides). "
+            "Use get_file_details for metadata only, or search_files/get_files_list to find the file ID first."
+        ),
+        parameters=[
+            ToolParameter(name="file_id", type=ParameterType.STRING, description="The ID of the file to read", required=True),
         ],
-        when_not_to_use=[
-            "User only wants metadata (size, dates) — use get_file_details",
-            "file_id is unknown — call get_files_list and/or search_files first",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Read the contents of this file in Drive",
-            "Summarise the spreadsheet in my Drive",
-            "What does this document contain?",
-            "Show me what's in notes.txt",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_storage"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching content for Drive file {file_id}", "file_id"),
+        result_summary=_get_file_content_result_summary,
     )
     async def get_file_content(
         self,

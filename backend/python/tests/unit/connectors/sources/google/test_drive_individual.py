@@ -455,6 +455,11 @@ class TestHandleRecordUpdates:
     async def test_deleted_record(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.record_name = "test.txt"
+        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+
         update = RecordUpdate(
             record=None,
             is_new=False,
@@ -466,7 +471,26 @@ class TestHandleRecordUpdates:
             external_record_id="file-1",
         )
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once()
+        connector.data_entities_processor.on_record_deleted.assert_called_once_with(
+            record_id="existing-id"
+        )
+
+    async def test_deleted_record_untracked_is_noop(self, connector):
+        """A delete for an external id we never synced should be a no-op."""
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+
+        update = RecordUpdate(
+            record=None,
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            external_record_id="never-synced",
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_called()
 
     async def test_metadata_update(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -582,6 +606,11 @@ class TestIncrementalSync:
         connector.data_entities_processor.on_new_records.assert_called()
 
     async def test_incremental_sync_handles_deletions(self, connector):
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.record_name = "deleted-file-1"
+        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+
         connector.drive_data_source.changes_list = AsyncMock(return_value={
             "changes": [
                 {"removed": True, "fileId": "deleted-file-1"},
@@ -599,7 +628,9 @@ class TestIncrementalSync:
                 drive_id="drive-1",
             )
 
-        connector.data_entities_processor.on_record_deleted.assert_called_once()
+        connector.data_entities_processor.on_record_deleted.assert_called_once_with(
+            record_id="existing-id"
+        )
 
     async def test_incremental_sync_updates_sync_point(self, connector):
         connector.drive_data_source.changes_list = AsyncMock(return_value={

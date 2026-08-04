@@ -8,8 +8,8 @@
 #     docker compose -p pipeshub-ai up -d                                        # full/arango/etcd/kafka
 #
 # Profile catalogue
-#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j in .env)
-#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb in .env)
+#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j in .env)
+#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb in .env)
 #   kv-etcd       — start etcd (set KV_STORE_TYPE=etcd in .env; default is redis)
 #   broker-kafka  — start Zookeeper + Kafka (set MESSAGE_BROKER=kafka in .env; default is redis)
 #
@@ -45,8 +45,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${APP_MEMORY_LIMIT:-10G}
+          # OOM cap only (not reserved). Lower via APP_MEMORY_LIMIT on smaller hosts.
+          memory: ${APP_MEMORY_LIMIT:-12G}
     shm_size: 2gb
+    # 7 services (node, frontend, 5 python) share one container's fd budget;
+    # docker's 1024 default hits EMFILE on accept() during startup.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     init: true
     logging:
       driver: local
@@ -76,9 +83,7 @@ services:
 
       # Graph database selection — set by install.sh
       # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      # GRAPH_DB_TYPE accepted values: "arangodb" (default) | "neo4j"
       - DATA_STORE=${DATA_STORE:-arangodb}
-      - GRAPH_DB_TYPE=${GRAPH_DB_TYPE:-arangodb}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529
@@ -185,7 +190,7 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
-      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
@@ -246,10 +251,9 @@ services:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
-    # Quickstart targets a 16 GB-class shared Docker host running MongoDB beside
-    # the app, Qdrant, graph DB, Redis, and optional broker services. WiredTiger
-    # otherwise reserves roughly half of host RAM; cap cache at 1 GB by default
-    # and keep the container limit at 2 GB to leave room for process overhead.
+    # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
+    # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
+    # caps, not concurrent reservations — they need not sum to host RAM.
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
@@ -345,7 +349,7 @@ services:
       - pipeshub
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb)
+  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
   # ---------------------------------------------------------------------------
   arango:
     profiles: ["graph-arango"]
@@ -365,7 +369,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j)
+  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)
   # ---------------------------------------------------------------------------
   neo4j:
     profiles: ["graph-neo4j"]

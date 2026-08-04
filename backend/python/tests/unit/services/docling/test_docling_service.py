@@ -67,7 +67,6 @@ try:
         CreateBlocksRequest,
         CreateBlocksResponse,
         ParseResponse,
-        ProcessRequest,
         ProcessResponse,
     )
     HAS_PYDANTIC_MODELS = True
@@ -166,18 +165,18 @@ class TestDoclingServiceProcessPdf:
         svc = DoclingService()
         mock_processor = MagicMock()
         mock_result = MagicMock()
-        mock_processor.load_document = AsyncMock(return_value=mock_result)
+        mock_processor.process_in_batches = AsyncMock(return_value=mock_result)
         svc.processor = mock_processor
 
         result = await svc.process_pdf("test.pdf", b"data")
         assert result is mock_result
-        mock_processor.load_document.assert_awaited_once_with("test.pdf", b"data")
+        mock_processor.process_in_batches.assert_awaited_once_with("test.pdf", b"data")
 
     @pytest.mark.asyncio
     async def test_process_pdf_returns_false(self):
         svc = DoclingService()
         mock_processor = MagicMock()
-        mock_processor.load_document = AsyncMock(return_value=False)
+        mock_processor.process_in_batches = AsyncMock(return_value=False)
         svc.processor = mock_processor
 
         with pytest.raises(ValueError, match="returned False"):
@@ -187,7 +186,7 @@ class TestDoclingServiceProcessPdf:
     async def test_process_pdf_processor_error(self):
         svc = DoclingService()
         mock_processor = MagicMock()
-        mock_processor.load_document = AsyncMock(side_effect=RuntimeError("parse fail"))
+        mock_processor.process_in_batches = AsyncMock(side_effect=RuntimeError("parse fail"))
         svc.processor = mock_processor
 
         with pytest.raises(RuntimeError, match="parse fail"):
@@ -211,6 +210,23 @@ class TestDoclingServiceParsePdfOnly:
 
         result = await svc.parse_pdf_only("test.pdf", b"data")
         assert result is mock_doc
+        mock_processor.parse_document.assert_awaited_once_with(
+            "test.pdf", b"data", page_range=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_with_page_range(self):
+        svc = DoclingService()
+        mock_processor = MagicMock()
+        mock_doc = MagicMock()
+        mock_processor.parse_document = AsyncMock(return_value=mock_doc)
+        svc.processor = mock_processor
+
+        result = await svc.parse_pdf_only("test.pdf", b"data", page_range=(1, 10))
+        assert result is mock_doc
+        mock_processor.parse_document.assert_awaited_once_with(
+            "test.pdf", b"data", page_range=(1, 10)
+        )
 
     @pytest.mark.asyncio
     async def test_parse_pdf_error(self):
@@ -341,15 +357,6 @@ class TestSetDoclingService:
 
 @pytest.mark.skipif(not HAS_PYDANTIC_MODELS, reason="Pydantic models not available")
 class TestRequestResponseModels:
-    def test_process_request(self):
-        req = ProcessRequest(record_name="test.pdf", pdf_binary="dGVzdA==")
-        assert req.record_name == "test.pdf"
-        assert req.org_id is None
-
-    def test_process_request_with_org(self):
-        req = ProcessRequest(record_name="test.pdf", pdf_binary="dGVzdA==", org_id="org1")
-        assert req.org_id == "org1"
-
     def test_process_response_success(self):
         resp = ProcessResponse(success=True, block_containers={"blocks": []})
         assert resp.success is True
@@ -440,21 +447,7 @@ class TestHealthCheckEndpoint:
 
 
 class TestProcessPdfEndpoint:
-    """Tests for the /process-pdf endpoint."""
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_invalid_base64(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        mod.docling_service = DoclingService()
-        try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            req = ProcessRequest(record_name="test.pdf", pdf_binary="not-valid-base64!!!")
-            from fastapi import HTTPException
-            with pytest.raises(HTTPException):
-                await process_pdf_endpoint(req)
-        finally:
-            mod.docling_service = original
+    """Tests for the /process-pdf endpoint (multipart file upload)."""
 
     @pytest.mark.asyncio
     async def test_process_pdf_endpoint_service_not_available(self):
@@ -463,18 +456,17 @@ class TestProcessPdfEndpoint:
         mod.docling_service = None
         try:
             from app.services.docling.docling_service import process_pdf_endpoint
-            import base64
-            req = ProcessRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
             from fastapi import HTTPException
             with pytest.raises(HTTPException):
-                await process_pdf_endpoint(req)
+                await process_pdf_endpoint(
+                    file=_make_upload_file(b"data"), record_name="test.pdf"
+                )
         finally:
             mod.docling_service = original
 
     @pytest.mark.asyncio
     async def test_process_pdf_endpoint_success(self):
         import app.services.docling.docling_service as mod
-        import base64
         original = mod.docling_service
         svc = DoclingService()
         mock_result = MagicMock()
@@ -483,24 +475,26 @@ class TestProcessPdfEndpoint:
         mod.docling_service = svc
         try:
             from app.services.docling.docling_service import process_pdf_endpoint
-            req = ProcessRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
-            resp = await process_pdf_endpoint(req)
+            resp = await process_pdf_endpoint(
+                file=_make_upload_file(b"data"), record_name="test.pdf"
+            )
             assert resp.success is True
+            svc.process_pdf.assert_awaited_once_with("test.pdf", b"data")
         finally:
             mod.docling_service = original
 
     @pytest.mark.asyncio
     async def test_process_pdf_endpoint_processing_error(self):
         import app.services.docling.docling_service as mod
-        import base64
         original = mod.docling_service
         svc = DoclingService()
         svc.process_pdf = AsyncMock(side_effect=ValueError("processing error"))
         mod.docling_service = svc
         try:
             from app.services.docling.docling_service import process_pdf_endpoint
-            req = ProcessRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
-            resp = await process_pdf_endpoint(req)
+            resp = await process_pdf_endpoint(
+                file=_make_upload_file(b"data"), record_name="test.pdf"
+            )
             assert resp.success is False
             assert "processing error" in resp.error
         finally:
@@ -522,6 +516,8 @@ class TestParsePdfEndpoint:
                 await parse_pdf_endpoint(
                     file=_make_upload_file(b"data"),
                     record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
                 )
         finally:
             mod.docling_service = original
@@ -540,9 +536,37 @@ class TestParsePdfEndpoint:
             resp = await parse_pdf_endpoint(
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
+                start_page=None,
+                end_page=None,
             )
             assert resp.success is True
-            svc.parse_pdf_only.assert_awaited_once_with("test.pdf", b"data")
+            svc.parse_pdf_only.assert_awaited_once_with(
+                "test.pdf", b"data", page_range=None
+            )
+        finally:
+            mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_with_page_range(self):
+        import app.services.docling.docling_service as mod
+        original = mod.docling_service
+        svc = DoclingService()
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = '{"pages": []}'
+        svc.parse_pdf_only = AsyncMock(return_value=mock_doc)
+        mod.docling_service = svc
+        try:
+            from app.services.docling.docling_service import parse_pdf_endpoint
+            resp = await parse_pdf_endpoint(
+                file=_make_upload_file(b"data"),
+                record_name="test.pdf",
+                start_page=5,
+                end_page=15,
+            )
+            assert resp.success is True
+            svc.parse_pdf_only.assert_awaited_once_with(
+                "test.pdf", b"data", page_range=(5, 15)
+            )
         finally:
             mod.docling_service = original
 
@@ -558,6 +582,8 @@ class TestParsePdfEndpoint:
             resp = await parse_pdf_endpoint(
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
+                start_page=None,
+                end_page=None,
             )
             assert resp.success is False
             assert "parse fail" in resp.error

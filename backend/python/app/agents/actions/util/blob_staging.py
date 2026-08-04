@@ -1,33 +1,25 @@
 """
 Fetch raw bytes back from PipesHub blob storage from agent actions.
 
-Cross-toolset file transfers (Outlook attachment -> Salesforce ContentVersion,
-Drive -> Box, etc.) cannot ship binary content through the agent's
-``(bool, str)`` tool boundary. The source action uploads bytes via
-``BlobStorage.save_conversation_file_to_storage`` and registers a small
-``documentId`` handle on ``chat_state.document_id_to_url`` (see
-:func:`conversation_upload_to_registry_entry`). The destination
-action calls :func:`fetch_staged_document_bytes` (or :func:`fetch_blob_bytes`
-for the scoped path alone) to pull bytes back in-process via the internal
-download route or a pre-signed URL, depending on ``storage_type``.
+:func:`fetch_blob_bytes` is the primary export used by the record-content
+resolution layer (``BlobBackedContentStrategy``) and artifact registry. It
+downloads raw bytes for a storage document using a scoped JWT and the internal
+Node.js download route (or follows a signedUrl hop for S3-backed storage).
 
 Tenancy: the download route's ``getDocumentInfo`` middleware filters by
 ``{_id, orgId}``, so a STORAGE_TOKEN-scoped JWT issued for org A cannot read
-org B's documents. This helper just needs to pass the caller's ``org_id``
-consistently.
+org B's documents. Callers must pass a consistent ``org_id``.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, Literal
 
 import aiohttp
 import jwt
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from yarl import URL
 
 from app.config.configuration_service import ConfigurationService
@@ -59,60 +51,6 @@ class BlobStagingError(Exception):
 # ---------------------------------------------------------------------------
 # Wire models
 # ---------------------------------------------------------------------------
-
-
-class BlobUploadInfo(BaseModel):
-    """JSON returned by ``BlobStorage.save_conversation_file_to_storage``.
-
-    The Node.js storage route returns either ``signedUrl`` (S3 path) or
-    ``downloadUrl`` (local path); ``documentId`` may come back as int or
-    str depending on the storage backend. We treat all fields as optional
-    so callers can decide what counts as "complete enough" (see
-    :func:`conversation_upload_to_registry_entry`).
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    documentId: str | int | None = None
-    fileName: str | None = None
-    signedUrl: str | None = None
-    downloadUrl: str | None = None
-
-
-class StagedDocumentSource(BaseModel):
-    """Producer-side breadcrumb so consumers can trace bytes back to origin.
-
-    ``platform`` is the only required field; everything else is producer-
-    specific (Outlook supplies ``message_id``/``attachment_id``; Drive will
-    supply ``file_id``/``revision_id``; etc.) so we accept extras rather
-    than discriminate per platform — the consumer never reads these.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    platform: str
-    message_id: str | None = None
-    attachment_id: str | None = None
-
-
-class StagedDocumentEntry(BaseModel):
-    """One row in ``chat_state['document_id_to_url']``.
-
-    ``storage_type`` controls which fetch path
-    :func:`fetch_staged_document_bytes` takes:
-
-    - ``"s3"``: ``download_url`` is a pre-signed URL; GET it directly.
-    - ``"external"``: route through the scoped-token internal download.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    download_url: str
-    filename: str
-    mime_type: str
-    size_bytes: int = Field(ge=0)
-    storage_type: Literal["s3", "external"]
-    source: StagedDocumentSource | None = None
 
 
 @asynccontextmanager
@@ -177,6 +115,7 @@ async def fetch_blob_bytes(
     org_id: str,
     config_service: ConfigurationService,
     storage_document_id: str,
+    version: int | None = None,
     session: aiohttp.ClientSession | None = None,
 ) -> bytes:
     """Download bytes for a previously staged document.
@@ -184,6 +123,11 @@ async def fetch_blob_bytes(
     The Node.js download route (``getDocumentInfo``) enforces
     ``{_id, orgId}`` matching, so a request scoped to ``org_id`` cannot read a
     document owned by a different org.
+
+    Pass ``version`` (a storage-layer ``versionHistory`` index, NOT a
+    registry version number — callers must map that first, see
+    ``ArtifactRegistryService._resolve_storage_version``) to pin the fetch
+    to a specific historical version; omit it for the current content.
 
     Pass ``session`` to reuse an open ``aiohttp.ClientSession`` across many
     fetches in a batch (HTTP keep-alive + pooled connections to the cm
@@ -198,6 +142,8 @@ async def fetch_blob_bytes(
         f"{nodejs_endpoint}"
         f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=storage_document_id)}"
     )
+    if version is not None:
+        download_url = f"{download_url}?version={version}"
 
     async with _session_or_default(session) as http:
         async with http.get(
@@ -237,97 +183,3 @@ async def fetch_blob_bytes(
             return await resp.read()
 
 
-async def fetch_staged_document_bytes(
-    *,
-    document_id: str,
-    entry: StagedDocumentEntry,
-    org_id: str,
-    config_service: ConfigurationService,
-    session: aiohttp.ClientSession | None = None,
-) -> bytes:
-    """Resolve a ``document_id_to_url`` registry entry to raw bytes.
-
-    When ``entry.storage_type == 's3'``, ``download_url`` is treated as a
-    pre-signed object URL (GET without auth). Otherwise bytes are loaded via
-    :func:`fetch_blob_bytes` (scoped storage JWT + internal download route).
-
-    Accepts a raw ``Mapping`` in addition to :class:`StagedDocumentEntry`
-    purely so a LangGraph checkpointer that round-trips ``chat_state``
-    through JSON (entries come back as plain dicts) doesn't break consumers
-    — the boundary coercion is one line and keeps the scoped path strict.
-
-    Pass ``session`` to share one ``aiohttp.ClientSession`` across a batch
-    fetch — the same session is forwarded to :func:`fetch_blob_bytes` on the
-    scoped path, so keep-alive holds across both code paths. When ``None``,
-    each call creates and tears down its own one-shot session.
-
-    Raises ``RuntimeError`` on direct-URL HTTP failure; :exc:`BlobStagingError`
-    on the scoped path. Size limits are enforced by callers after return.
-    """
-    validated = (
-        entry
-        if isinstance(entry, StagedDocumentEntry)
-        else StagedDocumentEntry.model_validate(entry)
-    )
-    if validated.storage_type == "s3":
-        async with _session_or_default(session) as http:
-            async with http.get(
-                URL(validated.download_url, encoded=True),
-                timeout=_REQUEST_TIMEOUT,
-            ) as resp:
-                if resp.status != HttpStatusCode.SUCCESS.value:
-                    detail = (await resp.text())[:300]
-                    raise RuntimeError(
-                        f"Download URL returned HTTP {resp.status}: {detail}"
-                    )
-                return await resp.read()
-
-    return await fetch_blob_bytes(
-        org_id=org_id,
-        config_service=config_service,
-        storage_document_id=document_id,
-        session=session,
-    )
-
-
-def conversation_upload_to_registry_entry(
-    upload_info: BlobUploadInfo,
-    *,
-    filename: str,
-    mime_type: str,
-    size_bytes: int,
-    source: StagedDocumentSource | None = None,
-) -> tuple[str, StagedDocumentEntry] | None:
-    """Turn ``BlobStorage.save_conversation_file_to_storage`` JSON into a registry row.
-
-    Returns ``(document_id, entry)`` for ``chat_state['document_id_to_url']``,
-    or ``None`` if ``documentId`` / download URL are missing.
-
-    Accepts either a validated :class:`BlobUploadInfo` or the raw ``dict``
-    that the storage route returns today; the dict path goes through
-    ``model_validate`` so extra keys are ignored and ``documentId`` int/str
-    polymorphism is handled at the boundary.
-    """
-    info = (
-        upload_info
-        if isinstance(upload_info, BlobUploadInfo)
-        else BlobUploadInfo.model_validate(upload_info)
-    )
-    download_url = info.signedUrl or info.downloadUrl
-    if not info.documentId or not download_url:
-        return None
-
-    validated_source = (
-        source
-        if source is None or isinstance(source, StagedDocumentSource)
-        else StagedDocumentSource.model_validate(source)
-    )
-    entry = StagedDocumentEntry(
-        download_url=download_url,
-        filename=filename,
-        mime_type=mime_type,
-        size_bytes=size_bytes,
-        storage_type="s3" if info.signedUrl else "external",
-        source=validated_source,
-    )
-    return str(info.documentId), entry

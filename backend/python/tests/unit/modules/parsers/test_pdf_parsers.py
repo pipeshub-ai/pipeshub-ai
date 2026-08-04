@@ -29,7 +29,7 @@ def _make_processor():
          patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
          patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
@@ -55,7 +55,7 @@ class TestDoclingProcessorInit:
              patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
              patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
              patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
              patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
             from app.modules.parsers.pdf.docling_processor import DoclingProcessor
             config = {"ocr": True, "model": "fast"}

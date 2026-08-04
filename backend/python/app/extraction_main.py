@@ -100,7 +100,7 @@ app.include_router(extraction_router)
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={"status": "healthy", "service": "extraction"})
 
 
 if __name__ == "__main__":

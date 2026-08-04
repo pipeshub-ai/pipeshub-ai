@@ -98,23 +98,32 @@ class TestDecodeGraphFileAttachmentContentBytes:
     def test_decodes_base64_text_payload(self):
         raw = b"hello"
         encoded = base64.b64encode(raw)
-        assert _decode_graph_file_attachment_content_bytes(encoded) == raw
+        # Pin to a pre-fix Kiota version so the legacy ASCII-detect/decode
+        # path runs regardless of what version is actually installed.
+        with patch(
+            "app.agents.actions.microsoft.outlook.outlook.importlib.metadata.version",
+            return_value="1.11.6",
+        ):
+            assert _decode_graph_file_attachment_content_bytes(encoded) == raw
 
     def test_empty_bytes(self):
         assert _decode_graph_file_attachment_content_bytes(b"") == b""
 
     def test_kiota_fixed_version_returns_blob_unchanged(self):
-        raw = base64.b64encode(b"hello")
-        with patch.object(
-            outlook_module,
-            "_KIOTA_JSON_VERSIONS_WITH_DECODED_CONTENT_BYTES",
-            frozenset({"1.99.0"}),
+        raw_bytes = b"\x89PNG\r\n\x1a\n\x00\x00"
+        with patch(
+            "app.agents.actions.microsoft.outlook.outlook.importlib.metadata.version",
+            return_value="1.11.7",
         ):
-            with patch(
-                "app.agents.actions.microsoft.outlook.outlook.importlib.metadata.version",
-                return_value="1.99.0",
-            ):
-                assert _decode_graph_file_attachment_content_bytes(raw) == raw
+            assert _decode_graph_file_attachment_content_bytes(raw_bytes) == raw_bytes
+
+    def test_kiota_future_version_returns_blob_unchanged(self):
+        raw_bytes = b"\x89PNG\r\n\x1a\n\x00\x00"
+        with patch(
+            "app.agents.actions.microsoft.outlook.outlook.importlib.metadata.version",
+            return_value="1.12.0",
+        ):
+            assert _decode_graph_file_attachment_content_bytes(raw_bytes) == raw_bytes
 
     def test_package_not_found_still_decodes(self):
         encoded = base64.b64encode(b"data")
@@ -123,6 +132,17 @@ class TestDecodeGraphFileAttachmentContentBytes:
             side_effect=importlib.metadata.PackageNotFoundError("nope"),
         ):
             assert _decode_graph_file_attachment_content_bytes(encoded) == b"data"
+
+    def test_non_ascii_bytes_returned_unchanged(self):
+        """When Kiota ≥1.11.7 properly decodes, content_bytes is raw binary."""
+        raw_pdf = b"\x25\x50\x44\x46\x2d\x31\x2e\x34\x0a\x25\xe2\xe3\xcf\xd3"
+        assert _decode_graph_file_attachment_content_bytes(raw_pdf) == raw_pdf
+
+    def test_ascii_non_base64_falls_back(self):
+        """ASCII content that isn't valid base64 is returned as-is."""
+        ascii_text = b"Hello World! Not base64."
+        result = _decode_graph_file_attachment_content_bytes(ascii_text)
+        assert result == ascii_text
 
 
 class TestSerializeGraphObj:
@@ -619,7 +639,7 @@ class TestStageAttachmentToBlob:
     async def test_non_dict_state_rejected(self):
         ol = _build_outlook(state=_NonMappingStateContainer())
         err = _err_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
-        assert "chat state container" in err["error"]
+        assert "agent runtime" in err["error"] or "chat state" in err["error"]
 
     @pytest.mark.asyncio
     async def test_missing_org_context(self):
@@ -628,7 +648,18 @@ class TestStageAttachmentToBlob:
         assert "org_id" in err["error"]
 
     @pytest.mark.asyncio
-    async def test_success_registers_document(self):
+    async def test_missing_conversation_id(self):
+        ol = _build_outlook(state={
+            "org_id": "o",
+            "user_id": "u",
+            "config_service": MagicMock(),
+        })
+        err = _err_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
+        assert "conversation_id" in err["error"]
+
+    @pytest.mark.asyncio
+    async def test_success_registers_as_artifact(self):
+        """stage_attachment_to_blob now uses ArtifactRegistryService, returns record_id."""
         raw = b"%PDF-1.4"
         attachment = MagicMock()
         attachment.odata_type = "#microsoft.graph.fileAttachment"
@@ -637,20 +668,13 @@ class TestStageAttachmentToBlob:
         attachment.content_bytes = base64.b64encode(raw)
 
         blob_store = MagicMock()
-        blob_store.save_conversation_file_to_storage = AsyncMock(
-            return_value={
-                "documentId": "doc-123",
-                "downloadUrl": "https://blob/x",
-                "storageType": "s3",
-            },
-        )
-
         state = {
             "org_id": "org-1",
+            "user_id": "user-1",
             "config_service": MagicMock(),
             "conversation_id": "conv-1",
             "blob_store": blob_store,
-            "document_id_to_url": {},
+            "graph_provider": AsyncMock(),
         }
         ol = _build_outlook({
             "me_messages_get_attachments": AsyncMock(
@@ -658,61 +682,17 @@ class TestStageAttachmentToBlob:
             ),
         }, state=state)
 
-        parsed = _ok_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
-        assert parsed["document_id"] == "doc-123"
-        registry_entry = state["document_id_to_url"]["doc-123"]
-        assert registry_entry.filename == "doc.pdf"
-        blob_store.save_conversation_file_to_storage.assert_awaited_once_with(
-            org_id="org-1",
-            conversation_id="conv-1",
-            file_name="doc.pdf",
-            file_bytes=raw,
-            content_type="application/pdf",
-            custom_metadata=[{"key": "isTemporary", "value": True}],
-        )
+        fake_artifact = MagicMock()
+        fake_artifact.artifact_id = "artifact-xyz"
 
-    @pytest.mark.asyncio
-    async def test_missing_conversation_id(self):
-        ol = _build_outlook(state={
-            "org_id": "o",
-            "config_service": MagicMock(),
-            "document_id_to_url": {},
-        })
-        err = _err_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
-        assert "conversation_id" in err["error"]
-
-    @pytest.mark.asyncio
-    async def test_lazy_blob_store_construction(self):
-        raw = b"data"
-        attachment = MagicMock()
-        attachment.odata_type = "#microsoft.graph.fileAttachment"
-        attachment.name = "f.txt"
-        attachment.content_type = "text/plain"
-        attachment.content_bytes = base64.b64encode(raw)
-
-        state = {
-            "org_id": "org-1",
-            "config_service": MagicMock(),
-            "conversation_id": "conv-1",
-            "document_id_to_url": {},
-        }
-        ol = _build_outlook({
-            "me_messages_get_attachments": AsyncMock(
-                return_value=_mock_graph_response(success=True, data=attachment),
-            ),
-        }, state=state)
-
-        mock_blob = MagicMock()
-        mock_blob.save_conversation_file_to_storage = AsyncMock(
-            return_value={"documentId": "d9", "downloadUrl": "https://blob/d9"},
-        )
         with patch(
-            "app.agents.actions.microsoft.outlook.outlook.BlobStorage",
-            return_value=mock_blob,
+            "app.services.artifact_registry.registry.ArtifactRegistryService.register",
+            new=AsyncMock(return_value=fake_artifact),
         ):
             parsed = _ok_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
-        assert parsed["document_id"] == "d9"
-        assert state["blob_store"] is mock_blob
+
+        assert parsed["record_id"] == "artifact-xyz"
+        assert parsed["filename"] == "doc.pdf"
 
     @pytest.mark.asyncio
     async def test_zero_byte_attachment_rejected(self):
@@ -728,10 +708,10 @@ class TestStageAttachmentToBlob:
             ),
         }, state={
             "org_id": "o",
+            "user_id": "u",
             "config_service": MagicMock(),
             "conversation_id": "c",
             "blob_store": MagicMock(),
-            "document_id_to_url": {},
         })
         with patch(
             "app.agents.actions.microsoft.outlook.outlook."
@@ -751,10 +731,10 @@ class TestStageAttachmentToBlob:
             ),
         }, state={
             "org_id": "o",
+            "user_id": "u",
             "config_service": MagicMock(),
             "conversation_id": "c",
             "blob_store": MagicMock(),
-            "document_id_to_url": {},
         })
         err = _err_tuple(await ol.stage_attachment_to_blob("MSG", "ATT"))
         assert "fileAttachment" in err["error"]
@@ -1196,16 +1176,25 @@ class TestMailToolErrorBranches:
 
 
 class TestStageAttachmentExtended:
+    def _base_state(self, **extra):
+        state = {
+            "org_id": "o",
+            "user_id": "u",
+            "config_service": MagicMock(),
+            "conversation_id": "c",
+            "blob_store": MagicMock(),
+            "graph_provider": AsyncMock(),
+        }
+        state.update(extra)
+        return state
+
     @pytest.mark.asyncio
     async def test_fetch_attachment_failure(self):
         ol = _build_outlook({
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=False, error="404"),
             ),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
         assert "404" in err["error"]
 
@@ -1215,10 +1204,7 @@ class TestStageAttachmentExtended:
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=True, data=None),
             ),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
         assert "empty attachment" in err["error"].lower()
 
@@ -1231,10 +1217,7 @@ class TestStageAttachmentExtended:
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=True, data=attachment),
             ),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
         assert "contentBytes" in err["error"]
 
@@ -1247,10 +1230,7 @@ class TestStageAttachmentExtended:
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=True, data=attachment),
             ),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         with patch(
             "app.agents.actions.microsoft.outlook.outlook."
             "_decode_graph_file_attachment_content_bytes",
@@ -1273,10 +1253,7 @@ class TestStageAttachmentExtended:
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=True, data=attachment),
             ),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         with patch(
             "app.agents.actions.microsoft.outlook.outlook."
             "_decode_graph_file_attachment_content_bytes",
@@ -1286,7 +1263,8 @@ class TestStageAttachmentExtended:
         assert err["error"] == "size_limit_exceeded"
 
     @pytest.mark.asyncio
-    async def test_blob_upload_failure_and_missing_registry_mapping(self):
+    async def test_artifact_registration_failure(self):
+        """When ArtifactRegistryService.register raises, a clear error is returned."""
         raw = b"pdf"
         attachment = MagicMock()
         attachment.odata_type = "#microsoft.graph.fileAttachment"
@@ -1294,27 +1272,17 @@ class TestStageAttachmentExtended:
         attachment.content_type = "application/pdf"
         attachment.content_bytes = base64.b64encode(raw)
 
-        blob_store = MagicMock()
-        blob_store.save_conversation_file_to_storage = AsyncMock(
-            side_effect=RuntimeError("upload failed"),
-        )
-        state = {
-            "org_id": "o", "config_service": MagicMock(), "conversation_id": "c",
-            "blob_store": blob_store, "document_id_to_url": {},
-        }
         ol = _build_outlook({
             "me_messages_get_attachments": AsyncMock(
                 return_value=_mock_graph_response(success=True, data=attachment),
             ),
-        }, state=state)
-        err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
-        assert "upload failed" in err["error"]
-
-        blob_store.save_conversation_file_to_storage = AsyncMock(
-            return_value={"documentId": None, "downloadUrl": None},
-        )
-        err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
-        assert "documentId" in err["error"]
+        }, state=self._base_state())
+        with patch(
+            "app.services.artifact_registry.registry.ArtifactRegistryService.register",
+            new=AsyncMock(side_effect=RuntimeError("db write failed")),
+        ):
+            err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
+        assert "Failed to register" in err["error"]
 
     @pytest.mark.asyncio
     async def test_lazy_blob_store_init_failure(self):
@@ -1327,24 +1295,24 @@ class TestStageAttachmentExtended:
                 )),
             ),
         }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
+            "org_id": "o",
+            "user_id": "u",
+            "config_service": MagicMock(),
+            "conversation_id": "c",
+            "graph_provider": AsyncMock(),
         })
         with patch(
             "app.agents.actions.microsoft.outlook.outlook.BlobStorage",
             side_effect=RuntimeError("no storage"),
         ):
             err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
-        assert "lazy construction failed" in err["error"]
+        assert "BlobStorage construction failed" in err["error"]
 
     @pytest.mark.asyncio
     async def test_stage_exception_uses_handle_error(self):
         ol = _build_outlook({
             "me_messages_get_attachments": AsyncMock(side_effect=RuntimeError("kaboom")),
-        }, state={
-            "org_id": "o", "config_service": MagicMock(),
-            "conversation_id": "c", "document_id_to_url": {},
-        })
+        }, state=self._base_state())
         err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
         assert err["error"] == "kaboom"
 
@@ -1991,33 +1959,16 @@ class TestRemainingLineCoverage:
         assert err["error"] == "Failed to send reply-all"
 
     @pytest.mark.asyncio
-    async def test_stage_reinitializes_non_dict_registry(self):
-        raw = b"x"
-        attachment = MagicMock(
-            odata_type="#microsoft.graph.fileAttachment",
-            name="f.txt",
-            content_type="text/plain",
-            content_bytes=base64.b64encode(raw),
-        )
-        state = {
+    async def test_missing_user_id_returns_error(self):
+        """stage_attachment_to_blob now requires user_id to register the artifact."""
+        ol = _build_outlook(state={
             "org_id": "o",
             "config_service": MagicMock(),
             "conversation_id": "c",
-            "document_id_to_url": [],  # not a dict — should be replaced
-            "blob_store": MagicMock(
-                save_conversation_file_to_storage=AsyncMock(
-                    return_value={"documentId": "d1", "downloadUrl": "https://b/d1"},
-                ),
-            ),
-        }
-        ol = _build_outlook({
-            "me_messages_get_attachments": AsyncMock(
-                return_value=_mock_graph_response(success=True, data=attachment),
-            ),
-        }, state=state)
-        parsed = _ok_tuple(await ol.stage_attachment_to_blob("M", "A"))
-        assert isinstance(state["document_id_to_url"], dict)
-        assert parsed["document_id"] == "d1"
+            # user_id intentionally absent
+        })
+        err = _err_tuple(await ol.stage_attachment_to_blob("M", "A"))
+        assert "user_id" in err["error"]
 
     @pytest.mark.asyncio
     async def test_get_mail_folders_exception(self):

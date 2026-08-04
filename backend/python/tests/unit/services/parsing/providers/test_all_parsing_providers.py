@@ -25,8 +25,7 @@ class TestDoclingServiceParser:
     @pytest.mark.asyncio
     async def test_parse_success(self):
         mock_client = MagicMock()
-        mock_client.parse_pdf = AsyncMock(return_value={"parsed": "data"})
-        mock_client.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_client.process_pdf = AsyncMock(return_value=_make_block_container())
 
         parser = DoclingServiceParser(mock_client)
         result = await parser.parse(b"pdf content", "test.pdf")
@@ -34,45 +33,30 @@ class TestDoclingServiceParser:
         assert isinstance(result, ParseResult)
         assert result.provider_used == ParserProvider.DOCLING
         assert result.metadata["record_name"] == "test.pdf"
-        mock_client.parse_pdf.assert_called_once_with("test.pdf", b"pdf content")
-        mock_client.create_blocks.assert_called_once()
+        mock_client.process_pdf.assert_awaited_once_with("test.pdf", b"pdf content")
 
     @pytest.mark.asyncio
     async def test_parse_adds_pdf_extension(self):
         mock_client = MagicMock()
-        mock_client.parse_pdf = AsyncMock(return_value={"parsed": "data"})
-        mock_client.create_blocks = AsyncMock(return_value=_make_block_container())
+        mock_client.process_pdf = AsyncMock(return_value=_make_block_container())
 
         parser = DoclingServiceParser(mock_client)
         result = await parser.parse(b"content", "document")
 
-        mock_client.parse_pdf.assert_called_once_with("document.pdf", b"content")
+        mock_client.process_pdf.assert_awaited_once_with("document.pdf", b"content")
         assert result.metadata["record_name"] == "document"
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_parse_pdf_returns_none(self):
+    async def test_parse_fails_when_process_returns_none(self):
         mock_client = MagicMock()
-        mock_client.parse_pdf = AsyncMock(return_value=None)
+        mock_client.process_pdf = AsyncMock(return_value=None)
 
         parser = DoclingServiceParser(mock_client)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-        assert "failed to parse" in exc_info.value.message.lower()
-
-    @pytest.mark.asyncio
-    async def test_parse_fails_when_create_blocks_returns_none(self):
-        mock_client = MagicMock()
-        mock_client.parse_pdf = AsyncMock(return_value={"data": "value"})
-        mock_client.create_blocks = AsyncMock(return_value=None)
-
-        parser = DoclingServiceParser(mock_client)
-        with pytest.raises(ParseError) as exc_info:
-            await parser.parse(b"content", "test.pdf")
-
-        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-        assert "failed to create blocks" in exc_info.value.message.lower()
+        assert "failed to process" in exc_info.value.message.lower()
 
     def test_supported_formats(self):
         mock_client = MagicMock()

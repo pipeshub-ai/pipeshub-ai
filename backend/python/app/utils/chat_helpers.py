@@ -34,11 +34,7 @@ from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
     qna_prompt_context,
-    qna_prompt_context_header,
-    qna_prompt_instructions_1,
-    qna_prompt_instructions_2,
     qna_prompt_simple,
-    render_fetch_full_record_tool_block,
     table_prompt,
 )
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
@@ -261,6 +257,122 @@ class CitationRefMapper:
         return dict(self._url_to_ref)
 
 
+_RECORD_ID_LABEL_RE = re.compile(r"((?:Linked )?Record ID): ([^\s,;)\]]+)")
+_RECORD_ID_ASSIGN_RE = re.compile(r"(record_id)=(\S+)")
+_NODE_ID_ASSIGN_RE = re.compile(r"(node_id)=([\"']?)([^\s\"',)]+)\2")
+
+
+class RecordIdShortener:
+    """TEMPORARY token-savings experiment: shorten full record IDs to a
+    short sequential label (`R1`, `R2`, ...) wherever a record id appears in
+    LLM-facing text, and resolve that label back to the full ID when the
+    model passes it to a knowledge-graph tool. One instance is kept per
+    request on `AgentContext.tool_state["record_id_shortener"]` (see
+    `_seed_tool_state()` in `agents/agent_loop/context.py`) so the same
+    record always gets the same short id within a conversation turn,
+    regardless of which tool (retrieval, search, navigate, lookup_record,
+    list_files, fetch_record) surfaces it first.
+
+    get_or_create_short_id() is idempotent — same full id always returns the
+    same short id, assigned in first-seen order (`R1`, `R2`, `R3`, ...).
+    Sequential labels can never collide with each other or with a full id,
+    so unlike a UUID-prefix scheme no collision handling is needed.
+    """
+
+    def __init__(self) -> None:
+        self._full_to_short: dict[str, str] = {}
+        self._short_to_full: dict[str, str] = {}
+        self._counter: int = 0
+
+    def get_or_create_short_id(self, full_id: str) -> str:
+        if full_id in self._full_to_short:
+            return self._full_to_short[full_id]
+        self._counter += 1
+        short = f"R{self._counter}"
+        self._full_to_short[full_id] = short
+        self._short_to_full[short] = full_id
+        return short
+
+    def shorten_if_known(self, full_id: str) -> str:
+        """Return the short label if already mapped, otherwise the full ID unchanged."""
+        return self._full_to_short.get(full_id, full_id)
+
+    def resolve(self, short_or_full_id: str) -> str:
+        """Full id for a known short id; unrecognized input (a full id the
+        model copied verbatim from a path that predates shortening) passes
+        through unchanged."""
+        return self._short_to_full.get(short_or_full_id, short_or_full_id)
+
+    def shorten_record_ids_in_text(self, text: str) -> str:
+        """Replace every `Record ID: <id>` / `Linked Record ID: <id>`
+        occurrence in `text` with a short id, creating new mappings as
+        needed. Only ever touches header/metadata lines carrying that exact
+        label — never block content."""
+        if not text:
+            return text
+
+        def _sub(match: "re.Match[str]") -> str:
+            label, full_id = match.group(1), match.group(2)
+            return f"{label}: {self.get_or_create_short_id(full_id)}"
+
+        return _RECORD_ID_LABEL_RE.sub(_sub, text)
+
+    def shorten_record_id_assigns_in_text(self, text: str) -> str:
+        """Replace every `record_id=<id>` occurrence (list_files/navigate
+        row format) with `record_id=<short id>`."""
+        if not text:
+            return text
+
+        def _sub(match: "re.Match[str]") -> str:
+            label, full_id = match.group(1), match.group(2)
+            return f"{label}={self.get_or_create_short_id(full_id)}"
+
+        return _RECORD_ID_ASSIGN_RE.sub(_sub, text)
+
+    def shorten_node_id_assigns_in_text(self, text: str) -> str:
+        """Replace every `node_id=<id>` / `node_id="<id>"` occurrence
+        (navigate breadcrumbs and `navigate(node_id=...)` hints) with the
+        short id, preserving any surrounding quotes."""
+        if not text:
+            return text
+
+        def _sub(match: "re.Match[str]") -> str:
+            label, quote, full_id = match.group(1), match.group(2), match.group(3)
+            return f"{label}={quote}{self.get_or_create_short_id(full_id)}{quote}"
+
+        return _NODE_ID_ASSIGN_RE.sub(_sub, text)
+
+    def shorten_all_record_ids(self, text: str) -> str:
+        """Apply every known shortening pattern (`Record ID:`, `record_id=`,
+        `node_id=`) to `text` in one pass. Use this at tool-output
+        boundaries that mix formats (navigate/lookup_record renderers)."""
+        text = self.shorten_record_ids_in_text(text)
+        text = self.shorten_record_id_assigns_in_text(text)
+        text = self.shorten_node_id_assigns_in_text(text)
+        return text
+
+
+def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShortener | None":
+    """Single point of truth for every knowledge-tool lazy-creation site:
+    reuse the per-request `RecordIdShortener` already on `state`, or mint
+    one — but only when the request opted in via
+    `state["enable_record_id_shortening"]` (`ChatQuery.enableRecordIdShortening`,
+    default False — see `AgentContext.enable_record_id_shortening`).
+
+    Returns `None` when the flag is off (the default) so call sites can
+    gate every shortening/resolution call with a plain `if shortener:`
+    instead of re-checking the flag themselves.
+    """
+    shortener = state.get("record_id_shortener")
+    if isinstance(shortener, RecordIdShortener):
+        return shortener
+    if not state.get("enable_record_id_shortening"):
+        return None
+    shortener = RecordIdShortener()
+    state["record_id_shortener"] = shortener
+    return shortener
+
+
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
@@ -327,6 +439,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 mime_type=record_dict.get("mime_type", ""),
                 external_record_id=record_dict.get("external_record_id", ""),
                 weburl=record_dict.get("weburl", ""),
+                location=record_dict.get("location"),
                 version=record_dict.get("version", 1),
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
                 connector_id=record_dict.get("connector_id", ""),
@@ -349,6 +462,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
         "mime_type": record_dict.get("mime_type", ""),
         "source_created_at": record_dict.get("source_created_at") or None,
         "source_updated_at": record_dict.get("source_updated_at") or None,
+        "location": record_dict.get("location"),
         "weburl": record_dict.get("weburl", ""),
         "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
     }
@@ -590,19 +704,19 @@ def _base_record_context_metadata_from_graph(
     web_url = base_graph_doc.get("webUrl")
 
     lines = [
-        f"Record ID       : {record_id}",
-        f"Name            : {record_name}",
-        f"Connector       : {connector_name}",
-        f"Type            : {record_type}",
-        f"External ID     : {external_id}",
-        f"Connector ID    : {connector_id or 'N/A'}",
+        f"Record ID: {record_id}",
+        f"Name: {record_name}",
+        f"Connector: {connector_name}",
+        f"Type: {record_type}",
+        f"External ID: {external_id}",
+        f"Connector ID: {connector_id or 'N/A'}",
     ]
     if mime_type:
-        lines.append(f"MIME Type       : {mime_type}")
+        lines.append(f"MIME Type: {mime_type}")
     if web_url:
         if not str(web_url).startswith("http") and frontend_url:
             web_url = f"{frontend_url.rstrip('/')}/{str(web_url).lstrip('/')}"
-        lines.append(f"Web URL         : {web_url}")
+        lines.append(f"Web URL: {web_url}")
     return "\n".join(lines)
 
 async def _build_linked_record_context_metadata(
@@ -1966,12 +2080,14 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
             elif (
-                web_url 
-                and origin != "UPLOAD" 
-                and record_type != RecordType.MAIL.value 
+                web_url
+                and origin != "UPLOAD"
+                and record_type != RecordType.MAIL.value
                 and block_type != BlockType.RECORD_SUMMARY.value
             ):
                 web_url = generate_text_fragment_url(web_url, block_text)
+            if not web_url and recordId:
+                web_url = f"/record/{recordId}"
 
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
@@ -2051,6 +2167,8 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                if graphDb_record.get("location"):
+                    record["location"] = graphDb_record["location"]
                 graph_external_id = graphDb_record.get("externalRecordId")
                 if graph_external_id:
                     record["external_record_id"] = graph_external_id
@@ -2436,8 +2554,8 @@ def _render_blocks_with_images(
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
     Groups consecutive entries sharing the same block_index so that the
-    Block Index / Citation ID header is emitted only once per container,
-    with all fragment content listed underneath it.
+    `[idx|ref]` header is emitted only once per container, with all
+    fragment content listed underneath it.
     """
     content: list[dict[str, Any]] = []
     for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
@@ -2453,12 +2571,12 @@ def _render_blocks_with_images(
         if len(group) == 1 and not has_images_in_group:
             content.append({
                 "type": "text",
-                "text": f"  - Block Index: {block_idx}\n  - Citation ID: {citation_ref}\n  - Block Content: {first.get('content')}\n",
+                "text": f"[{block_idx}|{citation_ref}] {first.get('content')}\n",
             })
         else:
             content.append({
                 "type": "text",
-                "text": f"  - Block Index: {block_idx}\n  - Citation ID: {citation_ref}\n  - Block Content:\n",
+                "text": f"[{block_idx}|{citation_ref}]\n",
             })
             for item in group:
                 if item.get("block_type") == BlockType.IMAGE.value:
@@ -2563,7 +2681,14 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return child_results
 
 
-def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None, is_multimodal_llm: bool = False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def record_to_message_content(
+    record: dict[str, Any],
+    ref_mapper: CitationRefMapper | None = None,
+    is_multimodal_llm: bool = False,
+    *,
+    start_block: int = 0,
+    max_blocks: int | None = None,
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -2571,6 +2696,12 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         record: The record JSON object containing block_containers and other metadata
         ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
         is_multimodal_llm: Whether the LLM supports image/vision input
+        start_block: Skip blocks with index < start_block (for windowed reads).
+        max_blocks: Maximum number of renderable blocks to include. When the
+            record has more renderable blocks than this window a continuation
+            hint is appended: "Showing blocks N-M of T. Call
+            dynamic_fetch_full_record with start_block=M+1 for the rest."
+            None means no cap (today's default behaviour).
 
     Returns:
         Tuple of (content list, ref_mapper)
@@ -2595,6 +2726,11 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
 
+        # Windowing: track how many renderable (non-fragment) blocks we have
+        # rendered so we can truncate at max_blocks and emit a continuation hint.
+        _renderable_rendered = 0
+        _truncated_at: int | None = None  # first block_index not rendered due to cap
+
         # Process individual blocks
         for block in blocks:
             block_index = block.get("index", 0)
@@ -2602,6 +2738,16 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
 
             # Skip fragment blocks — they are rendered via their container's group expansion.
             if block.get("parent_block_index") is not None:
+                continue
+
+            # Windowing: skip blocks before start_block.
+            if block_index < start_block:
+                continue
+
+            # Windowing: stop once we have hit the max_blocks cap.
+            if max_blocks is not None and _renderable_rendered >= max_blocks:
+                if _truncated_at is None:
+                    _truncated_at = block_index
                 continue
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
@@ -2614,18 +2760,20 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                     if image_uri and is_base64_image(image_uri):
                         content.append({
                             "type": "text",
-                            "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                            "text": f"[{ref}]"
                         })
                         content.append({
                             "type": "image_url",
                             "image_url": {"url": image_uri}
                         })
+                        _renderable_rendered += 1
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
-                    "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                    "text": f"[{ref}] {data}\n\n"
                 })
+                _renderable_rendered += 1
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -2715,12 +2863,13 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                     "text": f"{rendered_form}\n\n"
                                 })
                             else:
-                                header = f"* Block Group Index: {block_group_index}\n* Block Group Type: table\n* Table Rows/Blocks:\n"
+                                header = f"[Table #{block_group_index}]\n"
                                 content.append({
                                     "type": "text",
                                     "text": header,
                                 })
                                 content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                            _renderable_rendered += 1
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -2757,14 +2906,28 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                         "text": f"{rendered_form}\n\n"
                     })
                 else:
-                    header = f"* Block Group Index: {parent_index}\n* Block Group Type: {block_group.get('type')}\n* Block Group Content/Blocks:\n"
+                    header = f"[{block_group.get('type')} #{parent_index}]\n"
                     content.append({
                         "type": "text",
                         "text": header,
                     })
                     content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                _renderable_rendered += 1
             else:
                 continue
+
+        # Windowing continuation hint — appended when truncation happened.
+        if _truncated_at is not None:
+            total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
+            end_block = _truncated_at - 1
+            content.append({
+                "type": "text",
+                "text": (
+                    f"\n[Showing blocks {start_block}–{end_block} of approximately "
+                    f"{total_blocks} renderable blocks. Call knowledgegraph__fetch_record "
+                    f"with start_block={_truncated_at} for the next slice.]\n"
+                ),
+            })
 
         fk_parent = record.get("fk_parent_record_ids")
         fk_child = record.get("fk_child_record_ids")
@@ -2960,141 +3123,61 @@ def context_includes_jira_tickets(
     )
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, has_slack_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    user_data: str,
+    query: str,
+    ref_mapper: CitationRefMapper | None = None,
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+    """Build the user message content for the no-tools (Ollama/simple) path.
 
+    Renders ``qna_prompt_simple`` with deduplicated, citation-enriched chunks.
+    """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
+    chunks = []
+    seen_blocks: set[str] = set()
+    for result in flattened_results:
+        virtual_record_id = result.get("virtual_record_id")
+        block_index = result.get("block_index")
+        result_id = f"{virtual_record_id}_{block_index}"
 
-    # Logs for Enriched Data Check, for record type -> SQL_TABLE
-    vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
-    vrids_in_map = set(virtual_record_id_to_result.keys())
-    vrids_only_in_map = vrids_in_map - vrids_in_flattened
-    fk_enriched_in_flattened = [r for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
-    logger.debug(
-        "get_message_content: flattened_results=%d items, virtual_record_id_to_result=%d keys; "
-        "vrids_in_flattened=%d, vrids_only_in_map (e.g. FK blob not in list)=%d %s; FK_ENRICHMENT blocks in flattened=%d",
-        len(flattened_results),
-        len(virtual_record_id_to_result),
-        len(vrids_in_flattened),
-        len(vrids_only_in_map),
-        list(vrids_only_in_map)[:5] if vrids_only_in_map else [],
-        len(fk_enriched_in_flattened),
-    )
+        if result_id not in seen_blocks:
+            seen_blocks.add(result_id)
+            block_type = result.get("block_type")
 
-    if mode == "no_tools":
-        chunks = []
-        seen_blocks = set()
-        for result in flattened_results:
-            virtual_record_id = result.get("virtual_record_id")
-            block_index = result.get("block_index")
-            result_id = f"{virtual_record_id}_{block_index}"
+            if block_type == BlockType.IMAGE.value:
+                continue
 
-            if result_id not in seen_blocks:
-                seen_blocks.add(result_id)
-                block_type = result.get("block_type")
+            block_web_url = ""
+            record = virtual_record_id_to_result.get(virtual_record_id) or {}
+            frontend_url = record.get("frontend_url", "")
+            record_id = record.get("id", "")
+            block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+            citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
 
-                # Skip images for simplicity
-                if block_type == BlockType.IMAGE.value:
-                    continue
+            if block_type == GroupType.TABLE.value:
+                table_summary, _ = result.get("content")
+                content_text = f"Table: {table_summary}"
+            else:
+                content_text = result.get("content", "")
 
-                # Get content text
-                block_web_url = ""
-                record = virtual_record_id_to_result.get(virtual_record_id) or {}
-                frontend_url = record.get("frontend_url", "")
-                record_id = record.get("id", "")
-                block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
-                citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
-
-                if block_type == GroupType.TABLE.value:
-                    table_summary, _ = result.get("content")
-                    content_text = f"Table: {table_summary}"
-                else:
-                    content_text = result.get("content", "")
-
-                chunks.append({
-                    "metadata": {
-                        "blockText": content_text,
-                        "recordName": result.get("metadata", {}).get("recordName", ""),
-                        "block_web_url": block_web_url,
-                        "citation_ref": citation_ref,
-                    }
-                })
-
-        # Render simple prompt
-        template = Template(qna_prompt_simple)
-        rendered_form = template.render(
-            query=query,
-            chunks=chunks
-        )
-
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-
-        return content, ref_mapper
-    else:
-        has_jira = context_includes_jira_tickets(flattened_results, virtual_record_id_to_result)
-        fetch_block = render_fetch_full_record_tool_block(has_jira)
-        template = Template(qna_prompt_instructions_1)
-        rendered_form = template.render(
-                    user_data=user_data,
-                    query=query,
-                    mode=mode,
-                    has_sql_connector=has_sql_connector,
-                    fetch_full_record_tool_block=fetch_block,
-                    has_slack_connector=has_slack_connector,
-                    )
-
-        content.append({
-                    "type": "text",
-                    "text": rendered_form
-                })
-
-        if image_blocks:
-            content.append({
-                "type": "text",
-                "text": "Attachments:"
+            chunks.append({
+                "metadata": {
+                    "blockText": content_text,
+                    "recordName": result.get("metadata", {}).get("recordName", ""),
+                    "block_web_url": block_web_url,
+                    "citation_ref": citation_ref,
+                }
             })
-            content.extend(image_blocks)
 
-        content.append({
-            "type": "text",
-            "text": qna_prompt_context_header,
-        })
+    rendered_form = Template(qna_prompt_simple).render(query=query, chunks=chunks)
+    content.append({"type": "text", "text": rendered_form})
+    return content, ref_mapper
 
-        message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
-        message_content_array = [item for sublist in message_content_array for item in sublist]
-
-        if vrids_only_in_map:
-            logger.info(
-                "get_message_content: adding %d full records from virtual_record_id_to_result (missing in flattened_results)",
-                len(vrids_only_in_map),
-            )
-            for vrid in vrids_only_in_map:
-                record = virtual_record_id_to_result.get(vrid)
-                if not record:
-                    continue
-                record_type = record.get("record_type")
-                if record_type != RecordType.SQL_TABLE.value:
-                    continue
-                record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                if record_content:
-                    message_content_array.extend(record_content)
-
-        content.extend(message_content_array)
-        # Render instructions_2 with mode parameter
-        template_instructions_2 = Template(qna_prompt_instructions_2)
-        rendered_instructions_2 = template_instructions_2.render(mode=mode)
-
-        content.append({
-            "type": "text",
-            "text": f"</context>\n\n{rendered_instructions_2}"
-        })
-        return content, ref_mapper
-
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, record_id_shortener: "RecordIdShortener | None" = None) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     all_contents = []
@@ -3167,6 +3250,8 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             relations_info = build_record_relations_info(record)
             if relations_info:
                 record_header_text = f"{record_header_text}{relations_info}"
+            if record_id_shortener is not None:
+                record_header_text = record_id_shortener.shorten_record_ids_in_text(record_header_text)
             content.append({
                 "type": "text",
                 "text": record_header_text
@@ -3193,7 +3278,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         content.append({
                             "type": "text",
                             "text": prepend_record_blocks_sorted_header(
-                                f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                                f"[{block_index}|{ref}]"
                             ),
                         })
                         content.append({
@@ -3205,7 +3290,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         content.append({
                             "type": "text",
                             "text": prepend_record_blocks_sorted_header(
-                                f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('image_description')}\n\n"
+                                f"[{block_index}|{ref}] (image) {result.get('image_description')}\n\n"
                             ),
                         })
                 else:
@@ -3215,7 +3300,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(
-                            f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                            f"[{block_index}|{ref}] (image) {result.get('content')}\n\n"
                         ),
                     })
             elif block_type == GroupType.TABLE.value:
@@ -3242,7 +3327,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
                     })
                 else:
-                    header = f"* Block Group Index: {block_group_index}\n* Block Group Type: table\n* Table Summary: {table_summary}\n* Table Rows/Blocks:\n"
+                    header = f"[Table #{block_group_index}: {table_summary}]\n"
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
@@ -3253,7 +3338,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 content.append({
                     "type": "text",
                     "text": prepend_record_blocks_sorted_header(
-                        f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                        f"[{block_index}|{ref}] {result.get('content')}\n\n"
                     ),
                 })
             elif block_type in valid_group_labels:
@@ -3281,7 +3366,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     })
                 else:
                     # Emit blocks in reading order to preserve text/image interleaving.
-                    header = f"* Block Group Index: {block_group_index}\n* Block Group Type: {block_type}\n* Block Group Content/Blocks:\n"
+                    header = f"[{block_type} #{block_group_index}]\n"
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",

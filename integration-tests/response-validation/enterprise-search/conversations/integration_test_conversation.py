@@ -13,11 +13,9 @@ import json
 import os
 import sys
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -26,75 +24,30 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from ai_models_setup import SeededAIModel
+from helper.agui_sse import (
+    AGUI,
+    answer_from_completion,
+    conversation_created_value,
+    is_conversation_created,
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_error_message,
+    run_finished_result,
+    state_delta_answer,
+)
 from helper.clients.conversations_client import ConversationsClient
 from openapi_search_validator import (
     assert_matches_component_schema,
 )
-from openapi_schema_validator import assert_response_matches_openapi_operation
+from openapi_schema_validator import (
+    assert_request_body_matches_openapi_operation,
+    assert_response_matches_openapi_operation,
+)
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
-
-# Cap for runaway SSE; high enough for verbose dev streams before `complete`.
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    """
-    Minimal SSE parser for frames like:
-
-      event: <name>
-      data: <payload>
-
-    Frames are separated by a blank line. We return OpenAPI-style envelopes:
-    { "event": <name>, "data": <string> }.
-    """
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    # Use a literal LF delimiter so requests does not split on Unicode
-    # line-separator characters that can appear inside JSON string values.
-    for raw in resp.iter_lines(delimiter="\n", decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-        # Ignore optional SSE fields (id:, retry:, etc.)
-
-    env = flush()
-    if env is not None:
-        yield env
 
 
 class _BaseEnterpriseConversationIntegration:
@@ -104,9 +57,11 @@ class _BaseEnterpriseConversationIntegration:
         self,
         conversations_client: ConversationsClient,
         session_kb: dict,
+        reasoning_multimodal_llm_model: SeededAIModel,
     ) -> None:
         self.conversations = conversations_client
         self.kb_id = session_kb["kb_id"]
+        self.reasoning_model = reasoning_multimodal_llm_model
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
         stream_override = os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT", "").strip()
         self.stream_timeout = (
@@ -115,11 +70,55 @@ class _BaseEnterpriseConversationIntegration:
             else max(self.timeout, 120)
         )
 
+    def _model_fields(self, chat_mode: str) -> dict[str, str]:
+        """Agent mode is gated on ``isReasoning`` server-side and the org default
+        LLM is not one, so agent-mode streams must name the seeded reasoning model."""
+        if chat_mode != "agent":
+            return {}
+        return {
+            "modelKey": self.reasoning_model.model_key,
+            "modelName": self.reasoning_model.model_name,
+        }
+
 
 # ============================================================================
 # Router: createConversationalRouter
 # Routes mounted at /api/v1/conversations
 # ============================================================================
+@pytest.mark.integration
+class TestConversationStreamOpenApiRequestContract:
+    @pytest.mark.parametrize(
+        "chat_mode",
+        ["agent", "internal_search", "web_search"],
+    )
+    @pytest.mark.parametrize("operation_id", ["streamChat", "addMessageStream"])
+    def test_accepts_supported_required_chat_modes(
+        self,
+        operation_id: str,
+        chat_mode: str,
+    ) -> None:
+        assert_request_body_matches_openapi_operation(
+            {"query": "hello", "chatMode": chat_mode},
+            operation_id,
+        )
+
+    @pytest.mark.parametrize("operation_id", ["streamChat", "addMessageStream"])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"query": "missing mode"},
+            {"query": "unsupported mode", "chatMode": "quick"},
+        ],
+    )
+    def test_rejects_missing_or_unsupported_chat_mode(
+        self,
+        operation_id: str,
+        payload: dict[str, str],
+    ) -> None:
+        with pytest.raises(AssertionError):
+            assert_request_body_matches_openapi_operation(payload, operation_id)
+
+
 @pytest.mark.integration
 class TestConversations(_BaseEnterpriseConversationIntegration):
 
@@ -134,22 +133,22 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 return conv_id
 
-        raise AssertionError("conversation stream ended without a complete event")
+        raise AssertionError("conversation stream ended without a RUN_FINISHED event")
 
     def _get_conversation(self, conversation_id: str) -> dict:
         resp = self.conversations.get_conversation(
@@ -165,7 +164,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def _stream_create_conversation_and_last_bot_message_id(
         self, *, query: str = SEARCH_QUERY
     ) -> tuple[str, str]:
-        connected_conv_id: str | None = None
+        created_conv_id: str | None = None
 
         with self.conversations.stream_conversation(
             query=query,
@@ -173,27 +172,31 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-                if envelope["event"] == "connected":
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
+                if envelope["event"] == AGUI.CUSTOM:
                     payload = json.loads(envelope["data"])
-                    conv_id = payload.get("conversationId")
+                    if not is_conversation_created(payload):
+                        continue
+                    conv_id = conversation_created_value(payload).get("conversationId")
                     if isinstance(conv_id, str) and conv_id:
-                        connected_conv_id = conv_id
+                        created_conv_id = conv_id
                     continue
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
-                assert connected_conv_id, (
-                    f"stream complete arrived without connected conversationId: {envelope!r}"
+                assert created_conv_id, (
+                    f"RUN_FINISHED arrived without a conversation_created id: {envelope!r}"
                 )
                 break
             else:
-                raise AssertionError("conversation stream ended without a complete event")
+                raise AssertionError(
+                    "conversation stream ended without a RUN_FINISHED event"
+                )
 
-        conv_id = connected_conv_id
+        conv_id = created_conv_id
         conv = self._get_conversation(conv_id)
         msgs = conv.get("messages") or []
         bot_id: str | None = None
@@ -218,19 +221,19 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 conv_id = conv.get("_id")
                 assert isinstance(conv_id, str) and conv_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 msgs = conv.get("messages") or []
                 bot_id: str | None = None
@@ -257,7 +260,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 assert user_id, f"no user_query with _id in messages: {msgs!r}"
                 return conv_id, bot_id, user_id
 
-        raise AssertionError("conversation stream ended without a complete event")
+        raise AssertionError("conversation stream ended without a RUN_FINISHED event")
 
     # ------------------------------------------------------------------------
     # Tests
@@ -276,41 +279,37 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             )
 
             accumulated_answer = ""
-            saw_complete = False
+            saw_finished = False
 
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
 
-                if event == "error":
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if is_root_error(event, payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
 
-                if event == "complete":
-                    saw_complete = True
-                    if not accumulated_answer.strip() and isinstance(payload, dict):
-                        conv = payload.get("conversation") or {}
-                        msgs = conv.get("messages") or []
-                        for m in reversed(msgs if isinstance(msgs, list) else []):
-                            if isinstance(m, dict) and m.get("role") == "assistant":
-                                content = m.get("content")
-                                if isinstance(content, str) and content.strip():
-                                    accumulated_answer = content
-                                    break
+                if is_root_finished(event, payload):
+                    saw_finished = True
+                    if not accumulated_answer.strip():
+                        accumulated_answer = answer_from_completion(
+                            run_finished_result(payload)
+                        )
                     break
 
-            assert saw_complete, "stream ended without a complete event"
-            assert accumulated_answer.strip(), "stream completed but answer text was empty"
+            assert saw_finished, "stream ended without a RUN_FINISHED event"
+            assert accumulated_answer.strip(), "stream finished but answer text was empty"
 
     @pytest.mark.parametrize(
         ("chat_mode", "query"),
         [
+            ("agent", "What is two plus two?"),
             ("internal_search", SEARCH_QUERY),
             ("web_search", "Where is the pipeshub hq located?"),
         ],
@@ -322,54 +321,52 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         with self.conversations.stream_conversation(
             query=query,
             chatMode=chat_mode,
+            **self._model_fields(chat_mode),
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
             accumulated_answer = ""
-            saw_complete = False
+            saw_finished = False
 
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentStreamSSEEvent")
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "ConversationStreamSSEEvent")
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
 
-                if event == "error":
+                if is_root_error(event, payload):
                     raise AssertionError(
-                        f"stream emitted error event for chatMode={chat_mode!r}: {payload!r}"
+                        f"stream emitted RUN_ERROR for chatMode={chat_mode!r}: {payload!r}"
                     )
 
-                if event == "complete":
-                    saw_complete = True
-                    if not accumulated_answer.strip() and isinstance(payload, dict):
-                        conv = payload.get("conversation") or {}
-                        msgs = conv.get("messages") or []
-                        for m in reversed(msgs if isinstance(msgs, list) else []):
-                            if isinstance(m, dict) and m.get("role") == "assistant":
-                                content = m.get("content")
-                                if isinstance(content, str) and content.strip():
-                                    accumulated_answer = content
-                                    break
+                if is_root_finished(event, payload):
+                    saw_finished = True
+                    if not accumulated_answer.strip():
+                        accumulated_answer = answer_from_completion(
+                            run_finished_result(payload)
+                        )
                     break
 
-            assert saw_complete, (
-                f"stream ended without a complete event for chatMode={chat_mode!r}"
+            assert saw_finished, (
+                f"stream ended without a RUN_FINISHED event for chatMode={chat_mode!r}"
             )
             assert accumulated_answer.strip(), (
-                f"stream completed but answer text was empty for chatMode={chat_mode!r}"
+                f"stream finished but answer text was empty for chatMode={chat_mode!r}"
             )
 
     @pytest.mark.parametrize(
         "payload",
         [
             {},
-            {"query": ""},
+            {"query": "missing chat mode"},
+            {"query": "", "chatMode": "internal_search"},
+            {"query": "unsupported chat mode", "chatMode": "quick"},
         ],
     )
     def test_stream_conversation_invalid_payload_returns_400(self, payload: dict) -> None:
@@ -1108,32 +1105,46 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_stream_add_message_updates_conversation(self) -> None:
+    @pytest.mark.parametrize(
+        ("chat_mode", "query"),
+        [
+            ("agent", "What is two plus two?"),
+            ("internal_search", "Give one more detail from the source."),
+            ("web_search", "What is the latest PipesHub news?"),
+        ],
+    )
+    def test_stream_add_message_updates_conversation(
+        self, chat_mode: str, query: str
+    ) -> None:
         conversation_id = self._stream_create_conversation_id(
             query="stream-create conversation for message-stream test"
         )
 
         with self.conversations.stream_message(
             conversation_id,
-            query="follow-up question",
+            query=query,
+            chatMode=chat_mode,
+            **self._model_fields(chat_mode),
             timeout=self.stream_timeout,
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            saw_complete = False
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AgentMessageStreamSSEEvent")
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            saw_finished = False
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(
+                    envelope, "ConversationMessageStreamSSEEvent"
+                )
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                saw_complete = True
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                saw_finished = True
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
-                    f"complete conversation id mismatch: {conv.get('_id')!r}"
+                    f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
                 )
                 msgs = conv.get("messages") or []
                 non_empty_contents = [
@@ -1145,13 +1156,15 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 )
                 break
 
-            assert saw_complete, "stream ended without a complete event"
+            assert saw_finished, "stream ended without a RUN_FINISHED event"
 
     @pytest.mark.parametrize(
         "payload",
         [
             {},
-            {"query": ""},
+            {"query": "missing chat mode"},
+            {"query": "", "chatMode": "internal_search"},
+            {"query": "unsupported chat mode", "chatMode": "quick"},
         ],
     )
     def test_stream_add_message_invalid_payload_returns_400(self, payload: dict) -> None:
@@ -1195,15 +1208,15 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
                 return
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
-                    continue
+            for envelope in iter_sse_envelopes(resp):
                 payload = json.loads(envelope["data"])
-                msg = payload.get("message") or payload.get("error") or ""
-                assert "not found" in str(msg).lower(), f"unexpected error payload: {payload!r}"
+                if not is_root_error(envelope["event"], payload):
+                    continue
+                msg = run_error_message(payload)
+                assert "not found" in msg.lower(), f"unexpected RUN_ERROR payload: {payload!r}"
                 return
 
-        raise AssertionError("stream ended without an error event")
+        raise AssertionError("stream ended without a RUN_ERROR event")
 
     def test_regenerate_last_bot_message_streams_to_complete(self) -> None:
         conversation_id, message_id = self._stream_create_conversation_and_last_bot_message_id(
@@ -1222,24 +1235,24 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
             )
 
-            saw_complete = False
-            for envelope in _iter_sse_envelopes(resp):
-                assert_matches_component_schema(envelope, "AssistantStreamSSEEvent")
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"regenerate stream emitted error: {payload!r}")
-                if envelope["event"] != "complete":
+            saw_finished = False
+            for envelope in iter_sse_envelopes(resp):
+                assert_matches_component_schema(envelope, "SSEEvent")
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"regenerate stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                saw_complete = True
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                saw_finished = True
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
-                    f"complete conversation id mismatch: {conv.get('_id')!r}"
+                    f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
                 )
 
                 msgs = conv.get("messages") or []
-                assert msgs, f"complete payload missing messages: {conv!r}"
+                assert msgs, f"RUN_FINISHED result missing messages: {conv!r}"
                 last = msgs[-1]
                 assert last.get("messageType") == "bot_response", (
                     f"expected last message bot_response, got {last.get('messageType')!r}"
@@ -1250,7 +1263,7 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
                 )
                 break
 
-            assert saw_complete, "regenerate stream ended without a complete event"
+            assert saw_finished, "regenerate stream ended without a RUN_FINISHED event"
 
     def test_regenerate_missing_auth_returns_401_or_403(self) -> None:
         resp = self.conversations.regenerate_message(
@@ -1318,17 +1331,17 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
-                    continue
+            for envelope in iter_sse_envelopes(resp):
                 payload = json.loads(envelope["data"])
-                err = payload.get("message") or payload.get("error") or ""
-                assert "last message" in str(err).lower(), (
-                    f"unexpected error payload: {payload!r}"
+                if not is_root_error(envelope["event"], payload):
+                    continue
+                err = run_error_message(payload)
+                assert "last message" in err.lower(), (
+                    f"unexpected RUN_ERROR payload: {payload!r}"
                 )
                 return
 
-        raise AssertionError("regenerate stream ended without an error event")
+        raise AssertionError("regenerate stream ended without a RUN_ERROR event")
 
     def test_post_message_feedback_on_bot_response_matches_spec(self) -> None:
         conversation_id, bot_id, _user_id = (

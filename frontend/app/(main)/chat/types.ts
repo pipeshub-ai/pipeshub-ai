@@ -1,6 +1,7 @@
 import type { CitationOrigin } from './components/message-area/response-tabs/citations';
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import { ACCEPTED_MIME_TYPES, SUPPORTED_FILE_TYPES } from './utils/attachment-file-types';
 
 // Chat types following project conventions
 
@@ -9,6 +10,46 @@ export type ConfidenceLevel = 'Very High' | 'High' | 'Medium' | 'Low';
 
 // Tab types for response view
 export type ResponseTab = 'answer' | 'sources' | 'citation';
+
+/**
+ * Platform-normalized reasoning effort levels. `null`/absent means "no
+ * explicit user choice" — the backend applies `DEFAULT_REASONING_EFFORT`
+ * ("high") for any reasoning-capable model rather than deferring to the
+ * provider's own default.
+ *
+ * `'none'` is kept in the type for backward compatibility with
+ * already-persisted conversations/agents, but is no longer offered as a
+ * user choice (see `REASONING_EFFORT_OPTIONS` in `model-selector-panel.tsx`):
+ * fully disabling reasoning made some models prone to hallucinating
+ * malformed tool-call names. The backend silently upgrades an incoming
+ * `'none'` to `'low'` instead of honoring it — see `_reasoning_effort_kwargs`
+ * in `app/utils/aimodels.py`.
+ */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
+ * in `backend/python/app/utils/aimodels.py`) when the user hasn't explicitly
+ * picked one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
+ */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
+
+/**
+ * What the backend actually floors a legacy `'none'` to
+ * (`REASONING_MANDATORY_FALLBACK_EFFORT` in `app/utils/llm_api_mode_store.py`).
+ */
+const REASONING_MANDATORY_FALLBACK_EFFORT: ReasoningEffort = 'low';
+
+/**
+ * Maps a persisted/legacy `'none'` to the value the backend actually runs
+ * with, so every UI surface (toolbar label, radio selection, regen payload)
+ * agrees with server behavior instead of echoing a choice that's no longer offered.
+ */
+export function normalizeReasoningEffort(
+  value: ReasoningEffort | null
+): ReasoningEffort | null {
+  return value === 'none' ? REASONING_MANDATORY_FALLBACK_EFFORT : value;
+}
 
 // Inline citation for display within answer text
 export interface InlineCitation {
@@ -43,10 +84,13 @@ export interface ModelInfo {
   modelName: string;
   /**
    * Main assistant: often `quick`, or `agent:<segment>` when restoring agent-style modes.
-   * **Agent** conversations: API uses plain `auto` | `quick` | `verification` | `deep` (no `agent:` prefix).
+   * **Agent** conversations: API uses plain `auto` | `quick` | `planExecute` | `deep` (no `agent:`
+   * prefix); legacy conversations may still carry `verification` (pre-rename alias for `planExecute`).
    */
   chatMode: string;
   modelFriendlyName?: string;
+  /** Restored from the conversation's saved modelInfo when loading a thread. */
+  reasoningEffort?: ReasoningEffort;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -141,12 +185,12 @@ export type ChatMode = 'chat' | 'search';
 export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
 
 /** Strategy when query mode is Agent (toolbar dropdown). */
-export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
+export type AgentStrategy = 'auto' | 'quick' | 'plan-execute' | 'deep';
 
 /**
- * Segment after `agent:` in the stream API body (differs from {@link AgentStrategy} for verify → verification).
+ * Segment after `agent:` in the stream API body (differs from {@link AgentStrategy} for plan-execute → planExecute).
  */
-export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
+export type AgentStrategyApiSegment = 'auto' | 'quick' | 'planExecute' | 'deep';
 
 /**
  * API `chatMode` for streams (assistant modes + agent strategy variant).
@@ -157,19 +201,26 @@ export type StreamChatModePayload =
   | 'web_search'
   | 'image'
   | 'internal_search'
+  | 'agent'
   | `agent:${AgentStrategyApiSegment}`;
 
-/** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
+/** Maps UI agent strategy to the API `agent:` segment (plan-execute → planExecute). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
-  if (strategy === 'verify') return 'verification';
+  if (strategy === 'plan-execute') return 'planExecute';
   return strategy;
 }
 
-/** Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field). */
+/**
+ * Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field).
+ * Only the current canonical segments — outgoing requests always go through
+ * {@link agentStrategyToApiSegment}, which never produces the legacy
+ * `verification` wire value; restoring THAT from persisted history is
+ * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
+ */
 const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
   'auto',
   'quick',
-  'verification',
+  'planExecute',
   'deep',
 ];
 
@@ -253,12 +304,42 @@ export interface ChatCollectionAttachment {
   kind?: ChatCollectionAttachmentKind;
 }
 
+/**
+ * Per-agent-mode capability toggles.
+ *
+ * - `internalSearch` gates knowledge tools (retrieval, knowledgegraph, knowledgehub),
+ *   and disables the Connectors + Collections tabs in the UI when false.
+ * - `webSearch` gates web_search + fetch_url tools.
+ * - `deepSearch` is reserved for a future "deep research" mode; ignored by the
+ *   backend until that feature ships (always treated as false server-side).
+ *
+ * When absent from a stream request, the backend defaults both to `true`
+ * (preserving today's behavior for existing clients).
+ */
+export interface AgentCapabilities {
+  internalSearch: boolean;
+  webSearch: boolean;
+  deepSearch?: boolean;
+}
+
+/** Default capabilities — both search modes enabled, deep search off. */
+export const DEFAULT_AGENT_CAPABILITIES: AgentCapabilities = {
+  internalSearch: true,
+  webSearch: true,
+  deepSearch: false,
+};
+
 export interface ChatSettings {
   mode: ChatMode;
   queryMode: QueryMode;
   /** Used when queryMode is 'agent'. */
   agentStrategy: AgentStrategy;
   filters: ChatKnowledgeFilters;
+  /**
+   * Capability toggles for universal agent mode (main chat, no agentId).
+   * Persisted to localStorage key `pipeshub-agent-capabilities`.
+   */
+  agentCapabilities: AgentCapabilities;
   /**
    * Per-context map of the model explicitly chosen by the user in the model
    * selector panel. The key is either ASSISTANT_CTX (for the non-agent chat) or
@@ -278,6 +359,12 @@ export interface ChatSettings {
    * Used for deduping fetches and for invalidating stale selections.
    */
   availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
+  /**
+   * Per-context reasoning effort override, keyed the same way as
+   * `selectedModels`. `null`/missing means "use the model's own default".
+   * Only meaningful when the selected model has `isReasoning: true`.
+   */
+  reasoningEffort: Record<string, ReasoningEffort | null>;
 }
 
 /**
@@ -301,7 +388,9 @@ export interface UploadedFile {
   errorMessage?: string;
 }
 
-export type SupportedFileType = 'TXT' | 'PDF' | 'DOCX' | 'PNG' | 'JPEG' | 'JPG';
+/** Derived from `SUPPORTED_FILE_TYPES`/`ACCEPTED_MIME_TYPES` in `utils/attachment-file-types.ts`
+ * (the single source of truth) so the two allowlists cannot drift apart. */
+export type SupportedFileType = (typeof SUPPORTED_FILE_TYPES)[number];
 
 /** Returned by the attachment upload endpoint; forwarded verbatim in the SSE stream body. */
 export interface AttachmentRef {
@@ -313,14 +402,7 @@ export interface AttachmentRef {
 }
 
 /** MIME types accepted by the chat attachment upload endpoint. */
-export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = [
-  'application/pdf',
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'text/plain',
-  'text/markdown',
-] as const;
+export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = Object.keys(ACCEPTED_MIME_TYPES);
 
 /** Maximum file size for a single chat attachment (5 MB). */
 export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
@@ -328,25 +410,51 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 /** Maximum number of attachments per message. */
 export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
-// SSE Event Types
-export type SSEEventType =
-  | 'connected'
-  | 'status'
-  | 'answer_chunk'
-  | 'complete'
-  | 'tool_call'
-  | 'tool_success'
-  | 'artifact'
-  | 'tool_error'
-  /** Internal tool round-trip — UI ignores (same as legacy chat) */
-  | 'tool_calls'
-  /** Agent / deep flows — UI ignores */
-  | 'tool_result'
-  /** Interactive questionnaire card — internaltools.ask_user_question */
-  | 'ask_user_question'
-  | 'metadata'
-  | 'restreaming'
-  | 'error';
+/**
+ * AG-UI wire event type discriminators (`data.type` on every AG-UI frame —
+ * see `backend/python/app/agents/agent_loop/protocol/agui.py::AGUIEventType`
+ * and the Node-side mirror in `backend/nodejs/.../utils/agui.ts`).
+ * Consumed exclusively by `agui-event-handler.ts`. The frontend always
+ * negotiates `protocol: 'agui'` (see `api.ts::runChatStream`), so this is
+ * the only wire vocabulary the client needs to parse.
+ */
+export type AGUIWireEventType =
+  | 'RUN_STARTED'
+  | 'RUN_FINISHED'
+  | 'RUN_ERROR'
+  | 'STEP_STARTED'
+  | 'STEP_FINISHED'
+  | 'TEXT_MESSAGE_START'
+  | 'TEXT_MESSAGE_CONTENT'
+  | 'TEXT_MESSAGE_END'
+  | 'REASONING_START'
+  | 'REASONING_MESSAGE_START'
+  | 'REASONING_MESSAGE_CONTENT'
+  | 'REASONING_MESSAGE_END'
+  | 'REASONING_END'
+  | 'TOOL_CALL_START'
+  | 'TOOL_CALL_ARGS'
+  | 'TOOL_CALL_END'
+  | 'TOOL_CALL_RESULT'
+  | 'STATE_DELTA'
+  | 'STATE_SNAPSHOT'
+  | 'CUSTOM'
+  | 'HEARTBEAT';
+
+/** One JSON Patch (RFC 6902) operation, as carried by AG-UI `STATE_DELTA.delta`. */
+export interface AGUIJsonPatchOp {
+  op: string;
+  path: string;
+  value?: unknown;
+}
+
+/** Envelope every AG-UI frame's `data` field satisfies (fields beyond `type` vary per event). */
+export interface AGUIEventEnvelope {
+  type: AGUIWireEventType;
+  runId?: string;
+  parentRunId?: string;
+  [key: string]: unknown;
+}
 
 /** Single option in an ask_user_question tool payload. */
 export interface AskUserQuestionOption {
@@ -399,6 +507,17 @@ export interface SSEArtifactEvent {
   artifactType?: string;
   isTemporary?: boolean;
   recordId?: string;
+  /** Version number in the artifact registry (1-based, increments on each update). */
+  version?: number;
+  /** Id of the CODE artifact this was generated from, if any — lets the UI offer "view source". */
+  derivedFromCodeArtifactId?: string;
+  /**
+   * Visibility of the artifact set by the backend.
+   * 'VISIBLE' (default) — shown to the user.
+   * 'STAGING' — internal intermediate artifact; Python already suppresses these
+   * before emitting SSE events, so this field serves as a defensive signal only.
+   */
+  visibility?: 'VISIBLE' | 'STAGING';
 }
 
 /** Artifact metadata attached to a chat slot for display. */
@@ -410,6 +529,12 @@ export interface ChatArtifact {
   downloadUrl: string;
   artifactType: string;
   recordId?: string;
+  /** Version number in the artifact registry (1-based, increments on each update). */
+  version?: number;
+  /** Id of the CODE artifact this was generated from, if any — lets the UI offer "view source". */
+  derivedFromCodeArtifactId?: string;
+  /** Mirrors the backend visibility field — STAGING artifacts should never be rendered. */
+  visibility?: 'VISIBLE' | 'STAGING';
 }
 
 export interface SSEConnectedEvent {
@@ -475,6 +600,7 @@ export interface SSEAnswerChunkEvent {
   chunk: string;
   accumulated: string;
   citations: SSEChunkCitation[];
+  confidence?: string;
 }
 
 /**
@@ -522,6 +648,67 @@ export interface ToolCallEntry {
   toolResult: Record<string, unknown>;
 }
 
+/** One model-turn's persisted chain-of-thought (opt-in server-side; see reasoning_persistence.py). */
+export interface ReasoningTurn {
+  messageId?: string;
+  turnIndex?: number;
+  content: string;
+}
+
+/**
+ * One entry in the ordered agent-activity transcript — text, reasoning, a
+ * tool call, or a nested sub-agent's own timeline. Mirrors the Python
+ * `TranscriptCollector`'s `MessagePart` / Node's `IMessagePart` byte-for-
+ * byte; built live from AG-UI wire events during streaming
+ * (`agui-event-handler.ts`) and rendered identically from persisted
+ * `ConversationMessage.parts` after reload — see the "Parts-Based Agent
+ * Message Transcript" plan.
+ *
+ * `resultPreview` is always a bounded preview (~500 chars), never the full
+ * external tool result — the server never sends more than that.
+ */
+export interface MessagePart {
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  displayName?: string;
+  args?: string;
+  /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
+  argsSummary?: string;
+  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  resultPreview?: string;
+  /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
+  resultSummary?: string;
+  runId?: string;
+  roleName?: string;
+  parts?: MessagePart[];
+  /**
+   * Set ONLY on the one root-level `text` part that IS the final answer
+   * (mirrors Python's `TranscriptCollector.replace_final_text`) — every
+   * other root `text` part is narration (Cursor-Style Agent Transparency
+   * plan) and renders in the activity timeline instead. Never set on
+   * child (sub-agent) text parts.
+   */
+  isFinal?: boolean;
+  /**
+   * Set on a root-level, non-`isFinal` `text` part once a later root event
+   * proves it was narration rather than the (still-pending) final answer —
+   * a tool call starting, a reasoning block starting, or a new text turn
+   * starting all imply "more work follows this turn" (see
+   * `agui-event-handler.ts`'s `LivePartsBuilder.settleLastRootText()`,
+   * called from each of those three event handlers). The live answer
+   * buffer (`streamingContent`) is cleared in the same event, so the text
+   * is no longer duplicated there — `filterRootParts` shows `settled` text
+   * in the activity timeline as narration even while still streaming, and
+   * hides any not-yet-`settled` text (still mirrored in the answer buffer).
+   * `TEXT_MESSAGE_END` alone does NOT settle the part — at that point it's
+   * still ambiguous whether narration (tool call/reasoning follows) or the
+   * final answer (`RUN_FINISHED` follows) is next.
+   */
+  settled?: boolean;
+}
+
 export interface ConversationMessage {
   _id: string;
   messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
@@ -539,6 +726,10 @@ export interface ConversationMessage {
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
   tools?: ToolCallEntry[];
+  /** Present only when the org has reasoning persistence enabled server-side. */
+  reasoning?: ReasoningTurn[];
+  /** Persisted agent-activity transcript (`agui` protocol only) — see MessagePart. */
+  parts?: MessagePart[];
 }
 
 export interface ConversationCompleteData {
@@ -574,6 +765,15 @@ export interface SSEErrorEvent {
   error: string;
   message: string;
   code?: string;
+  /**
+   * Stable error classification the backend derives from the underlying
+   * failure (`rate_limit` / `auth_error` / `server_error` / `timeout` /
+   * `unknown` — see `error_classification.py`). `message` is already a
+   * user-friendly string for any of these, so this is only needed if a
+   * caller wants to branch on the failure kind (e.g. offer a "try again"
+   * affordance for `rate_limit` specifically).
+   */
+  type?: string;
 }
 
 // Status message for display during streaming
@@ -593,7 +793,7 @@ export interface StreamChatRequest {
   modelFriendlyName: string;
   /**
    * `quick` for normal modes; when query mode is Agent, `agent:<segment>`
-   * e.g. `agent:auto`, `agent:verification` (UI “verify” strategy).
+   * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
   filters: {
@@ -607,23 +807,50 @@ export interface StreamChatRequest {
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
   /**
-   * Agent streams only → JSON `tools`: every enabled tool `fullName` (resolved from the
-   * catalog when the UI means “all tools”; `[]` = none).
+   * Agent streams only → JSON `tools`: explicit tool `fullName` subset.
+   * `undefined` (field omitted) means "every configured toolset, no
+   * filter" — NEVER resolved into an exploded full-catalog array on this
+   * type, since that would defeat the backend's own "no filter" handling
+   * and needlessly approach its request-size cap. `[]` means "none".
    */
   agentStreamTools?: string[];
+  /**
+   * Agent mode capability overrides. When present and `chatMode` is
+   * `'agent'` or `'agent:*'`, the backend gates `has_knowledge` /
+   * `web_search_config` accordingly. Omitting this field keeps today's
+   * default behavior (both capabilities enabled).
+   */
+  agentCapabilities?: AgentCapabilities;
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /**
+   * Only sent when the user has explicitly picked a non-default effort for a
+   * reasoning-capable model. Omitted → backend uses the model's own default.
+   */
+  reasoningEffort?: ReasoningEffort;
 }
 
-/** Builds mode-related fields for stream/regenerate payloads from settings. */
-export function buildStreamRequestModeFields(settings: ChatSettings): Pick<
-  StreamChatRequest,
-  'chatMode'
-> {
+/**
+ * Builds mode-related fields for stream/regenerate payloads from settings.
+ *
+ * `isScopedAgent` distinguishes the two very different consumers of Agent
+ * `QueryMode`: a conversation scoped to a specific custom Agent (`agentId`
+ * set) still needs the `agent:<strategy>` wire value — its endpoint
+ * (`agent.py`) unwraps that via {@link streamChatModeToAgentApiChatMode} to
+ * drive `PipesHubAgentFactory`'s loop selection. The *main* chat's Agent
+ * mode (no `agentId` — "Universal Agent Mode") has no such strategy
+ * concept server-side (`chat_modes/policy.py`'s `AGENT_POLICY` decides
+ * internal-search vs web-search vs both from the query itself), so it must
+ * send the plain `'agent'` value instead.
+ */
+export function buildStreamRequestModeFields(
+  settings: ChatSettings,
+  isScopedAgent = false
+): Pick<StreamChatRequest, 'chatMode'> {
   if (settings.queryMode === 'agent') {
-    return {
-      chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
-    };
+    return isScopedAgent
+      ? { chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}` }
+      : { chatMode: 'agent' };
   }
   if (settings.queryMode === 'web-search') {
     return {
@@ -714,6 +941,15 @@ export interface ChatSlot {
   streamingQuestion: string;
   currentStatusMessage: StatusMessage | null;
   streamingCitationMaps: CitationMaps | null;
+  /**
+   * Live agent-activity transcript for the message currently streaming —
+   * built incrementally from AG-UI events (see `agui-event-handler.ts`'s
+   * `onParts` callback) so thinking/tool-call/sub-agent activity renders
+   * as it happens instead of only appearing after reload. Cleared when a
+   * new stream starts; the array reference is replaced (not mutated) on
+   * every update so it works as a plain render dependency.
+   */
+  streamingParts: MessagePart[];
 
   // ── Per-slot scroll state (persisted across switches) ──
   userScrollOverride: boolean;

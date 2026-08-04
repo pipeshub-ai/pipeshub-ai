@@ -1,4 +1,5 @@
 import type { Node } from '@xyflow/react';
+import type { ReasoningEffort } from '@/chat/types';
 import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
@@ -38,7 +39,7 @@ export interface NodeTemplate {
   defaultConfig: Record<string, unknown>;
   inputs?: string[];
   outputs?: string[];
-  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors';
+  category: 'agent' | 'inputs' | 'outputs' | 'llm' | 'knowledge' | 'tools' | 'connectors' | 'skills';
 }
 
 export interface ToolRef {
@@ -63,6 +64,11 @@ export interface KnowledgeReference {
   filters?: Record<string, unknown>;
 }
 
+/** A skill assigned to this agent (`AGENT_HAS_SKILL` edge) — see `_parse_skills` in `api/routes/agent.py`. */
+export interface SkillReference {
+  name: string;
+}
+
 export interface AgentFormPayload {
   name: string;
   description: string;
@@ -75,7 +81,10 @@ export interface AgentFormPayload {
   isServiceAccount?: boolean;
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
+  skills?: SkillReference[];
   webSearch?: AgentWebSearchAttachment | null;
+  /** Fallback applied when a chat request against this agent omits its own reasoningEffort. */
+  defaultReasoningEffort?: ReasoningEffort | null;
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */

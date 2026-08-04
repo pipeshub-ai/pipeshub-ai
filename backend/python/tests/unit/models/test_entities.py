@@ -72,7 +72,7 @@ class TestRecord:
         assert rec.external_revision_id is None
         assert rec.mime_type == MimeTypes.UNKNOWN.value
         assert rec.inherit_permissions is True
-        assert rec.indexing_status == ProgressStatus.NOT_STARTED.value
+        assert rec.indexing_status == ProgressStatus.QUEUED.value
         assert rec.extraction_status == ProgressStatus.NOT_STARTED.value
         assert rec.reason is None
         assert rec.weburl is None
@@ -175,6 +175,13 @@ class TestRecord:
         assert arango["webUrl"] == "https://example.com"
         assert arango["isDeleted"] is False
         assert arango["isArchived"] is False
+        assert arango["parsingStatus"] == ProgressStatus.NOT_STARTED.value
+
+    def test_to_arango_base_record_parsing_status_round_trips(self):
+        rec = Record(**_record_kwargs(id="rec-1", org_id="org-1"))
+        rec.parsing_status = ProgressStatus.IN_PROGRESS.value
+        arango = rec.to_arango_base_record()
+        assert arango["parsingStatus"] == ProgressStatus.IN_PROGRESS.value
 
     def test_from_arango_base_record(self):
         arango_doc = {
@@ -193,6 +200,7 @@ class TestRecord:
             "updatedAtTimestamp": 1704153600000,
             "sourceCreatedAtTimestamp": None,
             "sourceLastModifiedTimestamp": None,
+            "parsingStatus": "IN_PROGRESS",
             "indexingStatus": "QUEUED",
             "extractionStatus": "NOT_STARTED",
             "previewRenderable": True,
@@ -203,6 +211,25 @@ class TestRecord:
         assert rec.record_name == "Test Record"
         assert rec.record_type == RecordType.FILE
         assert rec.connector_name == Connectors.GOOGLE_DRIVE
+        assert rec.parsing_status == ProgressStatus.IN_PROGRESS.value
+
+    def test_from_arango_base_record_defaults_parsing_status_when_absent(self):
+        """Records persisted before parsingStatus existed should default to
+        NOT_STARTED rather than raising or leaving the field unset."""
+        arango_doc = {
+            "_key": "rec-1",
+            "orgId": "org-1",
+            "recordName": "Test",
+            "recordType": "FILE",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "UPLOAD",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704067200000,
+        }
+        rec = Record.from_arango_base_record(arango_doc)
+        assert rec.parsing_status == ProgressStatus.NOT_STARTED.value
 
     def test_from_arango_base_record_unknown_connector(self):
         """Unknown connector name should fall back to KNOWLEDGE_BASE."""
@@ -1701,7 +1728,7 @@ class TestRecordToLlmContextEdgeCases:
         """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
         rec = Record(**_record_kwargs(weburl="/record/abc"))
         ctx = rec.to_llm_context()
-        assert "Web URL         : http://localhost:3000/record/abc" in ctx
+        assert "Web URL: http://localhost:3000/record/abc" in ctx
 
     def test_to_llm_context_frontend_url_with_trailing_slash(self):
         """Trailing slash on frontend_url should not produce a double slash."""
@@ -1714,7 +1741,7 @@ class TestRecordToLlmContextEdgeCases:
         """Absolute weburl should pass through untouched regardless of frontend_url."""
         rec = Record(**_record_kwargs(weburl="https://example.com/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "Web URL         : https://example.com/doc" in ctx
+        assert "Web URL: https://example.com/doc" in ctx
         assert "localhost" not in ctx
 
 

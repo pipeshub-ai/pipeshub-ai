@@ -12,6 +12,7 @@ from app.modules.agents.qna.chat_state import (
     build_initial_state,
     cleanup_old_tool_results,
     cleanup_state_after_retrieval,
+    remember_record_ids,
 )
 
 
@@ -95,6 +96,22 @@ class TestBuildInitialState:
         assert state["is_multimodal_llm"] is False
         assert state["model_name"] == "gpt-test"
         assert state["model_key"] == "test-model-key"
+        # Opt-in, disabled by default — see `ChatQuery.enableRecordIdShortening`.
+        assert state["enable_record_id_shortening"] is False
+
+    @pytest.mark.parametrize("key", ["enableRecordIdShortening", "enable_record_id_shortening"])
+    def test_enable_record_id_shortening_accepts_either_key_name(
+        self, mock_deps, minimal_user_info, key,
+    ):
+        """The route passes camelCase (`ChatQuery.enableRecordIdShortening`);
+        internal callers may pass the snake_case form directly."""
+        cq = {"query": "q", key: True}
+        state = build_initial_state(
+            chat_query=cq,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["enable_record_id_shortening"] is True
 
     def test_custom_chat_query_fields(self, mock_deps, minimal_user_info):
         cq = {
@@ -366,6 +383,42 @@ class TestCleanupStateAfterRetrieval:
 # ===================================================================
 # cleanup_old_tool_results
 # ===================================================================
+class TestRememberRecordIds:
+    """Three tools write through this, and `citation_tracking` reads the set
+    to decide whether `dynamic_fetch_full_record` may be registered."""
+
+    def test_accumulates_across_calls_in_place(self):
+        """The state dict IS `AgentContext.tool_state`, so a replacement
+        instead of an in-place update would be invisible to the hook holding
+        the original set."""
+        state = {"known_record_ids": set()}
+        original = state["known_record_ids"]
+
+        remember_record_ids(state, ["r1"])
+        remember_record_ids(state, ["r2", "r1"])
+
+        assert state["known_record_ids"] == {"r1", "r2"}
+        assert state["known_record_ids"] is original
+
+    def test_creates_the_set_when_absent(self):
+        state = {}
+
+        remember_record_ids(state, ["r1"])
+
+        assert state["known_record_ids"] == {"r1"}
+
+    def test_empty_and_falsy_ids_are_ignored(self):
+        state = {}
+
+        remember_record_ids(state, [])
+        remember_record_ids(state, ["", None])
+
+        assert "known_record_ids" not in state
+
+    def test_no_state_is_a_noop(self):
+        remember_record_ids(None, ["r1"])
+
+
 class TestCleanupOldToolResults:
     def test_no_trim_when_under_limit(self):
         state = {

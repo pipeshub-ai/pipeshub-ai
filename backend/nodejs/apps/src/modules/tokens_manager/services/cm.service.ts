@@ -740,8 +740,8 @@ export class ConfigService {
     }
 
     // Node.js owns messageBrokerType and kvStoreType — always overwrite from env
-    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'kafka').toLowerCase();
-    config.kvStoreType = (process.env.KV_STORE_TYPE || 'etcd').toLowerCase();
+    config.messageBrokerType = (process.env.MESSAGE_BROKER || 'redis').toLowerCase();
+    config.kvStoreType = (process.env.KV_STORE_TYPE || 'redis').toLowerCase();
 
     // dataStoreType and vectorDbType are owned by Python — never set defaults here
 

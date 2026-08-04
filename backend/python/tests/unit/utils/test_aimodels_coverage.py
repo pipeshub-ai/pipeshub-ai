@@ -393,7 +393,11 @@ class TestAzureAIClaude45:
 
     @patch("langchain_anthropic.ChatAnthropic")
     def test_azure_ai_claude_reasoning_flag(self, mock_cls):
-        """Azure AI with claude model and isReasoning flag."""
+        """Azure AI Foundry also hosts non-OpenAI models under
+        `isReasoning=True` — the flag alone must not force temperature=1
+        for a provider that isn't guaranteed to be OpenAI's own API (see
+        `_default_temperature`); the configured/default temperature is
+        kept instead."""
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
@@ -406,7 +410,7 @@ class TestAzureAIClaude45:
         }
         result = get_generator_model(LLMProvider.AZURE_AI.value, config)
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["temperature"] == 1
+        assert call_kwargs["temperature"] == 0.2
 
     @patch("langchain_anthropic.ChatAnthropic")
     def test_azure_ai_claude_custom_max_tokens(self, mock_cls):
@@ -427,7 +431,10 @@ class TestAzureAIClaude45:
 
     @patch("langchain_openai.ChatOpenAI")
     def test_azure_ai_non_claude_is_reasoning_flag(self, mock_cls):
-        """Azure AI non-claude model with isReasoning flag."""
+        """Azure AI non-claude model with isReasoning flag: `gpt-4o` isn't
+        a gpt-5.x/o-series reasoning model, and `azureAI` isn't in
+        `_RESPONSES_API_PROVIDERS`, so the flag alone must not force
+        temperature=1 (see `_default_temperature`)."""
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
@@ -440,7 +447,7 @@ class TestAzureAIClaude45:
         }
         result = get_generator_model(LLMProvider.AZURE_AI.value, config)
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["temperature"] == 1
+        assert call_kwargs["temperature"] == 0.2
 
 
 # ============================================================================
@@ -466,6 +473,11 @@ class TestOpenAICompatibleReasoning:
 
     @patch("langchain_openai.ChatOpenAI")
     def test_openai_compatible_is_reasoning_flag(self, mock_cls):
+        """A generic OpenAI-compatible endpoint can proxy any backing model
+        under `isReasoning=True`, and `o3` doesn't match the gpt-5.x name
+        heuristic (`_is_openai_gpt5_model`), so the flag alone must not
+        force temperature=1 without also being routed through
+        `_RESPONSES_API_PROVIDERS` (see `_default_temperature`)."""
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
@@ -478,7 +490,7 @@ class TestOpenAICompatibleReasoning:
         }
         result = get_generator_model(LLMProvider.OPENAI_COMPATIBLE.value, config)
         call_kwargs = mock_cls.call_args.kwargs
-        assert call_kwargs["temperature"] == 1
+        assert call_kwargs["temperature"] == 0.2
 
 
 # ============================================================================

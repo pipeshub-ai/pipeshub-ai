@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.models.blocks import BlocksContainer
 from app.services.docling.client import DoclingClient
 from app.services.parsing.interface import (
     IParser,
@@ -31,19 +30,11 @@ class DoclingServiceParser:
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
 
-        # Two-phase: parse → create blocks
-        parse_result_json = await self._client.parse_pdf(record_name_pdf, content)
-        if parse_result_json is None:
-            raise ParseError(
-                ParseErrorCode.PARSE_FAILED,
-                f"Docling service failed to parse '{record_name}'",
-            )
-
-        block_containers: BlocksContainer | None = await self._client.create_blocks(parse_result_json)
+        block_containers = await self._client.process_pdf(record_name_pdf, content)
         if block_containers is None:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
-                f"Docling service failed to create blocks for '{record_name}'",
+                f"Docling service failed to process '{record_name}'",
             )
 
         return ParseResult(

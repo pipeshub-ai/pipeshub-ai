@@ -274,25 +274,6 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self.__get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            # Only proceed with app connections if syncAction is 'immediate'
-            if payload["syncAction"] == "immediate":
-                # Get all apps associated with the org
-                org_apps = await self.graph_provider.get_org_apps(payload["orgId"])
-
-                for app in org_apps:
-                    if app["name"].lower() in ["calendar"]:
-                        self.logger.info("Skipping init")
-                        continue
-
-                    # Start sync for the specific user
-                    await self.__handle_sync_event(
-                        event_type=f'{app["name"].lower()}.user',
-                        value={
-                            "email": payload["email"],
-                            "connector":app["name"]
-                        },
-                    )
-
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )

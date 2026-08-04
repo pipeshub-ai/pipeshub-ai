@@ -29,6 +29,13 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_error_message,
+    run_finished_result,
+)
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_search_validator import assert_matches_component_schema
 from openapi_schema_validator import (
@@ -37,14 +44,12 @@ from openapi_schema_validator import (
     assert_response_matches_openapi_ref,
 )
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 
 # Rich optional-field body for offline OpenAPI request validation. Omits `filters`
 # because `Filters.apps` / `Filters.kb` use a oneOf that jsonschema rejects for
 # typical test ids (documented OpenAPI/schema quirk; live gateway still accepts them).
 _RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD: dict[str, Any] = {
-    "chatMode": "auto",
+    "chatMode": "quick",
     "modelKey": "model-key",
     "modelName": "model-name",
     "modelFriendlyName": "Model Friendly Name",
@@ -63,51 +68,6 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
         ) from exc
     assert isinstance(data, dict), f"Expected dict JSON body, got: {data!r}"
     return data
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
 
 
 class AgentConversationsTestBase:
@@ -160,23 +120,23 @@ class AgentConversationsTestBase:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conversation = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conversation = result.get("conversation") or {}
                 conversation_id = conversation.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 created_conversations.append((agent_key, conversation_id))
                 return conversation_id
 
-        raise AssertionError("agent conversation stream ended without a complete event")
+        raise AssertionError("agent conversation stream ended without a RUN_FINISHED event")
 
     def _get_conversation_messages(
         self,
@@ -1095,7 +1055,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         ) as resp:
             status_code = resp.status_code
             content_type = (resp.headers.get("Content-Type") or "").lower()
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_matches_component_schema(
                     envelope,
                     "AgentRegenerateSSEEvent",
@@ -1108,7 +1068,9 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                 envelopes.append(
                     {"event": envelope["event"], "data": parsed_data}
                 )
-                if envelope["event"] in {"complete", "error"}:
+                if is_root_finished(envelope["event"], parsed_data) or is_root_error(
+                    envelope["event"], parsed_data
+                ):
                     break
 
         return status_code, content_type, envelopes
@@ -1126,21 +1088,23 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             f"expected text/event-stream, got Content-Type={content_type!r}"
         )
         assert envelopes, "expected at least one SSE event"
-        complete_event = next(
-            (event for event in envelopes if event["event"] == "complete"),
+        finished_event = next(
+            (e for e in envelopes if is_root_finished(e["event"], e["data"])),
             None,
         )
-        assert complete_event is not None, f"expected complete event, got: {envelopes!r}"
-        payload = complete_event["data"]
-        assert isinstance(payload, dict), f"expected dict complete payload, got: {payload!r}"
-        conversation = payload.get("conversation") or {}
+        assert finished_event is not None, (
+            f"expected RUN_FINISHED event, got: {envelopes!r}"
+        )
+        result = run_finished_result(finished_event["data"])
+        assert result, f"expected dict RUN_FINISHED result, got: {finished_event['data']!r}"
+        conversation = result.get("conversation") or {}
         assert conversation.get("_id") == expected_conversation_id, (
-            f"conversation id mismatch: expected {expected_conversation_id!r}, got {payload!r}"
+            f"conversation id mismatch: expected {expected_conversation_id!r}, got {result!r}"
         )
         messages = conversation.get("messages") or []
-        assert messages, f"expected messages in complete payload: {payload!r}"
+        assert messages, f"expected messages in RUN_FINISHED result: {result!r}"
         last_message = messages[-1]
-        assert isinstance(last_message, dict), f"expected dict last message, got: {payload!r}"
+        assert isinstance(last_message, dict), f"expected dict last message, got: {result!r}"
         assert last_message.get("messageType") == "bot_response", (
             f"expected last message bot_response, got: {last_message!r}"
         )
@@ -1148,7 +1112,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         assert isinstance(content, str) and content.strip(), (
             f"expected non-empty bot content, got: {last_message!r}"
         )
-        return payload
+        return result
 
     def _assert_sse_error(
         self,
@@ -1164,15 +1128,15 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
         assert envelopes, "expected at least one SSE event"
         error_event = next(
-            (event for event in envelopes if event["event"] == "error"),
+            (e for e in envelopes if is_root_error(e["event"], e["data"])),
             None,
         )
-        assert error_event is not None, f"expected error event, got: {envelopes!r}"
+        assert error_event is not None, f"expected RUN_ERROR event, got: {envelopes!r}"
         payload = error_event["data"]
-        assert isinstance(payload, dict), f"expected dict error payload, got: {payload!r}"
-        message = payload.get("message") or payload.get("error") or payload.get("details") or ""
-        assert expected_substring.lower() in str(message).lower(), (
-            f"expected {expected_substring!r} in error payload, got: {payload!r}"
+        assert isinstance(payload, dict), f"expected dict RUN_ERROR payload, got: {payload!r}"
+        message = run_error_message(payload)
+        assert expected_substring.lower() in message.lower(), (
+            f"expected {expected_substring!r} in RUN_ERROR payload, got: {payload!r}"
         )
         return payload
 
@@ -1191,7 +1155,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
 
         assert_request_body_matches_openapi_operation(
-            {},
+            {"chatMode": "quick"},
             "regenerateAgentConversationMessage",
         )
         assert_request_body_matches_openapi_operation(
@@ -1203,7 +1167,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.primary_agent,
             conversation_id,
             message_id,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_complete(
@@ -1223,7 +1187,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                         "apps": ["123e4567-e89b-12d3-a456-426614174000"],
                         "kb": ["knowledgeBase_placeholder"],
                     },
-                    "chatMode": "auto",
+                    "chatMode": "quick",
                     "modelKey": "model-key",
                     "modelName": "model-name",
                     "modelFriendlyName": "Model Friendly Name",
@@ -1232,12 +1196,19 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                     "tools": ["web_search", "calculator"],
                 },
             ),
-            ("chatMode only", {"chatMode": "auto"}),
-            ("currentTime only", {"currentTime": "2026-05-27T10:30:00+05:30"}),
-            ("tools only", {"tools": ["web_search"]}),
+            ("chatMode only", {"chatMode": "quick"}),
+            (
+                "currentTime only",
+                {
+                    "chatMode": "quick",
+                    "currentTime": "2026-05-27T10:30:00+05:30",
+                },
+            ),
+            ("tools only", {"chatMode": "quick", "tools": ["web_search"]}),
             (
                 "filters only",
                 {
+                    "chatMode": "quick",
                     "filters": {
                         "apps": ["123e4567-e89b-12d3-a456-426614174001"],
                         "kb": ["knowledgeBase_placeholder"],
@@ -1246,7 +1217,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             ),
             (
                 "unknown extra keys",
-                {"chatMode": "auto", "ignoredField": "ignored-value"},
+                {"chatMode": "quick", "ignoredField": "ignored-value"},
             ),
         ],
     )
@@ -1310,7 +1281,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.primary_agent,
             conversation_id,
             "0" * 24,
-            json={},
+            json={"chatMode": "quick"},
             stream=False,
             timeout=self.timeout,
         )
@@ -1336,7 +1307,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.primary_agent,
             "0" * 24,
             message_id,
-            json={},
+            json={"chatMode": "quick"},
             stream=False,
             timeout=self.timeout,
         )
@@ -1348,20 +1319,58 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     @pytest.mark.parametrize(
         ("label", "payload"),
         [
+            ("missing chatMode", {}),
             ("empty chatMode", {"chatMode": ""}),
-            ("empty modelKey", {"modelKey": ""}),
-            ("empty modelName", {"modelName": ""}),
-            ("empty modelFriendlyName", {"modelFriendlyName": ""}),
-            ("empty timezone", {"timezone": ""}),
-            ("invalid currentTime", {"currentTime": "not-an-iso-datetime"}),
-            ("currentTime without offset", {"currentTime": "2026-05-27T10:30:00"}),
-            ("tools not array", {"tools": "web_search"}),
-            ("tools has empty string", {"tools": ["web_search", ""]}),
-            ("filters not object", {"filters": "invalid"}),
-            ("filters.apps not array", {"filters": {"apps": "invalid"}}),
-            ("filters.kb not array", {"filters": {"kb": "invalid"}}),
-            ("filters.apps invalid entry", {"filters": {"apps": ["not-a-valid-app-id"]}}),
-            ("filters.kb invalid entry", {"filters": {"kb": ["not-a-valid-kb-id"]}}),
+            ("auto chatMode", {"chatMode": "auto"}),
+            ("deep chatMode", {"chatMode": "deep"}),
+            ("planExecute chatMode", {"chatMode": "planExecute"}),
+            ("verification chatMode", {"chatMode": "verification"}),
+            ("empty modelKey", {"chatMode": "quick", "modelKey": ""}),
+            ("empty modelName", {"chatMode": "quick", "modelName": ""}),
+            (
+                "empty modelFriendlyName",
+                {"chatMode": "quick", "modelFriendlyName": ""},
+            ),
+            ("empty timezone", {"chatMode": "quick", "timezone": ""}),
+            (
+                "invalid currentTime",
+                {"chatMode": "quick", "currentTime": "not-an-iso-datetime"},
+            ),
+            (
+                "currentTime without offset",
+                {
+                    "chatMode": "quick",
+                    "currentTime": "2026-05-27T10:30:00",
+                },
+            ),
+            ("tools not array", {"chatMode": "quick", "tools": "web_search"}),
+            (
+                "tools has empty string",
+                {"chatMode": "quick", "tools": ["web_search", ""]},
+            ),
+            ("filters not object", {"chatMode": "quick", "filters": "invalid"}),
+            (
+                "filters.apps not array",
+                {"chatMode": "quick", "filters": {"apps": "invalid"}},
+            ),
+            (
+                "filters.kb not array",
+                {"chatMode": "quick", "filters": {"kb": "invalid"}},
+            ),
+            (
+                "filters.apps invalid entry",
+                {
+                    "chatMode": "quick",
+                    "filters": {"apps": ["not-a-valid-app-id"]},
+                },
+            ),
+            (
+                "filters.kb invalid entry",
+                {
+                    "chatMode": "quick",
+                    "filters": {"kb": ["not-a-valid-kb-id"]},
+                },
+            ),
         ],
     )
     def test_post_agent_conversation_regenerate_rejects_invalid_body(
@@ -1400,7 +1409,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.primary_agent,
             "0" * 24,
             "0" * 24,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1429,7 +1438,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             other_agent_key,
             conversation_id,
             message_id,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1457,7 +1466,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             self.primary_agent,
             conversation_id,
             user_query_id,
-            payload={},
+            payload={"chatMode": "quick"},
         )
 
         self._assert_sse_error(
@@ -1471,6 +1480,19 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
 @pytest.mark.integration
 class TestAgentConversationRegenerateOpenApiRequestContract:
     """Offline OpenAPI request-body checks not covered by live gateway negatives."""
+
+    def test_requires_quick_chat_mode(self) -> None:
+        assert_request_body_matches_openapi_operation(
+            {"chatMode": "quick"},
+            "regenerateAgentConversationMessage",
+        )
+
+        for payload in ({}, {"chatMode": "auto"}):
+            with pytest.raises(AssertionError):
+                assert_request_body_matches_openapi_operation(
+                    payload,
+                    "regenerateAgentConversationMessage",
+                )
 
     def test_rejects_extra_top_level_property(self) -> None:
         payload = {"chatMode": "answer", "unexpectedTopLevelField": "x"}

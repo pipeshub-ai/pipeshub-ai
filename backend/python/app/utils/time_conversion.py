@@ -86,8 +86,6 @@ def build_llm_time_context(
     lines = [
         _LLM_TIME_CONTEXT_HEADING,
         "",
-        _LLM_TIME_CONTEXT_SUBLINE,
-        "",
         current_line,
     ]
     if tz_line:

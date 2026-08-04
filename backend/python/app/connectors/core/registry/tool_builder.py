@@ -350,6 +350,7 @@ class ToolsetBuilder:
         self.tools: List[ToolDefinition] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
         self.is_internal: bool = False  # Internal toolsets are backend-only, not sent to frontend
+        self.is_essential: bool = False  # Essential toolsets stay visible under lazy tool disclosure
 
     def in_group(self, app_group: str) -> 'ToolsetBuilder':
         """Set the app group"""
@@ -437,6 +438,17 @@ class ToolsetBuilder:
     def as_internal(self) -> 'ToolsetBuilder':
         """Mark this toolset as internal (backend-only, not sent to frontend)"""
         self.is_internal = True
+        return self
+
+    def as_essential(self) -> 'ToolsetBuilder':
+        """Mark this toolset as essential — under lazy tool disclosure
+        (`PIPESHUB_ENABLE_LAZY_TOOLS`), its tools stay visible to the model
+        from turn 0 instead of being hidden behind `fetch_tools`/
+        `search_tools`. `PipesHubAgentFactory` derives `AgentSpec.
+        pinned_toolsets` from this flag (see `factory.py`) — reserve it for
+        toolsets the model needs on nearly every turn (knowledge retrieval,
+        artifacts), not every internal toolset."""
+        self.is_essential = True
         return self
 
     def configure(
@@ -557,7 +569,8 @@ class ToolsetBuilder:
             category=self.category,
             config=config,
             tools=self.tools,
-            internal=self.is_internal
+            internal=self.is_internal,
+            essential=self.is_essential,
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:

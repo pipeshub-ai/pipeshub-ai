@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -139,6 +140,8 @@ SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
 }
 # Leave ~10% headroom so transient bursts don't trip Slack's 429.
 RATE_LIMIT_HEADROOM = 0.9
+
+ALL_CHANNEL_API_TYPES = {"public_channel", "private_channel"}
 
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
 
@@ -518,6 +521,23 @@ class SlackConnector(BaseConnector):
                 self.workspace_domain = team.get("domain")
                 self.team_id = team.get("id")
                 self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
+
+            # Fallback: extract workspace_domain from auth.test if team.info failed
+            if not self.workspace_domain:
+                try:
+                    auth_resp = await ds.auth_test()
+                    if auth_resp and auth_resp.success:
+                        auth_url = auth_resp.data.get("url", "")
+                        if auth_url:
+                            host = urlparse(auth_url).hostname or ""
+                            if host.endswith(".slack.com"):
+                                self.workspace_domain = host.replace(".slack.com", "")
+                                self.logger.info(
+                                    f"Resolved workspace_domain from auth.test: "
+                                    f"{self.workspace_domain}"
+                                )
+                except Exception as exc:
+                    self.logger.warning(f"auth.test fallback failed: {exc}")
 
             self.logger.info("✅ Slack connector initialised")
             return True
@@ -929,13 +949,21 @@ class SlackConnector(BaseConnector):
             elif op == FilterOperator.NOT_IN:
                 exclude_ids = set(ch_filter.get_value() or [])
 
-        # Apply channel_types filter (DMs not supported — only public, private channels)
+        # Apply channel_types filter (DMs not supported — only public, private channels).
+        # NOT_IN is inverted to IN against the fixed 2-type universe.
+        # Empty value = no explicit selection → default to all types.
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[set[str]] = None
+        allowed_types: set[str] | None = None
         if ch_types_filter is not None:
-            allowed_types = set(ch_types_filter.get_value() or [])
-        if allowed_types:
-            allowed_types = allowed_types - {"im", "mpim"}
+            raw = set(ch_types_filter.get_value() or []) - {"im", "mpim"}
+            if raw:
+                if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
+                    allowed_types = ALL_CHANNEL_API_TYPES - raw
+                else:
+                    allowed_types = raw
+                if not allowed_types:
+                    self.logger.info("channel_types filter excludes all types — nothing to sync")
+                    return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel"
 
         # Clear channel caches so stale entries from a previous sync (with different
@@ -1432,6 +1460,30 @@ class SlackConnector(BaseConnector):
         ]
         return f"Reactions: {', '.join(parts)}"
 
+    def _format_mentioned_users_line(
+        self,
+        raw_text: str,
+        ctx: ProcessingContext,
+    ) -> str | None:
+        """Format <@U…> mentions with resolved id/email for block text (indexing/retrieval)."""
+        mentioned_ids = list(dict.fromkeys(self._extract_user_mentions(raw_text or "")))
+        if not mentioned_ids:
+            return None
+        parts: list[str] = []
+        for uid in mentioned_ids:
+            name = (
+                ctx.user_id_to_name.get(uid)
+                or ctx.user_id_to_email.get(uid)
+                or uid
+            )
+            segment = f"{name} (ID: {uid}"
+            email = (ctx.user_id_to_email.get(uid) or "").strip()
+            if email:
+                segment += f", Email: {email}"
+            segment += ")"
+            parts.append(segment)
+        return f"Mentioned Users: {'; '.join(parts)}"
+
     def _build_message_block(
         self,
         msg: dict[str, Any],
@@ -1463,12 +1515,25 @@ class SlackConnector(BaseConnector):
             or self._bot_display_name(msg)
             or user_id
         )
+        author_email = (ctx.user_id_to_email.get(user_id) or "").strip() or None
         if author_name and text:
             block_data = f"**{author_name}**: {text}"
         elif author_name:
             block_data = f"**{author_name}**:"
         else:
             block_data = text or ""
+
+        author_meta: list[str] = []
+        if user_id:
+            author_meta.append(f"Author ID: {user_id}")
+        if author_email:
+            author_meta.append(f"Author Email: {author_email}")
+        if author_meta:
+            block_data = f"{block_data}\n\n{', '.join(author_meta)}"
+
+        mentioned_line = self._format_mentioned_users_line(msg.get("text", ""), ctx)
+        if mentioned_line:
+            block_data = f"{block_data}\n\n{mentioned_line}"
 
         src_ts_ms = int(float(ts) * 1000) if ts else None
         is_edited = "edited" in msg
@@ -1784,7 +1849,6 @@ class SlackConnector(BaseConnector):
                 is_reply=True,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
-                author_id=burst_authors[0] if burst_authors else "",
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
@@ -2168,7 +2232,6 @@ class SlackConnector(BaseConnector):
                 content=aggregated_text,
                 mentioned_user_ids=list(mentioned_user_ids),
                 mentioned_group_ids=list(mentioned_group_ids),
-                author_id=burst_authors[0] if burst_authors else "",
                 start_ts=first_ts,
                 end_ts=last_ts,
                 inherit_permissions=True,
@@ -2327,8 +2390,6 @@ class SlackConnector(BaseConnector):
                 mentioned_user_ids=mentioned_user_ids,
                 mentioned_group_ids=mentioned_group_ids,
                 is_edited=is_edited,
-                author_id=msg.get("user", ""),
-                author_email=ctx.user_id_to_email.get(msg.get("user", "")),
                 start_ts=ts,
                 end_ts=ts,
                 inherit_permissions=True,
@@ -2652,7 +2713,7 @@ class SlackConnector(BaseConnector):
                 mentioned_user_ids=self._extract_user_mentions(text),  # Keep original IDs for edges
                 mentioned_group_ids=self._extract_channel_mentions(text),  # Keep original IDs for edges
                 is_edited=is_edited,
-                author_id=user_id,
+                involved_user_source_ids=[user_id] if user_id else [],
                 # Hierarchy
                 inherit_permissions=True,
                 preview_renderable=False,
@@ -3304,7 +3365,6 @@ class SlackConnector(BaseConnector):
                 is_edited=is_edited,
                 start_ts=ts,
                 end_ts=ts,
-                author_id=md.get("user", ""),
                 inherit_permissions=True,
                 preview_renderable=False,
                 block_containers=bc,
@@ -3596,8 +3656,8 @@ class SlackConnector(BaseConnector):
 
     @staticmethod
     def _extract_user_mentions(text: str) -> list[str]:
-        """Extract Slack user IDs from <@U…> / <@W…> syntax."""
-        return re.findall(r"<@([UW]\w+)>", text)
+        """Extract Slack user IDs from <@U…> / <@W…> / <@U…|label> syntax."""
+        return re.findall(r"<@([UW]\w+)(?:\|[^>]+)?>", text)
 
     async def _warm_user_cache_for_messages(
         self,
@@ -3613,18 +3673,23 @@ class SlackConnector(BaseConnector):
         cache and the per-batch ``ProcessingContext`` snapshot so block-building
         within the same batch sees the freshly-resolved names.
         """
-        seen = self.user_id_to_name_cache
+        seen_names = self.user_id_to_name_cache
         ctx_names = ctx.user_id_to_name if ctx is not None else None
+        ctx_emails = ctx.user_id_to_email if ctx is not None else None
         unknown: set[str] = set()
         for m in msgs:
-            text = m.get("text") or ""
-            if "<@" not in text:
-                continue
-            for match in _USER_MENTION_RE.finditer(text):
-                uid = match.group(1)
-                if uid in seen:
-                    continue
-                if ctx_names is not None and uid in ctx_names:
+            candidate_ids: set[str] = set()
+            author_uid = m.get("user")
+            if author_uid:
+                candidate_ids.add(author_uid)
+            candidate_ids.update(self._extract_user_mentions(m.get("text") or ""))
+            for uid in candidate_ids:
+                has_name = uid in seen_names or (ctx_names is not None and uid in ctx_names)
+                has_email = bool(
+                    self.user_id_to_email_cache.get(uid)
+                    or (ctx_emails is not None and ctx_emails.get(uid))
+                )
+                if has_name and has_email:
                     continue
                 unknown.add(uid)
 
@@ -3919,6 +3984,8 @@ class SlackConnector(BaseConnector):
             if not burst_msgs:
                 raise HTTPException(404, f"No messages found for burst: {ext_id}")
 
+            await self._warm_user_cache_for_messages(burst_msgs, ctx)
+
             # Resolve file ChildRecords from DB, keyed by message ts
             file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
@@ -3975,6 +4042,8 @@ class SlackConnector(BaseConnector):
             if not burst_msgs:
                 raise HTTPException(404, f"No messages found for thread burst: {ext_id}")
 
+            await self._warm_user_cache_for_messages(burst_msgs, ctx)
+
             file_children_by_ts: dict[str, list[ChildRecord]] = {}
             try:
                 async with self.data_store_provider.transaction() as tx:
@@ -4030,6 +4099,8 @@ class SlackConnector(BaseConnector):
 
             if not msg:
                 raise HTTPException(404, f"Message not found: {ext_id}")
+
+            await self._warm_user_cache_for_messages([msg], ctx)
 
             # Resolve file ChildRecords
             file_children: list[ChildRecord] = []

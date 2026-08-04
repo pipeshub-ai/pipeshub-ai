@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import logging
 import os
 import traceback
 from collections.abc import AsyncGenerator
@@ -17,7 +18,6 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
 from app.agents.registry.toolset_registry import get_toolset_registry
-from app.agents.tools.registry import _global_tools_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
@@ -448,10 +448,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
-    # Log tool count from in-memory registry
-    tool_count = len(_global_tools_registry.list_tools())
-    logger.info(f"✅ {tool_count} tools available from in-memory registry")
-
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
     oauth_registry = get_oauth_config_registry()
@@ -616,12 +612,12 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).error("Health check failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "fail",
-                "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

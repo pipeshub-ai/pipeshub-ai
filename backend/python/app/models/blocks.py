@@ -287,18 +287,20 @@ class SemanticMetadata(BaseModel):
     def to_llm_context(self) -> list[str]:
         lines = []
         if self.summary:
-            lines.append(f"Summary         : {self.summary}")
+            lines.append(f"Summary: {self.summary}")
         if self.topics:
-            lines.append(f"Topics          : {self.topics}")
+            lines.append(f"Topics: {self.topics}")
+        cat_parts = []
         if self.categories:
-            lines.append(f"Category        : {self.categories[0]}")
+            cat_parts.append(self.categories[0])
         if self.sub_category_level_1:
-            lines.append(f"Sub-categories  :\n  - Level 1: {self.sub_category_level_1}")
+            cat_parts.append(self.sub_category_level_1)
         if self.sub_category_level_2:
-            lines.append(f"  - Level 2: {self.sub_category_level_2}")
+            cat_parts.append(self.sub_category_level_2)
         if self.sub_category_level_3:
-            lines.append(f"  - Level 3: {self.sub_category_level_3}")
-
+            cat_parts.append(self.sub_category_level_3)
+        if cat_parts:
+            lines.append(f"Category: {' > '.join(cat_parts)}")
         return lines
 
 class Block(BaseModel):

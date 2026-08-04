@@ -118,7 +118,7 @@ export type SidebarReindexHandler = (
 
 export type NodeOrigin = 'COLLECTION' | 'CONNECTOR';
 export type PermissionRole = 'OWNER' | 'READER' | 'WRITER';
-export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
+export type RecordType = 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET' | 'ARTIFACT';
 export type IndexingStatus =
   | 'COMPLETED'
   | 'IN_PROGRESS'
@@ -206,6 +206,7 @@ export interface KnowledgeHubNode {
   updatedAt?: number;
   webUrl?: string;
   recordType?: RecordType | null;
+  recordGroupType?: string | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
   sizeInBytes?: number | null;
@@ -477,7 +478,7 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
-    recordType: 'FILE' | 'WEBPAGE' | 'MESSAGE' | 'EMAIL' | 'TICKET';
+    recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;
     updatedAtTimestamp: number;

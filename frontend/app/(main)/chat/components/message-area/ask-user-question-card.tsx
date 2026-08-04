@@ -144,15 +144,17 @@ export function AskUserQuestionCard({
   );
 
   const handleRadioChange = useCallback(
-    (q: AskUserQuestionItem, value: string) => {
+    (q: AskUserQuestionItem, indexStr: string) => {
       const cleanOptions = stripCatchAlls(q.options);
       const allOptions = [...cleanOptions, SOMETHING_ELSE_OPTION];
-      const opt = allOptions.find((o) => o.id === value);
+      const idx = parseInt(indexStr, 10);
+      const opt = allOptions[idx];
+      if (!opt) return;
       const userInputs: Record<string, string> = {};
-      if (opt?.isUserInput) {
-        userInputs[value] = answers[q.uuid]?.userInputs?.[value] ?? '';
+      if (opt.isUserInput) {
+        userInputs[opt.id] = answers[q.uuid]?.userInputs?.[opt.id] ?? '';
       }
-      setSelectionForQuestion(q, value ? [value] : [], userInputs);
+      setSelectionForQuestion(q, [opt.id], userInputs);
     },
     [answers, setSelectionForQuestion]
   );
@@ -385,12 +387,15 @@ export function AskUserQuestionCard({
   if (!currentQ) return null;
 
   const selectedIds = answers[currentQ.uuid]?.selectedOptionIds ?? [];
-  const singleValue = currentQ.multiSelect ? '' : selectedIds[0] ?? '';
   const cleanOptions = stripCatchAlls(currentQ.options);
   const augmentedOptions = [...cleanOptions, SOMETHING_ELSE_OPTION];
+  const selectedRadioIndex = currentQ.multiSelect
+    ? -1
+    : augmentedOptions.findIndex((o) => o.id === selectedIds[0]);
+  const singleValue = selectedRadioIndex >= 0 ? String(selectedRadioIndex) : '';
   const somethingElseChosen = currentQ.multiSelect
     ? selectedIds.includes(SOMETHING_ELSE_ID)
-    : singleValue === SOMETHING_ELSE_ID;
+    : selectedIds[0] === SOMETHING_ELSE_ID;
   const somethingElseText =
     (answers[currentQ.uuid]?.userInputs?.[SOMETHING_ELSE_ID] ?? '').trim();
   const isSomethingElseSelected = somethingElseChosen && somethingElseText.length > 0;
@@ -444,12 +449,12 @@ export function AskUserQuestionCard({
         {currentQ.multiSelect ? (
           <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
           <Flex direction="column" gap="3">
-            {augmentedOptions.map((opt) => {
+            {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
               const isDisabled = false;
               return (
-                <Flex key={opt.id} direction="column" gap="2">
+                <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
                     style={{
                       cursor: isDisabled ? 'not-allowed' : 'pointer',
@@ -494,29 +499,37 @@ export function AskUserQuestionCard({
           >
             <div style={{ maxHeight: '160px', overflowY: 'auto', paddingRight: 'var(--space-2)' }}>
             <Flex direction="column" gap="3">
-              {augmentedOptions.map((opt) => {
+              {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
                 const isDisabled = isSomethingElseSelected && !isSynthetic;
+                const radioValue = String(idx);
+                const isSelected = singleValue === radioValue;
                 return (
                   <Flex
-                    key={opt.id}
+                    key={`${opt.id}-${idx}`}
                     direction="column"
                     gap="2"
                     style={{ opacity: isDisabled ? 0.45 : 1 }}
                   >
-                    <Flex align="start" gap="3" style={{ cursor: isDisabled ? 'not-allowed' : 'pointer' }}>
-                      <RadioGroup.Item
-                        value={opt.id}
-                        disabled={isDisabled}
-                        style={{ marginTop: 2 }}
-                      />
-                      <Flex direction="column" gap="1" style={{ flex: 1 }}>
-                        <Text weight="medium">
-                          {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
-                        </Text>
+                    <label
+                      style={{
+                        cursor: isDisabled ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      <Flex align="start" gap="3">
+                        <RadioGroup.Item
+                          value={radioValue}
+                          disabled={isDisabled}
+                          style={{ marginTop: 2 }}
+                        />
+                        <Flex direction="column" gap="1" style={{ flex: 1 }}>
+                          <Text weight="medium">
+                            {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
+                          </Text>
+                        </Flex>
                       </Flex>
-                    </Flex>
-                    {singleValue === opt.id && opt.isUserInput ? (
+                    </label>
+                    {isSelected && opt.isUserInput ? (
                       <TextArea
                         placeholder={isSynthetic ? t('askUserQuestion.describeYourAnswer') : t('askUserQuestion.typeYourAnswer')}
                         value={answers[currentQ.uuid]?.userInputs?.[opt.id] ?? ''}

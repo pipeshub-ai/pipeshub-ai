@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -11,11 +12,41 @@ import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
+  humanizeProviderKey,
 } from '@/chat/constants';
 import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { resolveLlmProviderIconPath, AGENT_LLM_FALLBACK_ICON } from '@/lib/utils/llm-provider-icons';
-import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
+import {
+  DEFAULT_REASONING_EFFORT,
+  normalizeReasoningEffort,
+  type AvailableLlmModel,
+  type ModelOverride,
+  type ReasoningEffort,
+} from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+
+// Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
+// render a matching "· High" style indicator without redefining labels.
+//
+// "none" is intentionally NOT offered here: some reasoning-capable models
+// (e.g. ChatOpenAI with reasoning_effort="none") are prone to hallucinating
+// malformed/oversized tool-call names once reasoning is fully disabled,
+// which can crash the whole turn. The backend still accepts "none" on the
+// wire (old persisted conversations/agents may carry it) and silently
+// upgrades it to "low" rather than rejecting it — see
+// `_reasoning_effort_kwargs` in `app/utils/aimodels.py`.
+export const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; labelKey: string; defaultLabel: string }[] = [
+  { value: 'low', labelKey: 'chat.reasoningEffort.low', defaultLabel: 'Low' },
+  { value: 'medium', labelKey: 'chat.reasoningEffort.medium', defaultLabel: 'Medium' },
+  { value: 'high', labelKey: 'chat.reasoningEffort.high', defaultLabel: 'High' },
+  { value: 'max', labelKey: 'chat.reasoningEffort.max', defaultLabel: 'Max' },
+];
+
+export function getReasoningEffortLabel(t: TFunction, value: ReasoningEffort): string {
+  const normalized = normalizeReasoningEffort(value) ?? value;
+  const option = REASONING_EFFORT_OPTIONS.find((o) => o.value === normalized);
+  return option ? t(option.labelKey, option.defaultLabel) : normalized;
+}
 
 interface ModelSelectorPanelProps {
   /** Currently selected model override (null = use default from API) */
@@ -55,6 +86,14 @@ export function ModelSelectorPanel({
   // writes results — no duplicate network calls.
   const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
   const models: AvailableLlmModel[] = cached?.models ?? [];
+
+  const reasoningEffort = normalizeReasoningEffort(useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null));
+  const setReasoningEffortForCtx = useChatStore((s) => s.setReasoningEffortForCtx);
+  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
+
+  useEffect(() => {
+    hydrateReasoningEffortForCtx(ctxKey);
+  }, [ctxKey, hydrateReasoningEffortForCtx]);
 
   const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +163,19 @@ export function ModelSelectorPanel({
   // because comma-separated configs share the same modelKey.
   const activeKey = selectedModel?.modelKey ?? null;
   const activeName = selectedModel?.modelName ?? null;
+  const activeModel = models.find(
+    (model) => model.modelKey === activeKey && model.modelName === activeName
+  );
+  const showReasoningEffort = Boolean(activeModel?.isReasoning);
+
+  const handleReasoningEffortSelect = useCallback(
+    (value: ReasoningEffort) => {
+      // Clicking the already-active pill clears the override (back to the
+      // model's own default) rather than getting stuck once selected.
+      setReasoningEffortForCtx(ctxKey, reasoningEffort === value ? null : value);
+    },
+    [ctxKey, reasoningEffort, setReasoningEffortForCtx]
+  );
 
   return (
     <Flex direction="column" gap="4" style={{ flex: 1, overflow: 'hidden' }}>
@@ -154,6 +206,15 @@ export function ModelSelectorPanel({
             </span>
           )}
         </Flex>
+      )}
+
+      {/* Reasoning effort selector — rendered above the scrollable list so it
+          stays visible regardless of how many models the panel contains. */}
+      {!isLoading && !error && showReasoningEffort && (
+        <ReasoningEffortSelector
+          value={reasoningEffort}
+          onSelect={handleReasoningEffortSelect}
+        />
       )}
 
       {/* Body */}
@@ -221,6 +282,77 @@ export function ModelSelectorPanel({
   );
 }
 
+// ─── Reasoning effort selector (shown only for isReasoning models) ───
+
+interface ReasoningEffortSelectorProps {
+  /** `null` = no explicit override, model/provider uses its own default. */
+  value: ReasoningEffort | null;
+  onSelect: (value: ReasoningEffort) => void;
+}
+
+function ReasoningEffortSelector({ value, onSelect }: ReasoningEffortSelectorProps) {
+  const { t } = useTranslation();
+  return (
+    <Flex
+      direction="column"
+      gap="2"
+      style={{
+        padding: 'var(--space-3) var(--space-4)',
+        borderRadius: 'var(--radius-1)',
+        border: '1px solid var(--olive-3)',
+        backgroundColor: 'var(--olive-2)',
+        marginTop: 'var(--space-1)',
+      }}
+    >
+      <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        {t('chat.reasoningEffort.label', 'Reasoning Effort')}
+      </Text>
+      <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('chat.reasoningEffort.label', 'Reasoning Effort')}>
+        {REASONING_EFFORT_OPTIONS.map((option) => {
+          const isActive = value === option.value || (!value && option.value === DEFAULT_REASONING_EFFORT);
+          return (
+            <Flex
+              key={option.value}
+              align="center"
+              justify="center"
+              role="radio"
+              aria-checked={isActive}
+              tabIndex={0}
+              onClick={() => onSelect(option.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelect(option.value);
+                }
+              }}
+              style={{
+                padding: '4px var(--space-3)',
+                borderRadius: 'var(--radius-6)',
+                border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--slate-7)',
+                backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              <Text
+                size="1"
+                weight={isActive ? 'medium' : 'regular'}
+                style={{ color: isActive ? 'var(--accent-11)' : 'var(--slate-11)' }}
+              >
+                {t(option.labelKey, option.defaultLabel)}
+              </Text>
+            </Flex>
+          );
+        })}
+      </Flex>
+      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        {value
+          ? t('chat.reasoningEffort.overrideHint', 'Click again to use the default.')
+          : t('chat.reasoningEffort.defaultHint', 'Defaults to High when not set.')}
+      </Text>
+    </Flex>
+  );
+}
+
 // ─── Individual model item (card style matching QueryModePanel) ──────
 
 interface ModelItemProps {
@@ -232,14 +364,14 @@ interface ModelItemProps {
 function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   // Provider always comes through from the API. If we don't have a curated
-  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to the raw
-  // provider string (case-insensitive lookup first) rather than a placeholder.
+  // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to splitting
+  // the raw camelCase provider key into words rather than a placeholder.
   const providerKey = Object.keys(PROVIDER_FRIENDLY_NAMES).find(
     (k) => k.toLowerCase() === model.provider?.toLowerCase(),
   );
   const providerName = providerKey
     ? PROVIDER_FRIENDLY_NAMES[providerKey]
-    : (model.provider?.trim() || '');
+    : humanizeProviderKey(model.provider?.trim() || '');
   // Description is optional — only render when we actually have one so we
   // don't show placeholder text for models that aren't in the curated map.
   const description = MODEL_DESCRIPTIONS[model.modelName];

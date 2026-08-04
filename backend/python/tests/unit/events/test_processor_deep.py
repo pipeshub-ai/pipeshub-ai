@@ -482,7 +482,7 @@ class TestProcessImage:
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
             recordName="photo.png", mimeType="image/png",
         ))
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.update_node = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
@@ -711,11 +711,10 @@ class TestProcessPdfWithPymupdf:
 class TestProcessPdfWithDocling:
     @pytest.mark.asyncio
     async def test_success(self):
-        """Docling PDF processing: parse, create blocks, index."""
+        """Docling PDF processing: process_pdf then index."""
         proc = _make_processor()
 
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pdf"))
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
@@ -731,9 +730,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_parse_returns_none(self):
-        """When docling parse_pdf returns None, yields docling_failed."""
+        """When docling process_pdf returns None, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
@@ -743,23 +742,20 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):
-        """When docling create_blocks returns None, yields docling_failed."""
+        """When docling process_pdf returns None, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
         )
-        assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         """Missing record yields indexing_complete."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         events = await _collect_events(
@@ -1006,16 +1002,15 @@ class TestMarkRecord:
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.update_node = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
-        proc.graph_provider.batch_update_nodes.assert_called_once()
-        call_args = proc.graph_provider.batch_update_nodes.call_args[0]
-        doc = call_args[0][0]
-        assert doc["indexingStatus"] == "EMPTY"
-        assert doc["isDirty"] is False
+        proc.graph_provider.update_node.assert_awaited_once()
+        fields = proc.graph_provider.update_node.await_args.args[2]
+        assert fields["indexingStatus"] == "EMPTY"
+        assert fields["isDirty"] is False
 
     @pytest.mark.asyncio
     async def test_record_not_found_raises(self):
@@ -1030,18 +1025,19 @@ class TestMarkRecord:
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_update_failure_logs_warning(self):
-        """_mark_record logs warning when batch_update_nodes returns False."""
+    async def test_update_failure_logs_and_returns(self):
+        # Failed status writes are non-fatal: log a warning and return.
         from app.config.constants.arangodb import ProgressStatus
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        proc.graph_provider.update_node = AsyncMock(return_value=False)
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("r1", ProgressStatus.EMPTY)
 
         proc.logger.warning.assert_called()
+        assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
 
 # ============================================================================
@@ -1162,7 +1158,8 @@ class TestEnhanceTablesWithLlm:
         bc = MagicMock(spec=BlocksContainer)
         bc.block_groups = [table_bg]
 
-        await proc._enhance_tables_with_llm(bc)
+        from app.utils.table_enrichment import enhance_tables_with_llm
+        await enhance_tables_with_llm(bc, proc.config_service, proc.logger, llm=MagicMock())
         # No error raised
 
 
@@ -1407,8 +1404,7 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_exception_in_pipeline(self):
         """Exception during pipeline processing yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
@@ -1429,8 +1425,7 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_appends_pdf_extension(self):
         """If record name doesn't end in .pdf, it gets appended."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="report")
         )
@@ -1443,7 +1438,7 @@ class TestProcessPdfWithDoclingAdditional:
                 proc.process_pdf_with_docling("report", "r1", b"data", "vr1")
             )
 
-        call_args = proc.docling_client.parse_pdf.call_args[0]
+        call_args = proc.docling_client.process_pdf.call_args[0]
         assert call_args[0] == "report.pdf"
 
 
@@ -1845,27 +1840,24 @@ class TestProcessBlocksAdditional:
 # process_image — batch_update_nodes failure
 # ============================================================================
 
-class TestProcessImageBatchUpdateFailure:
+class TestProcessImageStatusUpdateFailure:
     @pytest.mark.asyncio
-    async def test_non_multimodal_update_failure_yields_events(self):
-        """When batch_update_nodes returns False during non-multimodal status update, yields events."""
+    async def test_non_multimodal_update_failure_still_completes(self):
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
             recordName="photo.png", mimeType="image/png",
         ))
-        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+        proc.graph_provider.update_node = AsyncMock(return_value=False)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
              patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             mock_emb.return_value = {"isMultimodal": False}
 
-            events = await _collect_events(
-                proc.process_image("r1", b"imgdata", "vr1")
-            )
+            events = await _collect_events(proc.process_image("r1", b"imgdata", "vr1"))
 
-        assert len(events) == 2
+        assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
         proc.logger.warning.assert_called()
 
 

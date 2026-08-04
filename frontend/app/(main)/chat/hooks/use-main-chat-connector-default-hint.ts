@@ -5,5 +5,7 @@ import { useIsMainChatRoute } from '@/chat/hooks/use-is-main-chat-route';
 
 /** True on main `/chat` with no `agentId` (assistant / universal agent picker). */
 export function useMainChatConnectorDefaultHint(): boolean {
-  return useIsMainChatRoute() && !useEffectiveAgentId();
+  const isMain = useIsMainChatRoute();
+  const agentId = useEffectiveAgentId();
+  return isMain && !agentId;
 }

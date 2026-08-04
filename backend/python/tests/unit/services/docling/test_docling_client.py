@@ -2,6 +2,7 @@
 Tests for DoclingClient:
   - __init__ (URL, timeout, retry config)
   - _parse_blocks_container (dict and string input)
+  - process_pdf (single multipart POST /process-pdf, response parsing, size validation)
   - parse_pdf (multipart POST /parse-pdf, response parsing, retry, size validation)
   - create_blocks (POST /create-blocks)
   - health_check (GET /health)
@@ -299,6 +300,120 @@ class TestParsePdf:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
             result = await client.parse_pdf("doc.pdf", small_pdf)
+
+        assert result is None
+        assert mock_http.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_parse_with_page_range(self, client, small_pdf):
+        """page_range should be sent as start_page/end_page form fields."""
+        response_json = {"success": True, "parse_result": "partial-doc"}
+        mock_response = _make_response(status_code=200, json_data=response_json)
+
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch("asyncio.to_thread", side_effect=fake_to_thread):
+                result = await client.parse_pdf(
+                    "doc.pdf", small_pdf, page_range=(1, 10)
+                )
+
+        assert result == "partial-doc"
+        call_args = mock_http.post.call_args
+        form_data = call_args.kwargs["data"]
+        assert form_data["start_page"] == "1"
+        assert form_data["end_page"] == "10"
+
+
+# ===========================================================================
+# process_pdf
+# ===========================================================================
+
+
+class TestProcessPdf:
+    """Test process_pdf method."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_type_returns_none(self, client):
+        result = await client.process_pdf("doc.pdf", "not bytes")  # type: ignore
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_too_large_returns_none(self, client):
+        huge = b"x" * (101 * 1024 * 1024)
+        result = await client.process_pdf("doc.pdf", huge)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_uploads_pdf_once(self, client, small_pdf):
+        """A single multipart POST carries the whole PDF; the service batches internally."""
+        blocks_data = {"blocks": [], "block_groups": []}
+        mock_blocks = MagicMock()
+        mock_response = _make_response(
+            status_code=200,
+            json_data={"success": True, "block_containers": blocks_data},
+        )
+
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch("asyncio.to_thread", side_effect=fake_to_thread):
+                with patch.object(client, "_parse_blocks_container", return_value=mock_blocks):
+                    result = await client.process_pdf("doc.pdf", small_pdf)
+
+        assert result is mock_blocks
+        mock_http.post.assert_awaited_once()
+        call_args = mock_http.post.call_args
+        assert "/process-pdf" in call_args[0][0]
+        assert call_args.kwargs["data"] == {"record_name": "doc.pdf"}
+        assert call_args.kwargs["files"] == {
+            "file": ("doc.pdf", small_pdf, "application/pdf")
+        }
+
+    @pytest.mark.asyncio
+    async def test_service_error_response_returns_none(self, client, small_pdf):
+        mock_response = _make_response(
+            status_code=200, json_data={"success": False, "error": "process fail"}
+        )
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            with patch("asyncio.to_thread", side_effect=fake_to_thread):
+                result = await client.process_pdf("doc.pdf", small_pdf)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_http_error_retries(self, client, small_pdf):
+        client.max_retries = 2
+        client.retry_delay = 0.001
+
+        mock_response = _make_response(status_code=503, text="Service Unavailable")
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_response)
+
+        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await client.process_pdf("doc.pdf", small_pdf)
 
         assert result is None
         assert mock_http.post.await_count == 2

@@ -2,24 +2,16 @@
 Unit tests for ``app.agents.actions.util.blob_staging``.
 
 Covers:
-- ``conversation_upload_to_registry_entry`` mapping logic (incl. the
-  ``None``-on-missing-keys contract that ``outlook.stage_attachment_to_blob``
-  now relies on for safe unpacking).
 - ``_session_or_default`` borrow-vs-own session lifecycle (must NOT close
   an injected session; MUST close one it created itself even on error).
 - ``_get_storage_auth`` JWT minting + endpoint resolution failure modes.
 - ``fetch_blob_bytes`` for all three response shapes (raw bytes, JSON +
   signedUrl, JSON + base64) plus error paths and session-injection.
-- ``fetch_staged_document_bytes`` for the S3 fast path, error path, and
-  the scoped-fallback path — including the regression that an injected
-  session MUST be forwarded down to ``fetch_blob_bytes`` (the connection-
-  reuse change in ``upload_file_to_salesforce``).
 """
 
 from __future__ import annotations
 
 import base64
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -28,12 +20,9 @@ import pytest
 
 from app.agents.actions.util.blob_staging import (
     BlobStagingError,
-    StagedDocumentEntry,
     _get_storage_auth,
     _session_or_default,
-    conversation_upload_to_registry_entry,
     fetch_blob_bytes,
-    fetch_staged_document_bytes,
 )
 from app.config.constants.service import TokenScopes
 
@@ -102,138 +91,6 @@ def _mock_config_service(
     cfg = MagicMock()
     cfg.get_config = AsyncMock(side_effect=[secret_payload, endpoints_payload])
     return cfg
-
-
-# ============================================================================
-# conversation_upload_to_registry_entry
-# ============================================================================
-
-
-class TestConversationUploadToRegistryEntry:
-    def test_signed_url_yields_s3_storage_type(self):
-        mapped = conversation_upload_to_registry_entry(
-            {"documentId": "doc-1", "signedUrl": "https://s3.example/blob"},
-            filename="a.pdf",
-            mime_type="application/pdf",
-            size_bytes=128,
-        )
-        assert mapped is not None
-        doc_id, entry = mapped
-        assert isinstance(entry, StagedDocumentEntry)
-        assert doc_id == "doc-1"
-        assert entry.storage_type == "s3"
-        assert entry.download_url == "https://s3.example/blob"
-        assert entry.filename == "a.pdf"
-        assert entry.mime_type == "application/pdf"
-        assert entry.size_bytes == 128
-        assert entry.source is None
-
-    def test_download_url_only_yields_external_storage_type(self):
-        mapped = conversation_upload_to_registry_entry(
-            {"documentId": "doc-2", "downloadUrl": "http://cm.local/d/doc-2"},
-            filename="b.txt",
-            mime_type="text/plain",
-            size_bytes=10,
-        )
-        assert mapped is not None
-        doc_id, entry = mapped
-        assert doc_id == "doc-2"
-        assert entry.storage_type == "external"
-        assert entry.download_url == "http://cm.local/d/doc-2"
-
-    def test_signed_url_preferred_over_download_url(self):
-        mapped = conversation_upload_to_registry_entry(
-            {
-                "documentId": "doc-3",
-                "signedUrl": "https://s3.example/preferred",
-                "downloadUrl": "http://cm.local/d/doc-3",
-            },
-            filename="c",
-            mime_type="application/octet-stream",
-            size_bytes=1,
-        )
-        assert mapped is not None
-        _, entry = mapped
-        assert entry.download_url == "https://s3.example/preferred"
-        assert entry.storage_type == "s3"
-
-    def test_source_field_preserved(self):
-        mapped = conversation_upload_to_registry_entry(
-            {"documentId": "doc-4", "signedUrl": "https://s3/x"},
-            filename="d.eml",
-            mime_type="message/rfc822",
-            size_bytes=42,
-            source={
-                "platform": "outlook",
-                "message_id": "AAMk...",
-                "attachment_id": "att-1",
-            },
-        )
-        assert mapped is not None
-        _, entry = mapped
-        assert entry.source is not None
-        assert entry.source.platform == "outlook"
-        assert entry.source.message_id == "AAMk..."
-        assert entry.source.attachment_id == "att-1"
-
-    def test_source_extra_fields_preserved(self):
-        # Future producers (Drive, Box, ...) attach producer-specific
-        # breadcrumbs beyond the three named fields. StagedDocumentSource
-        # allows extras precisely so we don't need a schema bump per
-        # connector — the consumer never reads these anyway.
-        mapped = conversation_upload_to_registry_entry(
-            {"documentId": "doc-x", "signedUrl": "https://s3/x"},
-            filename="x",
-            mime_type="application/pdf",
-            size_bytes=1,
-            source={"platform": "drive", "file_id": "1abc", "revision_id": "r9"},
-        )
-        assert mapped is not None
-        _, entry = mapped
-        dumped = entry.source.model_dump()
-        assert dumped["file_id"] == "1abc"
-        assert dumped["revision_id"] == "r9"
-
-    def test_missing_document_id_returns_none(self):
-        # Regression: outlook.stage_attachment_to_blob now unpacks this result
-        # only after a None-guard. If this contract changes, the guard breaks.
-        result = conversation_upload_to_registry_entry(
-            {"signedUrl": "https://s3/x"},
-            filename="x",
-            mime_type="application/pdf",
-            size_bytes=1,
-        )
-        assert result is None
-
-    def test_missing_both_urls_returns_none(self):
-        result = conversation_upload_to_registry_entry(
-            {"documentId": "doc-5"},
-            filename="x",
-            mime_type="application/pdf",
-            size_bytes=1,
-        )
-        assert result is None
-
-    def test_empty_string_document_id_returns_none(self):
-        result = conversation_upload_to_registry_entry(
-            {"documentId": "", "signedUrl": "https://s3/x"},
-            filename="x",
-            mime_type="application/pdf",
-            size_bytes=1,
-        )
-        assert result is None
-
-    def test_document_id_coerced_to_str(self):
-        mapped = conversation_upload_to_registry_entry(
-            {"documentId": 12345, "signedUrl": "https://s3/x"},
-            filename="x",
-            mime_type="application/pdf",
-            size_bytes=1,
-        )
-        assert mapped is not None
-        doc_id, _ = mapped
-        assert doc_id == "12345"
-        assert isinstance(doc_id, str)
 
 
 # ============================================================================
@@ -492,167 +349,3 @@ class TestFetchBlobBytes:
         injected.close.assert_not_called()
 
 
-# ============================================================================
-# fetch_staged_document_bytes
-# ============================================================================
-
-
-def _valid_entry(
-    *,
-    storage_type: str = "s3",
-    download_url: str = "https://s3.example/object",
-    filename: str = "a.pdf",
-    mime_type: str = "application/pdf",
-    size_bytes: int = 1,
-) -> dict[str, Any]:
-    """Build a complete registry-entry dict for fetch tests.
-
-    ``fetch_staged_document_bytes`` validates its ``entry`` kwarg into a
-    ``StagedDocumentEntry`` at the boundary (so checkpointer round-trips
-    that downgrade models to dicts still work). Tests therefore have to
-    supply every required field; this helper keeps the per-test seeds
-    focused on the field actually under test.
-    """
-    return {
-        "storage_type": storage_type,
-        "download_url": download_url,
-        "filename": filename,
-        "mime_type": mime_type,
-        "size_bytes": size_bytes,
-    }
-
-
-class TestFetchStagedDocumentBytes:
-    @pytest.mark.asyncio
-    async def test_s3_path_direct_get(self):
-        cfg = _mock_config_service()
-        resp = _mock_response(read_bytes=b"s3-payload")
-        session = _mock_session(response=resp)
-        with patch(
-            "app.agents.actions.util.blob_staging.aiohttp.ClientSession",
-            return_value=session,
-        ):
-            data = await fetch_staged_document_bytes(
-                document_id="doc-1",
-                entry=_valid_entry(storage_type="s3"),
-                org_id="org-1",
-                config_service=cfg,
-            )
-        assert data == b"s3-payload"
-        # Should NOT have minted a storage JWT — the S3 branch skips that.
-        cfg.get_config.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_s3_path_accepts_validated_model(self):
-        # Producers (outlook.stage_attachment_to_blob, etc.) write a
-        # StagedDocumentEntry directly into chat_state — the function
-        # must honor it without re-validating it through dict-coercion.
-        cfg = _mock_config_service()
-        resp = _mock_response(read_bytes=b"model-payload")
-        session = _mock_session(response=resp)
-        with patch(
-            "app.agents.actions.util.blob_staging.aiohttp.ClientSession",
-            return_value=session,
-        ):
-            data = await fetch_staged_document_bytes(
-                document_id="doc-1",
-                entry=StagedDocumentEntry(**_valid_entry(storage_type="s3")),
-                org_id="org-1",
-                config_service=cfg,
-            )
-        assert data == b"model-payload"
-
-    @pytest.mark.asyncio
-    async def test_malformed_entry_dict_rejected_at_boundary(self):
-        # A dict missing required fields (e.g. download_url) used to
-        # surface as a RuntimeError from the S3 branch; with the
-        # boundary coercion it now fails fast as a ValidationError,
-        # which the salesforce consumer wraps into "corrupt_registry_entry".
-        cfg = _mock_config_service()
-        with pytest.raises(ValueError):  # pydantic.ValidationError is a ValueError
-            await fetch_staged_document_bytes(
-                document_id="doc-1",
-                entry={"storage_type": "s3"},
-                org_id="org-1",
-                config_service=cfg,
-            )
-
-    @pytest.mark.asyncio
-    async def test_s3_path_non_200_raises_runtime_error(self):
-        cfg = _mock_config_service()
-        resp = _mock_response(status=500, text_data="bad")
-        session = _mock_session(response=resp)
-        with patch(
-            "app.agents.actions.util.blob_staging.aiohttp.ClientSession",
-            return_value=session,
-        ):
-            with pytest.raises(RuntimeError, match="HTTP 500"):
-                await fetch_staged_document_bytes(
-                    document_id="doc-1",
-                    entry=_valid_entry(storage_type="s3"),
-                    org_id="org-1",
-                    config_service=cfg,
-                )
-
-    @pytest.mark.asyncio
-    async def test_external_storage_type_delegates_to_fetch_blob_bytes(self):
-        cfg = _mock_config_service()
-        with patch(
-            "app.agents.actions.util.blob_staging.fetch_blob_bytes",
-            new=AsyncMock(return_value=b"scoped-bytes"),
-        ) as mock_fbb:
-            data = await fetch_staged_document_bytes(
-                document_id="doc-1",
-                entry=_valid_entry(storage_type="external"),
-                org_id="org-1",
-                config_service=cfg,
-            )
-        assert data == b"scoped-bytes"
-        mock_fbb.assert_awaited_once_with(
-            org_id="org-1",
-            config_service=cfg,
-            storage_document_id="doc-1",
-            session=None,
-        )
-
-    @pytest.mark.asyncio
-    async def test_injected_session_forwarded_to_fetch_blob_bytes(self):
-        # Regression: ``upload_file_to_salesforce`` opens one session for
-        # the whole batch and passes it down. If this kwarg isn't forwarded
-        # to ``fetch_blob_bytes``, the scoped-path fetches silently revert
-        # to per-call sessions and you lose intra-batch keep-alive.
-        cfg = _mock_config_service()
-        injected = MagicMock(spec=aiohttp.ClientSession)
-        with patch(
-            "app.agents.actions.util.blob_staging.fetch_blob_bytes",
-            new=AsyncMock(return_value=b"x"),
-        ) as mock_fbb:
-            await fetch_staged_document_bytes(
-                document_id="doc-1",
-                entry=_valid_entry(storage_type="external"),
-                org_id="org-1",
-                config_service=cfg,
-                session=injected,
-            )
-        assert mock_fbb.await_args.kwargs["session"] is injected
-
-    @pytest.mark.asyncio
-    async def test_injected_session_used_on_s3_path(self):
-        # On the S3 fast path the helper makes the GET itself, so it
-        # must also honor the injected session rather than spinning up
-        # a fresh one.
-        cfg = _mock_config_service()
-        resp = _mock_response(read_bytes=b"s3-bytes")
-        injected = _mock_session(response=resp)
-        injected.close = AsyncMock()
-
-        data = await fetch_staged_document_bytes(
-            document_id="doc-1",
-            entry=_valid_entry(storage_type="s3"),
-            org_id="org-1",
-            config_service=cfg,
-            session=injected,
-        )
-        assert data == b"s3-bytes"
-        injected.get.assert_called_once()
-        injected.close.assert_not_called()

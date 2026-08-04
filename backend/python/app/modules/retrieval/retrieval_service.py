@@ -325,7 +325,8 @@ class RetrievalService:
         filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
-        knowledge_search:bool = False,
+        knowledge_search: bool = False,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
 
@@ -348,7 +349,9 @@ class RetrievalService:
                     filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
+                self._get_accessible_virtual_ids_task(
+                    user_id, org_id, filters, self.graph_provider, time_range=time_range
+                ),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
@@ -359,6 +362,9 @@ class RetrievalService:
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
+
+            # Graph key for KH permission_role checks (Location trails).
+            user_key = (user.get("_key") or user.get("id")) if user else None
 
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
@@ -537,7 +543,44 @@ class RetrievalService:
                     self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
                     return {}
 
-            if file_record_ids_to_fetch or mail_record_ids_to_fetch:
+            async def fetch_locations() -> dict[str, str]:
+                """Resolve permission-aware Location trails for retrieved records.
+
+                One adjacency query + KH permission_role batch on ancestors.
+                Soft-fail is App-only (never unfiltered RG/parent ids).
+                """
+                try:
+                    from app.agents.actions.knowledge_graph.location import (
+                        resolve_ancestor_locations,
+                    )
+
+                    rids = list(unique_record_ids)
+                    if not rids:
+                        return {}
+
+                    result = await resolve_ancestor_locations(
+                        rids,
+                        graph_provider=self.graph_provider,
+                        org_id=org_id,
+                        user_key=user_key or "",
+                        record_docs=record_id_to_record_map,
+                    )
+                    self.logger.info(
+                        "fetch_locations: %d/%d trails resolved",
+                        len(result),
+                        len(rids),
+                    )
+                    return result
+                except Exception as loc_exc:
+                    self.logger.warning("fetch_locations: skipped — %s", loc_exc, exc_info=True)
+                    return {}
+
+            locations_map: dict[str, str] = {}
+            if file_record_ids_to_fetch or mail_record_ids_to_fetch or unique_record_ids:
+                files_map, mails_map, locations_map = await asyncio.gather(
+                    fetch_files(), fetch_mails(), fetch_locations()
+                )
+            else:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
             for idx, (record_id, record_type) in result_to_record_map.items():
@@ -571,6 +614,16 @@ class RetrievalService:
                         result["metadata"]["extension"] = fallback_ext
 
                 final_search_results.append(result)
+
+            # Inject location into virtual_to_record_map entries so get_record()
+            # (chat_helpers.py) can forward it to Record.to_llm_context().
+            if locations_map:
+                for vr_entry in virtual_to_record_map.values():
+                    if vr_entry is None:
+                        continue
+                    rid = vr_entry.get("_key")
+                    if rid and rid in locations_map:
+                        vr_entry["location"] = locations_map[rid]
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension
             records = [
@@ -647,7 +700,12 @@ class RetrievalService:
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_virtual_ids_task(
-        self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        graph_provider: IGraphDBProvider,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Separate task for getting accessible virtualRecordId -> recordId mapping (optimized version).
@@ -656,7 +714,7 @@ class RetrievalService:
         user has permission to access, preventing cross-connector leakage.
         """
         return await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters
+            user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
         )
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:

@@ -18,6 +18,8 @@ export interface AppServices {
   connector: ServiceStatus;
   indexing: ServiceStatus;
   docling: ServiceStatus;
+  parsing?: ServiceStatus;
+  extraction?: ServiceStatus;
 }
 
 interface ServicesHealthState {
@@ -239,6 +241,8 @@ export const APP_SERVICE_LABELS: Record<string, string> = {
   connector: 'Connector Service',
   indexing: 'Indexing Service',
   docling: 'Docling Service',
+  parsing: 'Parsing Service',
+  extraction: 'Extraction Service',
 };
 
 export function formatServiceList(items: string[]): string {

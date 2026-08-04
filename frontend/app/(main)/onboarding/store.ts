@@ -123,7 +123,7 @@ const initialState: OnboardingState = {
     provider: '',
     apiKey: '',
     model: '',
-    isReasoning: false,
+    isReasoning: true,
     isMultimodal: false,
   },
   embeddingModel: {

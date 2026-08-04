@@ -38,6 +38,7 @@ export interface AIModelsConfig {
   stt?: AIModelConfiguration[];
   customSystemPrompt?: string;
   customSystemPromptWebSearch?: string;
+  customSystemPromptAgent?: string;
   /**
    * Role-to-model assignments. Each key is a named role (e.g. "indexing") and
    * the value identifies which configured model handles that role.

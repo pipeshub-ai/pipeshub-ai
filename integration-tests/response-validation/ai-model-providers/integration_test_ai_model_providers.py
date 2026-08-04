@@ -634,10 +634,14 @@ class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
 class TestUpdateAIModelProviderValidation(AIModelsTestBase):
     """Invalid params/bodies rejected by Zod before health-check."""
 
+    # Explicit ids are required, not cosmetic: parametrize arguments are evaluated at
+    # import time and every xdist worker imports this module separately, so a uuid4()
+    # folded into an auto-generated id makes each worker collect a different test id
+    # and aborts the whole run with a collection mismatch.
     @pytest.mark.parametrize(
         "label,model_type,model_key,payload",
         [
-            (
+            pytest.param(
                 "invalid modelType path",
                 "not-a-real-type",
                 str(uuid.uuid4()),
@@ -645,8 +649,9 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                     _PROVIDER_OPENAI,
                     {"model": "gpt-4o-mini", "apiKey": "sk-test"},
                 ),
+                id="invalid-model-type-path",
             ),
-            (
+            pytest.param(
                 "missing provider",
                 _MODEL_TYPE_LLM,
                 str(uuid.uuid4()),
@@ -656,8 +661,9 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                     "isReasoning": False,
                     "isDefault": False,
                 },
+                id="missing-provider",
             ),
-            (
+            pytest.param(
                 "missing configuration",
                 _MODEL_TYPE_LLM,
                 str(uuid.uuid4()),
@@ -667,8 +673,9 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                     "isReasoning": False,
                     "isDefault": False,
                 },
+                id="missing-configuration",
             ),
-            (
+            pytest.param(
                 "empty provider",
                 _MODEL_TYPE_LLM,
                 str(uuid.uuid4()),
@@ -676,8 +683,9 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                     "",
                     {"model": "gpt-4o-mini", "apiKey": "sk-test"},
                 ),
+                id="empty-provider",
             ),
-            (
+            pytest.param(
                 "modelFriendlyName with comma-separated models",
                 _MODEL_TYPE_LLM,
                 str(uuid.uuid4()),
@@ -689,8 +697,9 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                         "modelFriendlyName": "Not allowed",
                     },
                 ),
+                id="friendly-name-with-comma-separated-models",
             ),
-            (
+            pytest.param(
                 "contextLength wrong type",
                 _MODEL_TYPE_LLM,
                 str(uuid.uuid4()),
@@ -702,6 +711,7 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
                     "isDefault": False,
                     "contextLength": "not-a-number",
                 },
+                id="context-length-wrong-type",
             ),
         ],
     )
@@ -952,7 +962,12 @@ class TestDeleteAIModelProviderValidation(AIModelsTestBase):
     @pytest.mark.parametrize(
         "label,model_type,model_key",
         [
-            ("invalid modelType path", "not-a-real-type", str(uuid.uuid4())),
+            pytest.param(
+                "invalid modelType path",
+                "not-a-real-type",
+                str(uuid.uuid4()),
+                id="invalid-model-type-path",
+            ),
         ],
     )
     def test_validation_rejects_invalid_delete(

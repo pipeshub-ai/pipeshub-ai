@@ -40,8 +40,11 @@ class TestCanonicalize:
     def test_npm_preserves_scope(self):
         assert canonicalize("@types/node", SandboxLanguage.TYPESCRIPT) == "@types/node"
 
-    def test_npm_preserves_scope_with_version(self):
-        assert canonicalize("@types/node@^20", SandboxLanguage.TYPESCRIPT) == "@types/node@^20"
+    def test_npm_strips_version_from_scoped_spec(self):
+        assert canonicalize("@types/node@^20", SandboxLanguage.TYPESCRIPT) == "@types/node"
+
+    def test_npm_strips_version_from_unscoped_spec(self):
+        assert canonicalize("lodash@4.17.21", SandboxLanguage.TYPESCRIPT) == "lodash"
 
     def test_npm_lowercases(self):
         assert canonicalize("PDFKit", SandboxLanguage.TYPESCRIPT) == "pdfkit"
@@ -68,6 +71,18 @@ class TestAllowlistSeeds:
 
     def test_npm_seed(self):
         for name in ["fs-extra", "sharp", "@types/node", "chart.js", "docx", "xlsx"]:
+            assert name in NPM_PACKAGE_ALLOWLIST
+
+    def test_npm_includes_pptxgenjs(self):
+        """The pptx builtin skill pack creates decks via `npm install
+        pptxgenjs` — see builtin_packs/pptx/SKILL.md."""
+        assert "pptxgenjs" in NPM_PACKAGE_ALLOWLIST
+
+    def test_npm_includes_office_document_creation_libraries(self):
+        """Builtin skill packs prefer Node for office-document CREATION —
+        docx-js (docx), pptxgenjs, exceljs, and pdfkit/pdf-lib all need to
+        be allowlisted for their respective packs."""
+        for name in ["docx", "pptxgenjs", "exceljs", "pdfkit", "pdf-lib"]:
             assert name in NPM_PACKAGE_ALLOWLIST
 
     def test_npm_excludes_network(self):
@@ -125,6 +140,14 @@ class TestEnforcePackageAllowlist:
         assert enforce_package_allowlist(
             ["chart.js", "@types/node"], SandboxLanguage.TYPESCRIPT,
         ) == ["chart.js", "@types/node"]
+
+    def test_pptxgenjs_allowed_under_typescript(self):
+        assert enforce_package_allowlist(["pptxgenjs"], SandboxLanguage.TYPESCRIPT) == ["pptxgenjs"]
+
+    def test_exceljs_and_pdf_lib_allowed_under_typescript(self):
+        assert enforce_package_allowlist(
+            ["exceljs", "pdf-lib"], SandboxLanguage.TYPESCRIPT,
+        ) == ["exceljs", "pdf-lib"]
 
     def test_npm_rejects_unknown(self):
         with pytest.raises(PackageNotAllowedError):

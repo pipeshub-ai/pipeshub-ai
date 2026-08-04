@@ -52,13 +52,19 @@
 - 📝 **Explainable Answers:** PipesHub delivers grounded answers with precise block citations to the original documents.
 - 🔒 **Permission-Aware Search:** Enforces source-level access controls so users only see what they're authorized to.
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
-- 🔌 **Enterprise Connectors:** 30+ connectors with real-time and scheduled indexing out of the box.
+- 🔌 **Enterprise Connectors:** 50+ connectors with real-time and scheduled indexing out of the box.
 - 🔍 **Unified Search, Deep Research, and Agents:** Search, Q&A, deep research, web search, and AI agents on one context layer.
 - 📊 **Artifacts and Code Execution:** Generate reports, charts, and dashboards in a safe execution sandbox.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
 - 🤖 **No-Code Agents and Actions:** Build agents visually and execute actions across enterprise tools.
 - 🧠 **Bring Your Own Model, Fully Self-Hostable:** Any LLM provider, deployed in your VPC — data never leaves your infrastructure.
 - 🛠️ **Developer-First and Extensible:** APIs, SDKs, MCP tools, custom connectors, and independently scalable services.
+
+## PipesHub Cloud
+
+Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+
+👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
 
 ## PipesHub in Action
 
@@ -111,20 +117,22 @@
 
 ### Backend
 
-| Technology | Description |
-|-----------|-------------|
-| FastAPI | High-performance Python web framework |
-| LangChain | Framework for LLM pipelines |
-| LangGraph | State graph for LLM workflows |
-| Qdrant | Vector similarity search engine |
-| Neo4j / ArangoDB | Graph database |
-| Kafka / Redis Streams | Distributed event streaming platform |
-| Redis | Caching |
-| Redis / etcd3 | Distributed key-value configuration store |
-| Celery | Distributed task queue system |
-| Docling | Document parsing and extraction toolkit |
-| pdfplumber | PDF processing library |
-| pandas | Data analysis and manipulation |
+| Category | Technologies |
+|----------|--------------|
+| GraphDB | Neo4j / ArangoDB |
+| VectorDB | Qdrant / OpenSearch / Redis |
+| Document Store | MongoDB |
+| Blob Storage | Local filesystem / S3 / Azure Blob |
+| Message Broker | Kafka / Redis Streams |
+| Cache | Redis |
+| KV Store | Redis / etcd |
+| Task Queue | Celery |
+| Web Framework | FastAPI |
+| LLM Interface | LangChain (multi-provider model access) |
+| Embeddings | sentence-transformers / fastembed |
+| Document Parsing | pdfplumber, selectolax, markdown-it, openpyxl, csv (default) — or Docling, opt-in via `PARSER_BACKEND` |
+| Document Conversion | LibreOffice, CairoSVG |
+| Data Analysis | pandas |
 
 ## 🚀 Deployment Guide
 
@@ -229,7 +237,7 @@ PipesHub is fully open-source (Apache 2.0) and self-hostable — your data never
 
 ### What connectors does PipesHub support?
 
-PipesHub has 30+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
+PipesHub has 50+ enterprise connectors with real-time and scheduled indexing. It supports file formats like PDF, Docx, XLSX, PPTX, CSV, Markdown, HTML, Google Docs/Sheets/Slides, images, audio, and video.
 
 ### How do I deploy PipesHub?
 
@@ -247,7 +255,7 @@ Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain and LangGraph for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
 
 ### What is the Knowledge Graph Retrieval feature?
 

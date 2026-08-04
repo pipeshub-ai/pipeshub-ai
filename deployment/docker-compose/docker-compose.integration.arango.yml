@@ -24,8 +24,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 10G
+          # OOM cap only (not reserved). Sibling service limits are likewise caps.
+          memory: 12G
     shm_size: 2gb
+    # 7 services (node, frontend, 5 python) share one container's fd budget;
+    # docker's 1024 default hits EMFILE on accept() during startup.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     init: true
     logging:
       driver: local
@@ -60,12 +67,7 @@ services:
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
-
-      # ETCD config
-      - ETCD_URL=http://etcd:2379
-      - ETCD_HOST=etcd
-      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # ArangoDB config
       - ARANGO_URL=http://arango:8529
@@ -153,9 +155,9 @@ services:
         condition: service_started
       mongodb:
         condition: service_started
-      etcd:
-        condition: service_started
       arango:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
@@ -169,8 +171,8 @@ services:
   mongodb:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     restart: always
-    # Shared 16 GB-class quickstart hosts need MongoDB bounded: 1 GB cache
-    # leaves room for the app, graph DB, vector DB, Redis, and broker services.
+    # Shared ~16 GB hosts: cap WiredTiger so Mongo does not grab ~half of RAM.
+    # Sibling deploy.limits are OOM caps, not concurrent reservations.
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     ports:
       - "27017:27017"
@@ -201,6 +203,19 @@ services:
     volumes:
       - redis_data:/data
 
+  # Local SMTP sink for mail-dependent integration tests: CI runners cannot
+  mailpit:
+    image: axllent/mailpit:v1.30.6
+    restart: always
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   arango:
     image: arangodb:3.12.4
     restart: always
@@ -215,24 +230,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    restart: always
-    ports:
-      - "2379:2379"
-      - "2380:2380"
-    command: >
-      etcd
-      --name etcd-node
-      --data-dir /etcd-data
-      --listen-client-urls http://0.0.0.0:2379
-      --advertise-client-urls http://0.0.0.0:2379
-      --listen-peer-urls http://0.0.0.0:2380
-      --initial-advertise-peer-urls http://0.0.0.0:2380
-      --initial-cluster etcd-node=http://0.0.0.0:2380
-    volumes:
-      - etcd_data:/etcd-data
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
@@ -313,8 +310,6 @@ volumes:
   redis_data:
     driver: local
   arango_data:
-    driver: local
-  etcd_data:
     driver: local
   qdrant_storage:
     driver: local

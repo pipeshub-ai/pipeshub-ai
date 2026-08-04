@@ -8,6 +8,7 @@ import {
   findMergeTargetToolsetNode,
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
+import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -626,6 +627,18 @@ export function handleFlowCanvasDrop(
     }
   }
 
+  // Check for duplicate skill nodes (each skill is dragged individually, unlike KB-group's multi-select).
+  if (template.type.startsWith('skill-')) {
+    const skillName = template.defaultConfig?.skillName as string | undefined;
+    const duplicate =
+      skillName &&
+      nodes.some((n) => n.data?.type?.startsWith('skill-') && n.data.config?.skillName === skillName);
+    if (duplicate) {
+      onError?.(t('agentBuilder.dropDuplicateSkill', { name: template.label }));
+      return;
+    }
+  }
+
   const fallbackId = `${type}-${Date.now()}`;
   appendNodeWithAutoConnect({
     id: fallbackId,
@@ -634,7 +647,12 @@ export function handleFlowCanvasDrop(
     data: {
       id: fallbackId,
       type: template.type,
-      label: normalizeDisplayName(template.label),
+      // Model names (e.g. "gpt-5.4-mini") already have their own official
+      // casing — normalizeDisplayName's snake_case title-casing would mangle
+      // them (-> "Gpt-5.4-mini"), so only apply it to identifier-style labels.
+      label: NODE_TYPES_WITHOUT_INPUT_HANDLES.LLM_MODELS(template.type)
+        ? template.label
+        : normalizeDisplayName(template.label),
       description: template.description,
       icon: template.icon,
       config: {
@@ -654,7 +672,11 @@ export function handleFlowCanvasDrop(
       inputs: template.inputs,
       outputs: template.outputs,
       isConfigured:
-        template.type.startsWith('app-') || template.type.startsWith('tool-group-') ? true : false,
+        template.type.startsWith('app-') ||
+        template.type.startsWith('tool-group-') ||
+        template.type.startsWith('skill-')
+          ? true
+          : false,
     },
   });
 }

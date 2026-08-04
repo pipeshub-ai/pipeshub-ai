@@ -17,6 +17,7 @@ from app.utils.aimodels import (
     LLMProvider,
     MAX_OUTPUT_TOKENS,
     MAX_OUTPUT_TOKENS_CLAUDE_4_5,
+    MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
     ModelType,
     _create_bedrock_client,
     _get_anthropic_max_tokens,
@@ -69,6 +70,12 @@ class TestGetAnthropicMaxTokens:
 
     def test_regular_model(self):
         assert _get_anthropic_max_tokens("claude-3-opus") == MAX_OUTPUT_TOKENS
+
+    def test_modern_claude_sonnet_5(self):
+        assert _get_anthropic_max_tokens("claude-sonnet-5") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
+    def test_modern_claude_opus_4_8(self):
+        assert _get_anthropic_max_tokens("claude-opus-4-8") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
 
 
 # ============================================================================

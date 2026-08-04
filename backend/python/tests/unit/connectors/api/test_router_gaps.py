@@ -1858,13 +1858,14 @@ class TestGetRecordsGaps:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self):
+    async def test_exception_raises_500(self):
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(graph_provider=gp)
 
-        result = await get_records(req, graph_provider=gp)
-        assert "error" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await get_records(req, graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================
@@ -5186,13 +5187,14 @@ class TestGetRecordsGapsCoverage:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self):
+    async def test_exception_raises_500(self):
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(graph_provider=gp)
 
-        result = await get_records(req, graph_provider=gp)
-        assert "error" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await get_records(req, graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================

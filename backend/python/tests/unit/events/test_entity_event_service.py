@@ -7,7 +7,7 @@ Covers:
 - Exception in process_event returns False
 - __handle_org_created: enterprise + individual account types, departments
 - __handle_org_updated, __handle_org_deleted
-- __handle_user_added: existing user, new user, immediate sync
+- __handle_user_added: existing user, new user (immediate sync commented out)
 - __handle_user_updated: found and not found
 - __handle_user_deleted: found and not found
 - __handle_app_enabled: immediate sync
@@ -238,37 +238,6 @@ class TestHandleUserAdded:
             with patch.object(svc, '_EntityEventService__create_user_kb_app_relation', new_callable=AsyncMock, return_value=True):
                 result = await svc.process_event("userAdded", payload)
         assert result is True
-
-    @pytest.mark.skip(reason="Method __create_user_kb_app_relation removed - edges now created inline in __get_or_create_knowledge_base")
-    @pytest.mark.asyncio
-    async def test_new_user_with_immediate_sync(self):
-        svc, logger, gp, container = _make_service()
-        gp.get_user_by_email = AsyncMock(return_value=None)
-        gp.get_document = AsyncMock(return_value={"accountType": "enterprise"})
-        gp.batch_upsert_nodes = AsyncMock()
-        gp.batch_create_edges = AsyncMock()
-        gp.get_nodes_by_filters = AsyncMock(return_value=[])
-        gp.get_org_apps = AsyncMock(return_value=[
-            {"name": "Drive", "_key": "app-1"},
-            {"name": "Calendar", "_key": "app-2"},  # Should be skipped
-        ])
-        gp.get_edges_from_node = AsyncMock(return_value=[])
-
-        payload = {
-            "userId": "uid-2",
-            "orgId": "org-1",
-            "email": "bob@example.com",
-            "fullName": "Bob",
-            "syncAction": "immediate",
-        }
-
-        with patch.object(svc, '_EntityEventService__get_or_create_knowledge_base', new_callable=AsyncMock, return_value={}):
-            with patch.object(svc, '_EntityEventService__create_user_kb_app_relation', new_callable=AsyncMock, return_value=True):
-                with patch.object(svc, '_EntityEventService__handle_sync_event', new_callable=AsyncMock, return_value=True) as mock_sync:
-                    result = await svc.process_event("userAdded", payload)
-        assert result is True
-        # Drive should trigger sync, Calendar should not
-        mock_sync.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_org_not_found_returns_false(self):

@@ -8,7 +8,7 @@
 	clean-docker clean-docker-no-etcd clean-docker-neo4j \
 	stop-and-clean-volumes stop-and-clean-volumes-no-etcd stop-and-clean-volumes-neo4j \
 	setup-nodejs implode-setup-nodejs nodejs setup-python setup-python-deps \
-	implode-setup-python connectors indexing query embedding docling check-python-version \
+	implode-setup-python connectors indexing query embedding parsing extraction docling check-python-version \
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
@@ -95,6 +95,8 @@ help: ## Show this help message
 	@echo "  make indexing             - Run indexing service (requires venv)"
 	@echo "  make query                - Run query service (requires venv)"
 	@echo "  make embedding            - Run embedding service (requires venv; start before indexing/query)"
+	@echo "  make parsing              - Run parsing service (requires venv)"
+	@echo "  make extraction           - Run extraction service (requires venv)"
 	@echo "  make docling              - Run docling service (requires venv)"
 	@echo "  make check-python-version - Check Python version used by the venv"
 	@echo ""
@@ -548,6 +550,16 @@ embedding: ## Run Python embedding service (local HuggingFace / SentenceTransfor
 	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
 	@echo "$(YELLOW)Start this before indexing and query when using default local embeddings$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.embedding_main
+
+parsing: ## Run Python parsing service
+	@echo "$(BLUE)Starting parsing service...$(NC)"
+	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.parsing_main
+
+extraction: ## Run Python extraction service
+	@echo "$(BLUE)Starting extraction service...$(NC)"
+	@echo "$(YELLOW)Note: This will block the terminal$(NC)"
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m app.extraction_main
 
 docling: ## Run Python docling service
 	@echo "$(BLUE)Starting docling service...$(NC)"

@@ -9,27 +9,29 @@ metadata/structure, while retrieval searches file contents.
 
 import json
 import logging
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
-
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import bullet_list, parse_json_maybe
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder
+from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
+    NodeItem,
     NodeType,
 )
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
-from app.models.entities import RecordType
+from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
 from app.modules.agents.qna.chat_state import (
     ChatState,
-    _extract_kb_app_ids,
-    _extract_knowledge_connector_ids,
+    remember_record_ids,
 )
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.types import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,96 +42,11 @@ _VALID_SORT_ORDERS = {"asc", "desc"}
 
 # Build description fragments from enums so they stay in sync automatically
 _NODE_TYPES_DESC = ", ".join(f"'{nt.value}'" for nt in NodeType)
-_RECORD_TYPES_DESC = ", ".join(f"'{rt.value}'" for rt in RecordType)
 
 # Query validation constants
 MIN_QUERY_LENGTH = 2
 MAX_QUERY_LENGTH = 500
 
-
-class ListFilesInput(BaseModel):
-    """Input schema for the list_files tool"""
-    query: str | None = Field(
-        default=None,
-        description=(
-            "Search query to find files by name (2-500 chars). "
-            "Leave empty to browse without searching."
-        ),
-    )
-    parent_id: str | None = Field(
-        default=None,
-        description=(
-            "ID of the node to browse into. Get the ID from the capability summary "
-            "or from a previous list_files response. Required for browsing."
-        ),
-    )
-    parent_type: str | None = Field(
-        default=None,
-        description=(
-            "Type of the parent node. Required when parent_id is provided. "
-            "Values: 'app' (connector root), 'recordGroup' (KB / space / drive), "
-            "'folder' (subfolder), 'record' (file with children)."
-        ),
-    )
-    node_types: list[str] | None = Field(
-        default=None,
-        description=(
-            f"Filter results by node type. "
-            f"All valid values: {_NODE_TYPES_DESC}. "
-            f"Example: ['record'] for files only, "
-            f"['folder', 'recordGroup'] for containers only."
-        ),
-    )
-    connector_ids: list[str] | None = Field(
-        default=None,
-        description=(
-            "Filter results to specific connectors by their IDs. "
-            "Get the connector ID from the capability summary. "
-            "Only needed for search (query). Not needed when browsing with parent_id."
-        ),
-    )
-    record_group_ids: list[str] | None = Field(
-        default=None,
-        description=(
-            "Filter search results to specific KB collections by their record group IDs. "
-            "Get IDs from the capability summary. Only applies to Collection/KB sources. "
-            "For connector spaces (Confluence, Drive, etc.), use parent_id with "
-            "parent_type='recordGroup' to browse into a specific space instead."
-        ),
-    )
-    record_types: list[str] | None = Field(
-        default=None,
-        description=(
-            f"Filter by record type (only applies to 'record' nodeType). "
-            f"All valid values: {_RECORD_TYPES_DESC}. "
-            f"Example: ['CONFLUENCE_PAGE'] for Confluence pages only, "
-            f"['FILE'] for uploaded files only."
-        ),
-    )
-    only_containers: bool = Field(
-        default=False,
-        description="If true, only return containers (folders, KBs, apps) that have children.",
-    )
-    page: int = Field(
-        default=1,
-        description="Page number for pagination (starts at 1).",
-    )
-    limit: int = Field(
-        default=20,
-        description="Number of items per page (1-50).",
-    )
-    sort_by: str = Field(
-        default="updatedAt",
-        description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
-    )
-    sort_order: str = Field(
-        default="desc",
-        description="Sort order: 'asc' or 'desc'.",
-    )
-    flattened: bool = Field(
-        default=False,
-        description="If true, return all nested items recursively instead of direct children only.",
-    )
 
 
 def _normalize_list_param(value: str | list[object] | None) -> list[str] | None:
@@ -146,6 +63,20 @@ def _normalize_list_param(value: str | list[object] | None) -> list[str] | None:
     return None
 
 
+_FETCHABLE_NODE_TYPES = frozenset({NodeType.RECORD.value, NodeType.FOLDER.value})
+
+
+def _record_ids_in_items(items: list[NodeItem] | None) -> list[str]:
+    """Record IDs from a listing that `knowledgegraph__fetch_record` can read —
+    app and recordGroup ids cannot be fetched."""
+    ids: list[str] = []
+    for item in items or []:
+        node_type = getattr(item.nodeType, "value", item.nodeType)
+        if node_type in _FETCHABLE_NODE_TYPES and item.id:
+            ids.append(item.id)
+    return ids
+
+
 def _format_browse_response(response: KnowledgeHubNodesResponse) -> tuple[bool, str]:
     """Return KnowledgeHubNodesResponse as-is (no formatting needed)."""
     if not response.success:
@@ -158,14 +89,53 @@ def _format_browse_response(response: KnowledgeHubNodesResponse) -> tuple[bool, 
     return True, json.dumps(response.model_dump(exclude_none=True), ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# Agent-activity summaries for list_files — declared here (colocated with
+# the tool) rather than in a central registry, per `@tool`'s
+# `args_summary`/`result_summary` params (see `agent_loop_lib/tools/
+# decorators.py`). Unlike most connector tools, `list_files`'s success
+# envelope has no `{"message", "data": ...}` wrapper — it's `Knowledge
+# HubNodesResponse.model_dump()` directly, i.e. `{"items": [...], ...}` at
+# the top level — so this needs its own parsing rather than the shared
+# `list_summary`/`entity_summary` factories in `app/agents/actions/util/
+# tool_summaries.py`.
+# ---------------------------------------------------------------------------
+
+
+def _list_files_args_summary(args: dict[str, Any]) -> str | None:
+    query = args.get("query")
+    if isinstance(query, str) and query.strip():
+        return f'Searched Knowledge Hub for "{query.strip()}"'
+    return "Listed files"
+
+
+def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    parsed = parse_json_maybe(result.content)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("status") == "error" or parsed.get("success") is False:
+        return f"Listing failed: {parsed.get('message') or parsed.get('error') or 'Unknown error'}"
+    items = parsed.get("items")
+    if not isinstance(items, list):
+        return None
+    if not items:
+        return "No items found"
+    names = [item.get("name") for item in items if isinstance(item, dict) and item.get("name")]
+    header = f"Found {len(items)} item{'s' if len(items) != 1 else ''}"
+    if not names:
+        return header
+    return header + "\n" + bullet_list(names, total=len(items))
+
+
 @ToolsetBuilder("KnowledgeHub")\
     .in_group("Internal Tools")\
     .with_description("Browse and search files in the Knowledge Hub")\
-    .with_category(ToolCategory.UTILITY)\
+    .with_category(ToolsetCategory.UTILITY)\
     .with_auth([
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/knowledge_hub.svg"))\
     .build_decorator()
 class KnowledgeHub:
@@ -175,41 +145,34 @@ class KnowledgeHub:
         self.state: ChatState | None = state
 
     @tool(
-        app_name="knowledgehub",
-        tool_name="list_files",
-        description="List and search all indexed items in the Knowledge Hub by name, structure, or metadata",
-        args_schema=ListFilesInput,
-        llm_description=(
-            "List, browse, and search all items indexed in the Knowledge Hub. "
-            "This includes every type of record the system indexes from connected services "
-            "(use record_types and node_types parameters to filter).\n\n"
-            "BROWSING: Pass parent_id + parent_type to navigate the hierarchy.\n"
-            "SEARCHING: Pass query to find items by name across all sources.\n"
-            "FILTERING: Use node_types and record_types to narrow results.\n\n"
-            "This tool operates on indexed metadata (names, types, dates, structure). "
-            "For searching WITHIN document content, use retrieval.search_internal_knowledge."
+        path="/tools/knowledgehub/list_files",
+        short_description="Search indexed items in the Knowledge Hub by name",
+        description=(
+            "Search for items indexed in the Knowledge Hub by name across all sources. "
+            "Use this to find records when you know part of the name.\n\n"
+            "Results are records, not content: each item's id is a Record ID — pass it to "
+            "knowledgegraph.navigate(node_id=...) to see what is under it, or to "
+            "knowledgegraph__fetch_record to read it.\n\n"
+            "For BROWSING the hierarchy (App → RecordGroup → Record → children), use "
+            "knowledgegraph__navigate instead — it takes a single node_id "
+            "and handles all node types without requiring parent_type.\n\n"
+            "For searching WITHIN document content, use knowledgegraph__search.\n\n"
+            "FILTERING: Use node_types and record_types to narrow results by type."
         ),
-        category=ToolCategory.KNOWLEDGE,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to list, browse, or find indexed items by name or metadata",
-            "User asks what items are available in a knowledge source or connector",
-            "User wants to explore the structure or hierarchy of knowledge sources",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query to find files by name (2-500 chars). Required.", required=True),
+            ToolParameter(name="node_types", type=ParameterType.ARRAY, description=f"Filter results by node type. All valid values: {_NODE_TYPES_DESC}. Example: ['record'] for files only.", required=False, items={"type": "string"}),
+            ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter results to specific connectors by their IDs. Get the connector ID from the capability summary.", required=False, items={"type": "string"}),
+            ToolParameter(name="record_group_ids", type=ParameterType.ARRAY, description="Filter search results to specific KB collections by their record group IDs. Only applies to Collection/KB sources.", required=False, items={"type": "string"}),
+            ToolParameter(name="record_types", type=ParameterType.ARRAY, description="Filter by record type (only applies to 'record' nodeType). E.g. 'CONFLUENCE_PAGE', 'FILE', 'TICKET'.", required=False, items={"type": "string"}),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number for pagination (starts at 1).", required=False, default=1),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Number of items per page (1-50).", required=False, default=20),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.", required=False, default="updatedAt"),
+            ToolParameter(name="sort_order", type=ParameterType.STRING, description="Sort order: 'asc' or 'desc'.", required=False, default="desc"),
         ],
-        when_not_to_use=[
-            "User wants to search WITHIN document content (use retrieval instead)",
-            "User wants to create, update, or delete items",
-            "User asks about a topic rather than listing items",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What items are in the knowledge base?",
-            "List all indexed items",
-            "Find items named 'policy'",
-            "Show me the folder structure",
-            "What knowledge sources are available?",
-        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=_list_files_args_summary,
+        result_summary=_list_files_result_summary,
     )
     async def list_files(
         self,
@@ -246,16 +209,14 @@ class KnowledgeHub:
                     "message": "Graph provider not available",
                 })
 
-            # Extract knowledge scoping from agent configuration.
-            agent_knowledge = self.state.get("agent_knowledge") or []
-            agent_connector_ids = _extract_knowledge_connector_ids(agent_knowledge)
-            kb_ids = set(_extract_kb_app_ids(agent_knowledge))
-
-            if not agent_connector_ids:
+            scope = await resolve_scope(self.state, allow_catalog_fallback=True)
+            if scope.is_empty():
                 return False, json.dumps({
                     "status": "error",
                     "message": "No knowledge sources configured for this agent",
                 })
+            agent_connector_ids = list(scope.app_ids)
+            kb_ids = set(scope.kb_ids)
 
             # --- Input normalization ---
             # LLMs often send empty strings instead of null for optional params
@@ -385,6 +346,7 @@ class KnowledgeHub:
                 record_group_ids=use_record_group_ids,
             )
 
+            remember_record_ids(self.state, _record_ids_in_items(response.items))
             return _format_browse_response(response)
 
         except Exception as e:

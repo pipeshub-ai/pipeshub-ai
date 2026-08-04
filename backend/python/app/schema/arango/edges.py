@@ -450,6 +450,46 @@ toolset_has_tool_schema = {
 }
 
 
+# Skill -> Skill (agentSkillRelation) — the skill-to-skill connectedness
+# graph materialized from `SkillMetadata.related`/`requires`/`replaced_by`
+# on every create/update (see GraphSkillStore). `type` distinguishes the
+# three relation kinds so a traversal can pick just one direction of the
+# graph (e.g. "requires" for a hierarchy walk) without a second collection.
+agent_skill_relation_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "type": {"type": "string", "enum": ["related", "requires", "replaced_by"]},
+            "createdAtTimestamp": {"type": "number"},
+        },
+        "required": ["type", "createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent skill relation schema.",
+}
+
+# Agent -> Skill (agentHasSkill) — per-agent skill assignment, mirrors
+# agent_has_toolset_schema/agent_has_knowledge_schema exactly.
+agent_has_skill_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent has skill schema.",
+}
+
+
 # future schema
 
 # task_action_edge_schema = {

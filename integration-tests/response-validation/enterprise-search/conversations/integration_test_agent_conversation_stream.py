@@ -17,7 +17,6 @@ import os
 import random
 import sys
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,19 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    AGUI,
+    StreamOutcome,
+    answer_from_completion,
+    conversation_created_value,
+    is_conversation_created,
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_error_message,
+    run_finished_result,
+    state_delta_answer,
+)
 from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
@@ -49,84 +61,8 @@ _KB_QA_POOL: list[tuple[str, list[str]]] = [
     ),
 ]
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 _AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
 _AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    """
-    Minimal SSE parser for frames like:
-
-      event: <name>
-      data: <payload>
-
-    Frames are separated by a blank line. Returns envelopes:
-    { "event": <name>, "data": <string> }.
-    """
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].removeprefix(" ")
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].removeprefix(" "))
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
-
-
-def _answer_from_complete_payload(payload: dict[str, Any]) -> str:
-    conv = payload.get("conversation") or {}
-    msgs = conv.get("messages") or []
-    for m in reversed(msgs if isinstance(msgs, list) else []):
-        if not isinstance(m, dict):
-            continue
-        if m.get("messageType") == "bot_response":
-            content = m.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-        if m.get("role") == "assistant":
-            content = m.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-    answer = payload.get("answer")
-    if isinstance(answer, str) and answer.strip():
-        return answer
-    return ""
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -192,15 +128,16 @@ class _AgentStreamTestBase:
         *,
         query: str,
         allow_error: bool = False,
-    ) -> tuple[str | None, str, bool]:
+    ) -> StreamOutcome:
         """Stream a new agent conversation.
 
-        Returns ``(conversation_id, accumulated_answer, saw_complete)``.
-        When ``allow_error`` is True, error SSE events do not raise (for negative tests).
+        When ``allow_error`` is True, ``RUN_ERROR`` does not raise (for negative tests)
+        and is reported on the returned outcome instead.
         """
-        connected_conv_id: str | None = None
+        created_conv_id: str | None = None
         accumulated_answer = ""
-        saw_complete = False
+        saw_finished = False
+        error_message: str | None = None
 
         with self.conversations.stream_conversation(
             agent_key,
@@ -214,55 +151,55 @@ class _AgentStreamTestBase:
                 f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
             )
 
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
-                if event == "connected":
-                    conv_id = payload.get("conversationId")
+                if event == AGUI.CUSTOM and is_conversation_created(payload):
+                    conv_id = conversation_created_value(payload).get("conversationId")
                     if isinstance(conv_id, str) and conv_id:
-                        connected_conv_id = conv_id
+                        created_conv_id = conv_id
                     continue
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
                     continue
 
-                if event == "error":
+                if is_root_error(event, payload):
                     if not allow_error:
-                        raise AssertionError(f"stream emitted error event: {payload!r}")
+                        raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                    error_message = run_error_message(payload)
                     continue
 
-                if event != "complete":
+                if not is_root_finished(event, payload):
                     continue
 
-                saw_complete = True
-                if not accumulated_answer.strip() and isinstance(payload, dict):
-                    accumulated_answer = _answer_from_complete_payload(payload)
+                saw_finished = True
+                result = run_finished_result(payload)
+                if not accumulated_answer.strip():
+                    accumulated_answer = answer_from_completion(result)
 
-                complete_conv = (
-                    (payload.get("conversation") or {}) if isinstance(payload, dict) else {}
-                )
-                complete_conv_id = complete_conv.get("_id")
-                if isinstance(complete_conv_id, str) and complete_conv_id:
-                    if connected_conv_id and connected_conv_id != complete_conv_id:
+                finished_conv = result.get("conversation") or {}
+                finished_conv_id = finished_conv.get("_id")
+                if isinstance(finished_conv_id, str) and finished_conv_id:
+                    if created_conv_id and created_conv_id != finished_conv_id:
                         raise AssertionError(
-                            f"connected conversationId {connected_conv_id!r} != "
-                            f"complete conversation._id {complete_conv_id!r}"
+                            f"conversation_created conversationId {created_conv_id!r} != "
+                            f"RUN_FINISHED conversation._id {finished_conv_id!r}"
                         )
-                    connected_conv_id = complete_conv_id
+                    created_conv_id = finished_conv_id
                 break
 
-        return connected_conv_id, accumulated_answer, saw_complete
+        return StreamOutcome(created_conv_id, accumulated_answer, saw_finished, error_message)
 
     def _create_agent_conversation_id(self, agent_key: str, *, query: str) -> str:
-        conv_id, _, saw_complete = self._stream_agent_conversation(agent_key, query=query)
-        assert saw_complete, "stream ended without a complete event"
-        assert conv_id, "stream did not yield a conversation id"
-        return conv_id
+        outcome = self._stream_agent_conversation(agent_key, query=query)
+        assert outcome.finished, "stream ended without a RUN_FINISHED event"
+        assert outcome.conversation_id, "stream did not yield a conversation id"
+        return outcome.conversation_id
 
     def _stream_add_message(
         self,
@@ -273,17 +210,20 @@ class _AgentStreamTestBase:
         query: str | None = None,
         params: dict[str, str] | None = None,
         allow_error: bool = False,
-    ) -> tuple[str, bool]:
+    ) -> StreamOutcome:
         """Stream a follow-up message on an existing agent conversation.
 
-        Returns ``(accumulated_answer, saw_complete)``.
+        ``conversation_id`` on the returned outcome is always the one passed in —
+        the add-message routes stream onto a conversation the caller already named,
+        so their ``conversation_created`` frame carries no id.
         """
         options: dict[str, Any] = {"timeout": self.stream_timeout}
         if params is not None:
             options["params"] = params
 
         accumulated_answer = ""
-        saw_complete = False
+        saw_finished = False
+        error_message: str | None = None
 
         with self.conversations.stream_message(
             agent_key,
@@ -299,33 +239,34 @@ class _AgentStreamTestBase:
                 f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
             )
 
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
                 event = envelope["event"]
                 payload = json.loads(envelope["data"])
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
                     continue
 
-                if event == "error":
+                if is_root_error(event, payload):
                     if not allow_error:
-                        raise AssertionError(f"stream emitted error event: {payload!r}")
+                        raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                    error_message = run_error_message(payload)
                     continue
 
-                if event != "complete":
+                if not is_root_finished(event, payload):
                     continue
 
-                saw_complete = True
-                if not accumulated_answer.strip() and isinstance(payload, dict):
-                    accumulated_answer = _answer_from_complete_payload(payload)
+                saw_finished = True
+                if not accumulated_answer.strip():
+                    accumulated_answer = answer_from_completion(run_finished_result(payload))
                 break
 
-        return accumulated_answer, saw_complete
+        return StreamOutcome(conversation_id, accumulated_answer, saw_finished, error_message)
 
 
 @pytest.mark.integration
@@ -334,23 +275,43 @@ class TestAgentConversationStreamOpenApiRequestContract:
 
     def test_minimal_request_body_matches_openapi_spec(self) -> None:
         assert_request_body_matches_openapi_operation(
-            {"query": "hello"},
+            {"query": "hello", "chatMode": "quick"},
             "streamAgentConversation",
         )
 
     def test_rejects_previous_conversations_offline(self) -> None:
         with pytest.raises(AssertionError):
             assert_request_body_matches_openapi_operation(
-                {"query": "hi", "previousConversations": []},
+                {
+                    "query": "hi",
+                    "chatMode": "quick",
+                    "previousConversations": [],
+                },
                 "streamAgentConversation",
             )
 
     def test_rejects_quick_mode_offline(self) -> None:
         with pytest.raises(AssertionError):
             assert_request_body_matches_openapi_operation(
-                {"query": "hi", "quickMode": True},
+                {"query": "hi", "chatMode": "quick", "quickMode": True},
                 "streamAgentConversation",
             )
+
+    def test_follow_up_requires_quick_mode_offline(self) -> None:
+        assert_request_body_matches_openapi_operation(
+            {"query": "hello", "chatMode": "quick"},
+            "streamAgentConversationMessage",
+        )
+
+        for payload in (
+            {"query": "missing mode"},
+            {"query": "unsupported mode", "chatMode": "agent"},
+        ):
+            with pytest.raises(AssertionError):
+                assert_request_body_matches_openapi_operation(
+                    payload,
+                    "streamAgentConversationMessage",
+                )
 
 
 @pytest.mark.integration
@@ -376,54 +337,57 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             )
 
             accumulated_answer = ""
-            saw_complete = False
+            saw_finished = False
 
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
 
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
 
-                if event == "error":
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if is_root_error(event, payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
 
-                if event == "complete":
-                    saw_complete = True
-                    if not accumulated_answer.strip() and isinstance(payload, dict):
-                        accumulated_answer = _answer_from_complete_payload(payload)
+                if is_root_finished(event, payload):
+                    saw_finished = True
+                    if not accumulated_answer.strip():
+                        accumulated_answer = answer_from_completion(
+                            run_finished_result(payload)
+                        )
                     break
 
-            assert saw_complete, "stream ended without a complete event"
-            assert accumulated_answer.strip(), "stream completed but answer text was empty"
+            assert saw_finished, "stream ended without a RUN_FINISHED event"
+            assert accumulated_answer.strip(), "stream finished but answer text was empty"
 
     def test_stream_agent_conversation_completes_with_answer(self) -> None:
         agent_key = self.agent_session["primary_agent"]
 
-        conv_id, answer, saw_complete = self._stream_agent_conversation(
+        outcome = self._stream_agent_conversation(
             agent_key,
             query=SEARCH_QUERY,
         )
 
-        assert saw_complete, "stream ended without a complete event"
-        assert conv_id, "stream did not yield a conversation id"
-        assert answer.strip(), "stream completed but answer text was empty"
+        assert outcome.finished, "stream ended without a RUN_FINISHED event"
+        assert outcome.conversation_id, "stream did not yield a conversation id"
+        assert outcome.answer.strip(), "stream finished but answer text was empty"
 
     def test_stream_agent_conversation_random_question_answer_is_plausible(self) -> None:
         agent_key = self.agent_session["primary_agent"]
         query, expected_keywords = random.choice(_KB_QA_POOL)
 
-        conv_id, answer, saw_complete = self._stream_agent_conversation(
+        outcome = self._stream_agent_conversation(
             agent_key,
             query=query,
         )
 
-        assert saw_complete, f"stream ended without complete for query={query!r}"
-        assert conv_id, f"no conversation id for query={query!r}"
+        assert outcome.finished, f"stream ended without RUN_FINISHED for query={query!r}"
+        assert outcome.conversation_id, f"no conversation id for query={query!r}"
+        answer = outcome.answer
         answer_lower = answer.lower()
         assert any(kw.lower() in answer_lower for kw in expected_keywords), (
             f"answer did not contain any of {expected_keywords!r} for query={query!r}: "
@@ -438,7 +402,12 @@ class TestAgentConversationStream(_AgentStreamTestBase):
         "payload",
         [
             {},
-            {"query": ""},
+            {"query": "missing mode"},
+            {"query": "", "chatMode": "quick"},
+            {"query": "unsupported mode", "chatMode": "auto"},
+            {"query": "unsupported mode", "chatMode": "deep"},
+            {"query": "unsupported mode", "chatMode": "planExecute"},
+            {"query": "unsupported mode", "chatMode": "verification"},
         ],
     )
     def test_stream_agent_conversation_invalid_payload_returns_400(
@@ -469,15 +438,20 @@ class TestAgentConversationStream(_AgentStreamTestBase):
     def test_stream_agent_conversation_unknown_agent_emits_error(self) -> None:
         unknown_key = str(uuid.uuid4())
 
-        conv_id, answer, saw_complete = self._stream_agent_conversation(
+        outcome = self._stream_agent_conversation(
             unknown_key,
             query=SEARCH_QUERY,
             allow_error=True,
         )
 
-        assert not saw_complete, (
-            f"expected no complete event for unknown agent; conv_id={conv_id!r}, "
-            f"answer={answer[:200]!r}"
+        # Assert the RUN_ERROR positively: `not finished` alone is also true when
+        # the stream hangs or dies silently, which would make this test unfailable.
+        assert outcome.errored, (
+            f"expected a RUN_ERROR for unknown agent; conv_id={outcome.conversation_id!r}, "
+            f"finished={outcome.finished}, answer={outcome.answer[:200]!r}"
+        )
+        assert not outcome.finished, (
+            f"expected no RUN_FINISHED for unknown agent; error={outcome.error!r}"
         )
 
     def test_stream_agent_conversation_deleted_agent_fails(self) -> None:
@@ -488,15 +462,19 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             f"agent delete failed: {delete_resp.status_code}: {delete_resp.text}"
         )
 
-        conv_id, answer, saw_complete = self._stream_agent_conversation(
+        outcome = self._stream_agent_conversation(
             deleted_key,
             query=SEARCH_QUERY,
             allow_error=True,
         )
 
-        assert not saw_complete, (
-            f"expected stream to fail for deleted agent {deleted_key}; "
-            f"conv_id={conv_id!r}, answer={answer[:200]!r}"
+        assert outcome.errored, (
+            f"expected a RUN_ERROR for deleted agent {deleted_key}; "
+            f"conv_id={outcome.conversation_id!r}, finished={outcome.finished}, "
+            f"answer={outcome.answer[:200]!r}"
+        )
+        assert not outcome.finished, (
+            f"expected no RUN_FINISHED for deleted agent {deleted_key}; error={outcome.error!r}"
         )
 
 
@@ -528,9 +506,9 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             )
 
             accumulated_answer = ""
-            saw_complete = False
+            saw_finished = False
 
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
@@ -538,22 +516,24 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                 payload = json.loads(envelope["data"])
                 event = envelope["event"]
 
-                if event == "answer_chunk" and isinstance(payload, dict):
-                    acc = payload.get("accumulated")
-                    if isinstance(acc, str):
+                if event == AGUI.STATE_DELTA:
+                    acc = state_delta_answer(payload)
+                    if acc is not None:
                         accumulated_answer = acc
 
-                if event == "error":
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
+                if is_root_error(event, payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
 
-                if event == "complete":
-                    saw_complete = True
-                    if not accumulated_answer.strip() and isinstance(payload, dict):
-                        accumulated_answer = _answer_from_complete_payload(payload)
+                if is_root_finished(event, payload):
+                    saw_finished = True
+                    if not accumulated_answer.strip():
+                        accumulated_answer = answer_from_completion(
+                            run_finished_result(payload)
+                        )
                     break
 
-            assert saw_complete, "stream ended without a complete event"
-            assert accumulated_answer.strip(), "stream completed but answer text was empty"
+            assert saw_finished, "stream ended without a RUN_FINISHED event"
+            assert accumulated_answer.strip(), "stream finished but answer text was empty"
 
     def test_add_message_stream_completes_with_answer(self) -> None:
         agent_key = self.agent_session["primary_agent"]
@@ -562,14 +542,14 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             query="stream-create conversation for add-message positive test",
         )
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             agent_key,
             conversation_id,
             query=SEARCH_QUERY,
         )
 
-        assert saw_complete, "stream ended without a complete event"
-        assert answer.strip(), "stream completed but answer text was empty"
+        assert outcome.finished, "stream ended without a RUN_FINISHED event"
+        assert outcome.answer.strip(), "stream finished but answer text was empty"
 
     def test_add_message_stream_random_kb_question_plausible(self) -> None:
         agent_key = self.agent_session["primary_agent"]
@@ -579,13 +559,14 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             query="stream-create conversation for add-message KB test",
         )
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             agent_key,
             conversation_id,
             query=query,
         )
 
-        assert saw_complete, f"stream ended without complete for query={query!r}"
+        assert outcome.finished, f"stream ended without RUN_FINISHED for query={query!r}"
+        answer = outcome.answer
         answer_lower = answer.lower()
         assert any(kw.lower() in answer_lower for kw in expected_keywords), (
             f"answer did not contain any of {expected_keywords!r} for query={query!r}: "
@@ -607,22 +588,22 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            saw_complete = False
-            for envelope in _iter_sse_envelopes(resp):
+            saw_finished = False
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                saw_complete = True
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                saw_finished = True
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 assert conv.get("_id") == conversation_id, (
-                    f"complete conversation id mismatch: {conv.get('_id')!r}"
+                    f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
                 )
                 msgs = conv.get("messages") or []
                 non_empty_contents = [
@@ -634,27 +615,26 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                 )
                 break
 
-            assert saw_complete, "stream ended without a complete event"
+            assert saw_finished, "stream ended without a RUN_FINISHED event"
 
-    @pytest.mark.parametrize("chat_mode", ["auto", "quick", "verification", "deep"])
-    def test_add_message_stream_all_chat_modes_complete(self, chat_mode: str) -> None:
+    def test_add_message_stream_quick_mode_completes(self) -> None:
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
             query=SEARCH_QUERY,
         )
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             agent_key,
             conversation_id,
             json_body={
-                "query": f"follow-up question with chatMode {chat_mode}",
-                "chatMode": chat_mode,
+                "query": "follow-up question with quick chatMode",
+                "chatMode": "quick",
             },
         )
 
-        assert saw_complete, f"[{chat_mode}] stream ended without a complete event"
-        assert answer.strip(), f"[{chat_mode}] stream completed but answer text was empty"
+        assert outcome.finished, "stream ended without a RUN_FINISHED event"
+        assert outcome.answer.strip(), "stream finished but answer text was empty"
 
     @pytest.mark.parametrize(
         ("label", "json_body"),
@@ -689,16 +669,17 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             query=SEARCH_QUERY,
         )
         body = dict(json_body)
+        body["chatMode"] = "quick"
         if label == "filters kb":
             body["filters"] = {"kb": [self.kb_id]}
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             agent_key,
             conversation_id,
             json_body=body,
         )
-        assert saw_complete, f"[{label}] stream ended without a complete event"
-        assert answer.strip(), f"[{label}] stream completed but answer text was empty"
+        assert outcome.finished, f"[{label}] stream ended without a RUN_FINISHED event"
+        assert outcome.answer.strip(), f"[{label}] stream finished but answer text was empty"
 
     def test_add_message_stream_ignores_benign_query_param(self) -> None:
         agent_key = self.agent_session["primary_agent"]
@@ -707,15 +688,15 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             query="stream-create conversation for benign query param test",
         )
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             agent_key,
             conversation_id,
             query="follow-up with debug query param",
             params={"debug": "1"},
         )
 
-        assert saw_complete, "stream ended without a complete event"
-        assert answer.strip(), "stream completed but answer text was empty"
+        assert outcome.finished, "stream ended without a RUN_FINISHED event"
+        assert outcome.answer.strip(), "stream finished but answer text was empty"
 
     # ------------------------------------------------------------------------
     # Negative tests — path params and auth
@@ -760,17 +741,17 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
                 assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
                 return
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] != "error":
-                    continue
+            for envelope in iter_sse_envelopes(resp):
                 payload = json.loads(envelope["data"])
-                msg = payload.get("message") or payload.get("error") or ""
-                assert "not found" in str(msg).lower(), (
-                    f"unexpected error payload: {payload!r}"
+                if not is_root_error(envelope["event"], payload):
+                    continue
+                msg = run_error_message(payload)
+                assert "not found" in msg.lower(), (
+                    f"unexpected RUN_ERROR payload: {payload!r}"
                 )
                 return
 
-        raise AssertionError("stream ended without an error event")
+        raise AssertionError("stream ended without a RUN_ERROR event")
 
     def test_add_message_wrong_agent_key_emits_error(self) -> None:
         primary_key = self.agent_session["primary_agent"]
@@ -780,22 +761,28 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             query="stream-create conversation for wrong-agent-key test",
         )
 
-        answer, saw_complete = self._stream_add_message(
+        outcome = self._stream_add_message(
             wrong_key,
             conversation_id,
             query=SEARCH_QUERY,
             allow_error=True,
         )
 
-        assert not saw_complete, (
-            f"expected no complete for wrong agent key; answer={answer[:200]!r}"
+        # Assert the RUN_ERROR positively: `not finished` alone is also true when
+        # the stream hangs or dies silently, which would make this test unfailable.
+        assert outcome.errored, (
+            f"expected a RUN_ERROR for wrong agent key; finished={outcome.finished}, "
+            f"answer={outcome.answer[:200]!r}"
+        )
+        assert not outcome.finished, (
+            f"expected no RUN_FINISHED for wrong agent key; error={outcome.error!r}"
         )
 
     def test_add_message_unknown_agent_emits_error(self) -> None:
         unknown_key = str(uuid.uuid4())
         conversation_id = "0" * 24
 
-        saw_complete = False
+        saw_finished = False
         saw_error = False
         with self.conversations.stream_message(
             unknown_key,
@@ -805,20 +792,22 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
+            for envelope in iter_sse_envelopes(resp):
                 assert_response_matches_openapi_ref(
                     envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
                 )
-                if envelope["event"] == "error":
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
                     saw_error = True
                     break
-                if envelope["event"] == "complete":
-                    saw_complete = True
+                if is_root_finished(envelope["event"], payload):
+                    saw_finished = True
                     break
 
-        assert saw_error or not saw_complete, (
-            "expected error event or no complete for unknown agent"
+        assert saw_error, (
+            f"expected a RUN_ERROR for unknown agent; saw_finished={saw_finished}"
         )
+        assert not saw_finished, "expected no RUN_FINISHED for unknown agent"
 
     # ------------------------------------------------------------------------
     # Negative tests — body (Zod)
@@ -828,16 +817,51 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         ("label", "payload"),
         [
             ("missing query", {}),
-            ("empty query", {"query": ""}),
-            ("invalid filters kb", {"query": "x", "filters": {"kb": ["bad-id"]}}),
-            ("invalid currentTime", {"query": "x", "currentTime": "not-an-iso-datetime"}),
+            ("missing chatMode", {"query": "x"}),
+            ("empty query", {"query": "", "chatMode": "quick"}),
+            (
+                "invalid filters kb",
+                {
+                    "query": "x",
+                    "chatMode": "quick",
+                    "filters": {"kb": ["bad-id"]},
+                },
+            ),
+            (
+                "invalid currentTime",
+                {
+                    "query": "x",
+                    "chatMode": "quick",
+                    "currentTime": "not-an-iso-datetime",
+                },
+            ),
             ("empty chatMode", {"query": "x", "chatMode": ""}),
-            ("invalid chatMode", {"query": "x", "chatMode": "internal_search"}),
+            ("auto chatMode", {"query": "x", "chatMode": "auto"}),
+            ("deep chatMode", {"query": "x", "chatMode": "deep"}),
+            (
+                "planExecute chatMode",
+                {"query": "x", "chatMode": "planExecute"},
+            ),
+            (
+                "verification chatMode",
+                {"query": "x", "chatMode": "verification"},
+            ),
+            (
+                "internal_search chatMode",
+                {"query": "x", "chatMode": "internal_search"},
+            ),
             (
                 "attachment missing recordId",
-                {"query": "x", "attachments": [{"recordName": "only-name"}]},
+                {
+                    "query": "x",
+                    "chatMode": "quick",
+                    "attachments": [{"recordName": "only-name"}],
+                },
             ),
-            ("empty modelKey", {"query": "x", "modelKey": ""}),
+            (
+                "empty modelKey",
+                {"query": "x", "chatMode": "quick", "modelKey": ""},
+            ),
         ],
     )
     def test_add_message_invalid_body_returns_400(

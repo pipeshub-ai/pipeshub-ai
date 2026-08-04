@@ -1,10 +1,7 @@
 import json
 
-from app.agents.actions.google.google_drive.google_drive import (
-    ParameterType,
-    ToolParameter,
-    tool,
-)
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.sources.client.google.google import GoogleClient
 
 
@@ -20,18 +17,15 @@ class GoogleDriveEnterprise:
         self.client = client
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_users_list",
+        path="/tools/google_drive_enterprise/get_users_list",
+        short_description="List users in the Google Workspace domain",
+        description="Get the list of users in the Google Workspace domain.",
         parameters=[
-            ToolParameter(
-                name="customer",
-                type=ParameterType.STRING,
-                description="The customer ID to get the list of users for",
-                required=True
-            )
-        ]
+            ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of users for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_users_list(self, customer: str = "my_customer") -> tuple[bool, str]:
+    async def get_users_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of users in the domain
         Args:
             customer: The customer ID to get the list of users for
@@ -46,18 +40,15 @@ class GoogleDriveEnterprise:
 
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_groups_list",
+        path="/tools/google_drive_enterprise/get_groups_list",
+        short_description="List groups in the Google Workspace domain",
+        description="Get the list of groups in the Google Workspace domain.",
         parameters=[
-            ToolParameter(
-                name="customer",
-                type=ParameterType.STRING,
-                description="The customer ID to get the list of groups for",
-                required=True
-            )
-        ]
+            ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of groups for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_groups_list(self, customer: str = "my_customer") -> tuple[bool, str]:
+    async def get_groups_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of groups in the domain
         Args:
             customer: The customer ID to get the list of groups for
@@ -71,18 +62,15 @@ class GoogleDriveEnterprise:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_domains_list",
+        path="/tools/google_drive_enterprise/get_domains_list",
+        short_description="List domains in the Google Workspace domain",
+        description="Get the list of domains in the Google Workspace domain.",
         parameters=[
-            ToolParameter(
-                name="customer",
-                type=ParameterType.STRING,
-                description="The customer ID to get the list of domains for",
-                required=True
-            )
-        ]
+            ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of domains for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_domains_list(self, customer: str = "my_customer") -> tuple[bool, str]:
+    async def get_domains_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of domains in the domain
         Args:
             customer: The customer ID to get the list of domains for
@@ -96,18 +84,15 @@ class GoogleDriveEnterprise:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_group_members_list",
+        path="/tools/google_drive_enterprise/get_group_members_list",
+        short_description="List members of a Google Workspace group",
+        description="Get the list of members in a Google Workspace group.",
         parameters=[
-            ToolParameter(
-                name="group_email",
-                type=ParameterType.STRING,
-                description="The email of the group to get the list of members for",
-                required=True
-            )
-        ]
+            ToolParameter(name="group_email", type=ParameterType.STRING, description="The email of the group to get the list of members for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_group_members_list(self, group_email: str) -> tuple[bool, str]:
+    async def get_group_members_list(self, group_email: str) -> tuple[bool, str]:
         """Get the list of members in a group
         Args:
             group_email: The email of the group to get the list of members for
@@ -122,18 +107,15 @@ class GoogleDriveEnterprise:
 
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_user_info",
+        path="/tools/google_drive_enterprise/get_user_info",
+        short_description="Get info for a specific Google Workspace user",
+        description="Get the info of a user in the Google Workspace domain.",
         parameters=[
-            ToolParameter(
-                name="user_email",
-                type=ParameterType.STRING,
-                description="The email of the user to get the info for",
-                required=True
-            )
-        ]
+            ToolParameter(name="user_email", type=ParameterType.STRING, description="The email of the user to get the info for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_user_info(self, user_email: str) -> tuple[bool, str]:
+    async def get_user_info(self, user_email: str) -> tuple[bool, str]:
         """Get the info of a user
         Args:
             user_email: The email of the user to get the info for
@@ -148,18 +130,15 @@ class GoogleDriveEnterprise:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_drive_enterprise",
-        tool_name="get_group_info",
+        path="/tools/google_drive_enterprise/get_group_info",
+        short_description="Get info for a specific Google Workspace group",
+        description="Get the info of a group in the Google Workspace domain.",
         parameters=[
-            ToolParameter(
-                name="group_email",
-                type=ParameterType.STRING,
-                description="The email of the group to get the info for",
-                required=True
-            )
-        ]
+            ToolParameter(name="group_email", type=ParameterType.STRING, description="The email of the group to get the info for", required=True),
+        ],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
     )
-    def get_group_info(self, group_email: str) -> tuple[bool, str]:
+    async def get_group_info(self, group_email: str) -> tuple[bool, str]:
         """Get the info of a group
         Args:
             group_email: The email of the group to get the info for

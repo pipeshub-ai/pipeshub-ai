@@ -96,7 +96,7 @@ IS_REASONING = AIModelField(
     display_name="Reasoning",
     field_type="BOOLEAN",
     required=False,
-    default_value=False,
+    default_value=True,
     description="Supports chain-of-thought reasoning",
 )
 

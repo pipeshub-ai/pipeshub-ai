@@ -13,6 +13,7 @@ import {
   OAuthAppStatus,
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
+import * as XLSX from 'xlsx';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -34,6 +35,7 @@ describe('UserController', () => {
   let mockAuthService: any;
   let mockLogger: any;
   let mockEventService: any;
+  let mockNotificationProducer: any;
   let req: any;
   let res: any;
   let next: sinon.SinonStub;
@@ -70,12 +72,20 @@ describe('UserController', () => {
       isConnected: sinon.stub().returns(false),
     };
 
+    mockNotificationProducer = {
+      start: sinon.stub().resolves(),
+      stop: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+    };
+
     controller = new UserController(
       mockConfig,
       mockMailService,
       mockAuthService,
       mockLogger,
       mockEventService,
+      mockNotificationProducer,
     );
 
     req = {
@@ -4618,6 +4628,322 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('Error fetching auth methods');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Bulk-safety: one recipient failing must not stop the others
+  // -----------------------------------------------------------------------
+  describe('addManyUsers - partial mail failure does not abort the batch', () => {
+    it('still sends the other invites when one email fails, and reports the failing code', async () => {
+      req.body = {
+        emails: ['a@test.com', 'b@test.com', 'c@test.com'],
+        groupIds: [],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      // The middle recipient fails; a@ and c@ must still be sent.
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).resolves({ statusCode: 502 })
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsers(req, res, next);
+
+      // All three attempted — the failure did not abort the loop.
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+
+      // The failing mail service code is surfaced, not a blanket 500.
+      expect(res.status.calledWith(502)).to.be.true;
+      expect(next.called).to.be.false;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // File upload: responds first, then reports mail failures via notification
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - continues on individual mail failures', () => {
+    it('responds 202, sends the remaining invites, and reports failures via notification', async () => {
+      req.body = {
+        fileBuffer: {
+          buffer: Buffer.from('Email\na@test.com\nb@test.com\nc@test.com\n'),
+        },
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).resolves({ statusCode: 500 })
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsersFromFile(req, res, next);
+
+      // Responds immediately, before any mail is sent.
+      expect(res.status.calledWith(202)).to.be.true;
+
+      // Let the background task finish.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      // All three attempted despite the middle failure.
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+
+      // The failure is surfaced after the response, via the notification.
+      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      const payload =
+        mockNotificationProducer.publishEvent.lastCall.args[0].payload;
+      expect(payload.message).to.include('failed to email');
+      expect(next.called).to.be.false;
+    });
+  });
+
+  describe('addManyUsers - a thrown mail transport error does not abort the batch', () => {
+    it('keeps inviting the remaining users when one send throws', async () => {
+      req.body = { emails: ['a@test.com', 'b@test.com', 'c@test.com'] };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      // A network-level failure (not a non-200 response) for the middle address.
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).rejects(new Error('ECONNRESET'))
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(500)).to.be.true;
+    });
+  });
+
+  describe('processInvites - skips group update when no groupIds given', () => {
+    it('does not query UserGroups.updateMany for an empty groupIds list', async () => {
+      req.body = { emails: ['solo@test.com'] };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon
+        .stub(Users, 'create')
+        .resolves([{ _id: 'u-1', email: 'solo@test.com' }] as any);
+      const updateMany = sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(updateMany.called).to.be.false;
+      // The 'everyone' group is still joined.
+      expect((UserGroups.updateOne as any).called).to.be.true;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // parseEmailsFromFile — CSV / Excel buffer parsing
+  // -----------------------------------------------------------------------
+  describe('parseEmailsFromFile', () => {
+    const parse = (buf: Buffer): string[] =>
+      (controller as any).parseEmailsFromFile(buf);
+
+    it('extracts emails from a CSV buffer, skipping the header and blank cells', () => {
+      const csv = 'Email\na@test.com\n\nb@test.com\n';
+      expect(parse(Buffer.from(csv))).to.deep.equal(['a@test.com', 'b@test.com']);
+    });
+
+    it('flattens multi-column rows and keeps only email-shaped cells', () => {
+      const csv = 'Name,Email\nAlice,alice@test.com\nBob,bob@test.com\n';
+      const result = parse(Buffer.from(csv));
+      expect(result).to.include.members(['alice@test.com', 'bob@test.com']);
+      expect(result).to.not.include('Name');
+      expect(result).to.not.include('Alice');
+    });
+
+    it('strips a UTF-8 BOM so the first email is not corrupted', () => {
+      const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+      const body = Buffer.from('carol@test.com\n');
+      expect(parse(Buffer.concat([bom, body]))).to.deep.equal(['carol@test.com']);
+    });
+
+    it('skips cells longer than 254 characters', () => {
+      const huge = 'x'.repeat(300) + '@test.com';
+      expect(parse(Buffer.from(`good@test.com\n${huge}\n`))).to.deep.equal([
+        'good@test.com',
+      ]);
+    });
+
+    it('parses an .xlsx workbook buffer', () => {
+      const ws = XLSX.utils.aoa_to_sheet([
+        ['Email'],
+        ['x@test.com'],
+        ['y@test.com'],
+      ]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+      expect(parse(buf)).to.include.members(['x@test.com', 'y@test.com']);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // normalizeEmails — trim / BOM / lowercase / dedupe
+  // -----------------------------------------------------------------------
+  describe('normalizeEmails', () => {
+    const normalize = (emails: unknown[]): string[] =>
+      (controller as any).normalizeEmails(emails);
+
+    it('trims, lowercases, strips BOM, dedupes, and drops empties', () => {
+      const result = normalize([
+        '  Alice@Test.com  ',
+        '﻿alice@test.com',
+        'BOB@test.com',
+        '',
+        null,
+      ]);
+      expect(result).to.deep.equal(['alice@test.com', 'bob@test.com']);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // addManyUsersFromFile — request-thread validation (before the 202)
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - request validation', () => {
+    it('rejects when no file is uploaded', async () => {
+      req.body = {};
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('No file uploaded');
+    });
+
+    it('rejects a file with no email addresses', async () => {
+      req.body = { fileBuffer: { buffer: Buffer.from('Name\nAlice\nBob\n') } };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'No email addresses found in the file',
+      );
+    });
+
+    it('rejects a file exceeding the bulk-invite limit', async () => {
+      const lines = Array.from({ length: 1001 }, (_, i) => `user${i}@test.com`);
+      req.body = { fileBuffer: { buffer: Buffer.from(lines.join('\n')) } };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'File exceeds the 1000-user limit',
+      );
+    });
+
+    it('rejects invalid groupIds before starting the import', async () => {
+      req.body = {
+        fileBuffer: { buffer: Buffer.from('a@test.com\n') },
+        groupIds: JSON.stringify(['not-an-objectid']),
+      };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'groupIds must contain valid MongoDB ObjectIds',
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // addManyUsersFromFile — happy path: 202 now, notification after
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - success', () => {
+    it('responds 202 and notifies the inviter with the invite summary', async () => {
+      req.body = {
+        fileBuffer: {
+          buffer: Buffer.from('Email\nnew1@test.com\nnew2@test.com\n'),
+        },
+      };
+      sinon
+        .stub(Org, 'findOne')
+        .resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-1', email: 'new1@test.com' },
+        { _id: 'u-2', email: 'new2@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      await controller.addManyUsersFromFile(req, res, next);
+
+      expect(res.status.calledWith(202)).to.be.true;
+      expect(next.called).to.be.false;
+
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      const event = mockNotificationProducer.publishEvent.lastCall.args[0];
+      expect(event.payload.title).to.equal('Bulk invite finished');
+      expect(event.payload.severity).to.equal('success');
+      expect(event.payload.message).to.include('2 invited');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidEmail — regression guard for the ReDoS-safe email regex
+  // -----------------------------------------------------------------------
+  describe('addManyUsers - rejects pathological email input quickly', () => {
+    it('classifies a very long malformed address as invalid without hanging', async () => {
+      const nasty = 'a'.repeat(50000) + '@' + 'a'.repeat(50000);
+      req.body = { emails: [nasty] };
+
+      const startedAt = Date.now();
+      await controller.addManyUsers(req, res, next);
+      expect(Date.now() - startedAt).to.be.lessThan(1000);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
     });
   });
 });

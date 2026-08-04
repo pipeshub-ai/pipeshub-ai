@@ -113,9 +113,9 @@ describe('MessageBrokerFactory', () => {
   // getMessageBrokerType
   // ================================================================
   describe('getMessageBrokerType', () => {
-    it('should default to kafka when env var is not set', () => {
+    it('should default to redis when env var is not set', () => {
       delete process.env.MESSAGE_BROKER;
-      expect(getMessageBrokerType()).to.equal('kafka');
+      expect(getMessageBrokerType()).to.equal('redis');
     });
 
     it('should return kafka when env is kafka', () => {

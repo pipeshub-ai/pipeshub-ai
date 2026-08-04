@@ -358,6 +358,7 @@
       "subtitleExisting": "Confirm or update your PipesHub server URL.",
       "label": "Server URL",
       "submit": "Connect",
+      "changeServer": "Change server",
       "errors": {
         "empty": "Please enter a server URL.",
         "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
@@ -621,7 +622,7 @@
       "agent": {
         "label": "Agent",
         "toolbarLabel": "Agent",
-        "description": "Multi-step agent with tools—pick a strategy in the toolbar"
+        "description": "Agent that can plan and use tools to complete complex tasks"
       }
     },
     "agentStrategy": {
@@ -637,10 +638,10 @@
           "short": "Quick",
           "hint": "Favors fast answers and fewer refinement loops. Best for straightforward tasks."
         },
-        "verify": {
-          "label": "Verify",
-          "short": "Verify",
-          "hint": "Adds extra checks on facts and steps before finalizing the answer."
+        "plan-execute": {
+          "label": "Plan & Execute",
+          "short": "Plan & Execute",
+          "hint": "Plans all steps upfront, then executes them in order."
         },
         "deep": {
           "label": "Deep",
@@ -855,6 +856,8 @@
         "groupPlaceholder": "Select groups",
         "groupSearchPlaceholder": "Search groups...",
         "importCsv": "Import CSV",
+        "import": "Import",
+        "importTooltip": "Supports CSV and Excel files (.csv, .xlsx, .xls)",
         "cancel": "Cancel",
         "send": "Send Invite",
         "successTitle": "Invitations Sent",
@@ -1196,7 +1199,7 @@
       "configInfoPlaceholderProvider": "provider",
       "downloadDialogTitle": "Downloading Embedding Model",
       "downloadDialogDescription": "\"{{modelName}}\" is downloading. This can take a few minutes depending on model size and your connection.",
-      "downloadDialogHint": "You can keep this panel open — the download continues in the background.",
+      "downloadDialogHint": "You can close this dialog — the download continues in the background. Save again once the model is ready.",
       "downloadStatusChecking": "Checking local cache...",
       "downloadStatusDownloading": "Downloading model...",
       "downloadStatusLoading": "Loading model into memory...",
@@ -2179,7 +2182,7 @@
       "lastChecked": "Last checked: {{time}}",
       "loading": "Loading services status…",
       "policyTitle": "Service Health Policy",
-      "policyDescription": "Query and Connector services are critical — the application will wait for them before loading. Indexing and Docling services are non-blocking and only affect background processing.",
+      "policyDescription": "Query and Connector services are critical — the application will wait for them before loading. Indexing, Docling, Parsing, and Extraction services are non-blocking and only affect background processing.",
       "allHealthy": "All services are healthy",
       "someUnhealthy": "Some services are unhealthy",
       "fetchFailed": "Failed to check services health",
@@ -2229,6 +2232,14 @@
         "docling": {
           "label": "Docling Service",
           "description": "Advanced document parsing and OCR"
+        },
+        "parsing": {
+          "label": "Parsing Service",
+          "description": "Parses documents into structured blocks for indexing"
+        },
+        "extraction": {
+          "label": "Extraction Service",
+          "description": "LLM-based document classification and metadata extraction"
         }
       }
     }

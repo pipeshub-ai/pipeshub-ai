@@ -670,6 +670,47 @@ li > blockquote {
 }
 
 /* ========================
+   Agent activity timeline — live typing cursor + entry animation
+   Used by LiveNarrationText / StatusTimelineEntry (agent-activity.tsx) for
+   the still-unsettled trailing text of a multi-step (ReAct) response.
+   ======================== */
+
+@keyframes cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.typing-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  background: var(--accent-9);
+  vertical-align: text-bottom;
+  animation: cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes activity-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.agent-activity-enter {
+  animation: activity-fade-in 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-cursor {
+    animation: none;
+    opacity: 1;
+  }
+
+  .agent-activity-enter {
+    animation: none;
+  }
+}
+
+/* ========================
    Sidebar title typing animation
    Plays once when a new conversation title is revealed after generation.
    ======================== */
@@ -1101,4 +1142,99 @@ th code {
 .ph-disabled-field-tooltip-wrap button:disabled,
 .ph-disabled-field-tooltip-wrap [data-disabled] {
   pointer-events: none !important;
+}
+
+/* ─── Skills SKILL.md Tiptap Editor ────────────────────────────────── */
+
+.ph-skill-editor-container:focus-within {
+  border-color: var(--accent-a8);
+}
+
+.ph-skill-markdown-editor .tiptap {
+  outline: none;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--slate-12);
+}
+
+.ph-skill-markdown-editor .tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--gray-8);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+.ph-skill-markdown-editor .tiptap h1,
+.ph-skill-markdown-editor .tiptap h2,
+.ph-skill-markdown-editor .tiptap h3 {
+  font-weight: 600;
+  color: var(--slate-12);
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+  line-height: 1.3;
+}
+
+.ph-skill-markdown-editor .tiptap h1 { font-size: 1.4em; }
+.ph-skill-markdown-editor .tiptap h2 { font-size: 1.2em; }
+.ph-skill-markdown-editor .tiptap h3 { font-size: 1.05em; }
+
+.ph-skill-markdown-editor .tiptap p {
+  margin: 0.4em 0;
+}
+
+.ph-skill-markdown-editor .tiptap ul,
+.ph-skill-markdown-editor .tiptap ol {
+  padding-left: 1.4em;
+  margin: 0.4em 0;
+}
+
+.ph-skill-markdown-editor .tiptap li {
+  margin: 0.15em 0;
+}
+
+.ph-skill-markdown-editor .tiptap code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.88em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--gray-a3);
+  color: var(--amber-11);
+}
+
+.ph-skill-markdown-editor .tiptap pre {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.88em;
+  background: var(--gray-a2);
+  border: 1px solid var(--olive-3);
+  border-radius: var(--radius-2);
+  padding: 12px 14px;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.ph-skill-markdown-editor .tiptap pre code {
+  background: none;
+  padding: 0;
+  color: var(--slate-12);
+}
+
+.ph-skill-markdown-editor .tiptap blockquote {
+  border-left: 3px solid var(--olive-6);
+  margin: 0.6em 0;
+  padding-left: 14px;
+  color: var(--gray-11);
+}
+
+.ph-skill-markdown-editor .tiptap a {
+  color: var(--accent-a11);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ph-skill-markdown-editor .tiptap hr {
+  border: none;
+  border-top: 1px solid var(--olive-4);
+  margin: 1em 0;
 }

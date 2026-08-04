@@ -183,6 +183,43 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_typed_records_batch(
+        self,
+        record_ids: list[str],
+    ) -> dict[str, "Record"]:
+        """Batch-fetch typed Record instances for the given record IDs.
+
+        Returns a dict mapping record ID to typed Record (FileRecord,
+        TicketRecord, etc.). IDs not found or failing typed construction
+        are silently omitted from the result.
+        """
+        pass
+
+    @abstractmethod
+    async def get_node_depths_batch(
+        self,
+        parent_id: str,
+        node_ids: list[str],
+        max_depth: int = 3,
+        parent_type: str | None = None,
+    ) -> dict[str, int]:
+        """Compute traversal depth for each node relative to a parent.
+
+        For record/folder parents: traverses recordRelations
+        (PARENT_CHILD / ATTACHMENT) edges.
+
+        For recordGroup parents: records belonging to the group are
+        level 1; their children via recordRelations are level 2+.
+
+        For app parents: records directly under the connector's record
+        groups are level 1; their children via recordRelations are level 2+.
+
+        Returns ``{node_id: depth}`` for every reachable node_id.
+        Unreachable IDs are omitted.
+        """
+        pass
+
+    @abstractmethod
     async def get_all_documents(
         self,
         collection: str,
@@ -209,6 +246,7 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -225,6 +263,8 @@ class IGraphDBProvider(ABC):
                           database's natural order is used (stable per query but
                           not guaranteed across restarts).
             transaction:  Optional transaction ID.
+            raise_on_error: Propagate database errors instead of returning an
+                            empty page.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -2421,7 +2461,8 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -2445,6 +2486,9 @@ class IGraphDBProvider(ABC):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (Optional[Dict[str, int]]): Optional source-creation time bounds in epoch ms.
+                Keys: 'source_created_after_ms' (inclusive lower), 'source_created_before_ms' (inclusive upper).
+                Filters on record.sourceCreatedAtTimestamp.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -3660,6 +3704,7 @@ class IGraphDBProvider(ABC):
         parent_id: str | None = None,
         parent_type: str | None = None,
         record_group_ids: list[str] | None = None,
+        depth: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -3699,6 +3744,8 @@ class IGraphDBProvider(ABC):
             record_group_ids: Optional list of record group IDs to restrict visibility.
                 When set, only recordGroup nodes whose IDs are in this list are returned;
                 non-recordGroup nodes (folders, records, apps) pass through unfiltered.
+            depth: Optional traversal depth limit for record/folder children-intersection
+                traversal. None preserves the existing unlimited (100-level) behavior.
             transaction: Optional transaction ID
 
         Returns:
@@ -3786,6 +3833,62 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with id, name, nodeType, subType or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Resolve a node to its metadata ONLY if it belongs to org_id and user_key
+        holds any permission role on it.
+
+        Returns a dict with keys: id, name, nodeType, subType, connector,
+        webUrl, recordType, indexingStatus, userRole.
+        Returns None for missing nodes AND for permission-denied — callers
+        must not distinguish between the two cases.
+
+        Args:
+            node_id: Node ID (record _key, recordGroup _key, or app _key)
+            user_key: User's internal key
+            org_id: Organization ID
+            folder_mime_types: MIME types that classify a record as a folder
+            transaction: Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return cross-reference edges (anything except PARENT_CHILD / ATTACHMENT)
+        enriched with recordName, recordType, connectorName, webUrl,
+        permission-filtered and bounded, in a single query.
+
+        Args:
+            record_id: Source record ID (_key)
+            org_id: Organization ID (used to scope results)
+            user_key: User's internal key (used for permission filtering)
+            relation_types: Relation types to include (e.g. LINKED_TO, RELATED, BLOCKS …)
+            limit: Maximum number of results to return
+            transaction: Optional transaction context
+
+        Returns:
+            List of dicts with id, name, recordType, connectorName, webUrl,
+            relationshipType, hasChildren.
         """
         pass
 
@@ -4342,5 +4445,59 @@ class IGraphDBProvider(ABC):
             Dict with ``valid: True`` and context on success, or
             ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
             on failure.
+        """
+        pass
+
+    @abstractmethod
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
+
+        Each entry is ``{"id": str, "type": "record"|"recordGroup"}``.
+        Reuses the same ``_get_permission_role_*`` fragments as
+        ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
+        Apps are not checked here — callers keep App trail segments via ACL.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_parent_adjacency(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 20,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Batched upward parent-adjacency for retrieved records (one round trip).
+
+        Structure + names only — does **not** apply breadcrumb priority or ACL.
+        Every node is org-scoped (``orgId == org_id``; apps may omit orgId).
+
+        Name coalesce (navigate-aligned)::
+
+            app:          name → appName → _key
+            record:       recordName → name → title → _key
+            recordGroup:  groupName → name → _key
+
+        Return shape::
+
+            {
+              "nodes": {
+                "<id>": {"id": str, "type": "app"|"recordGroup"|"record", "name": str},
+              },
+              "parents": {
+                "<child_id>": [
+                  {"parent_id": str, "parent_type": str, "via": "recordRelations"|"belongsTo"},
+                  ...
+                ],
+              },
+            }
         """
         pass

@@ -16,6 +16,9 @@ import copy
 from app.config.constants.arangodb import CollectionNames
 from app.schema.arango.documents import (
     agent_schema,
+    agent_skill_candidates_schema,
+    agent_skill_versions_schema,
+    agent_skills_schema,
     agent_template_schema,
     app_role_schema,
     app_schema,
@@ -101,6 +104,9 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.RECORD_GROUPS.value: adapt_schema(record_group_schema),
     CollectionNames.AGENT_INSTANCES.value: adapt_schema(agent_schema),
     CollectionNames.AGENT_TEMPLATES.value: adapt_schema(agent_template_schema),
+    CollectionNames.AGENT_SKILLS.value: adapt_schema(agent_skills_schema),
+    CollectionNames.AGENT_SKILL_VERSIONS.value: adapt_schema(agent_skill_versions_schema),
+    CollectionNames.AGENT_SKILL_CANDIDATES.value: adapt_schema(agent_skill_candidates_schema),
     CollectionNames.TICKETS.value: adapt_schema(ticket_record_schema),
     CollectionNames.MEETINGS.value: adapt_schema(meeting_record_schema),
     CollectionNames.PROJECTS.value: adapt_schema(project_record_schema),
