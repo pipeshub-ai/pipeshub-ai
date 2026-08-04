@@ -43,6 +43,13 @@ import type {
   AttachmentRef,
 } from '@/chat/types';
 import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, DEFAULT_REASONING_EFFORT } from '@/chat/types';
+import {
+  SUPPORTED_FILE_TYPES,
+  ACCEPTED_MIME_TYPES,
+  ACCEPTED_EXTENSIONS,
+  isFileTypeSupported,
+  pasteFallbackExtension,
+} from '../utils/attachment-file-types';
 
 type ChatInputVariant = 'full' | 'widget';
 
@@ -79,30 +86,10 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG', 'TXT', 'MD'];
-const ACCEPTED_MIME_TYPES = {
-  'application/pdf': 'PDF',
-  'image/png': 'PNG',
-  'image/jpeg': 'JPEG',
-  'image/jpg': 'JPEG',
-  'text/plain': 'TXT',
-  'text/markdown': 'MD',
-};
-// Extension fallback for files that arrive without a recognisable MIME type
-// (e.g. on some Windows setups the file.type may be empty).
-const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg', 'txt', 'md'];
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isFileTypeSupported(file: File): boolean {
-  const mimeType = file.type;
-  if (Object.keys(ACCEPTED_MIME_TYPES).includes(mimeType)) return true;
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-  return ACCEPTED_EXTENSIONS.includes(ext);
 }
 
 interface SpeechInputButtonProps {
@@ -1026,12 +1013,7 @@ export function ChatInput({
           if (hasRealName) {
             fileItems.push(file);
           } else {
-            const ext =
-              file.type === 'application/pdf'
-                ? 'pdf'
-                : file.type === 'image/png'
-                  ? 'png'
-                  : 'jpg';
+            const ext = pasteFallbackExtension(file);
             const named = new File([file], `pasted-${Date.now()}.${ext}`, {
               type: file.type,
             });

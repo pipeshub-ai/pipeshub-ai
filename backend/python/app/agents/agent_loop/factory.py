@@ -93,7 +93,6 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
-    looks_like_file_generation_request,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -377,16 +376,6 @@ class PipesHubAgentFactory:
             opik_active=opik_active,
             opik_project_name=opik_project_name,
             transport_registry=transport_registry,
-        )
-
-        # Read by `hooks/completion_gate.py` (already wired onto `hooks`
-        # above) once the agent actually runs — computed from the raw query
-        # and the ORIGINAL goal description (pre-attachment), since attachment
-        # text often contains file-format tokens (e.g. ".pdf" in a filename)
-        # that would false-positive when the user only uploaded a file for
-        # analysis, not requested one to be generated.
-        context.file_generation_requested = looks_like_file_generation_request(
-            query, goal.description,
         )
 
         # Stash model_name on context so ensure_fetch_full_record_available()
@@ -805,12 +794,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
 
-        # Refuses a text-only, no-tool-call turn as "done" when the request
-        # needed a generated file and no artifact has been produced yet —
-        # see `hooks/completion_gate.py`. Registered unconditionally: it is
-        # a no-op for every request `context.file_generation_requested`
-        # ends up False for (set further up in `create()`, after intent
-        # resolves the goal).
+        # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
 
         # This adapter path builds its own HookRegistry directly (never
