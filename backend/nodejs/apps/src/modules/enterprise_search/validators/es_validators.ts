@@ -179,6 +179,8 @@ const attachmentRefSchema = z.object({
   mimeType: z.string().min(1).optional(),
   extension: z.string().min(1).optional(),
   virtualRecordId: z.string().min(1).optional(),
+  // Origin metadata ('upload' | 'paste') — see IChatAttachmentRef.source.
+  source: z.enum(['upload', 'paste']).optional(),
 });
 
 const enterpriseSearchCreateBodySchema = z.object({

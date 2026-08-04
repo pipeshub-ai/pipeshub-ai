@@ -103,6 +103,8 @@ const attachmentRefSchema = new Schema(
     mimeType: { type: String },
     extension: { type: String },
     virtualRecordId: { type: String },
+    // Origin metadata ('upload' | 'paste') — see IChatAttachmentRef.source.
+    source: { type: String, enum: ['upload', 'paste'] },
   },
   { _id: false },
 );
