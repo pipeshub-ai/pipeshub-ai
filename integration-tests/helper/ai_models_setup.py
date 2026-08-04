@@ -35,7 +35,7 @@ provider is tried):
 
     OpenAI:
         TEST_OPENAI_API_KEY        – falls back to OPENAI_API_KEY
-        TEST_OPENAI_LLM_MODEL      – default LLM (default: gpt-5.4-nano)
+        TEST_OPENAI_LLM_MODEL      – default LLM (default: gpt-5.6-luna)
         TEST_OPENAI_EMBEDDING_MODEL – default embedding (default: text-embedding-3-small)
 
     Azure OpenAI:
@@ -78,8 +78,8 @@ _PROVIDER_GROQ = "groq"
 
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
-_DEFAULT_MODEL_NAME = "gpt-5.4-nano"
-_DEFAULT_REASONING_MODEL_NAME = "gpt-5.4-mini"
+_DEFAULT_MODEL_NAME = "gpt-5.6-luna"
+_DEFAULT_REASONING_MODEL_NAME = "gpt-5.6-luna"
 _DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 
 _LLM_PROVIDER_ORDER = (
