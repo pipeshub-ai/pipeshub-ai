@@ -51,7 +51,8 @@ provider is tried):
         TEST_GROQ_API_KEY, TEST_GROQ_LLM_MODEL
 
 Reasoning LLMs for agent ITs use provider-specific model names when no override
-is passed.
+is passed. On OpenAI that is gpt-5.6-luna, and no env var overrides it —
+TEST_OPENAI_LLM_MODEL applies only to the non-reasoning default.
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ _PROVIDER_GROQ = "groq"
 _DEFAULT_LLM_MODEL_TYPE = "llm"
 _DEFAULT_EMBEDDING_MODEL_TYPE = "embedding"
 _DEFAULT_MODEL_NAME = "gpt-5.4-nano"
-_DEFAULT_REASONING_MODEL_NAME = "gpt-5.4-mini"
+_DEFAULT_REASONING_MODEL_NAME = "gpt-5.6-luna"
 _DEFAULT_EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 
 _LLM_PROVIDER_ORDER = (
