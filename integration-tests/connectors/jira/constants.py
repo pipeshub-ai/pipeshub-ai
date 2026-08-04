@@ -31,3 +31,13 @@ JIRA_USERS_GROUP_NAME = "jira-users-pipeshub-it"
 # Fixed cut between the original fixture batch and later "IT Date Filter New" tickets.
 # Used for created after/before partitions in TC-FILTER-DATE-001 (``created`` is immutable).
 JIRA_FILTER_DATE_CUT_MS = 1784146637293
+
+# Sub-task on the primary project whose ancestor chain sits outside the created-window
+# in TC-JIRA-PH-001. Needs >= 2 ancestors, all created before the child.
+# Chain: KAN-229 (Sub-task) → KAN-6 (Story) → KAN-5 (Epic). Cut must sit in a different
+# JQL minute than the ancestors (``_jql_datetime`` truncates to ``YYYY-MM-DD HH:MM``).
+JIRA_PH_CHILD_KEY = "KAN-229"
+
+# Fixed cut between the chain's ancestors and the child. ``created`` is immutable, so this
+# does not decay; recompute only if the chain is reprovisioned.
+JIRA_PH_CREATED_CUT_MS = 1785847131576
