@@ -5225,10 +5225,15 @@ components:
           type: string
           minLength: 1
           description: Synthetic record id used by the graph layer.
+        parseMode:
+          type: string
+          minLength: 1
+          description: Backend-reported parsing mode used for the attachment (e.g. `pdfplumber`, `docling`, `csv_lightweight`).
         ocrMode:
           type: string
           minLength: 1
-          description: Optional backend-reported processing mode for the attachment.
+          deprecated: true
+          description: Deprecated alias for `parseMode`, kept for backward compatibility. Use `parseMode` instead.
 
     ChatAttachmentUploadResponse:
       type: object
@@ -23748,7 +23753,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; part name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -23763,7 +23772,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
@@ -28181,7 +28190,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; field name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -28197,7 +28210,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
