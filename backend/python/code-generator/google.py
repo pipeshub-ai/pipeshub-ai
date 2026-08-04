@@ -459,7 +459,11 @@ Generated from Google Discovery API schema definitions.
         # Generate class header
         class_code = f'''import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, Optional, List
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+
+T = TypeVar("T")
 
 
 class {class_name}:
@@ -488,11 +492,26 @@ class {class_name}:
         # googleapiclient services share one httplib2.Http per instance, which is
         # not thread-safe, so at most one in-flight request per datasource instance.
         self._execute_lock = asyncio.Lock()
+        # Cancellation releases an asyncio lock without stopping executor work.
+        # This worker-held lock keeps the transport exclusive until the call returns.
+        self._transport_lock = Lock()
 
-    async def _execute(self, request: Any) -> Dict[str, Any]:
+    def _run_transport_operation(self, operation: Callable[[], T]) -> T:
+        with self._transport_lock:
+            return operation()
+
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
         async with self._execute_lock:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._executor, request.execute)
+            return await loop.run_in_executor(
+                self._executor,
+                self._run_transport_operation,
+                operation,
+            )
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(request.execute)
 
 '''
         

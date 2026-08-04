@@ -3358,7 +3358,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             drive_service = await self._get_drive_service_for_user(user_email)
 
             # Wrap drive service in GoogleDriveDataSource to use files_get method
-            user_drive_data_source = GoogleDriveDataSource(drive_service, executor=self._drive_executor)
+            if (
+                self.drive_data_source
+                and drive_service is self.drive_data_source.client
+            ):
+                user_drive_data_source = self.drive_data_source
+            else:
+                user_drive_data_source = GoogleDriveDataSource(
+                    drive_service,
+                    executor=self._drive_executor,
+                )
 
             # Get user information (permissionId) from the user-specific drive service
             fields = 'user(displayName,emailAddress,permissionId)'

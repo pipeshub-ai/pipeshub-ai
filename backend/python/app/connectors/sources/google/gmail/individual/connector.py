@@ -219,6 +219,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         self.gmail_client: Optional[GoogleClient] = None
         self.gmail_data_source: Optional[GoogleGmailDataSource] = None
         self.config: Optional[Dict] = None
+        self._datasource_refresh_lock = asyncio.Lock()
 
         # Dedicated executor for this connector's blocking Google API calls.
         # The connector owns creation and shutdown so cleanup() can guarantee
@@ -333,14 +334,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise GoogleMailError("Gmail client or Gmail data source not initialized. Call init() first.")
 
 
-        await refresh_google_datasource_credentials(
-            google_client=self.gmail_client,
-            data_source=self.gmail_data_source,
-            config_service=self.config_service,
-            connector_id=self.connector_id,
-            logger=self.logger,
-            service_name="Gmail"
-        )
+        async with self._datasource_refresh_lock:
+            await refresh_google_datasource_credentials(
+                google_client=self.gmail_client,
+                data_source=self.gmail_data_source,
+                config_service=self.config_service,
+                connector_id=self.connector_id,
+                logger=self.logger,
+                service_name="Gmail"
+            )
 
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
