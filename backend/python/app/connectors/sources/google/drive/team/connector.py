@@ -102,7 +102,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 # Isolating Drive sync on its own pool means a slow/hung Google response can
 # only stall this connector's work, never the loop's shared default executor
 # (which other connectors and platform file I/O also depend on).
-_DRIVE_TEAM_EXECUTOR_MAX_WORKERS = 8
+_DRIVE_TEAM_EXECUTOR_MAX_WORKERS = 4
 
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
