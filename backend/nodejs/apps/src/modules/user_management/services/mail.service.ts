@@ -1,7 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import { AppConfig } from '../../tokens_manager/config/config';
 import { MailProducer } from '../../mail/services/mail.producer';
 import { MailEventType } from '../../mail/types/mail-event.types';
 import { MailBody } from '../../mail/middlewares/types';
@@ -24,9 +23,6 @@ interface SendMailResponse {
 @injectable()
 export class MailService {
   constructor(
-    // Retained so existing call sites keep their signature; delivery config
-    // now lives with the consumer, not this publisher.
-    @inject('AppConfig') _userConfig: AppConfig,
     @inject('Logger') private logger: Logger,
     @inject(MailProducer) private readonly mailProducer: MailProducer,
   ) {}

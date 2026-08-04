@@ -7,12 +7,22 @@ import { MailModel } from '../schema/mailInfo.schema';
 import { getEmailContent } from '../utils/email-content';
 import { classifyMailError, MailSendResult } from '../types/mail-event.types';
 
+const SMTP_DNS_TIMEOUT_MS = 30_000;
+const SMTP_CONNECTION_TIMEOUT_MS = 30_000;
+const SMTP_GREETING_TIMEOUT_MS = 30_000;
+const SMTP_SOCKET_TIMEOUT_MS = 60_000;
+const SMTP_SEND_DEADLINE_MS = 120_000;
+const SMTP_POOL_MAX_CONNECTIONS = 5;
+const SMTP_POOL_MAX_MESSAGES = 100;
+
 /**
  * Owns the actual SMTP delivery. Shared by the HTTP route and the broker
  * consumer so both paths send mail through exactly one implementation.
  */
 @injectable()
 export class MailSenderService {
+  private pooled?: { key: string; transporter: nodemailer.Transporter };
+
   constructor(
     // Resolved per call, not captured: updating SMTP settings rebinds
     // AppConfig, and this service outlives that rebind as a singleton.
@@ -26,6 +36,79 @@ export class MailSenderService {
     return (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
   }
 
+  /** Releases pooled SMTP connections so shutdown is not held open. */
+  close(): void {
+    this.discardTransporter();
+  }
+
+  private getTransporter(smtpConfig: SmtpConfig): nodemailer.Transporter {
+    const key = JSON.stringify([
+      smtpConfig.host,
+      smtpConfig.port,
+      smtpConfig.username,
+      smtpConfig.password,
+    ]);
+    if (this.pooled?.key === key) {
+      return this.pooled.transporter;
+    }
+
+    this.discardTransporter();
+    const transporter = nodemailer.createTransport({
+      host: smtpConfig.host,
+      port: smtpConfig.port || 587,
+      secure: false,
+      pool: true,
+      maxConnections: SMTP_POOL_MAX_CONNECTIONS,
+      maxMessages: SMTP_POOL_MAX_MESSAGES,
+      dnsTimeout: SMTP_DNS_TIMEOUT_MS,
+      connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+      greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+      socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+      ...(!smtpConfig.username
+        ? {}
+        : smtpConfig.password
+          ? { auth: { user: smtpConfig.username, pass: smtpConfig.password } }
+          : { auth: { user: smtpConfig.username } }),
+    });
+    this.pooled = { key, transporter };
+    return transporter;
+  }
+
+  private discardTransporter(): void {
+    try {
+      this.pooled?.transporter.close();
+    } catch {
+    }
+    this.pooled = undefined;
+  }
+
+  private async sendWithDeadline(
+    transporter: nodemailer.Transporter,
+    message: Parameters<nodemailer.Transporter['sendMail']>[0],
+  ): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(
+          new Error(`SMTP send exceeded ${SMTP_SEND_DEADLINE_MS}ms deadline`),
+        );
+      }, SMTP_SEND_DEADLINE_MS);
+    });
+
+    try {
+      await Promise.race([transporter.sendMail(message), deadline]);
+    } catch (error) {
+      if (timedOut) {
+        this.discardTransporter();
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * Sends one message. Never throws for delivery problems — the outcome is
    * returned so the caller can decide between retrying and giving up.
@@ -36,25 +119,7 @@ export class MailSenderService {
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
-      const transporter = nodemailer.createTransport({
-        host: smtpConfig.host,
-        port: smtpConfig.port || 587,
-        secure: false,
-        ...(smtpConfig.password
-          ? {
-            auth: {
-              user: smtpConfig.username,
-              pass: smtpConfig.password, // Included only if password exists
-            },
-          }
-          : {
-            auth: {
-              user: smtpConfig.username, // Include only the username
-            },
-          }),
-      });
-
-      await transporter.sendMail({
+      await this.sendWithDeadline(this.getTransporter(smtpConfig), {
         from: smtpConfig.fromEmail,
         to: bodyData.sendEmailTo,
         cc: bodyData.sendCcTo,
