@@ -150,8 +150,6 @@ spec:
             {{- end }}
             {{- if .Values.neo4j.enabled }}
             # Neo4j config (app uses Neo4j as graph DB when DATA_STORE=neo4j)
-            - name: GRAPH_DB_TYPE
-              value: "neo4j"
             - name: DATA_STORE
               value: "neo4j"
             - name: NEO4J_URI

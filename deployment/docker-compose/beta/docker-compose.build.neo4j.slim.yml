@@ -59,7 +59,6 @@ services:
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
       # Graph Database config
-      - GRAPH_DB_TYPE=neo4j
       - DATA_STORE=neo4j
 
       # Neo4j config

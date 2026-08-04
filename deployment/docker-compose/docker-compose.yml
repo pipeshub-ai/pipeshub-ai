@@ -8,8 +8,8 @@
 #     docker compose -p pipeshub-ai up -d                                        # full/arango/etcd/kafka
 #
 # Profile catalogue
-#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j in .env)
-#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb in .env)
+#   graph-neo4j   — start Neo4j (set DATA_STORE=neo4j in .env)
+#   graph-arango  — start ArangoDB (set DATA_STORE=arangodb in .env)
 #   kv-etcd       — start etcd (set KV_STORE_TYPE=etcd in .env; default is redis)
 #   broker-kafka  — start Zookeeper + Kafka (set MESSAGE_BROKER=kafka in .env; default is redis)
 #
@@ -83,9 +83,7 @@ services:
 
       # Graph database selection — set by install.sh
       # DATA_STORE accepted values: "arangodb" (default) | "neo4j"
-      # GRAPH_DB_TYPE accepted values: "arangodb" (default) | "neo4j"
       - DATA_STORE=${DATA_STORE:-arangodb}
-      - GRAPH_DB_TYPE=${GRAPH_DB_TYPE:-arangodb}
 
       # ArangoDB (active when DATA_STORE=arangodb)
       - ARANGO_URL=http://arango:8529
@@ -351,7 +349,7 @@ services:
       - pipeshub
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb, GRAPH_DB_TYPE=arangodb)
+  # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
   # ---------------------------------------------------------------------------
   arango:
     profiles: ["graph-arango"]
@@ -371,7 +369,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j, GRAPH_DB_TYPE=neo4j)
+  # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)
   # ---------------------------------------------------------------------------
   neo4j:
     profiles: ["graph-neo4j"]
