@@ -142,6 +142,10 @@ def check_mcp_check_defaults() -> None:
     require_tool = re.search(r'(?s)add_argument\(\s*"--require-tool".*?\)', text)
     if not require_tool or "nargs" not in require_tool.group(0):
         _fail("mcp-check.py must accept multiple --require-tool values (nargs)")
+    if "nextCursor" not in text or 'params["cursor"]' not in text:
+        _fail("mcp-check.py must follow tools/list nextCursor pagination")
+    if "MCP-Protocol-Version" not in text:
+        _fail("mcp-check.py must send MCP-Protocol-Version on follow-up requests")
     _pass("mcp-check.py defaults include all MCP tools")
 
 

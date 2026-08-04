@@ -32,6 +32,7 @@ def _request(
     payload: dict[str, Any],
     *,
     session_id: str | None = None,
+    protocol_version: str | None = None,
 ) -> tuple[int, dict[str, str], Any]:
     body = json.dumps(payload).encode("utf-8")
     headers = {
@@ -41,6 +42,8 @@ def _request(
     }
     if session_id:
         headers["Mcp-Session-Id"] = session_id
+    if protocol_version:
+        headers["MCP-Protocol-Version"] = protocol_version
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -136,6 +139,9 @@ def main() -> int:
     status, headers, init_data = _request(url, token, init_payload)
     init_result = _rpc_result(init_data, label="initialize")
     session_id = headers.get("mcp-session-id")
+    protocol = init_result.get("protocolVersion")
+    if not isinstance(protocol, str) or not protocol:
+        protocol = DEFAULT_PROTOCOL
 
     # Best-effort notification; ignore failures in fully-stateless servers.
     try:
@@ -148,29 +154,49 @@ def main() -> int:
                 "params": {},
             },
             session_id=session_id,
+            protocol_version=protocol,
         )
     except SystemExit:
         pass
 
-    _, _, list_data = _request(
-        url,
-        token,
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        session_id=session_id,
-    )
-    list_result = _rpc_result(list_data, label="tools/list")
-    tools = list_result.get("tools")
-    if not isinstance(tools, list):
-        raise SystemExit("tools/list did not return a tools array")
-
     names: list[str] = []
-    for tool in tools:
-        if not isinstance(tool, dict):
-            raise SystemExit("tools/list returned a non-object tool entry")
-        name = tool.get("name")
-        if not isinstance(name, str) or not name:
-            raise SystemExit("tools/list returned a tool without a string name")
-        names.append(name)
+    cursor: str | None = None
+    rpc_id = 2
+    max_pages = 50
+    for _ in range(max_pages):
+        params: dict[str, Any] = {}
+        if cursor is not None:
+            params["cursor"] = cursor
+        _, _, list_data = _request(
+            url,
+            token,
+            {"jsonrpc": "2.0", "id": rpc_id, "method": "tools/list", "params": params},
+            session_id=session_id,
+            protocol_version=protocol,
+        )
+        rpc_id += 1
+        list_result = _rpc_result(list_data, label="tools/list")
+        tools = list_result.get("tools")
+        if not isinstance(tools, list):
+            raise SystemExit("tools/list did not return a tools array")
+
+        for tool in tools:
+            if not isinstance(tool, dict):
+                raise SystemExit("tools/list returned a non-object tool entry")
+            name = tool.get("name")
+            if not isinstance(name, str) or not name:
+                raise SystemExit("tools/list returned a tool without a string name")
+            names.append(name)
+
+        next_cursor = list_result.get("nextCursor")
+        if next_cursor is None or next_cursor == "":
+            break
+        if not isinstance(next_cursor, str):
+            raise SystemExit("tools/list nextCursor must be a string or null")
+        cursor = next_cursor
+    else:
+        raise SystemExit("tools/list exceeded page limit while following nextCursor")
+
     missing = [tool for tool in require_tools if tool not in names]
     if missing:
         raise SystemExit(
@@ -190,6 +216,7 @@ def main() -> int:
         "ok": True,
         "http_status": status,
         "server": server_name,
+        "protocolVersion": protocol,
         "tools": names,
         "required_tools": require_tools,
     }
