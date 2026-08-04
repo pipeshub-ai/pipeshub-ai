@@ -131,7 +131,6 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
 
   it('still raises the security error when the alert mail fails', async () => {
     setupFifthWrongOtp(controller);
-    // What a 30s SMTP deadline looks like to this caller.
     mockMailService.sendMail.rejects(new Error('timeout of 30000ms exceeded'));
 
     let surfaced: Error | undefined;

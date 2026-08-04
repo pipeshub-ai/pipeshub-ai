@@ -688,7 +688,6 @@ export class Application {
     })();
   }
 
-  /** Starts the mail consumer so SMTP delivery happens off the request path. */
   private bootstrapMailBrokerConsumer(): void {
     void (async () => {
       try {
@@ -697,7 +696,7 @@ export class Application {
         await consumer.start();
         await consumer.subscribe([BrokerTopic.MAIL_EVENTS], false);
         await consumer.consume(async () => {
-          /* delivery + retry + failure notification implemented in MailConsumer */
+          /* delivery, retry and failure notification live in MailConsumer */
         });
       } catch (error) {
         this.logger.error('Mail broker consumer failed to start', {
