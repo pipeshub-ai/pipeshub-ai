@@ -122,7 +122,7 @@ describe('MailSenderService', () => {
     expect(opts.auth, 'auth').to.equal(undefined);
   });
 
-  it('abandons a stalled send at the deadline and drops the pool', async () => {
+  it('abandons a stalled send at the deadline without dropping the pool', async () => {
     const clock = sinon.useFakeTimers();
     const closeStub = sinon.stub();
     try {
@@ -138,8 +138,8 @@ describe('MailSenderService', () => {
 
       expect(result.status).to.equal('transient');
       expect(String((result as { error?: string }).error)).to.contain('deadline');
-      // The stuck connection must not be handed to the next message.
-      expect(closeStub.calledOnce).to.be.true;
+      // Concurrent sends share this pool, so it must survive one timeout.
+      expect(closeStub.called).to.be.false;
     } finally {
       clock.restore();
     }
