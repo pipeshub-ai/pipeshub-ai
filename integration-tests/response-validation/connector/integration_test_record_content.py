@@ -67,7 +67,7 @@ class TestConnectorRecordContent:
         # paraphrased, never verbatim. Spacing around the colon is not part of the
         # contract (Prompt tuning #2848 dropped column padding).
         assert re.search(
-            rf"^Record ID\s*:\s*{re.escape(record_id)}\s*$",
+            rf"^Record ID[^\S\r\n]*:[^\S\r\n]*{re.escape(record_id)}[^\S\r\n]*$",
             content,
             re.MULTILINE,
         ), content[:500]
