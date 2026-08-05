@@ -85,21 +85,15 @@ export class MailSenderService {
     deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
-    let timedOut = false;
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        reject(new Error(`SMTP send exceeded ${deadlineMs}ms deadline`));
-      }, deadlineMs);
+      timer = setTimeout(
+        () => reject(new Error(`SMTP send exceeded ${deadlineMs}ms deadline`)),
+        deadlineMs,
+      );
     });
 
     try {
       await Promise.race([transporter.sendMail(message), deadline]);
-    } catch (error) {
-      if (timedOut) {
-        this.discardTransporter();
-      }
-      throw error;
     } finally {
       clearTimeout(timer);
     }
@@ -111,11 +105,24 @@ export class MailSenderService {
     smtpConfig: SmtpConfig,
     deadlineMs: number = SMTP_SEND_DEADLINE_MS,
   ): Promise<MailSendResult> {
+    let emailContent: string;
     try {
-      const emailContent = getEmailContent(
+      emailContent = getEmailContent(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === 'string'
+            ? error
+            : 'Failed to render email template';
+      this.logger.error('Mail template error', { error: message });
+      return { status: 'permanent', error: message };
+    }
+
+    try {
       await this.sendWithDeadline(
         this.getTransporter(smtpConfig),
         {
@@ -133,7 +140,7 @@ export class MailSenderService {
       try {
         const mailEntry = new MailModel({
           subject: bodyData.subject,
-          from: bodyData.fromEmailDomain,
+          from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
           cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
           emailTemplateType: bodyData.emailTemplateType,

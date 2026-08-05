@@ -8,6 +8,7 @@ describe('mail/controller/mail.controller', () => {
   let controller: MailController
   let mockConfig: any
   let mockLogger: any
+  let mockSender: any
 
   beforeEach(() => {
     mockConfig = {
@@ -19,13 +20,14 @@ describe('mail/controller/mail.controller', () => {
         fromEmail: 'noreply@test.com',
       },
     }
+    mockSender = { send: sinon.stub().resolves({ status: 'sent' }) }
     mockLogger = {
       info: sinon.stub(),
       error: sinon.stub(),
       warn: sinon.stub(),
       debug: sinon.stub(),
     }
-    controller = new MailController(mockConfig, mockLogger)
+    controller = new MailController(mockConfig, mockLogger, mockSender)
   })
 
   afterEach(() => {
@@ -52,7 +54,7 @@ describe('mail/controller/mail.controller', () => {
 
   describe('sendMail', () => {
     it('should throw NotFoundError when smtp is not configured', async () => {
-      controller = new MailController({ smtp: null }, mockLogger)
+      controller = new MailController({ smtp: null }, mockLogger, mockSender)
       const req: any = { body: {} }
       const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub() }
       const next = sinon.stub()
