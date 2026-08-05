@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Flex, Box, Text, Badge } from '@radix-ui/themes';
+import { Flex, Box, Text, Badge, Button } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { openRecordSource } from '@/chat/utils/open-record-source';
@@ -11,13 +11,13 @@ import type { SearchResultItem } from '@/chat/types';
 interface SearchResultCardProps {
   result: SearchResultItem;
   onOpenSource: (result: SearchResultItem) => void;
-  onChat: (result: SearchResultItem) => void;
+  onPreview: (result: SearchResultItem) => void;
 }
 
 export function SearchResultCard({
   result,
   onOpenSource,
-  onChat,
+  onPreview,
 }: SearchResultCardProps) {
   const { metadata, content, score } = result;
   const config = getConnectorConfig(metadata.connector);
@@ -34,6 +34,11 @@ export function SearchResultCard({
   const canOpenSource =
     isLocalFsSource ||
     (!metadata.hideWeburl && !!metadata.webUrl);
+  // Same gate as the Chat citation card (citation-card.tsx) — only files (not web
+  // links) can be streamed into the preview panel.
+  const showPreview =
+    metadata.recordType?.toUpperCase() === 'FILE' &&
+    metadata.connector?.toUpperCase() !== 'WEB';
 
   const handleOpenSource = async () => {
     await openRecordSource({
@@ -118,41 +123,17 @@ export function SearchResultCard({
               </Box>
             )}
 
-            {/* "Chat" solid accent button */}
-            <Box
-              asChild
-              onClick={() => onChat(result)}
-              style={{
-                height: '24px',
-                padding: '0 var(--space-2)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'var(--accent-9)',
-                borderRadius: 'var(--radius-1)',
-                cursor: 'pointer',
-                border: 'none',
-                transition: 'background-color 0.15s ease',
-              }}
-              onMouseEnter={(e: React.MouseEvent<HTMLElement>) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor =
-                  'var(--accent-10)';
-              }}
-              onMouseLeave={(e: React.MouseEvent<HTMLElement>) => {
-                (e.currentTarget as HTMLElement).style.backgroundColor =
-                  'var(--accent-9)';
-              }}
-            >
-              <button type="button">
-                <Text
-                  size="1"
-                  weight="medium"
-                  style={{ color: 'var(--accent-contrast)', whiteSpace: 'nowrap' }}
-                >
-                  Chat
-                </Text>
-              </button>
-            </Box>
+            {/* "Preview" button — only for previewable files, same as citation-card.tsx */}
+            {showPreview && (
+              <Button
+                size="1"
+                variant="solid"
+                onClick={() => onPreview(result)}
+                style={{ height: '24px', cursor: 'pointer' }}
+              >
+                Preview
+              </Button>
+            )}
           </Flex>
         </Flex>
 

@@ -28,7 +28,8 @@ export function DeleteChatDialog({
 }: DeleteChatDialogProps) {
   const { t } = useTranslation();
   const [confirmText, setConfirmText] = useState('');
-  const isConfirmed = confirmText === 'DELETE';
+  const deleteKeyword = t('dialog.deleteKeyword', { defaultValue: 'DELETE' });
+  const isConfirmed = confirmText.trim().toUpperCase() === deleteKeyword.trim().toUpperCase();
 
   const handleConfirm = async () => {
     if (isConfirmed && !isDeleting) {
@@ -84,10 +85,10 @@ export function DeleteChatDialog({
 
           <Flex direction="column" gap="2">
             <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
-              {t('dialog.typeDeleteToConfirm')}
+              {t('dialog.typeDeleteToConfirm', { keyword: deleteKeyword })}
             </Text>
             <TextField.Root
-              placeholder=""
+              placeholder={deleteKeyword}
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               style={{
