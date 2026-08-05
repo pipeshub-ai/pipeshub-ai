@@ -125,11 +125,12 @@ def get_mime_type_from_record(record: Record) -> str:
 
 
 # File types that require conversion to PDF for streaming
-_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx"})
+_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx", "epub"})
 _PDF_CONVERTIBLE_MIME_TYPES: frozenset[str] = frozenset({
     MimeTypes.PPT.value,
     MimeTypes.PPTX.value,
     MimeTypes.GOOGLE_SLIDES.value,
+    MimeTypes.EPUB.value,
 })
 
 
@@ -166,6 +167,8 @@ def get_pdf_conversion_info(
             # Google Slides exports are returned as OOXML presentations by the
             # connector, so LibreOffice needs a .pptx suffix to detect them.
             file_extension = "pptx"
+        elif resolved_mime == MimeTypes.EPUB.value:
+            file_extension = "epub"
     needs_conversion = (
         file_extension in _PDF_CONVERTIBLE_EXTENSIONS
         or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
