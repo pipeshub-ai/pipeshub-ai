@@ -460,6 +460,7 @@ class TestRetrievedImageInjectionHookWiring:
         assert any(
             "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
         )
+        assert context.tool_state["supports_multipart_tool_result"] is False
 
     def test_not_registered_when_model_supports_multipart_tool_result(self) -> None:
         context = make_context(llm=FakeChatModel())
@@ -467,6 +468,9 @@ class TestRetrievedImageInjectionHookWiring:
         assert not any(
             "shape_retrieved_image_injection" in name for name in _pre_model_qualnames(hooks)
         )
+        # retrieval.py/citations.py read this flag to skip stashing into
+        # `pending_tool_images` when no fallback hook exists to consume it.
+        assert context.tool_state["supports_multipart_tool_result"] is True
 
     def test_defaults_to_supported_when_flag_omitted(self) -> None:
         """Backward-compat default: callers that don't pass the new kwarg

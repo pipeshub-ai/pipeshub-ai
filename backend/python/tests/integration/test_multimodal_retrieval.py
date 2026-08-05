@@ -55,10 +55,6 @@ def _record(vr_id: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# build_message_content_array: hybrid-search result -> LLM content
-# ---------------------------------------------------------------------------
-
 class TestBuildMessageContentArrayImageHandling:
     def test_real_base64_image_becomes_image_url_for_multimodal_llm(self):
         vr_id = "vr-1"
@@ -151,10 +147,6 @@ class TestBuildMessageContentArrayImageHandling:
         assert any("Some retrieved paragraph." in c.get("text", "") for c in flat if c["type"] == "text")
         assert any(c["type"] == "image_url" for c in flat)
 
-
-# ---------------------------------------------------------------------------
-# Vector-metadata-only reconstruction -> record_to_message_content
-# ---------------------------------------------------------------------------
 
 class TestVectorMetadataReconstructionToMessageContent:
     """Exercises create_record_from_vector_metadata -> create_block_from_metadata

@@ -369,12 +369,16 @@ class _FetchFullRecordTool(Tool):
             if collected_images and self._context.is_multimodal_llm:
                 # See `retrieval.py`'s matching branch: multipart `data`
                 # flows through `ToolOutput` -> `ToolResult.content` ->
-                # `ToolMessage.content` unchanged; the Ollama transport
-                # strips images back to text and the PRE_MODEL fallback
-                # hook re-injects them from this same stash.
-                self._context.tool_state.setdefault(
-                    "pending_tool_images", [],
-                ).extend(collected_images)
+                # `ToolMessage.content` unchanged. Only stash a fallback
+                # copy when the transport actually needs one — models with
+                # native multipart tool-result support already got the
+                # images via the multipart return above, and
+                # `shape_retrieved_image_injection` (the sole consumer of
+                # this stash) is never registered for them.
+                if not self._context.tool_state.get("supports_multipart_tool_result", True):
+                    self._context.tool_state.setdefault(
+                        "pending_tool_images", [],
+                    ).extend(collected_images)
                 from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
                 image_parts = [
                     part for img in collected_images

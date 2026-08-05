@@ -336,6 +336,11 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             state["citation_ref_mapper"] = ref_mapper
 
         attachment_records: dict[str, dict[str, Any]] = {}
+        # Shared with retrieval/prefetch/citations/history-replay via the
+        # SAME `state["image_budget"]` instance (see `context.py`'s
+        # `_seed_tool_state`) so attachment images debit the one
+        # conversation-wide 50-image cap instead of an independent budget.
+        image_budget = state.setdefault("image_budget", ImageBudget())
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
@@ -344,6 +349,7 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             logger=logger,
             ref_mapper=ref_mapper,
             out_records=attachment_records,
+            image_budget=image_budget,
         )
 
         if attachment_records:

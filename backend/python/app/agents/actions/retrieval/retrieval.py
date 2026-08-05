@@ -707,11 +707,19 @@ class Retrieval:
                 # `ToolOutput.data` straight into `ToolResult.content` — so
                 # this list of Parts flows through unchanged into a
                 # multipart `ToolMessage` (see `agent/__init__.py`'s
-                # `_tool_result_content_to_message_content`). Ollama's
-                # transport strips the images back out at format time; the
-                # PRE_MODEL fallback hook re-injects them via `UserMessage`
-                # using this same `pending_tool_images` stash.
-                self.state.setdefault("pending_tool_images", []).extend(collected_images)
+                # `_tool_result_content_to_message_content`). Only stash a
+                # fallback copy when the transport actually needs one —
+                # models with native multipart tool-result support (the
+                # `supports_multipart_tool_result=True` default) already
+                # get the images via the multipart return above, so
+                # `shape_retrieved_image_injection` (which alone consumes
+                # this stash) is never registered for them; retaining the
+                # images here regardless would just leak memory across
+                # turns. Ollama's transport strips images back out at
+                # format time — that fallback hook re-injects them via
+                # `UserMessage` using this same `pending_tool_images` stash.
+                if not self.state.get("supports_multipart_tool_result", True):
+                    self.state.setdefault("pending_tool_images", []).extend(collected_images)
                 from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
                 image_parts = [
                     part for img in collected_images

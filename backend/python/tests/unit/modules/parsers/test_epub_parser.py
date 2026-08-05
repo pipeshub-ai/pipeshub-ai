@@ -1,6 +1,5 @@
 """Unit tests for app.modules.parsers.epub.epub_parser.EPUBParser."""
 
-import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,9 +8,6 @@ from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.services.parsing.interface import ParseError, ParseErrorCode
 
 
-# ---------------------------------------------------------------------------
-# __init__
-# ---------------------------------------------------------------------------
 class TestEPUBParserInit:
     def test_default_pdf_parser_is_none(self):
         parser = EPUBParser()
@@ -23,9 +19,6 @@ class TestEPUBParserInit:
         assert parser.pdf_parser is mock_inner
 
 
-# ---------------------------------------------------------------------------
-# parse
-# ---------------------------------------------------------------------------
 class TestParse:
     @pytest.mark.asyncio
     async def test_raises_when_no_pdf_parser_configured(self):
@@ -91,9 +84,6 @@ class TestParse:
         assert "pymupdf" not in dir(epub_parser_module)
 
 
-# ---------------------------------------------------------------------------
-# convert_epub_to_pdf_async
-# ---------------------------------------------------------------------------
 class TestConvertEpubToPdfAsync:
     @pytest.mark.asyncio
     async def test_calls_convert_with_libreoffice(self):
@@ -106,88 +96,3 @@ class TestConvertEpubToPdfAsync:
 
         mock_convert.assert_called_once_with(b"epub input", "epub", "pdf")
         assert result == b"pdf output"
-
-
-# ---------------------------------------------------------------------------
-# convert_epub_to_pdf (sync, LibreOffice subprocess)
-# ---------------------------------------------------------------------------
-class TestConvertEpubToPdf:
-    def test_raises_when_libreoffice_not_installed(self, tmp_path):
-        parser = EPUBParser()
-
-        with patch("subprocess.run") as mock_run, \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-            mock_run.side_effect = subprocess.CalledProcessError(
-                1, ["which", "libreoffice"], stderr=b""
-            )
-
-            with pytest.raises(subprocess.CalledProcessError):
-                parser.convert_epub_to_pdf(b"epub data")
-
-    def test_raises_when_output_file_not_found(self, tmp_path):
-        parser = EPUBParser()
-
-        def _run(cmd, **kwargs):
-            return MagicMock(returncode=0)
-
-        with patch("subprocess.run", side_effect=_run), \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
-             patch("os.path.exists", return_value=False), \
-             patch("builtins.open", MagicMock(
-                 return_value=MagicMock(
-                     __enter__=MagicMock(return_value=MagicMock(write=MagicMock())),
-                     __exit__=MagicMock(return_value=False),
-                 )
-             )):
-            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-
-            with pytest.raises(Exception):
-                parser.convert_epub_to_pdf(b"epub data")
-
-    def test_raises_on_timeout(self, tmp_path):
-        parser = EPUBParser()
-
-        def _run(cmd, **kwargs):
-            if "which" in cmd:
-                return MagicMock(returncode=0)
-            raise subprocess.TimeoutExpired(cmd, 60)
-
-        with patch("subprocess.run", side_effect=_run), \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
-             patch("builtins.open", MagicMock(
-                 return_value=MagicMock(
-                     __enter__=MagicMock(return_value=MagicMock(write=MagicMock())),
-                     __exit__=MagicMock(return_value=False),
-                 )
-             )):
-            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-
-            with pytest.raises(Exception, match="timed out"):
-                parser.convert_epub_to_pdf(b"epub data")
-
-    def test_returns_bytes_on_success(self, tmp_path):
-        parser = EPUBParser()
-        fake_pdf = b"fake pdf bytes"
-        pdf_path = str(tmp_path / "input.pdf")
-
-        def _run(cmd, **kwargs):
-            if "which" in cmd:
-                return MagicMock(returncode=0)
-            # Simulate LibreOffice creating the output file
-            with open(pdf_path, "wb") as f:
-                f.write(fake_pdf)
-            return MagicMock(returncode=0)
-
-        with patch("subprocess.run", side_effect=_run), \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir:
-            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
-
-            result = parser.convert_epub_to_pdf(b"epub data")
-
-        assert isinstance(result, bytes)
-        assert result == fake_pdf

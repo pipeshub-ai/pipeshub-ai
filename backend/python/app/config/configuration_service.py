@@ -59,6 +59,11 @@ class ConfigurationService:
         self._pubsub_task: Optional[asyncio.Task] = None
         self._pubsub_loop: Optional[asyncio.AbstractEventLoop] = None
         self._stopping = False
+        # Serializes "check _stopping and create _pubsub_task" (in the watch
+        # thread) against "check _pubsub_task and cancel it" (in close()), so
+        # close() can never race ahead to store.close() while the watch thread
+        # is still about to subscribe on it. See close() and start_subscription.
+        self._pubsub_state_lock = threading.Lock()
 
         # etcd prefix watch ID (so we can cancel it on close)
         self._etcd_watch_id: Optional[int] = None
@@ -285,10 +290,18 @@ class ConfigurationService:
                 except Exception as e:
                     self._log_safe("Could not check migration flag: %s" % str(e), level="debug")
 
-                # Subscribe to cache invalidation channel
-                self._pubsub_task = loop.run_until_complete(
-                    self.store.subscribe_cache_invalidation(self._redis_invalidation_callback)
-                )
+                # Subscribe to cache invalidation channel. Guarded by the same
+                # lock close() uses to check/cancel _pubsub_task, so a
+                # shutdown that starts during the migration-flag check above
+                # is guaranteed to either see the task here and cancel it, or
+                # be observed by the _stopping recheck below — never both
+                # missed, which would let this subscribe a closed client.
+                with self._pubsub_state_lock:
+                    if self._stopping:
+                        return
+                    self._pubsub_task = loop.run_until_complete(
+                        self.store.subscribe_cache_invalidation(self._redis_invalidation_callback)
+                    )
                 self._log_safe("👀 Redis Pub/Sub subscription registered for cache invalidation", level="debug")
 
                 # Clear cache after subscription is active to ensure any values
@@ -468,12 +481,23 @@ class ConfigurationService:
                 finally:
                     self._etcd_watch_id = None
 
-            # Cancel the Redis Pub/Sub task if running
-            if self._pubsub_task is not None and self._pubsub_loop is not None:
-                try:
-                    self._pubsub_loop.call_soon_threadsafe(self._pubsub_task.cancel)
-                except RuntimeError:
-                    pass
+            # Cancel the Redis Pub/Sub task if running. Acquired off-thread
+            # (via executor) so we don't block this event loop while waiting
+            # on the watch thread's subscribe call; the lock guarantees that
+            # by the time we hold it, the watch thread has either registered
+            # _pubsub_task (so we cancel it below) or has observed _stopping
+            # and will exit without ever calling the store again.
+            await asyncio.get_running_loop().run_in_executor(
+                None, self._pubsub_state_lock.acquire
+            )
+            try:
+                if self._pubsub_task is not None and self._pubsub_loop is not None:
+                    try:
+                        self._pubsub_loop.call_soon_threadsafe(self._pubsub_task.cancel)
+                    except RuntimeError:
+                        pass
+            finally:
+                self._pubsub_state_lock.release()
 
             # Wait for the watch thread to finish
             if hasattr(self, 'watch_thread') and self.watch_thread.is_alive():

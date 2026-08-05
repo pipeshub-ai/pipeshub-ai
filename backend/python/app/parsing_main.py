@@ -146,11 +146,9 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
-    # ----------------------------------------------------------------
-    # EPUB — converted to PDF via LibreOffice, then delegated to the same
+    # EPUB is converted to PDF via LibreOffice, then delegated to the same
     # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
     # OCR selection stays entirely inside SmartPDFParser).
-    # ----------------------------------------------------------------
     registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
     registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
 

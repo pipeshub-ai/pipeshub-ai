@@ -706,6 +706,15 @@ class PipesHubAgentFactory:
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
 
+        # Exposed on tool_state so search/fetch tools (retrieval.py,
+        # citations.py) can skip stashing into `pending_tool_images` when
+        # the model already receives images natively via the multipart
+        # ToolMessage — that stash only exists to feed
+        # `shape_retrieved_image_injection`'s fallback, which is only
+        # registered below (and thus only ever consumes the stash) when
+        # this flag is False.
+        context.tool_state["supports_multipart_tool_result"] = supports_multipart_tool_result
+
         # --- POST_TOOL_USE: artifact registration (Phase 1 of two-phase compaction) ---
         # Large tool results (>2K tokens) are persisted in the artifact store
         # and annotated with ToolMessageMeta.  Full content stays for the

@@ -351,3 +351,42 @@ class TestSynthesisGuard:
         assert all(isinstance(m.content, str) for m in tool_msgs)
         multipart_result = next(m for m in tool_msgs if m.tool_call_id == "tc_1")
         assert "truncated by synthesis_guard" in multipart_result.content
+
+    @pytest.mark.asyncio
+    async def test_truncates_multipart_tool_result_with_short_text(self):
+        """A multipart ToolMessage with short/no text (e.g. an image-only
+        result) must still be reduced to plain text — `len(msg.text) > 200`
+        alone would let its images slip through untouched, since images
+        don't count toward `count_message_tokens` but still cost real
+        request bytes/tokens.
+
+        `tc_image` sits at the tail so it's visited (and must be handled)
+        before `total` drops under budget via `tc_large`'s own truncation —
+        otherwise the loop's `total <= budget` break could skip it without
+        actually exercising the fix.
+        """
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource
+
+        messages = [
+            SystemMessage(content="sys"),
+            AssistantMessage(content="ok"),
+            ToolMessage(content="x" * 5_000, tool_call_id="tc_large"),
+            ToolMessage(
+                content=[
+                    TextPart(text="img"),
+                    ImagePart(source=ImageSource(type="base64", media_type="image/png", data="x" * 50_000)),
+                ],
+                tool_call_id="tc_image",
+            ),
+        ]
+        # keep_last_n_tool_results=2 (== the number of tool results present)
+        # skips the clearing step entirely, same as the test above, so both
+        # messages are only ever touched by `_truncate_tool_results`.
+        shaper = shape_synthesis_guard(keep_last_n_tool_results=2)
+        result = await _run_middleware(shaper, messages, _budget(1_000))
+
+        multipart_result = next(
+            m for m in result if isinstance(m, ToolMessage) and m.tool_call_id == "tc_image"
+        )
+        assert isinstance(multipart_result.content, str)
+        assert "truncated by synthesis_guard" in multipart_result.content

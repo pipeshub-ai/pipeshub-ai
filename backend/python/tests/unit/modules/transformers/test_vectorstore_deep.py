@@ -825,64 +825,9 @@ class TestStoreImagePoints:
 
 
 # ===================================================================
-# _process_image_embeddings (routing)
+# _process_image_embeddings (routing) — see TestProcessImageEmbeddings in
+# test_vectorstore.py for factory-routing and unsupported-provider coverage.
 # ===================================================================
-
-class TestProcessImageEmbeddings:
-    @pytest.mark.asyncio
-    async def test_unsupported_provider(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = "unknown_provider"
-        result = await vs._process_image_embeddings(
-            [{"metadata": {}}], ["data:image/png;base64,abc"]
-        )
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_resolved_provider_routing(self):
-        """_process_image_embeddings resolves a provider via the factory and
-        builds VectorPoints from whatever ImageEmbeddingResults it returns."""
-        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = "cohere"
-
-        mock_provider = MagicMock()
-        mock_provider.supports_multimodal.return_value = True
-        mock_provider.embed_images = AsyncMock(
-            return_value=[ImageEmbeddingResult(index=0, embedding=[0.1])]
-        )
-
-        with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
-            return_value=mock_provider,
-        ):
-            result = await vs._process_image_embeddings(
-                [{"metadata": {}}], ["data:image/png;base64,abc"]
-            )
-
-        mock_provider.embed_images.assert_awaited_once()
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_provider_without_multimodal_support_skips_embedding(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = "ollama"
-
-        mock_provider = MagicMock()
-        mock_provider.supports_multimodal.return_value = False
-        mock_provider.embed_images = AsyncMock()
-
-        with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
-            return_value=mock_provider,
-        ):
-            result = await vs._process_image_embeddings(
-                [{"metadata": {}}], ["data:image/png;base64,abc"]
-            )
-
-        mock_provider.embed_images.assert_not_awaited()
-        assert result == []
 
 
 # ===================================================================

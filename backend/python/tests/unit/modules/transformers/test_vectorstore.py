@@ -1936,34 +1936,6 @@ class TestBuildImagePoints:
         assert points[0].payload["metadata"] == {"i": 0}
         assert points[1].payload["metadata"] == {"i": 2}
 
-    def test_dimension_mismatch_is_skipped_and_logged(self):
-        """A result whose dimension doesn't match the collection's expected
-        embedding size must be dropped, not upserted with a mismatched
-        vector (which would corrupt cosine similarity for the collection)."""
-        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
-
-        vs = _make_vectorstore()
-        vs.embedding_size = 4
-        image_chunks = [{"metadata": {}, "description": ""}]
-        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
-
-        points = vs._build_image_points(image_chunks, results)
-
-        assert points == []
-        vs.logger.error.assert_called()
-
-    def test_matching_dimension_is_kept(self):
-        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
-
-        vs = _make_vectorstore()
-        vs.embedding_size = 3
-        image_chunks = [{"metadata": {}, "description": ""}]
-        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
-
-        points = vs._build_image_points(image_chunks, results)
-
-        assert len(points) == 1
-
     def test_no_embedding_size_set_skips_validation(self):
         """When embedding_size hasn't been resolved yet (e.g. instance not
         fully initialised), dimension checking is skipped rather than
@@ -1980,6 +1952,9 @@ class TestBuildImagePoints:
         assert len(points) == 1
 
     def test_dimension_mismatch_among_multiple_results_only_drops_bad_one(self):
+        """A result whose dimension doesn't match the collection's expected
+        embedding size must be dropped (and logged), not upserted with a
+        mismatched vector — while matching results are still kept."""
         from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 
         vs = _make_vectorstore()
@@ -1997,6 +1972,7 @@ class TestBuildImagePoints:
 
         assert len(points) == 1
         assert points[0].payload["metadata"] == {"i": 0}
+        vs.logger.error.assert_called()
 
 
 # ===================================================================

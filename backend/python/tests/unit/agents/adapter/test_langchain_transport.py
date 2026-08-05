@@ -877,11 +877,11 @@ class TestReasoningMandatoryFallbackStream:
 
 
 class TestSupportsMultipartToolResult:
-    """`_supports_multipart_tool_result` detects Ollama by LangChain class
-    name (`ChatOllama`) so `LangChainTransport` knows to route multipart
-    `ToolMessage` content through the text-only fallback instead of
-    sending it straight to a provider that rejects it (Ollama's
-    `/api/chat` only accepts `content: str` for `role: "tool"`)."""
+    """`_supports_multipart_tool_result` detects Ollama by walking the
+    model's MRO for a class named `ChatOllama` so `LangChainTransport`
+    knows to route multipart `ToolMessage` content through the text-only
+    fallback instead of sending it straight to a provider that rejects it
+    (Ollama's `/api/chat` only accepts `content: str` for `role: "tool"`)."""
 
     def test_ollama_model_class_name_returns_false(self) -> None:
         class ChatOllama(_FakeModel):
@@ -891,6 +891,19 @@ class TestSupportsMultipartToolResult:
 
     def test_non_ollama_model_returns_true(self) -> None:
         assert _supports_multipart_tool_result(_FakeModel()) is True
+
+    def test_ollama_subclass_with_different_name_still_returns_false(self) -> None:
+        """A wrapper/subclass of `ChatOllama` under a different class name
+        must still be detected — a bare `type(x).__name__ != "ChatOllama"`
+        compare would miss this and incorrectly report multipart support,
+        silently dropping images sent to a still-text-only provider."""
+        class ChatOllama(_FakeModel):
+            pass
+
+        class CustomOllamaWrapper(ChatOllama):
+            pass
+
+        assert _supports_multipart_tool_result(CustomOllamaWrapper()) is False
 
     def test_transport_computes_flag_once_at_construction(self) -> None:
         class ChatOllama(_FakeModel):

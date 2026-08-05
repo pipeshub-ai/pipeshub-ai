@@ -595,3 +595,55 @@ class TestShapeRetrievedImageInjection:
         ctx = SimpleNamespace(messages=[msg])
         await mw(ctx, _noop_next)
         assert ctx.messages[0].content == "hello"
+
+    async def test_second_distinct_batch_is_not_dropped_by_existing_image(self):
+        """Regression: a message that already carries an unrelated image
+        (an attachment injected by `shape_image_injection`, or an earlier
+        retrieved-image batch) must not cause a freshly-popped batch to be
+        silently dropped -- `pending_tool_images` is popped exactly once,
+        so a dropped batch is gone for good, never redelivered."""
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        context = _make_context(
+            tool_state={"pending_tool_images": [
+                {"image_url": {"url": "data:image/png;base64,SECOND"}},
+            ]},
+        )
+        mw = shape_retrieved_image_injection(context)
+
+        # Simulate a message that already contains an unrelated image
+        # (e.g. from a prior batch or an attachment injection).
+        msg = UserMessage(content=[
+            TextPart(text="turn 1"),
+            ImagePart(source=ImageSource(type="base64", media_type="image/png", data="FIRST")),
+        ])
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+
+        image_parts = [p for p in ctx.messages[0].content if isinstance(p, ImagePart)]
+        assert len(image_parts) == 2
+        assert {p.source.data for p in image_parts} == {"FIRST", "data:image/png;base64,SECOND"}
+
+    async def test_duplicate_image_source_not_appended_twice(self):
+        """The SAME image (identical `source.data`) already present in the
+        message content must not be appended again."""
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        context = _make_context(
+            tool_state={"pending_tool_images": [
+                {"image_url": {"url": "data:image/png;base64,abc123"}},
+            ]},
+        )
+        mw = shape_retrieved_image_injection(context)
+
+        msg = UserMessage(content=[
+            TextPart(text="turn 1"),
+            ImagePart(source=ImageSource(
+                type="base64", media_type="image/png", data="data:image/png;base64,abc123",
+            )),
+        ])
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+
+        image_parts = [p for p in ctx.messages[0].content if isinstance(p, ImagePart)]
+        assert len(image_parts) == 1

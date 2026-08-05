@@ -363,7 +363,40 @@ class TestSearchImageMultipart:
         image_parts = [p for p in result if isinstance(p, ImagePart)]
         assert len(image_parts) == 1
         assert image_parts[0].source.data == _MIN_PNG_DATA_URI
-        # Stashed for the Ollama PRE_MODEL fallback (`shape_retrieved_image_injection`).
+        # No fallback stash: `supports_multipart_tool_result` defaults to
+        # True, and `shape_retrieved_image_injection` (its only consumer)
+        # is never registered for such models — retaining the images here
+        # too would just leak memory across turns.
+        assert "pending_tool_images" not in state
+
+    @pytest.mark.asyncio
+    async def test_no_native_multipart_support_also_stashes_fallback_images(self):
+        """When the resolved chat model lacks native multipart tool-result
+        support (Ollama), the search must ALSO stash a fallback copy into
+        `pending_tool_images` so `shape_retrieved_image_injection` can
+        re-inject it via a `UserMessage` on the next model call."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={
+                "status_code": 200,
+                "searchResults": [{"virtual_record_id": "vr-1", "content": "x"}],
+                "virtual_to_record_map": {},
+            }
+        )
+        state = _make_state(
+            retrieval_service=retrieval_service, is_multimodal_llm=True,
+            supports_multipart_tool_result=False,
+        )
+
+        with patch(
+            "app.agents.actions.retrieval.retrieval.get_flattened_results",
+            new_callable=AsyncMock,
+            side_effect=_image_flatten_side_effect(),
+        ), patch("app.agents.actions.retrieval.retrieval.BlobStorage"):
+            r = Retrieval(state=state)
+            result = await r.search_internal_knowledge(query="test")
+
+        assert isinstance(result, list)
         assert len(state["pending_tool_images"]) == 1
 
     @pytest.mark.asyncio

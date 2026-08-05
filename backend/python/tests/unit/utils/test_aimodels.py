@@ -681,19 +681,16 @@ class TestGetEmbeddingModel:
             get_embedding_model(EmbeddingProvider.OPENAI.value, config, model_name="model-c")
 
 
-# ---------------------------------------------------------------------------
 # Regression: GoogleGenerativeAIEmbeddings.embed_documents must return one
 # vector per input text (not a single aggregated vector for the whole batch).
-#
-# https://github.com/langchain-ai/langchain/issues/37728 —
-# `embed_documents` returned len(texts) == 1 regardless of batch size because
-# the SDK's content transformer merged a bare `list[str]` into a single
-# multi-part `Content`. Fixed in `google-genai>=1.72.0` / `t_contents_for_embed`
-# (each string becomes its own `Content`) and shipped in
-# `langchain-google-genai==4.3.2` (pinned in pyproject.toml). This test
-# exercises the real embedding class (not the factory) with a stubbed
-# `embed_content` call so a dependency downgrade or SDK regression is caught.
-# ---------------------------------------------------------------------------
+# https://github.com/langchain-ai/langchain/issues/37728 — `embed_documents`
+# returned len(texts) == 1 regardless of batch size because the SDK's content
+# transformer merged a bare `list[str]` into a single multi-part `Content`.
+# Fixed in `google-genai>=1.72.0` / `t_contents_for_embed` (each string becomes
+# its own `Content`) and shipped in `langchain-google-genai==4.3.2` (pinned in
+# pyproject.toml). This test exercises the real embedding class (not the
+# factory) with a stubbed `embed_content` call so a dependency downgrade or
+# SDK regression is caught.
 class TestGeminiEmbedDocumentsBatchCountRegression:
     """Guards against the Gemini SDK collapsing N texts into 1 embedding."""
 
@@ -719,10 +716,23 @@ class TestGeminiEmbedDocumentsBatchCountRegression:
             "This indicates the Gemini batch-embedding bug has regressed — "
             "check google-genai / langchain-google-genai pinned versions."
         )
-        # The SDK must receive the batch as a bare list of strings; t_contents_for_embed
-        # (google-genai>=1.72.0) is responsible for splitting it into per-text Content.
+        # `langchain-google-genai` 4.3.2 sends one Content per text (each as its
+        # own `{"parts": [{"text": ...}]}` dict) rather than a bare list of
+        # strings — the shape that used to get merged into a single multi-part
+        # Content. Extract the text back out regardless of the exact dict/str
+        # shape, since that's an internal-library detail this test shouldn't pin.
         call_kwargs = embeddings.client.models.embed_content.call_args.kwargs
-        assert call_kwargs["contents"] == texts
+        contents = call_kwargs["contents"]
+        assert len(contents) == len(texts)
+
+        def _content_text(content: object) -> str:
+            if isinstance(content, str):
+                return content
+            if isinstance(content, dict):
+                return content["parts"][0]["text"]
+            raise AssertionError(f"Unexpected content shape: {content!r}")
+
+        assert [_content_text(c) for c in contents] == texts
 
 
 # ---------------------------------------------------------------------------

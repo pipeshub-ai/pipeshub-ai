@@ -562,9 +562,24 @@ def _inject_into_first_user_message(
         if isinstance(content, str):
             msg.content = [text_part_cls(text=content), *parts]
         elif isinstance(content, list):
-            has_image = any(getattr(p, "type", None) == "image" for p in content)
-            if not has_image:
-                msg.content = [*content, *parts]
+            # Dedup by `source.data`, not by "any image present" — the
+            # latter would drop a whole batch of newly-popped
+            # `pending_tool_images` (each batch is popped exactly once,
+            # see `shape_retrieved_image_injection`, so a dropped batch is
+            # gone for good) whenever the message already carried an
+            # unrelated image, e.g. an attachment injected by
+            # `shape_image_injection` or an earlier retrieved-image batch.
+            existing_sources = {
+                getattr(getattr(p, "source", None), "data", None)
+                for p in content
+                if getattr(p, "type", None) == "image"
+            }
+            new_parts = [
+                p for p in parts
+                if getattr(getattr(p, "source", None), "data", None) not in existing_sources
+            ]
+            if new_parts:
+                msg.content = [*content, *new_parts]
         break
 
 

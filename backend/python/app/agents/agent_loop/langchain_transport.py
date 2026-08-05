@@ -180,15 +180,18 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     """Whether this LangChain chat model's underlying provider accepts
     image content inside a tool-result message.
 
-    Detected by class name (not an isinstance check against
-    `langchain_ollama.ChatOllama`) so this module has no hard dependency on
-    every provider package being installed. Ollama's `/api/chat` only
-    accepts `content: str` for `role: "tool"` messages (see the Image
-    Context Engineering plan's API landscape survey) — every other
-    LangChain-wrapped provider PipesHub configures (OpenAI, Anthropic,
-    Gemini, Bedrock, ...) accepts multipart tool results.
+    Walks the model's full MRO (not just `type(chat_model).__name__`, which
+    a `ChatOllama` subclass/wrapper would defeat — `type(x).__name__ !=
+    "ChatOllama"` is `True`, i.e. "supports multipart", for any subclass)
+    looking for a class named `ChatOllama`, so this module still has no
+    hard `isinstance`/import dependency on `langchain_ollama` being
+    installed. Ollama's `/api/chat` only accepts `content: str` for
+    `role: "tool"` messages (see the Image Context Engineering plan's API
+    landscape survey) — every other LangChain-wrapped provider PipesHub
+    configures (OpenAI, Anthropic, Gemini, Bedrock, ...) accepts multipart
+    tool results.
     """
-    return type(chat_model).__name__ != "ChatOllama"
+    return not any(cls.__name__ == "ChatOllama" for cls in type(chat_model).__mro__)
 
 
 class LangChainTransport(LLMTransport):

@@ -41,7 +41,12 @@ def _image_record(record_id: str = "rec-1") -> dict:
     }
 
 
-def _make_context(*, is_multimodal_llm: bool, image_budget: ImageBudget | None = None) -> AgentContext:
+def _make_context(
+    *,
+    is_multimodal_llm: bool,
+    image_budget: ImageBudget | None = None,
+    supports_multipart_tool_result: bool = True,
+) -> AgentContext:
     context = AgentContext(
         org_id="org-1", user_id="user-1", user_email="a@b.com",
         is_multimodal_llm=is_multimodal_llm,
@@ -50,6 +55,7 @@ def _make_context(*, is_multimodal_llm: bool, image_budget: ImageBudget | None =
         context.tool_state["image_budget"] = image_budget
     context.tool_state["virtual_record_id_to_result"] = {"vr-1": _image_record()}
     context.tool_state["citation_ref_mapper"] = CitationRefMapper()
+    context.tool_state["supports_multipart_tool_result"] = supports_multipart_tool_result
     return context
 
 
@@ -65,7 +71,10 @@ class TestFetchFullRecordToolImageDelivery:
         """The core bug fix: fetching an all-image record with a multimodal
         LLM must return a multipart `ToolOutput.data` containing an
         `ImagePart` — not just a text placeholder the image silently
-        vanished from."""
+        vanished from. With native multipart tool-result support (the
+        default), no fallback copy is stashed into `pending_tool_images`
+        since `shape_retrieved_image_injection` is never registered to
+        consume it — retaining it would just leak memory across turns."""
         context = _make_context(is_multimodal_llm=True)
         collector = CitationCollector(context)
         tool = _FetchFullRecordTool(collector, context)
@@ -82,6 +91,26 @@ class TestFetchFullRecordToolImageDelivery:
         image_parts = [p for p in output.data if isinstance(p, ImagePart)]
         assert len(image_parts) == 1
         assert image_parts[0].source.data == _MIN_PNG_DATA_URI
+        assert "pending_tool_images" not in context.tool_state
+
+    @pytest.mark.asyncio
+    async def test_no_native_multipart_support_also_stashes_fallback_images(self):
+        """When the resolved chat model lacks native multipart tool-result
+        support (Ollama), the fetch must ALSO stash a fallback copy into
+        `pending_tool_images` so `shape_retrieved_image_injection` can
+        re-inject it via a `UserMessage` on the next model call."""
+        context = _make_context(is_multimodal_llm=True, supports_multipart_tool_result=False)
+        collector = CitationCollector(context)
+        tool = _FetchFullRecordTool(collector, context)
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_structured_tool([_image_record()]),
+        ):
+            output = await tool.execute(record_ids=["rec-1"])
+
+        assert output.success is True
+        assert isinstance(output.data, list)
         assert len(context.tool_state["pending_tool_images"]) == 1
 
     @pytest.mark.asyncio

@@ -2650,19 +2650,36 @@ def _render_blocks_with_images(
                 if item.get("block_type") == BlockType.IMAGE.value:
                     if is_multimodal_llm:
                         img_uri = item.get("content", "")
-                        if img_uri and is_base64_image(img_uri) and image_budget.can_add():
-                            image_budget.try_consume(1)
-                            if collected_images is not None:
-                                collected_images.append({
-                                    "ref": item.get("citation_ref", ""),
-                                    "block_index": item.get("block_index"),
-                                    "image_url": {"url": img_uri},
-                                    "virtual_record_id": item.get("virtual_record_id"),
-                                })
+                        item_ref = item.get("citation_ref", "")
+                        if img_uri and is_base64_image(img_uri):
+                            if image_budget.can_add():
+                                image_budget.try_consume(1)
+                                if collected_images is not None:
+                                    collected_images.append({
+                                        "ref": item_ref,
+                                        "block_index": item.get("block_index"),
+                                        "image_url": {"url": img_uri},
+                                        "virtual_record_id": item.get("virtual_record_id"),
+                                    })
+                                    # Side-channel callers still need a text
+                                    # anchor in `content` — without it, the
+                                    # image (delivered separately via
+                                    # `collected_images`) has no `[ref]`
+                                    # citation the model can point back to.
+                                    content.append({
+                                        "type": "text",
+                                        "text": f"    [{item_ref}] (image)\n",
+                                    })
+                                else:
+                                    content.append({
+                                        "type": "image_url",
+                                        "image_url": {"url": img_uri}
+                                    })
                             else:
                                 content.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": img_uri}
+                                    "type": "text",
+                                    "text": f"    [{item_ref}] (image block - visual content "
+                                            "not shown due to conversation image limit)\n",
                                 })
                     continue
                 content.append({
