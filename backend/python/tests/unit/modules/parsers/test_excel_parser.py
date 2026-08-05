@@ -1,6 +1,6 @@
 """Unit tests for pure functions in app.modules.parsers.excel.excel_parser."""
 
-from datetime import datetime
+from datetime import datetime, time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -343,6 +343,31 @@ class TestFormatExcelDatetime:
         # The minute "07" also gets stripped to "7" because the "m" pattern
         # in _strip_leading_zeros applies broadly after "d" has already run.
         assert result == "3/5/23 9:7"
+
+    def test_uppercase_date_format_dd_mmm_yyyy(self):
+        # Excel often stores custom formats in uppercase; tokens are case-insensitive.
+        dt = datetime(2024, 3, 15)
+        result = format_excel_datetime(dt, "DD-MMM-YYYY")
+        assert result == "15-mar-2024"
+        assert "DD" not in result
+        assert "YYYY" not in result
+
+    def test_uppercase_time_format_hh_mm(self):
+        dt = datetime(2023, 1, 1, 10, 30)
+        result = format_excel_datetime(dt, "HH:MM")
+        assert result == "10:30"
+        assert "MM" not in result
+
+    def test_datetime_time_with_h_mm_ss(self):
+        # openpyxl yields datetime.time for time-only cells
+        t = time(10, 30, 45)
+        result = format_excel_datetime(t, "h:mm:ss")
+        assert result == "10:30:45"
+
+    def test_datetime_time_with_uppercase_hh_mm(self):
+        t = time(11, 0)
+        result = format_excel_datetime(t, "HH:MM")
+        assert result == "11:00"
 
 
 # ---------------------------------------------------------------------------

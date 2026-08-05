@@ -99,10 +99,11 @@ COMMON_FORMAT_WHITELIST = {
     "hh:mm": ("%H:%M", ""),
     "hh:mm:ss": ("%H:%M:%S", ""),
     "h:mm:ss": ("%H:%M:%S", "h"),
-    "h:mm AM/PM": ("%I:%M %p", "h"),
-    "hh:mm AM/PM": ("%I:%M %p", ""),
-    "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
-    "hh:mm:ss AM/PM": ("%I:%M:%S %p", ""),
+    # Keys are lowercase; format_excel_datetime lowercases Excel formats before lookup.
+    "h:mm am/pm": ("%I:%M %p", "h"),
+    "hh:mm am/pm": ("%I:%M %p", ""),
+    "h:mm:ss am/pm": ("%I:%M:%S %p", "h"),
+    "hh:mm:ss am/pm": ("%I:%M:%S %p", ""),
 
     # Combined date-time formats (first mm=month, second mm=minute)
     "mm/dd/yyyy h:mm": ("%m/%d/%Y %H:%M", "h"),
@@ -115,8 +116,8 @@ COMMON_FORMAT_WHITELIST = {
     "m/d/yy h:mm": ("%m/%d/%y %H:%M", "dmh"),
     "m/d/yyyy h:m": ("%m/%d/%Y %H:%M", "dmh"),
     "dd-mmm-yy hh:mm": ("%d-%b-%y %H:%M", ""),
-    "mmm dd, yyyy h:mm AM/PM": ("%b %d, %Y %I:%M %p", "dh"),
-    "mm/dd/yyyy h:mm AM/PM": ("%m/%d/%Y %I:%M %p", "h"),
+    "mmm dd, yyyy h:mm am/pm": ("%b %d, %Y %I:%M %p", "dh"),
+    "mm/dd/yyyy h:mm am/pm": ("%m/%d/%Y %I:%M %p", "h"),
 
     # Edge cases that are uncommon but appear in tests
     "mm:ss": ("%M:%S", ""),  # Minutes:seconds format (no hours)
@@ -327,6 +328,9 @@ def format_excel_datetime(dt_value: datetime | time | str | int | float | None, 
     try:
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
+        # Excel date/time tokens are case-insensitive (DD-MMM-YYYY, HH:MM, etc.).
+        # Normalize so whitelist lookup and _resolve_ambiguous_format see lowercase tokens.
+        format_str = format_str.lower()
 
         # Step 2: Try whitelist first (covers 80-90% of cases with simple lookup)
         if format_str in COMMON_FORMAT_WHITELIST:
