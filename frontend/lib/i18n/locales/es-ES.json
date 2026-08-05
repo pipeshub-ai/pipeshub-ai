@@ -874,7 +874,8 @@
         "importSkipped": "{{invalid}} no válida(s), {{duplicate}} duplicada(s)",
         "importSkippedDescription": "Las entradas no válidas están marcadas — elimínalas antes de enviar.",
         "importFailed": "Error de importación",
-        "importFailedDescription": "No se pudo leer el archivo. Sube un archivo CSV o Excel válido."
+        "importFailedDescription": "No se pudo leer el archivo. Sube un archivo CSV o Excel válido.",
+        "adminGroupWarning": "Todas las personas invitadas aquí se convierten en administradores de la organización, incluidas todas las direcciones importadas de un archivo. Los administradores pueden gestionar usuarios, grupos y configuración."
       }
     },
     "groups": {

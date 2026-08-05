@@ -875,7 +875,8 @@
         "importSkipped": "{{invalid}} अमान्य, {{duplicate}} डुप्लिकेट पते",
         "importSkippedDescription": "अमान्य प्रविष्टियाँ चिह्नित हैं — भेजने से पहले हटाएँ।",
         "importFailed": "आयात विफल",
-        "importFailedDescription": "फ़ाइल पढ़ी नहीं जा सकी। मान्य CSV या Excel फ़ाइल अपलोड करें।"
+        "importFailedDescription": "फ़ाइल पढ़ी नहीं जा सकी। मान्य CSV या Excel फ़ाइल अपलोड करें।",
+        "adminGroupWarning": "यहाँ आमंत्रित सभी लोग पूर्ण संगठन एडमिन बन जाएंगे — फ़ाइल से आयात किया गया हर पता भी। एडमिन उपयोगकर्ता, समूह और संगठन सेटिंग्स प्रबंधित कर सकते हैं।"
       }
     },
     "groups": {

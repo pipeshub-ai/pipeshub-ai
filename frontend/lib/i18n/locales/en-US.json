@@ -887,7 +887,8 @@
         "importSkipped": "{{invalid}} invalid, {{duplicate}} duplicate address(es)",
         "importSkippedDescription": "Invalid entries are marked in the list — remove them before sending.",
         "importFailed": "Import failed",
-        "importFailedDescription": "Could not read the file. Upload a valid CSV or Excel file."
+        "importFailedDescription": "Could not read the file. Upload a valid CSV or Excel file.",
+        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings."
       }
     },
     "groups": {

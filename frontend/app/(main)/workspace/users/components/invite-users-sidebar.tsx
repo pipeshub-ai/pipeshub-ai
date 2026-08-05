@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Box, Button, Flex, HoverCard, Text } from '@radix-ui/themes';
+import { Box, Button, Callout, Flex, HoverCard, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -147,6 +147,11 @@ export function InviteUsersSidebar({
   // Form validation (role hidden — not required for now)
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
   const isFormValid = hasValidEmails;
+
+  const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
+  const isGrantingAdmin = Boolean(
+    adminGroupId && inviteGroupIds.includes(adminGroupId)
+  );
 
   // Group options for dropdown
   const groupOptions: CheckboxOption[] = groups.map((g) => ({
@@ -596,6 +601,21 @@ export function InviteUsersSidebar({
                 : 'No groups available'
             }
           />
+          {isGrantingAdmin ? (
+            <Box mt="2">
+              <Callout.Root color="amber" variant="soft" size="1">
+                <Callout.Icon>
+                  <MaterialIcon name="warning" size={16} />
+                </Callout.Icon>
+                <Callout.Text size="1" style={{ lineHeight: 1.45 }}>
+                  {t('workspace.users.invite.adminGroupWarning', {
+                    defaultValue:
+                      'Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.',
+                  })}
+                </Callout.Text>
+              </Callout.Root>
+            </Box>
+          ) : null}
         </FormField>
       </Box>
     </WorkspaceRightPanel>

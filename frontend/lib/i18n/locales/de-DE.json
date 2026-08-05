@@ -872,7 +872,8 @@
         "importSkipped": "{{invalid}} ungültige, {{duplicate}} doppelte Adresse(n)",
         "importSkippedDescription": "Ungültige Einträge sind markiert — vor dem Senden entfernen.",
         "importFailed": "Import fehlgeschlagen",
-        "importFailedDescription": "Datei konnte nicht gelesen werden. Bitte eine gültige CSV- oder Excel-Datei hochladen."
+        "importFailedDescription": "Datei konnte nicht gelesen werden. Bitte eine gültige CSV- oder Excel-Datei hochladen.",
+        "adminGroupWarning": "Alle hier eingeladenen Personen werden vollwertige Organisations-Admins — auch jede aus einer Datei importierte Adresse. Admins können Benutzer, Gruppen und Organisationseinstellungen verwalten."
       }
     },
     "groups": {
