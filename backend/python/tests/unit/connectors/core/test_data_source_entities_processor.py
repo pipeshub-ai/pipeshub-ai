@@ -3627,6 +3627,86 @@ class TestOnRecordMetadataUpdateAndDelete:
         assert tx_store.batch_upsert_records.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_metadata_update_preserves_indexing_lifecycle(self):
+        """A metadata-only write must not disturb stored indexing state.
+
+        _process_record resets a COMPLETED record to NOT_STARTED to request a
+        re-index, but this path publishes no event and nothing consumes
+        NOT_STARTED — the record would be stranded. The caller's record is also a
+        stale snapshot, so letting it through clobbers md5/parse/extraction too.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "rev-1"
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = True
+        existing.md5_hash = "live-md5"
+        existing.storage_document_id = "live-doc"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        # Stale snapshot, exactly what GitLab's timestamp backfill passes in.
+        record = _make_record(external_revision_id="rev-1")
+        record.indexing_status = ProgressStatus.QUEUED.value
+        record.parsing_status = ProgressStatus.NOT_STARTED.value
+        record.extraction_status = ProgressStatus.NOT_STARTED.value
+        record.md5_hash = None
+        record.storage_document_id = None
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+        assert written.parsing_status == ProgressStatus.COMPLETED.value
+        assert written.extraction_status == ProgressStatus.COMPLETED.value
+        assert written.is_vlm_ocr_processed is True
+        # Unset on the caller's copy → fall back to what is stored.
+        assert written.md5_hash == "live-md5"
+        assert written.storage_document_id == "live-doc"
+
+    @pytest.mark.asyncio
+    async def test_metadata_update_keeps_caller_supplied_md5(self):
+        """A connector that does report a checksum still wins over the stored one."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "rev-1"
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = False
+        existing.md5_hash = "live-md5"
+        existing.storage_document_id = None
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(external_revision_id="rev-1")
+        record.md5_hash = "fresh-from-source"
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.md5_hash == "fresh-from-source"
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
     async def test_record_deleted(self):
         """Deletes record by key."""
         proc = _make_processor()
