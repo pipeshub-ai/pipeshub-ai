@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 from app.connectors.core.registry.filters import (
@@ -1455,8 +1456,9 @@ class TestLinearStreamRecord:
         record.record_type = RecordType.LINK
         record.weburl = None
         record.external_record_id = "att-1"
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1477,8 +1479,9 @@ class TestLinearStreamRecord:
         record = MagicMock()
         record.record_type = "UNKNOWN"
         record.external_record_id = "x"
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===================================================================
@@ -1862,7 +1865,7 @@ class TestLinearFetchDocumentContent:
         mock_ds.document = AsyncMock(return_value=resp)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await c._fetch_document_content("doc-1")
 
     @pytest.mark.asyncio

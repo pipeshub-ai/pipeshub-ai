@@ -87,6 +87,11 @@ from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_found_at_source,
+    to_stream_error,
+)
 
 # Notion OAuth URLs
 # Note: Notion OAuth doesn't use traditional scopes. Permissions are configured
@@ -317,7 +322,7 @@ class NotionConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                return None
+                raise connector_not_ready(self.display_name)
 
             external_id = record.external_record_id
             if external_id.startswith("ca_") or external_id.startswith("comment_attachment_"):
@@ -325,9 +330,11 @@ class NotionConnector(BaseConnector):
             else:
                 return await self._get_block_file_url(record)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to get signed URL for {record.external_record_id}: {e}", exc_info=True)
-            raise e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_comment_attachment_url(self, record: Record) -> Optional[str]:
         """
@@ -444,28 +451,29 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"📥 Streaming record: {record.record_name} ({record.external_record_id})")
 
             if not self.data_source:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Notion data source not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Handle file records
             if record.record_type == RecordType.FILE:
                 signed_url = await self.get_signed_url(record)
 
                 if not signed_url:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="File URL not available"
-                    )
+                    raise not_found_at_source(self.display_name)
 
                 # Stream file from signed URL
                 async def generate_file_stream() -> AsyncGenerator[bytes, None]:
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        async with client.stream("GET", signed_url) as response:
-                            response.raise_for_status()
-                            async for chunk in response.aiter_bytes():
-                                yield chunk
+                    try:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            async with client.stream("GET", signed_url) as response:
+                                response.raise_for_status()
+                                async for chunk in response.aiter_bytes():
+                                    yield chunk
+                    except Exception as e:
+                        self.logger.error(
+                            f"❌ Failed to stream file for record {record.id}: {e}",
+                            exc_info=True,
+                        )
+                        raise to_stream_error(e, connector=self.display_name) from e
 
                 # Determine content type from record
                 media_type = record.mime_type if record.mime_type else "application/octet-stream"
@@ -556,9 +564,7 @@ class NotionConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def reindex_records(self, records: List[Record]) -> None:
         """

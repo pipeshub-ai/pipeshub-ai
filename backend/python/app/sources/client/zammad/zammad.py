@@ -17,6 +17,7 @@ class ZammadResponse(BaseModel):
     data: Optional[Union[Dict[str, Any], List[Any], bytes]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    status_code: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""

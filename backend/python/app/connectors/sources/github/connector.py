@@ -80,6 +80,10 @@ from app.sources.client.github.github import (
 )
 from app.sources.external.github.github_ import GitHubDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import (
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 
 if TYPE_CHECKING:
     from github.PullRequest import PullRequest
@@ -267,73 +271,86 @@ class GithubConnector(BaseConnector):
             return False
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        if record.record_type == RecordType.TICKET:
-            self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
+        try:
+            if record.record_type == RecordType.TICKET:
+                blocks_container= await self._build_ticket_blocks(record)
 
-            blocks_container= await self._build_ticket_blocks(record)
+                async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
+                    json_str = blocks_container.model_dump_json(indent=2)
+                    chunk_size = 81920
+                    encoded = json_str.encode("utf-8")
+                    for i in range(0, len(encoded), chunk_size):
+                        yield encoded[i : i + chunk_size]
 
-            async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                json_str = blocks_container.model_dump_json(indent=2)
-                chunk_size = 81920
-                encoded = json_str.encode("utf-8")
-                for i in range(0, len(encoded), chunk_size):
-                    yield encoded[i : i + chunk_size]
+                return StreamingResponse(
+                    content=generate_blocks_json(),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={record.record_name}"
+                    },
+                )
+            elif record.record_type == RecordType.PULL_REQUEST:
+                block_container= await self._build_pull_request_blocks(record)
 
-            return StreamingResponse(
-                content=generate_blocks_json(),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
+
+                async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
+                    json_str = block_container.model_dump_json(indent=2)
+                    chunk_size = 81920
+                    encoded = json_str.encode("utf-8")
+                    for i in range(0, len(encoded), chunk_size):
+                        yield encoded[i : i + chunk_size]
+
+                return StreamingResponse(
+                    content=generate_blocks_json(),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={record.record_name}"
+                    },
+                )
+            elif record.record_type == RecordType.FILE:
+                record_url = record.weburl
+                file_data_res = await self.data_source.get_attachment_files_content(record_url)
+                if not file_data_res.success or not file_data_res.data:
+                    self.logger.error(
+                        f"Failed to fetch file from {record_url}: {file_data_res.error}"
+                    )
+                    raise_for_stream_fetch(
+                        success=file_data_res.success,
+                        has_payload=bool(file_data_res.data),
+                        connector=self.display_name,
+                        status=file_data_res.status_code,
+                        message=file_data_res.error,
+                    )
+                file_data = file_data_res.data
+                async def stream_markdown(
+                    markdown_content:str, chunk_size:int=160000
+                ) -> AsyncGenerator[bytes, None]:
+                    """Stream markdown content in optimal chunks"""
+                    for i in range(0, len(markdown_content), chunk_size):
+                        yield markdown_content[i : i + chunk_size]
+
+                return StreamingResponse(
+                    content=stream_markdown(file_data),
+                    media_type=(
+                        record.mime_type if record.mime_type else "application/octet-stream"
+                    ),
+                    headers={
+                        "Content-Disposition": f"attachment; filename={record.record_name}"
+                    },
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(
+                f"Error streaming record {record.external_record_id} ({record.record_type}): {e}",
+                exc_info=True,
             )
-        elif record.record_type == RecordType.PULL_REQUEST:
-            self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-
-            block_container= await self._build_pull_request_blocks(record)
-
-
-            async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                json_str = block_container.model_dump_json(indent=2)
-                chunk_size = 81920
-                encoded = json_str.encode("utf-8")
-                for i in range(0, len(encoded), chunk_size):
-                    yield encoded[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=generate_blocks_json(),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        elif record.record_type == RecordType.FILE:
-            self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
-            record_url = record.weburl
-            file_data_res = await self.data_source.get_attachment_files_content(record_url)
-            if not file_data_res.success or not file_data_res.data:
-                raise Exception(f"Failed to fetch file from {record_url}: {file_data_res.error}")
-            file_data = file_data_res.data
-            async def stream_markdown(
-                markdown_content:str, chunk_size:int=160000
-            ) -> AsyncGenerator[bytes, None]:
-                """Stream markdown content in optimal chunks"""
-                for i in range(0, len(markdown_content), chunk_size):
-                    yield markdown_content[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=stream_markdown(file_data),
-                media_type=(
-                    record.mime_type if record.mime_type else "application/octet-stream"
-                ),
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported record type for streaming: {record.record_type}",
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_sync(self) -> None:
         try:
@@ -696,10 +713,19 @@ class GithubConnector(BaseConnector):
         issue_res = self.data_source.get_issue(
             owner=username, repo=repo_name, number=issue_number
         )
-        if not issue_res.success:
-            raise Exception(f"❌❌ Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
-        if not issue_res.data:
-            raise Exception(f"❌❌ No issue data found for record {record.external_record_id}")
+        if not issue_res.success or not issue_res.data:
+            self.logger.error(
+                "Failed to fetch issue details for record %s: %s",
+                record.external_record_id,
+                issue_res.error if not issue_res.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=issue_res.success,
+                has_payload=bool(issue_res.data),
+                connector=self.display_name,
+                status=issue_res.status_code,
+                message=issue_res.error,
+            )
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
@@ -1037,10 +1063,19 @@ class GithubConnector(BaseConnector):
         owner = pr_url[3]
         repo_name = pr_url[4]
         pull_request_res = self.data_source.get_pull(owner, repo_name, pr_number)
-        if not pull_request_res.success:
-            raise Exception(f"Failed to fetch pull request details for record {record.external_record_id}: {pull_request_res.error}")
-        if not pull_request_res.data:
-            raise Exception(f"No pull request data found for record {record.external_record_id}")
+        if not pull_request_res.success or not pull_request_res.data:
+            self.logger.error(
+                "Failed to fetch pull request details for record %s: %s",
+                record.external_record_id,
+                pull_request_res.error if not pull_request_res.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=pull_request_res.success,
+                has_payload=bool(pull_request_res.data),
+                connector=self.display_name,
+                status=pull_request_res.status_code,
+                message=pull_request_res.error,
+            )
         pull_request: PullRequest = pull_request_res.data
         block_group_number = 0
         block_number = 0

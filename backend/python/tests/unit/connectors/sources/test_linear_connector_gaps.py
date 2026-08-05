@@ -4,6 +4,7 @@ from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
@@ -527,7 +528,7 @@ class TestProjectStreaming:
         mock_ds.project = AsyncMock(return_value=MagicMock(success=False, message="not found"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="Failed to fetch project"):
+            with pytest.raises(RuntimeError, match="not found"):
                 await conn._process_project_blockgroups_for_streaming(record)
 
     @pytest.mark.asyncio
@@ -825,7 +826,7 @@ class TestIssueStreaming:
         mock_ds.issue = AsyncMock(return_value=MagicMock(success=False, message="not found"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="Failed to fetch issue"):
+            with pytest.raises(RuntimeError, match="not found"):
                 await conn._process_issue_blockgroups_for_streaming(record)
 
 
@@ -2545,8 +2546,9 @@ class TestCoverageBoostFinal:
         mock_ds.issue = AsyncMock(return_value=MagicMock(success=True, data={"issue": {}}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="No issue data found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_fetch_document_content_empty_returns_blank(self):

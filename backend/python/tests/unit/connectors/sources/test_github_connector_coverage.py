@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.connectors.sources.github.connector import GithubConnector, RecordUpdate
 from app.models.entities import RecordType
@@ -907,8 +908,10 @@ class TestStreamRecord:
         github_connector.data_source.get_attachment_files_content = AsyncMock(
             return_value=_make_response(False, error="not found")
         )
-        with pytest.raises(Exception, match="Failed to fetch file"):
+        # Failure with no HTTP status must not invent a 404 — to_stream_error → 500.
+        with pytest.raises(HTTPException) as exc_info:
             await github_connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, github_connector):
@@ -1303,7 +1306,7 @@ class TestBuildTicketBlocks:
 
         github_connector.data_source = MagicMock()
         github_connector.data_source.get_issue.return_value = _make_response(False, error="not found")
-        with pytest.raises(Exception, match="Failed to fetch issue"):
+        with pytest.raises(RuntimeError, match="not found"):
             await github_connector._build_ticket_blocks(record)
 
 
@@ -1325,7 +1328,7 @@ class TestBuildPullRequestBlocks:
         record.external_record_id = "ext-1"
         github_connector.data_source = MagicMock()
         github_connector.data_source.get_pull.return_value = _make_response(False, error="not found")
-        with pytest.raises(Exception, match="Failed to fetch pull request"):
+        with pytest.raises(RuntimeError, match="not found"):
             await github_connector._build_pull_request_blocks(record)
 
 

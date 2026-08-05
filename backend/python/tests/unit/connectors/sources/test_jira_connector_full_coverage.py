@@ -1191,8 +1191,9 @@ class TestStreamRecord:
             side_effect=Exception("fetch failed")
         )
 
-        with pytest.raises(Exception, match="fetch failed"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 500
 
 
 class TestReindexRecords:

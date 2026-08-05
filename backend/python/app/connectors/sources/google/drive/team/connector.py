@@ -94,6 +94,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.connectors.core.base.error.stream_errors import map_source_status, to_stream_error
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -2853,10 +2854,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     _, done = downloader.next_chunk()
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}: {str(http_error)}",
-                    )
+                    # HttpError carries Drive's own status on .resp.status —
+                    # mapping it is what tells a revoked token from a deleted file.
+                    raise map_source_status(
+                        http_error.resp.status, connector=self.display_name
+                    ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
                     raise HTTPException(
@@ -2875,6 +2877,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                 # Yield control back to event loop
                 await asyncio.sleep(0)
+        except HTTPException:
+            raise
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
             raise HTTPException(
@@ -3190,10 +3194,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming file: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync for Google Drive enterprise."""

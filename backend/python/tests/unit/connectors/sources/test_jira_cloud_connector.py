@@ -2192,8 +2192,9 @@ class TestProcessIssueBlockgroupsForStreaming:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record()
-        with pytest.raises(Exception, match="Failed to fetch"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_no_issue_data(self):
@@ -2204,8 +2205,9 @@ class TestProcessIssueBlockgroupsForStreaming:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record()
-        with pytest.raises(Exception, match="No issue data"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_without_site_url_uses_record_weburl(self):
@@ -4108,7 +4110,7 @@ class TestStreamRecordFileCloud:
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
                     await conn.stream_record(_make_file_record())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_http_exception_not_swallowed_by_outer_handler(self):

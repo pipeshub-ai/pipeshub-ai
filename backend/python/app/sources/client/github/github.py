@@ -14,6 +14,7 @@ class GitHubResponse(BaseModel):
     data: Any | None = None
     error: str | None = None
     message: str | None = None
+    status_code: int | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

@@ -623,8 +623,11 @@ class TestGetSignedUrl:
         c, *_ = _make_connector()
         c.data_source = None
         record = MagicMock()
-        result = await c.get_signed_url(record)
-        assert result is None
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================

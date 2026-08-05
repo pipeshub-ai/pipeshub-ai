@@ -731,8 +731,9 @@ class TestStreamRecord:
         ds.get_attachment_content = AsyncMock(return_value=resp)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(Exception, match="Failed to fetch attachment"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 404
 
 
 # ===========================================================================

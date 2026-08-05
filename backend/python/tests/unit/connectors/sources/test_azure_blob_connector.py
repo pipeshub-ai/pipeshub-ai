@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -935,8 +936,9 @@ class TestGetSignedUrl:
     @pytest.mark.asyncio
     async def test_not_initialized(self, azure_connector):
         azure_connector.data_source = None
-        result = await azure_connector.get_signed_url(MagicMock())
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_container(self, azure_connector):
@@ -975,8 +977,9 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
@@ -986,8 +989,9 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_container_prefix(self, azure_connector):
