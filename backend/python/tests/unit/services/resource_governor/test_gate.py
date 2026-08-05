@@ -192,7 +192,7 @@ class TestAdmissionGateDemandAccounting:
         assert demand.permit_seconds == pytest.approx(12.0)
 
     def test_massively_concurrent_short_holds_are_visible_to_demand(self) -> None:
-        """The aliasing regression (plan section 4.1): 2,000 concurrent
+        """The aliasing regression (plan section 4.1): 300 concurrent
         ~5ms acquisitions against a limit of 2 must show blocked_acquires
         and high utilisation even though in_use is back to 0 by the time
         the controller drains — proving demand is not point-sampled.

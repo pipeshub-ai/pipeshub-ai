@@ -20,8 +20,13 @@ def _registry(limit: int) -> LimitRegistry:
 
 
 class TestConfluenceShapedDemand:
-    """2,000 concurrent 5ms holds against a limit of 2 — the exact shape of
-    a Jira/Confluence BLOCKS/HTML sync (plan section 4.1)."""
+    """300 concurrent 5ms holds against a limit of 2 — the same shape (and
+    task count) as test_gate.py's
+    test_massively_concurrent_short_holds_are_visible_to_demand, which
+    proves this aliasing property for a Jira/Confluence BLOCKS/HTML sync
+    (plan section 4.1)."""
+
+    NUM_TASKS = 300
 
     def test_blocked_acquires_and_high_utilisation_survive_to_drain(self) -> None:
         registry = _registry(limit=2)
@@ -34,7 +39,7 @@ class TestConfluenceShapedDemand:
 
         async def scenario() -> float:
             start = time.monotonic()
-            await asyncio.gather(*(tiny_parse() for _ in range(2000)))
+            await asyncio.gather(*(tiny_parse() for _ in range(self.NUM_TASKS)))
             return time.monotonic() - start
 
         wall_elapsed = asyncio.run(scenario())
@@ -46,11 +51,11 @@ class TestConfluenceShapedDemand:
         demand = gate.drain_demand()
         assert demand.blocked_acquires > 0
         assert demand.utilisation(limit=2, interval=wall_elapsed) >= 0.7
-        # Loose sanity bound only: under real scheduling, 2,000 concurrent
+        # Loose sanity bound only: under real scheduling, 300 concurrent
         # 5ms holds against a limit of 2 take noticeably longer in wall
         # time than the analytic minimum, but permit_seconds must still be
         # in the right ballpark (same order of magnitude), not zero/tiny.
-        assert demand.permit_seconds > 2000 * 0.005 * 0.5
+        assert demand.permit_seconds > self.NUM_TASKS * 0.005 * 0.5
 
     def test_drain_demand_resets_so_next_interval_starts_clean(self) -> None:
         registry = _registry(limit=2)

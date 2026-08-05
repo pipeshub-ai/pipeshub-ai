@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from app.services.resource_governor.admission import DEFAULT_GATE_TIMEOUT_SECONDS
+
 if TYPE_CHECKING:
     from app.services.resource_governor.gate import AdmissionGate
 
@@ -73,7 +75,18 @@ class GatedBytesBudget:
         if self._gate is None:
             return
         cost = estimate_reservation(content_length)
-        await self._gate.acquire(cost)
+        if not await self._gate.acquire(cost, timeout=DEFAULT_GATE_TIMEOUT_SECONDS):
+            # Every other governor call site passes an explicit timeout
+            # (see acquire_gate_with_backpressure) — without one here, a
+            # leaked DOWNLOAD_BYTES reservation elsewhere would make this
+            # wait forever with no error and no log. Raising TimeoutError
+            # is deliberate: both callers of reserve()/ensure() (api_call's
+            # tenacity retry, record.py's manual retry loop) already treat
+            # it as retryable and already release the budget on failure.
+            raise TimeoutError(
+                f"DOWNLOAD_BYTES budget unavailable after "
+                f"{DEFAULT_GATE_TIMEOUT_SECONDS:.0f}s (requested {cost} bytes)"
+            )
         self._reserved += cost
 
     async def ensure(self, total_bytes_so_far: int) -> None:
@@ -88,7 +101,11 @@ class GatedBytesBudget:
         additional = target - self._reserved
         if additional <= 0:
             return
-        await self._gate.acquire(additional)
+        if not await self._gate.acquire(additional, timeout=DEFAULT_GATE_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                f"DOWNLOAD_BYTES budget top-up unavailable after "
+                f"{DEFAULT_GATE_TIMEOUT_SECONDS:.0f}s (requested {additional} bytes)"
+            )
         self._reserved += additional
 
     def release(self) -> None:

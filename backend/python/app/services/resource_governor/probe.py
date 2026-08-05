@@ -580,6 +580,7 @@ class SystemResourceProbe:
         self._clock = clock
         self._lock = threading.Lock()
         self._prev_cpu_usec: int | None = None
+        self._prev_cpu_source: str | None = None
         self._prev_throttled_usec: int | None = None
         self._prev_time: float | None = None
         self._baseline_tracker = baseline_tracker or BaselineMemoryTracker()
@@ -615,7 +616,12 @@ class SystemResourceProbe:
                 cpu_usage_usec is not None
                 and self._prev_cpu_usec is not None
                 and self._prev_time is not None
+                and cpu_source == self._prev_cpu_source
             ):
+                # A counter delta is only meaningful within the same source:
+                # a fallback switch (e.g. cgroup read failure -> os.times())
+                # changes scope, so treat it like a first sample instead of
+                # diffing two incompatible counters.
                 elapsed = now - self._prev_time
                 if elapsed > 0 and cpu_quota > 0:
                     delta_usec = cpu_usage_usec - self._prev_cpu_usec
@@ -625,6 +631,7 @@ class SystemResourceProbe:
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))
 
             self._prev_cpu_usec = cpu_usage_usec
+            self._prev_cpu_source = cpu_source
             self._prev_throttled_usec = throttled_usec
             self._prev_time = now
 

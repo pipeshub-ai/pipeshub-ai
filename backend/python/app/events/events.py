@@ -708,12 +708,20 @@ class EventProcessor:
             # are already known here (extension, mime and content_len were
             # read above) so the consumer can route to the matching
             # resource_governor pool instead of re-deriving format itself.
+            # content_len is a char count for str content (set before we knew
+            # the type); re-derive actual bytes here so XL-cost routing isn't
+            # underestimated for non-ASCII text.
+            size_bytes = (
+                len(file_content.encode("utf-8"))
+                if isinstance(file_content, str)
+                else content_len
+            )
             yield PipelineEvent(
                 event=IndexingEvent.START_PARSING,
                 data=PipelineEventData(
                     record_id=record_id,
                     tier=classify(extension, mime_type),
-                    size_bytes=content_len,
+                    size_bytes=size_bytes,
                 ),
             )
 

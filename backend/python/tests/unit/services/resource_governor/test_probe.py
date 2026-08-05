@@ -152,6 +152,27 @@ class TestCpuUsageUsec:
         assert usage is not None
         assert source in {"os_times", "proc_stat", "psutil"}
 
+    def test_container_scoped_quota_does_not_pair_with_host_wide_proc_stat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cgroup v1 host where ``cpu`` resolves but ``cpuacct`` doesn't
+        must never fall back to host-wide /proc/stat for the numerator: that
+        would divide host-wide CPU activity by this container's fractional
+        quota and can report an idle container as pegged (see
+        ``_resolve_cpu_usage_usec`` docstring)."""
+        _write(tmp_path / "cpu" / "cpu.cfs_quota_us", "200000")
+        _write(tmp_path / "cpu" / "cpu.cfs_period_us", "100000")
+        proc_stat = tmp_path / "proc_stat"
+        _write(proc_stat, "cpu  100000000 0 0 0 0 0 0 0 0 0\n")
+        monkeypatch.setattr(probe_mod, "_PROC_STAT", proc_stat)
+
+        _quota, quota_source = probe_mod._resolve_cpu_quota_with_source()
+        assert quota_source == "cgroup_v1"
+
+        usage, source = probe_mod._resolve_cpu_usage_usec(quota_source)
+        assert source == "os_times"
+        assert usage is not None
+
 
 class TestNestedCgroupfs:
     def test_resolves_via_proc_self_cgroup_v2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

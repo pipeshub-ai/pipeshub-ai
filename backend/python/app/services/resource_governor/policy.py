@@ -130,8 +130,10 @@ def resolve_ceilings(
 
     ``env_parse``/``env_index`` are the resolved ``MAX_CONCURRENT_PARSING`` /
     ``MAX_CONCURRENT_INDEXING`` values — ``None`` means "derive". Explicit
-    operator values are honoured exactly, including 1 or an intentionally
-    very high number (see corner-case table).
+    operator values are honoured exactly as the process-wide total,
+    including 1 or an intentionally very high number (see corner-case
+    table); when ``worker_count > 1`` that total is then divided across
+    workers below, since each worker process runs its own governor.
     """
     workers = max(1, worker_count)
     mem_limit_gb = snap.mem_limit_bytes / (1024 ** 3) if snap.mem_limit_bytes else None

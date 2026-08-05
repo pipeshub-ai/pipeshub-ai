@@ -511,6 +511,12 @@ class TestResourceGovernorWiring:
             ):
                 admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
             assert admitted is False
+            # A denied acquire never incremented the gate's in_use counter,
+            # so the cost returned to the caller must be 0 — otherwise the
+            # caller's unconditional `finally: _release_docling_gate(cost)`
+            # would decrement in_use for a permit that was never taken,
+            # inflating free capacity beyond the configured limit.
+            assert cost == 0
         finally:
             mod._resource_governor = original
 
@@ -567,7 +573,8 @@ class TestProcessPdfEndpoint:
     @pytest.mark.asyncio
     async def test_process_pdf_endpoint_backpressured_returns_429(self):
         import app.services.docling.docling_service as mod
-        original = mod._resource_governor
+        original_governor = mod._resource_governor
+        original_svc = mod.docling_service
         svc = DoclingService()
         mod.docling_service = svc
         try:
@@ -582,8 +589,8 @@ class TestProcessPdfEndpoint:
                 )
             assert resp.status_code == 429
         finally:
-            mod._resource_governor = original
-            mod.docling_service = None
+            mod._resource_governor = original_governor
+            mod.docling_service = original_svc
 
     @pytest.mark.asyncio
     async def test_process_pdf_endpoint_service_not_available(self):
@@ -674,7 +681,8 @@ class TestParsePdfEndpoint:
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_backpressured_returns_429(self):
         import app.services.docling.docling_service as mod
-        original = mod._resource_governor
+        original_governor = mod._resource_governor
+        original_svc = mod.docling_service
         svc = DoclingService()
         mod.docling_service = svc
         try:
@@ -692,8 +700,8 @@ class TestParsePdfEndpoint:
                 )
             assert resp.status_code == 429
         finally:
-            mod._resource_governor = original
-            mod.docling_service = None
+            mod._resource_governor = original_governor
+            mod.docling_service = original_svc
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_service_not_available(self):

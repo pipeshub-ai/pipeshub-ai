@@ -142,7 +142,7 @@ async def parse_file(
     tier = classify(extension, mime_type)
     cost = parse_cost(tier, len(content))
     logger.info(
-        "Accepted parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
+        "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
         record_name, extension or mime_type or "unknown", provider_enum.value, len(content),
         tier.value, cost,
     )

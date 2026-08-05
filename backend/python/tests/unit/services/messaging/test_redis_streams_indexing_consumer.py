@@ -43,8 +43,9 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     _BUSYGROUP_ERROR,
     _MESSAGE_VALUE_FIELD,
 )
-from app.services.resource_governor import Pool, ResourceGovernor
-from app.services.resource_governor.models import ParseTier, ResourceSnapshot
+from app.services.resource_governor import Pool
+from app.services.resource_governor.models import ParseTier
+from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 
 # ---------------------------------------------------------------------------
@@ -1424,31 +1425,6 @@ class TestProcessMessageWrapper:
         assert consumer.indexing_semaphore._value == 1
 
 
-def _make_governor(*, env_parse: int = 4, env_index: int = 8) -> ResourceGovernor:
-    """A governor with deterministic ceilings (explicit env values bypass
-    cgroup/CPU derivation entirely, see policy.resolve_ceilings)."""
-    snapshot = ResourceSnapshot(
-        cpu_quota=4.0,
-        cpu_utilisation=0.1,
-        cpu_throttled_ratio=0.0,
-        cpu_pressure=0.0,
-        mem_limit_bytes=8 * 1024 ** 3,
-        mem_working_set_bytes=1 * 1024 ** 3,
-        source="test",
-    )
-
-    class _FixedProbe:
-        def snapshot(self) -> ResourceSnapshot:
-            return snapshot
-
-    return ResourceGovernor(
-        logger=logging.getLogger("test_redis_indexing_governor"),
-        env_parse=env_parse,
-        env_index=env_index,
-        probe=_FixedProbe(),
-    )
-
-
 class TestProcessMessageWrapperWithGovernor:
     """Phase 1: when a ResourceGovernor is injected, parsing/indexing
     admission routes through its adaptive gates instead of the legacy
@@ -1458,7 +1434,7 @@ class TestProcessMessageWrapperWithGovernor:
     def governor_consumer(self, logger, config) -> IndexingRedisStreamsConsumer:
         c = IndexingRedisStreamsConsumer(
             logger, config, retry_manager=None, producer=None,
-            governor=_make_governor(),
+            governor=make_test_governor(logger_name="test_redis_indexing_governor"),
         )
         c._pending_message_is_owned = AsyncMock(return_value=True)
         return c
@@ -2416,21 +2392,34 @@ class TestWaitOutBackpressure:
         consumer.running = True
 
         wait_calls = 0
+        call_order: list[str] = []
 
         async def fake_wait():
             nonlocal wait_calls
             wait_calls += 1
+            call_order.append("wait")
             if wait_calls >= 2:
                 consumer.running = False
 
+        async def fake_read(**_kwargs):
+            call_order.append("read")
+            return []
+
         consumer.redis = AsyncMock()
-        consumer.redis.xreadgroup = AsyncMock(return_value=[])
+        consumer.redis.xreadgroup = fake_read
 
         with patch.object(consumer, "_wait_out_backpressure", side_effect=fake_wait):
             with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
                 await consumer._consume_loop()
 
         assert wait_calls == 2
+        # Every read must be preceded by a backpressure wait in the same
+        # iteration — proves the ordering the docstring claims, not just
+        # that both were called some number of times.
+        assert call_order[0] == "wait"
+        for index, entry in enumerate(call_order):
+            if entry == "read":
+                assert call_order[index - 1] == "wait"
 
 
 # ===================================================================

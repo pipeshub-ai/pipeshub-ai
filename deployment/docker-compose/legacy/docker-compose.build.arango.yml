@@ -50,7 +50,10 @@ services:
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
-    # forever. Lower APP_MEMSWAP_LIMIT if you lower APP_MEMORY_LIMIT.
+    # forever. memswap_limit is the combined memory+swap ceiling (not a
+    # separate swap allowance), so the 12G/16G defaults give 4G of swap on
+    # top of APP_MEMORY_LIMIT. Keep APP_MEMSWAP_LIMIT >= APP_MEMORY_LIMIT and
+    # raise/lower both together to change the swap budget.
     # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only
     # knob and is silently discarded with a warning on cgroup v2 hosts
     # (Docker Desktop, modern Linux distros) -- intentionally omitted here.

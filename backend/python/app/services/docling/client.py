@@ -100,7 +100,13 @@ class DoclingClient(BaseServiceClient):
             self.logger.error(f"❌ Processing PDF {record_name} failed: {exc}")
             return None
 
-        result = await asyncio.to_thread(response.json)
+        try:
+            result = await asyncio.to_thread(response.json)
+        except ValueError:
+            self.logger.error(
+                f"❌ Docling service returned non-JSON body for {record_name} (status {response.status_code})"
+            )
+            return None
         if not result.get("success"):
             self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
             return None
@@ -143,7 +149,13 @@ class DoclingClient(BaseServiceClient):
             self.logger.error(f"❌ Parsing PDF {record_name} failed: {exc}")
             return None
 
-        result = await asyncio.to_thread(response.json)
+        try:
+            result = await asyncio.to_thread(response.json)
+        except ValueError:
+            self.logger.error(
+                f"❌ Docling service returned non-JSON body for {record_name} (status {response.status_code})"
+            )
+            return None
         if not result.get("success"):
             self.logger.error(f"❌ Docling service returned error for {record_name}: {result.get('error', 'Unknown error')}")
             return None
@@ -171,7 +183,13 @@ class DoclingClient(BaseServiceClient):
             self.logger.error(f"❌ Creating blocks failed: {exc}")
             return None
 
-        result = await asyncio.to_thread(response.json)
+        try:
+            result = await asyncio.to_thread(response.json)
+        except ValueError:
+            self.logger.error(
+                f"❌ Docling service returned non-JSON body (status {response.status_code})"
+            )
+            return None
         if not result.get("success"):
             self.logger.error(f"❌ Docling service returned error: {result.get('error', 'Unknown error')}")
             return None

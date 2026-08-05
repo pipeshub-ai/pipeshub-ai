@@ -117,6 +117,7 @@ class TestSmallRecordScaling:
         assert peak_limit > probe.snapshots[-1].cpu_quota, (
             "INDEX must grow past cpu_quota — its target is the ceiling, not a CPU-derived expression"
         )
+        assert peak_limit <= INDEX_CEILING, "INDEX must not grow past the operator ceiling"
 
         # Throughput rose alongside concurrency: mean completions/interval
         # once the limit had grown must exceed the floor-limit baseline,

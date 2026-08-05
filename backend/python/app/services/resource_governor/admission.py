@@ -10,6 +10,7 @@ Phase 4/5 of the adaptive-concurrency plan.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import TYPE_CHECKING
 
@@ -64,6 +65,21 @@ async def acquire_gate_with_backpressure(
         admitted = await asyncio.wait_for(
             asyncio.shield(acquire_task), timeout=queue_wait_warn_seconds
         )
+    except asyncio.CancelledError:
+        # shield() only protects acquire_task from wait_for's own timeout —
+        # it does nothing to stop an external cancellation of *this*
+        # coroutine (e.g. the caller's request task cancelled on a client
+        # disconnect) from propagating past it while acquire_task keeps
+        # running detached. Cancel it here and, if it had already been
+        # granted a permit in that race, release it — otherwise the gate's
+        # in_use permanently overcounts by `cost` with nothing left to
+        # release it, shrinking real capacity by one permit every time a
+        # caller is cancelled during this wait.
+        acquire_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            if await acquire_task:
+                gate.release(cost)
+        raise
     except asyncio.TimeoutError:
         # in_use well below limit while a request still waits means the
         # concurrency limit itself isn't the bottleneck — most likely the

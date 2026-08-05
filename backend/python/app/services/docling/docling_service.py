@@ -195,10 +195,13 @@ def set_resource_governor(governor: ResourceGovernor) -> None:
 
 async def _acquire_docling_gate(pdf_binary: bytes, message_id: str) -> tuple[bool, int]:
     """Acquire a HEAVY_PARSE permit sized to *pdf_binary*, if a governor has
-    been wired. Returns ``(admitted, cost)`` — ``admitted`` is always True
-    and ``cost`` is 0 when no governor is configured, so callers can release
-    unconditionally without an extra guard (standalone/test runs of this
-    module often skip governor wiring entirely)."""
+    been wired. Returns ``(admitted, cost)`` — ``cost`` is 0 whenever no
+    permit was actually taken (no governor configured, standalone/test runs
+    that skip governor wiring, or the gate denied admission) so callers can
+    release unconditionally without an extra guard: ``AdmissionGate.release``
+    subtracts ``cost`` straight from ``in_use``, and a denied acquire never
+    incremented it, so releasing a non-zero cost here would under-count
+    in-flight work and let in more concurrent parses than the limit allows."""
     if _resource_governor is None:
         return True, 0
     cost = parse_cost(ParseTier.HEAVY, len(pdf_binary))
@@ -210,7 +213,7 @@ async def _acquire_docling_gate(pdf_binary: bytes, message_id: str) -> tuple[boo
         queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS,
         gate_timeout_seconds=DOCLING_GATE_TIMEOUT_SECONDS,
     )
-    return admitted, cost
+    return admitted, (cost if admitted else 0)
 
 
 def _release_docling_gate(cost: int) -> None:

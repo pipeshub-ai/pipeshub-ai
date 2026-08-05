@@ -12,6 +12,7 @@ from app.services.resource_governor.policy import (
     HEAVY_START_INTERVAL_SECONDS,
     MEM_HARD,
     MEM_SOFT,
+    floor_for,
     start_rate_limiter_params,
 )
 
@@ -126,8 +127,12 @@ class TestResourceGovernorController:
 
         governor.report_memory_incident("synthetic OOM-adjacent event")
 
-        assert heavy_gate.limit == max(2, before_heavy // 2)
-        assert bytes_gate.limit == max(256 * 1024 * 1024, before_bytes // 2)
+        assert heavy_gate.limit == max(
+            floor_for(Pool.HEAVY_PARSE, governor.ceilings.heavy), before_heavy // 2
+        )
+        assert bytes_gate.limit == max(
+            floor_for(Pool.DOWNLOAD_BYTES, governor.ceilings.bytes_max), before_bytes // 2
+        )
 
     async def test_start_rate_limiters_scale_with_explicit_high_ceiling(self) -> None:
         """Regression guard: setting MAX_CONCURRENT_PARSING/INDEXING to a

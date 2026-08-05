@@ -23,7 +23,8 @@ services:
     # Lets the kernel page out memory that a co-located idle service (e.g.
     # Docling's model weights between documents) is holding but not
     # actively using, instead of counting it against the hard OOM cap above
-    # forever.
+    # forever. memswap_limit is the combined memory+swap ceiling (not a
+    # separate swap allowance), so 12G memory / 16G memswap gives 4G of swap.
     # mem_swappiness (per-container swap aggressiveness) is a cgroup v1-only
     # knob and is silently discarded with a warning on cgroup v2 hosts
     # (Docker Desktop, modern Linux distros) -- intentionally omitted here.

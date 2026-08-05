@@ -920,7 +920,12 @@ async def health_check(request: Request) -> JSONResponse:
             "timestamp": get_epoch_timestamp_in_ms(),
         }
         if governor is not None:
-            content["resource_governor"] = governor.stats()
+            try:
+                content["resource_governor"] = governor.stats()
+            except Exception as stats_error:
+                # Observability failure must not fail the liveness probe —
+                # the service itself is still healthy.
+                content["resource_governor"] = {"error": str(stats_error)}
         return JSONResponse(
             status_code=200,
             content=content,

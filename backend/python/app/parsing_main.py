@@ -303,7 +303,12 @@ async def health_check() -> JSONResponse:
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     if governor is not None:
-        content["resource_governor"] = governor.stats()
+        try:
+            content["resource_governor"] = governor.stats()
+        except Exception as stats_error:
+            # Observability failure must not fail the liveness probe — the
+            # service itself is still healthy.
+            content["resource_governor"] = {"error": str(stats_error)}
     return JSONResponse(content=content)
 
 

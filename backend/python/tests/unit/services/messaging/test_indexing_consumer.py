@@ -33,8 +33,9 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
-from app.services.resource_governor import Pool, ResourceGovernor
-from app.services.resource_governor.models import ParseTier, ResourceSnapshot
+from app.services.resource_governor import Pool
+from app.services.resource_governor.models import ParseTier
+from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 
 # ---------------------------------------------------------------------------
@@ -1366,31 +1367,6 @@ class TestProcessMessageWrapper:
         consumer.concurrency_manager.renew.assert_awaited_once()
 
 
-def _make_governor(*, env_parse: int = 4, env_index: int = 8) -> ResourceGovernor:
-    """A governor with deterministic ceilings (explicit env values bypass
-    cgroup/CPU derivation entirely, see policy.resolve_ceilings)."""
-    snapshot = ResourceSnapshot(
-        cpu_quota=4.0,
-        cpu_utilisation=0.1,
-        cpu_throttled_ratio=0.0,
-        cpu_pressure=0.0,
-        mem_limit_bytes=8 * 1024 ** 3,
-        mem_working_set_bytes=1 * 1024 ** 3,
-        source="test",
-    )
-
-    class _FixedProbe:
-        def snapshot(self) -> ResourceSnapshot:
-            return snapshot
-
-    return ResourceGovernor(
-        logger=logging.getLogger("test_indexing_governor"),
-        env_parse=env_parse,
-        env_index=env_index,
-        probe=_FixedProbe(),
-    )
-
-
 class TestProcessMessageWrapperWithGovernor:
     """Phase 1: when a ResourceGovernor is injected, parsing/indexing
     admission routes through its adaptive gates instead of the legacy
@@ -1401,7 +1377,7 @@ class TestProcessMessageWrapperWithGovernor:
     def governor_consumer(self, logger, plain_config) -> IndexingKafkaConsumer:
         return IndexingKafkaConsumer(
             logger, plain_config, retry_manager=None, producer=None,
-            governor=_make_governor(),
+            governor=make_test_governor(logger_name="test_indexing_governor"),
         )
 
     @pytest.mark.asyncio

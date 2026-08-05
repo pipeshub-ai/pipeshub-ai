@@ -1018,8 +1018,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         renewal_task: asyncio.Future[None] | None = None
         lease_owner = f"{self.consumer_name}:{message_id}:{uuid.uuid4().hex}"
 
-        if not self.indexing_semaphore or (
-            self.governor is None and not self.parsing_semaphore
+        if self.indexing_semaphore is None or (
+            self.governor is None and self.parsing_semaphore is None
         ):
             self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
@@ -1165,7 +1165,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 elif (
                                     event.event == IndexingEvent.INDEXING_COMPLETE
                                     and indexing_held
-                                    and self.indexing_semaphore
+                                    and self.indexing_semaphore is not None
                                 ):
                                     distributed_leases.discard("indexing")
                                     await self._release_distributed_slot(
@@ -1339,7 +1339,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     await self._release_distributed_slot("parsing", lease_owner)
                 concurrency.release_parsing_slot(parsing_admission)
                 parsing_admission = None
-            if indexing_held and self.indexing_semaphore:
+            if indexing_held and self.indexing_semaphore is not None:
                 if distributed_leases.discard("indexing") is not None:
                     await self._release_distributed_slot("indexing", lease_owner)
                 self.indexing_semaphore.release()

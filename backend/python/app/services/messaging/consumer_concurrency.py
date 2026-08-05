@@ -24,10 +24,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
-from app.services.resource_governor import AdmissionGate, gate_pool, parse_cost
+from app.services.resource_governor import gate_pool, parse_cost
 from app.services.resource_governor.models import ParseTier
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.services.messaging.distributed_concurrency import (
@@ -335,10 +336,16 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
 @dataclass
 class ParsingAdmission:
     """What was acquired for one message's parsing phase, so release can
-    hand back exactly what was taken."""
+    hand back exactly what was taken.
 
-    gate: Any
+    ``_release`` is a closure bound at acquisition time to whichever
+    primitive (governor gate or legacy semaphore) actually granted the
+    permit, so ``release_parsing_slot`` doesn't need to branch on the
+    primitive's type.
+    """
+
     cost: int
+    _release: Callable[[], None]
 
 
 async def acquire_parsing_slot(
@@ -356,13 +363,13 @@ async def acquire_parsing_slot(
         cost = parse_cost(resolved_tier, size_bytes)
         gate = governor.gate(gate_pool(resolved_tier))
         await gate.acquire(cost=cost)
-        return ParsingAdmission(gate=gate, cost=cost)
+        return ParsingAdmission(cost=cost, _release=lambda: gate.release(cost))
 
     legacy_semaphore = host.parsing_semaphore
     if legacy_semaphore is None:
         raise RuntimeError("No parsing concurrency primitive configured")
     await legacy_semaphore.acquire()
-    return ParsingAdmission(gate=legacy_semaphore, cost=1)
+    return ParsingAdmission(cost=1, _release=legacy_semaphore.release)
 
 
 def release_parsing_slot(admission: ParsingAdmission | None) -> None:
@@ -371,7 +378,4 @@ def release_parsing_slot(admission: ParsingAdmission | None) -> None:
     ``finally`` block without an extra guard."""
     if admission is None:
         return
-    if isinstance(admission.gate, AdmissionGate):
-        admission.gate.release(admission.cost)
-    else:
-        admission.gate.release()
+    admission._release()

@@ -37,6 +37,7 @@ HTTP_TOO_MANY_REQUESTS = 429
 # treated as a failure — see ServiceBackpressureError.
 DEFAULT_MAX_BACKPRESSURE_ATTEMPTS = 30
 DEFAULT_BACKPRESSURE_WAIT_CAP = 30.0  # seconds; clamps a misbehaving/huge Retry-After
+MIN_BACKPRESSURE_WAIT = 0.05  # seconds; avoids a hot retry loop on Retry-After: 0
 
 # ── Circuit breaker defaults ────────────────────────────────────────────────
 DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5    # consecutive failures before opening
@@ -438,7 +439,7 @@ class BaseServiceClient:
                                 retry_after=retry_after,
                                 service_name=self.service_name,
                             )
-                        wait = min(retry_after, DEFAULT_BACKPRESSURE_WAIT_CAP)
+                        wait = min(max(retry_after, MIN_BACKPRESSURE_WAIT), DEFAULT_BACKPRESSURE_WAIT_CAP)
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
                             self.service_name, operation, retry_after, wait,

@@ -76,10 +76,6 @@ async def _async_gen_events(events):
         yield event
 
 
-# ===================================================================
-# _download_from_signed_url: reserve before buffering, hold on success
-# ===================================================================
-
 class TestDownloadReservation:
     @pytest.mark.asyncio
     async def test_reserves_before_buffering_and_holds_on_success(self) -> None:
@@ -205,10 +201,6 @@ class TestDownloadReservation:
 
         await first_task
 
-
-# ===================================================================
-# process_event: budget held through on_event processing, then released
-# ===================================================================
 
 class TestProcessEventBudgetLifecycle:
     @pytest.mark.asyncio

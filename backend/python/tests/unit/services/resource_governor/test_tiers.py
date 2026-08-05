@@ -21,6 +21,10 @@ class TestClassify:
     def test_mime_used_when_extension_unknown(self) -> None:
         assert classify(None, "application/pdf") is ParseTier.HEAVY
         assert classify(None, "text/markdown") is ParseTier.LIGHT
+        # An unrecognized (not merely missing) extension must still fall
+        # through to the mime lookup rather than being treated as authoritative.
+        assert classify("xyz-unknown", "application/pdf") is ParseTier.HEAVY
+        assert classify("xyz-unknown", "text/markdown") is ParseTier.LIGHT
 
     def test_extension_takes_priority_over_mime(self) -> None:
         # Contrived: extension says light, mime says heavy -> extension wins.
@@ -42,6 +46,11 @@ class TestParseCost:
 
     def test_heavy_below_threshold_is_cost_one(self) -> None:
         assert parse_cost(ParseTier.HEAVY, XL_HEAVY_BYTES - 1) == 1
+
+    def test_heavy_at_threshold_is_cost_one(self) -> None:
+        # parse_cost uses a strict ">" comparison, so the boundary value
+        # itself is not yet XL.
+        assert parse_cost(ParseTier.HEAVY, XL_HEAVY_BYTES) == 1
 
     def test_heavy_above_threshold_is_cost_two(self) -> None:
         assert parse_cost(ParseTier.HEAVY, XL_HEAVY_BYTES + 1) == 2

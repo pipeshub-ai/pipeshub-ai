@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+import app.services.resource_governor.budget as budget_mod
 from app.services.resource_governor.budget import (
     CONTENT_LENGTH_RESERVE_MULTIPLIER,
     DEFAULT_RESERVE_BYTES,
@@ -154,3 +155,48 @@ class TestGatedBytesBudgetWithGate:
         finally:
             if not task.done():
                 task.cancel()
+
+    async def test_reserve_raises_timeout_error_instead_of_hanging_forever(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A leaked DOWNLOAD_BYTES reservation elsewhere must surface as a
+        retryable failure here, not an indefinite hang with no error and no
+        log — see acquire_gate_with_backpressure, which every other governor
+        call site uses for the same reason."""
+        monkeypatch.setattr(budget_mod, "DEFAULT_GATE_TIMEOUT_SECONDS", 0.05)
+        registry = _registry(limit=DEFAULT_RESERVE_BYTES)
+        gate = AdmissionGate(Pool.DOWNLOAD_BYTES, registry)
+        holder = GatedBytesBudget(gate)
+        waiter = GatedBytesBudget(gate)
+
+        await holder.reserve(None)  # consumes the whole budget, never released
+
+        with pytest.raises(TimeoutError):
+            await waiter.reserve(None)
+
+        # A denied acquire never incremented in_use — nothing was reserved
+        # to leak, and the holder's reservation is untouched.
+        assert waiter.reserved_bytes == 0
+        assert gate.in_use == holder.reserved_bytes
+
+    async def test_ensure_raises_timeout_error_instead_of_hanging_forever(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Room for exactly two default-sized reservations, so the second
+        # one (holder's) saturates the gate and leaves nothing free for
+        # holder's later top-up to acquire.
+        registry = _registry(limit=DEFAULT_RESERVE_BYTES * 2)
+        gate = AdmissionGate(Pool.DOWNLOAD_BYTES, registry)
+        holder = GatedBytesBudget(gate)
+        other = GatedBytesBudget(gate)
+
+        await holder.reserve(None)
+        await other.reserve(None)  # never released — saturates the gate
+
+        monkeypatch.setattr(budget_mod, "DEFAULT_GATE_TIMEOUT_SECONDS", 0.05)
+        with pytest.raises(TimeoutError):
+            await holder.ensure(DEFAULT_RESERVE_BYTES * 3)
+
+        # holder's own top-up was denied, so its reservation must stay at
+        # what it already held — not partially bumped, not lost.
+        assert holder.reserved_bytes == DEFAULT_RESERVE_BYTES
