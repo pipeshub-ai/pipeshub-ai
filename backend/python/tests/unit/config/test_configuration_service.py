@@ -679,6 +679,7 @@ class TestClose:
         store.client = MagicMock()
         store.store = underlying_store
         store.subscribe_cache_invalidation = AsyncMock()
+        store.close = AsyncMock()
 
         svc = _build_service(store, kv_store_type="redis")
         svc._start_redis_pubsub()

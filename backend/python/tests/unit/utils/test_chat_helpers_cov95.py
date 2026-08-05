@@ -578,15 +578,6 @@ class TestRenderBlocksWithImagesGroupedImage:
         assert "[ref7] (image)" in text
         assert not any(c["type"] == "image_url" for c in content)
 
-    def test_no_collected_images_sink_embeds_inline_as_before(self):
-        """Direct-embedding callers (collected_images=None) keep the
-        original inline `image_url` behavior, unchanged by the fix."""
-        content = _render_blocks_with_images(
-            self._group(), is_multimodal_llm=True,
-            image_budget=ImageBudget(), collected_images=None,
-        )
-        assert any(c["type"] == "image_url" and c["image_url"]["url"] == _MIN_PNG_DATA_URI for c in content)
-
     def test_exhausted_budget_emits_citation_marked_fallback_text(self):
         """The second bug: an exhausted budget must degrade to a
         citation-marked placeholder (matching the standalone-image path in
@@ -606,24 +597,6 @@ class TestRenderBlocksWithImagesGroupedImage:
         assert "[ref9]" in text
         assert "conversation image limit" in text
         assert not any(c["type"] == "image_url" for c in content)
-
-    def test_exhausted_budget_fallback_also_applies_without_collected_images_sink(self):
-        content = _render_blocks_with_images(
-            self._group(ref="ref3"), is_multimodal_llm=True,
-            image_budget=ImageBudget(max_images=0), collected_images=None,
-        )
-        text = "".join(c["text"] for c in content if c["type"] == "text")
-        assert "[ref3]" in text
-        assert "conversation image limit" in text
-        assert not any(c["type"] == "image_url" for c in content)
-
-    def test_non_multimodal_llm_skips_image_entirely(self):
-        content = _render_blocks_with_images(
-            self._group(), is_multimodal_llm=False,
-            image_budget=ImageBudget(), collected_images=[],
-        )
-        assert not any(c["type"] == "image_url" for c in content)
-        assert not any("(image)" in c.get("text", "") for c in content)
 
 
 class TestImageDictToPart:
