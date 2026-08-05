@@ -203,5 +203,7 @@ describe('classifyMailError', () => {
   it('defaults to transient when the error carries no usable signal', () => {
     expect(classifyMailError(null)).to.equal('transient');
     expect(classifyMailError({})).to.equal('transient');
+    expect(classifyMailError({ code: 'EPIPE' })).to.equal('transient');
+    expect(classifyMailError({ code: 'EAI_NODATA' })).to.equal('transient');
   });
 });
