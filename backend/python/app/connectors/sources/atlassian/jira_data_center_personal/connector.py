@@ -347,14 +347,20 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            placeholders_backfilled = await self._sweep_placeholder_records(
+                synced_project_ids={p.external_group_id for p, _ in projects},
+                full_sync_project_ids=sync_stats.get("full_sync_project_ids") or set(),
+            )
+
             self.logger.info(
                 "✅ Jira DC Personal connector %s sync completed. Total: %s issues "
-                "(New: %s, Updated: %s) across %s projects",
+                "(New: %s, Updated: %s) across %s projects; placeholders backfilled: %s",
                 self.connector_id,
                 sync_stats["total_synced"],
                 sync_stats["new_count"],
                 sync_stats["updated_count"],
                 len(projects),
+                placeholders_backfilled,
             )
 
         except Exception as e:
