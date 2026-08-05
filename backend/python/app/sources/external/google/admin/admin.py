@@ -34,9 +34,6 @@ class GoogleAdminDataSource:
         self._executor = executor
         # googleapiclient services share one httplib2.Http per instance, which is
         # not thread-safe, so at most one in-flight request per datasource instance.
-        self._execute_lock = asyncio.Lock()
-        # Cancellation releases an asyncio lock without stopping executor work.
-        # This worker-held lock keeps the transport exclusive until the call returns.
         self._transport_lock = Lock()
 
     def _run_transport_operation(self, operation: Callable[[], T]) -> T:
@@ -45,13 +42,12 @@ class GoogleAdminDataSource:
 
     async def execute(self, operation: Callable[[], T]) -> T:
         """Run one blocking operation without overlapping this client's HTTP transport."""
-        async with self._execute_lock:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                self._executor,
-                self._run_transport_operation,
-                operation,
-            )
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._run_transport_operation,
+            operation,
+        )
 
     async def _execute(self, request: Any) -> Dict[str, Any]:
         return await self.execute(request.execute)

@@ -757,8 +757,10 @@ def _make_stream_connector():
 
     conn = object.__new__(GoogleDriveTeamConnector)
     conn.logger = MagicMock()
-    # None routes run_in_executor to the loop's default pool.
-    conn._drive_executor = None
+    conn.drive_data_source = MagicMock()
+    conn.drive_data_source.execute = AsyncMock(
+        side_effect=lambda operation: operation()
+    )
     return conn
 
 
