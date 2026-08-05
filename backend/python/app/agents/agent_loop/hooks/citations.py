@@ -306,7 +306,13 @@ class _FetchFullRecordTool(Tool):
         # same records, rendered as the `<record>` text blocks the model
         # already knows how to read from `retrieval_search_internal_knowledge`.
         if isinstance(result, dict) and result.get("ok") and result.get("records"):
+            from app.utils.chat_helpers import ImageBudget, image_dict_to_part  # noqa: PLC0415
+
             ref_mapper = self._collector.citation_ref_mapper
+            image_budget: ImageBudget = self._context.tool_state.setdefault(
+                "image_budget", ImageBudget(),
+            )
+            collected_images: list[dict[str, Any]] = []
             parts: list[str] = []
             for record in result["records"]:
                 # Reads start at block 0 unless the caller asked otherwise.
@@ -314,11 +320,21 @@ class _FetchFullRecordTool(Tool):
                 # everything before it — for a match near the end that returns
                 # a short tail as if it were the document. Oversized records are
                 # bounded by `block_cap`, which appends a continuation hint.
+                #
+                # `is_multimodal_llm` from the authoritative context flag (was
+                # never passed before, defaulting to False — a record that
+                # IS an image, e.g. an uploaded PNG with a single IMAGE
+                # block, returned an empty string). `collected_images`
+                # captures IMAGE blocks so they can be delivered via a
+                # multipart tool result instead of being dropped.
                 content_list, ref_mapper = record_to_message_content(
                     record,
                     ref_mapper=ref_mapper,
                     start_block=start_block,
                     max_blocks=block_cap,
+                    is_multimodal_llm=self._context.is_multimodal_llm,
+                    collected_images=collected_images,
+                    image_budget=image_budget,
                 )
                 parts.append("".join(
                     item["text"] for item in content_list if item.get("type") == "text"
@@ -349,6 +365,23 @@ class _FetchFullRecordTool(Tool):
                 if rid:
                     self._context.full_records_fetched.add(rid)
                     self._context.tool_state.setdefault("full_records_fetched", set()).add(rid)
+
+            if collected_images and self._context.is_multimodal_llm:
+                # See `retrieval.py`'s matching branch: multipart `data`
+                # flows through `ToolOutput` -> `ToolResult.content` ->
+                # `ToolMessage.content` unchanged; the Ollama transport
+                # strips images back to text and the PRE_MODEL fallback
+                # hook re-injects them from this same stash.
+                self._context.tool_state.setdefault(
+                    "pending_tool_images", [],
+                ).extend(collected_images)
+                from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
+                image_parts = [
+                    part for img in collected_images
+                    if (part := image_dict_to_part(img)) is not None
+                ]
+                return ToolOutput(success=True, data=[TextPart(text=text), *image_parts])
+
             return ToolOutput(success=True, data=text)
         return _to_tool_output(result)
 

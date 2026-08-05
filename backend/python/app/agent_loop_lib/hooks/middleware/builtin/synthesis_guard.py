@@ -148,10 +148,13 @@ def _truncate_tool_results(
         if total <= budget:
             break
         msg = result[i]
-        if isinstance(msg, ToolMessage) and len(msg.content) > 200:
+        if isinstance(msg, ToolMessage) and len(msg.text) > 200:
             old_tokens = count_message_tokens(msg)
+            # Last-resort truncation drops images along with excess text —
+            # a multipart result is a str afterward, same as any other
+            # over-budget tool result.
             result[i] = msg.model_copy(
-                update={"content": msg.content[:200] + "\n[…truncated by synthesis_guard]"}
+                update={"content": msg.text[:200] + "\n[…truncated by synthesis_guard]"}
             )
             total = total - old_tokens + count_message_tokens(result[i])
     return result, total

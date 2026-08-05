@@ -30,7 +30,7 @@ def _naive_summary(messages: list[Message]) -> str:
                 )
                 continue
             tc_id = m.tool_call_id or "?"
-            preview = m.content[:150].strip() if isinstance(m.content, str) else ""
+            preview = m.text[:150].strip()
             parts.append(f"[tool:{tc_id}] {preview}")
         else:
             text = extract_text(m).strip()
@@ -57,7 +57,7 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
                     f"tool:{meta.tool_name} — {meta.summary[:150]}"
                 )
             tc_id = m.tool_call_id or "?"
-            preview = m.content[:200].strip() if isinstance(m.content, str) else ""
+            preview = m.text[:200].strip()
             return f"[tool:{tc_id}] {preview}"
         return f"[{m.role.value}] {extract_text(m)}"
 

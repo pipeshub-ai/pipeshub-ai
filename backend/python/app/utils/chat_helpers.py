@@ -55,7 +55,56 @@ valid_group_labels = [
         GroupType.CONVERSATION.value
     ]
 
-MAX_IMAGES_IN_MESSAGE = 25
+MAX_IMAGES_IN_CONVERSATION = 50
+
+
+class ImageBudget:
+    """Conversation-wide image counter shared across every image source
+    (user attachments, history replay, search/fetch/prefetch tool
+    results). A single instance is threaded through a turn so the same
+    50-image cap applies no matter which source contributed the image —
+    without this, each source enforcing its own local limit could let the
+    conversation total balloon past what any provider will actually
+    accept as multimodal input.
+    """
+
+    def __init__(self, max_images: int = MAX_IMAGES_IN_CONVERSATION) -> None:
+        self.max_images = max_images
+        self.used = 0
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.max_images - self.used)
+
+    def can_add(self) -> bool:
+        return self.used < self.max_images
+
+    def try_consume(self, count: int = 1) -> int:
+        """Consume up to `count` from the budget. Returns the amount
+        actually consumed (may be less than `count` near the cap)."""
+        actual = min(count, self.remaining)
+        self.used += actual
+        return actual
+
+
+def image_dict_to_part(image: dict[str, Any]) -> Any | None:
+    """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
+    into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
+    every tool (`retrieval.py`, `citations.py`) and hook
+    (`attachment_resolver.py`'s `shape_image_injection`/
+    `shape_retrieved_image_injection`) that needs to hand collected images to
+    the agent loop, so the dict-to-Part conversion lives in exactly one
+    place. Local import avoids a module-level dependency from this
+    low-level formatting module onto `agent_loop_lib`.
+    """
+    from app.agent_loop_lib.core.messages import ImagePart, ImageSource  # noqa: PLC0415
+
+    image_url = image.get("image_url") or {}
+    url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+    if not url:
+        return None
+    return ImagePart(source=ImageSource(type="url", data=url))
+
 
 def _safe_stringify_content(value: Any) -> str:
     """Convert citation content to string without raising."""
@@ -2557,14 +2606,25 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
     is_multimodal_llm: bool,
-    image_count: list[int] | None = None,
+    image_budget: "ImageBudget | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
     Groups consecutive entries sharing the same block_index so that the
     `[idx|ref]` header is emitted only once per container, with all
     fragment content listed underneath it.
+
+    When `collected_images` is provided (tool-result callers, see
+    `build_message_content_array`), inline table/group images are routed
+    into that side-channel instead of being embedded directly as
+    `image_url` content blocks — `ToolMessage` only gets images via its
+    multipart `content`, never buried inside a text-typed tool result
+    string. Direct-embedding callers (attachments) leave `collected_images`
+    `None` and keep the original inline behavior.
     """
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
     content: list[dict[str, Any]] = []
     for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
         group = list(group_iter)
@@ -2590,14 +2650,20 @@ def _render_blocks_with_images(
                 if item.get("block_type") == BlockType.IMAGE.value:
                     if is_multimodal_llm:
                         img_uri = item.get("content", "")
-                        if img_uri and is_base64_image(img_uri):
-                            if image_count is None or image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                        if img_uri and is_base64_image(img_uri) and image_budget.can_add():
+                            image_budget.try_consume(1)
+                            if collected_images is not None:
+                                collected_images.append({
+                                    "ref": item.get("citation_ref", ""),
+                                    "block_index": item.get("block_index"),
+                                    "image_url": {"url": img_uri},
+                                    "virtual_record_id": item.get("virtual_record_id"),
+                                })
+                            else:
                                 content.append({
                                     "type": "image_url",
                                     "image_url": {"url": img_uri}
                                 })
-                                if image_count is not None:
-                                    image_count[0] += 1
                     continue
                 content.append({
                     "type": "text",
@@ -2696,6 +2762,8 @@ def record_to_message_content(
     *,
     start_block: int = 0,
     max_blocks: int | None = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
@@ -2710,12 +2778,26 @@ def record_to_message_content(
             hint is appended: "Showing blocks N-M of T. Call
             dynamic_fetch_full_record with start_block=M+1 for the rest."
             None means no cap (today's default behaviour).
+        collected_images: When provided, IMAGE blocks are routed into this
+            list (`{"ref", "block_index", "image_url", "virtual_record_id"}`
+            dicts) instead of being embedded inline as `image_url` content
+            entries — used by tool callers (e.g. `_FetchFullRecordTool`)
+            that must deliver images via `ToolMessage`'s multipart content
+            rather than buried in the returned content list. `None` (the
+            default) preserves the original inline-embedding behavior for
+            direct UserMessage callers (attachment resolution).
+        image_budget: Conversation-wide `ImageBudget` to enforce the
+            50-image cap across all sources. Defaults to a fresh
+            (unbounded-in-practice) per-call budget when not shared by the
+            caller.
 
     Returns:
         Tuple of (content list, ref_mapper)
     """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
 
     try:
         content = []
@@ -2766,14 +2848,37 @@ def record_to_message_content(
                 if is_multimodal_llm and isinstance(data, dict):
                     image_uri = data.get("uri", "")
                     if image_uri and is_base64_image(image_uri):
-                        content.append({
-                            "type": "text",
-                            "text": f"[{ref}]"
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": image_uri}
-                        })
+                        if image_budget.can_add():
+                            image_budget.try_consume(1)
+                            if collected_images is not None:
+                                collected_images.append({
+                                    "ref": ref,
+                                    "block_index": block_index,
+                                    "image_url": {"url": image_uri},
+                                    "virtual_record_id": record.get("virtual_record_id"),
+                                })
+                                content.append({
+                                    "type": "text",
+                                    "text": f"[{ref}] (image)\n\n",
+                                })
+                            else:
+                                content.append({
+                                    "type": "text",
+                                    "text": f"[{ref}]"
+                                })
+                                content.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": image_uri}
+                                })
+                        else:
+                            captions = ((block.get("image_metadata") or {}).get("captions")) or []
+                            description = " ".join(captions).strip()
+                            fallback_text = (
+                                f"[{ref}] (image) {description}\n\n" if description
+                                else f"[{ref}] (image block - visual content not shown due to "
+                                     "conversation image limit)\n\n"
+                            )
+                            content.append({"type": "text", "text": fallback_text})
                         _renderable_rendered += 1
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
@@ -2876,7 +2981,9 @@ def record_to_message_content(
                                     "type": "text",
                                     "text": header,
                                 })
-                                content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                                content.extend(_render_blocks_with_images(
+                                    child_results, is_multimodal_llm, image_budget, collected_images,
+                                ))
                             _renderable_rendered += 1
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
@@ -2919,7 +3026,9 @@ def record_to_message_content(
                         "type": "text",
                         "text": header,
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, collected_images,
+                    ))
                 _renderable_rendered += 1
             else:
                 continue
@@ -3185,9 +3294,32 @@ def get_message_content(
     content.append({"type": "text", "text": rendered_form})
     return content, ref_mapper
 
-def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, record_id_shortener: "RecordIdShortener | None" = None) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+def build_message_content_array(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    is_multimodal_llm: bool = False,
+    ref_mapper: CitationRefMapper | None = None,
+    from_tool: bool = True,
+    record_id_shortener: "RecordIdShortener | None" = None,
+    collected_images: list[dict[str, Any]] | None = None,
+    image_budget: "ImageBudget | None" = None,
+) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
+    """
+    Args (new):
+        collected_images: When `from_tool=True` and provided, IMAGE blocks
+            (standalone and inline table/group images) are routed into
+            this list instead of being silently dropped or embedded
+            inline — the side-channel a tool wrapper (e.g. `retrieval.py`)
+            reads to build a multipart `ToolOutput`. `None` preserves the
+            pre-existing behavior for each `from_tool` value.
+        image_budget: Conversation-wide `ImageBudget` (50-image cap by
+            default) shared across every image source in the turn.
+            Defaults to a fresh per-call budget when not supplied.
+    """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
+    if image_budget is None:
+        image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
     all_contents = []
     content = []
     seen_virtual_record_ids = set()
@@ -3200,7 +3332,12 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
     current_record_has_blocks = False
-    image_count = [0]
+    # Table/group inline images only go through the collected_images side
+    # channel when the caller both wants tool-result delivery (from_tool)
+    # AND supplied somewhere to put them — preserves the from_tool=False
+    # direct-embed behavior (currently unused in practice, kept for API
+    # parity with the top-level IMAGE-block branch below).
+    _group_collected_images = collected_images if from_tool else None
 
     def insert_summary_citation_if_needed() -> None:
         nonlocal record_page_url_for_summary, summary_citation_insert_index, current_record_has_blocks
@@ -3280,20 +3417,54 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             ref = ref_mapper.get_or_create_ref(block_web_url)
             result["citation_ref"] = ref
             if block_type == BlockType.IMAGE.value:
-                if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
+                image_content = result.get("content")
+                if is_base64_image(image_content) and is_multimodal_llm:
                     current_record_has_blocks = True
-                    if image_count[0] < MAX_IMAGES_IN_MESSAGE:
-                        content.append({
-                            "type": "text",
-                            "text": prepend_record_blocks_sorted_header(
-                                f"[{block_index}|{ref}]"
-                            ),
-                        })
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
-                        })
-                        image_count[0] += 1
+                    if image_budget.can_add():
+                        image_budget.try_consume(1)
+                        if from_tool and collected_images is not None:
+                            # ToolMessage only carries images via its
+                            # multipart content (see agent_loop_lib
+                            # messages.py) — never inline them into the
+                            # text-typed content list a tool result's text
+                            # is built from.
+                            collected_images.append({
+                                "ref": ref,
+                                "block_index": block_index,
+                                "image_url": {"url": image_content},
+                                "virtual_record_id": virtual_record_id,
+                            })
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image)\n\n"
+                                ),
+                            })
+                        elif not from_tool:
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}]"
+                                ),
+                            })
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": image_content}
+                            })
+                        else:
+                            # from_tool=True with no collected_images sink:
+                            # the caller has no way to carry an image
+                            # through its tool result, so fall back to a
+                            # text-only placeholder rather than inlining an
+                            # image_url block that would just be dropped by
+                            # a text-only join downstream.
+                            content.append({
+                                "type": "text",
+                                "text": prepend_record_blocks_sorted_header(
+                                    f"[{block_index}|{ref}] (image) "
+                                    f"{result.get('image_description', '')}\n\n"
+                                ),
+                            })
                     elif result.get("image_description"):
                         content.append({
                             "type": "text",
@@ -3301,14 +3472,22 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                                 f"[{block_index}|{ref}] (image) {result.get('image_description')}\n\n"
                             ),
                         })
+                    else:
+                        content.append({
+                            "type": "text",
+                            "text": prepend_record_blocks_sorted_header(
+                                f"[{block_index}|{ref}] (image block - visual content not "
+                                "shown due to conversation image limit)\n\n"
+                            ),
+                        })
                 else:
-                    if is_base64_image(result.get("content")):
+                    if is_base64_image(image_content):
                         continue
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(
-                            f"[{block_index}|{ref}] (image) {result.get('content')}\n\n"
+                            f"[{block_index}|{ref}] (image) {image_content}\n\n"
                         ),
                     })
             elif block_type == GroupType.TABLE.value:
@@ -3340,7 +3519,9 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
                     })
-                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        child_results, is_multimodal_llm, image_budget, _group_collected_images,
+                    ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
                 content.append({
@@ -3380,7 +3561,9 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(header),
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm, image_count))
+                    content.extend(_render_blocks_with_images(
+                        group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
+                    ))
             else:
                 continue
         else:

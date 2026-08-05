@@ -20,7 +20,15 @@ from app.agent_loop_lib.agent.tool_loop import (
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ImagePart,
+    Part,
+    TextPart,
+    ThinkingPart,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.responses import RunUsage
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.streaming import (
@@ -66,6 +74,27 @@ def _content_to_json(content: Any) -> str:
         return json.dumps(content)
     except (TypeError, ValueError):
         return str(content)
+
+
+_PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+
+def _tool_result_content_to_message_content(content: Any) -> str | list[Part]:
+    """Normalize a `ToolResult.content` into `ToolMessage.content`.
+
+    A tool that wants to surface images to the LLM (search/fetch tools
+    returning IMAGE blocks) returns `ToolOutput(data=[TextPart(...),
+    ImagePart(...), ...])`; that list of `Part` objects must pass through
+    untouched so `ToolMessage` keeps them as real multipart content instead
+    of collapsing them into an opaque JSON string. Everything else
+    (str, dict, Pydantic model, plain list/scalar) keeps the pre-existing
+    JSON-serialization behavior.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and content and all(isinstance(p, _PART_TYPES) for p in content):
+        return content
+    return _content_to_json(content)
 
 
 # See Agent.emit — legacy event -> AG-UI-aligned event, fired alongside
@@ -776,7 +805,10 @@ class Agent:
             if tool_calls:
                 trunc_results = post_model_ctx.recovery_tool_results or []
                 for tr in trunc_results:
-                    await context.add(ToolMessage(content=tr.content, tool_call_id=tr.tool_call_id))
+                    await context.add(ToolMessage(
+                        content=_tool_result_content_to_message_content(tr.content),
+                        tool_call_id=tr.tool_call_id,
+                    ))
                 turn = AgentTurn(messages=[response_msg], tool_calls=tool_calls, tool_results=trunc_results)
             else:
                 if post_model_ctx.recovery_message is not None:
@@ -940,9 +972,7 @@ class Agent:
             # rather than relying on a stateful "two consecutive empty turns"
             # prose rule.  See _OPERATING_RULES in prompt_builder.py.
             any_useful = any(
-                not tr.is_error and bool(
-                    tr.content if isinstance(tr.content, str) else _content_to_json(tr.content)
-                )
+                not tr.is_error and bool(_tool_result_content_to_message_content(tr.content))
                 for tr in tool_results
             )
             if any_useful:
@@ -955,11 +985,11 @@ class Agent:
                 f" stale_rounds={self._stale_tool_rounds}]"
             )
             for tr in tool_results:
-                content_str = _content_to_json(tr.content) if not isinstance(tr.content, str) else tr.content
+                message_content = _tool_result_content_to_message_content(tr.content)
                 # Skip the footer on terminal-tool results — they stop the loop.
                 is_terminal = TAG_LIFECYCLE_TERMINAL in runtime.tool_registry.tags_for_name(tr.name)
                 await context.add(ToolMessage(
-                    content=content_str,
+                    content=message_content,
                     step_footer=("" if is_terminal else step_footer),
                     tool_call_id=tr.tool_call_id,
                     is_error=tr.is_error,

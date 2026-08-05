@@ -102,11 +102,19 @@ class AnthropicTransport(LLMTransport):
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to Anthropic API message dict."""
         if msg.role == MessageRole.TOOL:
-            serialized_content = (msg.content or "") + getattr(msg, "step_footer", "")
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                formatted_parts = [self._format_part(p) for p in content]
+                if step_footer:
+                    formatted_parts.append({"type": "text", "text": step_footer})
+                block_content: Any = formatted_parts
+            else:
+                block_content = (content or "") + step_footer
             block: dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": msg.tool_call_id,
-                "content": serialized_content,
+                "content": block_content,
             }
             if getattr(msg, "is_error", False):
                 block["is_error"] = True

@@ -88,10 +88,19 @@ class OpenAITransport(LLMTransport):
     def _format_message(self, msg: Message) -> dict[str, Any]:
         """Convert a framework Message to an OpenAI chat message dict."""
         if msg.role == MessageRole.TOOL:
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                blocks = [self._format_tool_result_part(p) for p in content]
+                if step_footer:
+                    blocks.append({"type": "text", "text": step_footer})
+                tool_content: Any = blocks
+            else:
+                tool_content = (content or "") + step_footer
             return {
                 "role": "tool",
                 "tool_call_id": msg.tool_call_id,
-                "content": (msg.content or "") + getattr(msg, "step_footer", ""),
+                "content": tool_content,
             }
         if msg.role == MessageRole.ASSISTANT:
             return {
@@ -110,6 +119,19 @@ class OpenAITransport(LLMTransport):
         if isinstance(content, list):
             content = " ".join(getattr(p, "text", "") for p in content)
         return {"role": msg.role.value, "content": content or ""}
+
+    @staticmethod
+    def _format_tool_result_part(part: Any) -> dict[str, Any]:
+        # GPT-5+ tool-result content accepts the same `image_url` block
+        # shape as user-message vision input.
+        if part.__class__.__name__ == "ImagePart":
+            source = part.source
+            if source.type == "url":
+                url = source.data
+            else:
+                url = f"data:{source.media_type or 'image/png'};base64,{source.data}"
+            return {"type": "image_url", "image_url": {"url": url}}
+        return {"type": "text", "text": getattr(part, "text", "") or getattr(part, "thinking", "")}
 
     def _format_messages(self, messages: list[Message], system: str | None) -> list[dict[str, Any]]:
         formatted: list[dict[str, Any]] = []

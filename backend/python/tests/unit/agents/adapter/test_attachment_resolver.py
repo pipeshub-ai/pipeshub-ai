@@ -18,6 +18,7 @@ from app.agents.agent_loop.hooks.attachment_resolver import (
     attachment_rehydration,
     resolve_attachments_for_goal,
     shape_image_injection,
+    shape_retrieved_image_injection,
 )
 
 
@@ -529,3 +530,68 @@ class TestShapeImageInjection:
         parts = ctx.messages[0].content
         assert isinstance(parts, list)
         assert any(isinstance(p, ImagePart) for p in parts)
+
+
+# ---------------------------------------------------------------------------
+# shape_retrieved_image_injection (PRE_MODEL fallback hook for Ollama)
+# ---------------------------------------------------------------------------
+
+class TestShapeRetrievedImageInjection:
+    async def test_noop_when_no_pending_tool_images(self):
+        context = _make_context(tool_state={})
+        mw = shape_retrieved_image_injection(context)
+        msg = UserMessage(content="hello")
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+        assert ctx.messages[0].content == "hello"
+
+    async def test_injects_pending_tool_images_into_first_user_message(self):
+        from app.agent_loop_lib.core.messages import ImagePart
+
+        context = _make_context(
+            tool_state={"pending_tool_images": [
+                {"ref": "ref1", "block_index": 0,
+                 "image_url": {"url": "data:image/png;base64,abc123"},
+                 "virtual_record_id": "vr1"},
+            ]},
+        )
+        mw = shape_retrieved_image_injection(context)
+
+        msg = UserMessage(content="describe this")
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+
+        parts = ctx.messages[0].content
+        assert isinstance(parts, list)
+        image_parts = [p for p in parts if isinstance(p, ImagePart)]
+        assert len(image_parts) == 1
+        assert image_parts[0].source.data == "data:image/png;base64,abc123"
+
+    async def test_pops_pending_tool_images_so_they_are_not_redelivered(self):
+        """Each batch of tool-sourced images must be delivered exactly
+        once, on the very next model call — a stale stash re-injected on
+        every subsequent turn would duplicate images already seen."""
+        context = _make_context(
+            tool_state={"pending_tool_images": [
+                {"image_url": {"url": "data:image/png;base64,abc123"}},
+            ]},
+        )
+        mw = shape_retrieved_image_injection(context)
+
+        msg1 = UserMessage(content="turn 1")
+        await mw(SimpleNamespace(messages=[msg1]), _noop_next)
+        assert "pending_tool_images" not in context.tool_state
+
+        msg2 = UserMessage(content="turn 2")
+        await mw(SimpleNamespace(messages=[msg2]), _noop_next)
+        assert msg2.content == "turn 2"  # untouched: nothing pending on turn 2
+
+    async def test_skips_entries_with_no_resolvable_url(self):
+        context = _make_context(
+            tool_state={"pending_tool_images": [{"image_url": {}}]},
+        )
+        mw = shape_retrieved_image_injection(context)
+        msg = UserMessage(content="hello")
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+        assert ctx.messages[0].content == "hello"

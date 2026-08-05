@@ -417,7 +417,7 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         captured: dict = {}
 
-        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False):
+        def fake_rtc(record, ref_mapper=None, is_multimodal_llm=False, image_budget=None):
             captured["ref_mapper"] = ref_mapper
             return ([{"type": "text", "text": "ok"}], ref_mapper)
 
