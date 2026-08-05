@@ -324,6 +324,13 @@ class TestFormatExcelDatetime:
         result = format_excel_datetime(dt, "dd.mm.yyyy")
         assert result == "15.06.2023"
 
+    def test_quoted_literal_casing_preserved(self):
+        dt = datetime(2023, 6, 15, 14, 30, 45)
+        # Quoted literal text (e.g. "UTC") must keep its original casing,
+        # while the date/time tokens around it are still normalized.
+        result = format_excel_datetime(dt, 'yyyy-mm-dd "UTC"')
+        assert result == '2023-06-15 "UTC"'
+
     def test_unparseable_format_fallback_to_iso(self):
         dt = datetime(2023, 6, 15, 10, 30)
         # Something truly broken

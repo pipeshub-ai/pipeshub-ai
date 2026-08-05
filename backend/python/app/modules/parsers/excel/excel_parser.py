@@ -297,6 +297,12 @@ def _resolve_ambiguous_format(format_str: str) -> str:
     return python_format
 
 
+def _lowercase_preserving_quoted_literals(format_str: str) -> str:
+    """Lowercase format tokens while preserving the casing of quoted literals (e.g. "UTC")."""
+    parts = re.split(r'("[^"]*")', format_str)
+    return "".join(part if part.startswith('"') else part.lower() for part in parts)
+
+
 def format_excel_datetime(dt_value: datetime | time | str | int | float | None, number_format: str) -> str | int | float | None:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
@@ -329,8 +335,9 @@ def format_excel_datetime(dt_value: datetime | time | str | int | float | None, 
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
         # Excel date/time tokens are case-insensitive (DD-MMM-YYYY, HH:MM, etc.).
-        # Normalize so whitelist lookup and _resolve_ambiguous_format see lowercase tokens.
-        format_str = format_str.lower()
+        # Normalize so whitelist lookup and _resolve_ambiguous_format see lowercase tokens,
+        # but keep quoted literal text (e.g. "UTC") exactly as authored.
+        format_str = _lowercase_preserving_quoted_literals(format_str)
 
         # Step 2: Try whitelist first (covers 80-90% of cases with simple lookup)
         if format_str in COMMON_FORMAT_WHITELIST:
