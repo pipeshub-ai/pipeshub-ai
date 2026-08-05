@@ -154,7 +154,7 @@ export class MailConsumer {
   /** Drops idle orgs so the throttle map cannot grow without bound. */
   private pruneFailureNotifyState(now: number): void {
     for (const [orgId, entry] of this.failureNotifyState) {
-      if (entry.suppressed === 0 && now - entry.last > FAILURE_NOTIFY_WINDOW_MS) {
+      if (now - entry.last > FAILURE_NOTIFY_WINDOW_MS) {
         this.failureNotifyState.delete(orgId);
       }
     }

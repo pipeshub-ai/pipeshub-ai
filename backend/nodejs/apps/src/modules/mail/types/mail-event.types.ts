@@ -29,17 +29,10 @@ export type MailSendResult =
 // Per RFC 5321: 4xx means try again later, 5xx is an outright rejection.
 const PERMANENT_SMTP_RANGE = { min: 500, max: 599 };
 
-const TRANSIENT_ERROR_CODES = new Set([
-  'ECONNECTION',
-  'ETIMEDOUT',
-  'ESOCKET',
-  'ECONNRESET',
-  'EDNS',
-  'EAI_AGAIN',
-  'ECONNREFUSED',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-  'ETLS',
+const PERMANENT_ERROR_CODES = new Set([
+  'EAUTH',
+  'EENVELOPE',
+  'EMESSAGE',
 ]);
 
 /**
@@ -64,7 +57,7 @@ export function classifyMailError(error: unknown): 'transient' | 'permanent' {
   }
 
   if (typeof err.code === 'string') {
-    return TRANSIENT_ERROR_CODES.has(err.code) ? 'transient' : 'permanent';
+    return PERMANENT_ERROR_CODES.has(err.code) ? 'permanent' : 'transient';
   }
 
   return 'transient';

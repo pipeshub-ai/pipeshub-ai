@@ -137,10 +137,8 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
     try { await runOtpLogin(); } catch (e) { surfaced = e as Error; }
 
     expect(surfaced, 'a security error must still be raised').to.exist;
-    // Never replaced by a mail-plumbing error.
     expect(surfaced!.message).to.not.contain('timeout of 30000ms');
     expect(surfaced!.message).to.contain('Account Blocked');
-    // Recorded rather than swallowed, and never retried into a duplicate.
     expect(mockLogger.error.called).to.be.true;
     expect(mockMailService.sendMail.callCount).to.equal(1);
   });

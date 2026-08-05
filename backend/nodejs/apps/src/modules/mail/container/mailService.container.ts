@@ -126,14 +126,22 @@ export class MailServiceContainer {
             await consumer.disconnect();
           }
         }
+      } catch (error) {
+        this.logger.warn('Mail consumer failed to disconnect during shutdown', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
         if (c.isBound('MessageProducer')) {
           const producer = c.get<IMessageProducer>('MessageProducer');
           if (producer.isConnected()) {
             await producer.disconnect();
           }
         }
-      } catch {
-        // ignore disconnect errors during shutdown
+      } catch (error) {
+        this.logger.warn('Mail producer failed to disconnect during shutdown', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       this.instance = null!;
       this.logger.info('Mail Services Successfully disconnected');
