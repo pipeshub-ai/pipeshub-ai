@@ -170,8 +170,10 @@ async def test_run_in_executor_propagates_exceptions() -> None:
         pool.shutdown(wait=True)
 
 
-def test_no_injection_falls_back_to_process_pool() -> None:
-    """A connector with no pool injected (mocks, direct construction) still works."""
+def test_no_injection_falls_back_to_shared_thread_pool() -> None:
+    """A connector with no pool injected (mocks, direct construction) falls back
+    to the process-wide shared thread pool from get_shared_connector_thread_pool().
+    """
     lease = acquire_connector_lease(
         MagicMock(), 2, label="fallback", connector_type="TEST"
     )
