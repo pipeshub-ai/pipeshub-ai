@@ -35,6 +35,7 @@ from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.scope import resolve_scope
+from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result, render_navigation_view
 
@@ -166,36 +167,6 @@ def _get_scoping(state: ChatState) -> tuple[list[str], list[str]]:
     from .ops.scope import derive_scope
     scope = derive_scope(state)
     return list(scope.app_ids), list(scope.kb_ids)
-
-
-def _time_range_to_kh_filters(
-    time_range: dict[str, int] | None,
-) -> tuple[dict[str, int | None] | None, dict[str, int | None] | None]:
-    """Bridge `ops.time_range.parse_time_range()`'s epoch-ms dict (keyed by
-    source_created_after_ms/source_created_before_ms/source_updated_after_ms/
-    source_updated_before_ms — the shape knowledgegraph__search's retrieval
-    path expects) to the `{"gte": ..., "lte": ...}` shape
-    `KnowledgeHubService.get_nodes()` expects for its `created_at`/
-    `updated_at` params. Reusing the same parser as search() (rather than a
-    second, separate ISO-parsing implementation) means navigate() gets the
-    exact same validation: rejecting timezone-naive datetimes, checking
-    after <= before, and rejecting future created_after dates.
-    """
-    if not time_range:
-        return None, None
-    created_at: dict[str, int | None] | None = None
-    if "source_created_after_ms" in time_range or "source_created_before_ms" in time_range:
-        created_at = {
-            "gte": time_range.get("source_created_after_ms"),
-            "lte": time_range.get("source_created_before_ms"),
-        }
-    updated_at: dict[str, int | None] | None = None
-    if "source_updated_after_ms" in time_range or "source_updated_before_ms" in time_range:
-        updated_at = {
-            "gte": time_range.get("source_updated_after_ms"),
-            "lte": time_range.get("source_updated_before_ms"),
-        }
-    return created_at, updated_at
 
 
 def _time_range_error_message(error_json: str) -> str:
@@ -421,7 +392,7 @@ class KnowledgeGraph:
         )
         if time_error is not None:
             return False, _time_range_error_message(time_error)
-        created_at, updated_at = _time_range_to_kh_filters(time_range)
+        created_at, updated_at = time_range_to_kh_filters(time_range)
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`): node_id may be a short
