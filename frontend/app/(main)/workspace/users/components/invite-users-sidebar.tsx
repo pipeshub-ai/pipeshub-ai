@@ -483,26 +483,16 @@ export function InviteUsersSidebar({
                     >
                       <thead>
                         <tr style={{ backgroundColor: 'var(--olive-3)' }}>
-                          {['name', 'email'].map((col) => (
-                            <th key={col} style={SAMPLE_CELL_STYLE}>
-                              <Text size="1" weight="medium">
-                                {col}
-                              </Text>
-                            </th>
-                          ))}
+                          <th style={SAMPLE_CELL_STYLE}>
+                            <Text size="1" weight="medium">
+                              email
+                            </Text>
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
-                        {[
-                          ['Alice Chen', 'alice@acme.com'],
-                          ['Bob Ray', 'bob@acme.com'],
-                        ].map(([name, email]) => (
+                        {['alice@acme.com', 'bob@acme.com'].map((email) => (
                           <tr key={email}>
-                            <td style={SAMPLE_CELL_STYLE}>
-                              <Text size="1" color="gray">
-                                {name}
-                              </Text>
-                            </td>
                             <td style={SAMPLE_CELL_STYLE}>
                               <Text size="1">{email}</Text>
                             </td>
@@ -515,15 +505,7 @@ export function InviteUsersSidebar({
                     {[
                       t(
                         'workspace.users.invite.importHintHeader',
-                        'Header row optional — any column works'
-                      ),
-                      t(
-                        'workspace.users.invite.importHintExtraColumns',
-                        'Extra columns like name or role are ignored'
-                      ),
-                      t(
-                        'workspace.users.invite.importHintSkipped',
-                        'Duplicates removed, invalid addresses marked for review'
+                        'Header row optional — extra columns ignored'
                       ),
                       t(
                         'workspace.users.invite.importHintLimit',
