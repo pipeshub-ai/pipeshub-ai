@@ -198,7 +198,8 @@ function preprocessHtmlIndentation(content: string): string {
  * so we never mangle literal backslash sequences inside code examples or
  * escaped brackets inside link text (e.g. `[Title \[Subtitle\]](url)`).
  *
- *   \(...\)  →  $...$        (inline math)
+ *   \(...\)  →  $$...$$      (inline math; singleDollarTextMath is disabled
+ *                             on remarkMath so currency amounts like $5 stay plain text)
  *   \[...\]  →  $$\n...\n$$  (display math)
  */
 function preprocessMath(content: string): string {
@@ -221,7 +222,9 @@ function preprocessMath(content: string): string {
         .replace(/\\\[((?:(?!\n\n)[\s\S])*?)\\\]/g, (_m, math: string) => `$$\n${math.trim()}\n$$`)
         // Inline math: \( ... \)
         // Same paragraph-break guard — inline math must not span blank lines.
-        .replace(/\\\(((?:(?!\n\n)[\s\S])*?)\\\)/g, (_m, math: string) => `$${math}$`);
+        // Double dollars (not single) because singleDollarTextMath is disabled
+        // on remarkMath below to keep currency amounts like $1,234.56 as plain text.
+        .replace(/\\\(((?:(?!\n\n)[\s\S])*?)\\\)/g, (_m, math: string) => `$$${math}$$`);
     })
     .join('');
 }
@@ -1165,7 +1168,7 @@ export function AnswerContent({
   // 1. preprocessHtmlCodeBlocks  — convert <pre><code> to fenced blocks
   // 2. preprocessHtmlIndentation — strip ≥4-space indent from HTML tag lines
   //    so remark treats them as HTML blocks, not indented code blocks
-  // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  /  $..$ 
+  // 3. preprocessMath            — \[..\] / \(..\) → $$..$$  (both forms)
   //    (skips fenced blocks created by step 1)
   const normalizedContent = preprocessMath(
     preprocessHtmlIndentation(
@@ -1176,7 +1179,7 @@ export function AnswerContent({
   return (
     <Box>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, remarkCallouts]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkCallouts]}
         rehypePlugins={[rehypeRaw, [rehypeSanitize, SANITIZE_SCHEMA], rehypeKatex]}
         components={components}
       >
