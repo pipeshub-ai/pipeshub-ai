@@ -820,9 +820,12 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-MAX_CONCURRENT_PARSING=5
-MAX_CONCURRENT_INDEXING=7
-MAX_PENDING_INDEXING_TASKS=40
+# Left empty by default: the resource governor derives ceilings from this
+# container's own cgroup/CPU limits at startup. Set an explicit integer only
+# to pin a hard ceiling.
+MAX_CONCURRENT_PARSING=
+MAX_CONCURRENT_INDEXING=
+MAX_PENDING_INDEXING_TASKS=
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1
 DOCLING_UVICORN_WORKERS=1

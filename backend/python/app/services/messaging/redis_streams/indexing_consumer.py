@@ -29,6 +29,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.retry_manager import RetryManager
+from app.services.resource_governor import Pool
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
@@ -36,9 +37,11 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
     from app.services.messaging.distributed_concurrency import (
         DistributedConcurrencyManager,
     )
+    from app.services.resource_governor import ResourceGovernor
 
 _BUSYGROUP_ERROR = "BUSYGROUP"
 _MESSAGE_VALUE_FIELD = "value"
@@ -72,6 +75,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         retry_manager: Optional[RetryManager] = None,
         producer: Optional[IMessagingProducer] = None,
         concurrency_manager: Optional["DistributedConcurrencyManager"] = None,
+        governor: Optional["ResourceGovernor"] = None,
+        backpressure_coordinator: Optional["BackpressureCoordinator"] = None,
     ) -> None:
         self.logger = logger
         self.config = config
@@ -81,6 +86,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.retry_manager = retry_manager
         self.producer = producer
         self.concurrency_manager = concurrency_manager
+        # When set, node-local parsing/indexing admission is delegated to the
+        # ResourceGovernor's adaptive gates instead of the static semaphores
+        # below (see consumer_concurrency.acquire_parsing_slot/index_ceiling).
+        self.governor = governor
+        # Shared with the ParsingClient/DoclingClient/EmbeddingServerEmbeddings
+        # instances that this consumer's records flow through — see
+        # app.services.messaging.backpressure. Reading is paused whenever any
+        # of them last saw a 429+Retry-After, instead of pulling more work a
+        # saturated downstream would just reject again.
+        self.backpressure_coordinator = backpressure_coordinator
+        self._downstream_backpressure_active = False
         self._distributed_log_times: dict[str, float] = {}
         self.redis: Optional[Redis] = None
         self.running = False
@@ -89,8 +105,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.worker_loop: Optional[asyncio.AbstractEventLoop] = None
         self.worker_loop_ready = threading.Event()
         self.main_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Legacy fallback only: unused (stay None) once a governor is set.
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
-        self.indexing_semaphore: Optional[asyncio.Semaphore] = None
+        self.indexing_semaphore: Any = None
         self.message_handler: Optional[IndexingMessageHandler] = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
@@ -156,11 +173,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         def run_worker_loop() -> None:
             self.worker_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.worker_loop)
-            self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
-            self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
-            self.logger.info(
-                "Worker thread event loop started with semaphores initialized"
-            )
+            if self.governor is not None:
+                self.indexing_semaphore = self.governor.gate(Pool.INDEX)
+                self.logger.info(
+                    "Worker thread event loop started; using ResourceGovernor "
+                    "gates (index_ceiling=%d heavy_parse_ceiling=%d light_parse_ceiling=%d)",
+                    self.governor.ceilings.index,
+                    self.governor.ceilings.heavy,
+                    self.governor.ceilings.light,
+                )
+            else:
+                self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
+                self.indexing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_indexing)
+                self.logger.info(
+                    "Worker thread event loop started with semaphores initialized"
+                )
             self.worker_loop_ready.set()
             try:
                 self.worker_loop.run_forever()
@@ -202,9 +229,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             self.consume_task = asyncio.create_task(self._consume_loop())
             self.logger.info(
-                "Started Redis Streams consumer task with parsing_slots=%d, indexing_slots=%d",
-                messaging_env.max_concurrent_parsing,
-                messaging_env.max_concurrent_indexing,
+                "Started Redis Streams consumer task with parsing_ceiling=%d, indexing_ceiling=%d",
+                concurrency.parse_ceiling(self),
+                concurrency.index_ceiling(self),
             )
         except Exception as e:
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
@@ -412,6 +439,32 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         return False
 
+    async def _wait_out_backpressure(self) -> None:
+        """Block while any downstream service has an active 429+Retry-After
+        pause signalled, so this consumer stops pulling new work a saturated
+        parser/embedder/Docling instance would just reject again.
+
+        Polls in small increments and re-checks ``self.running`` between
+        them, mirroring ``_delay_if_retry_not_ready``, so shutdown interrupts
+        the wait instead of blocking on it.
+        """
+        if self.backpressure_coordinator is None:
+            return
+        while self.running and self.backpressure_coordinator.is_paused():
+            if not self._downstream_backpressure_active:
+                self._downstream_backpressure_active = True
+                self.logger.warning(
+                    "Downstream backpressure from %s: pausing new stream "
+                    "reads for %.1fs",
+                    ", ".join(sorted(self.backpressure_coordinator.paused_services)),
+                    self.backpressure_coordinator.pause_remaining(),
+                )
+            remaining = self.backpressure_coordinator.pause_remaining()
+            await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining) if remaining > 0 else _DELAY_POLL_INTERVAL_SECONDS)
+        if self._downstream_backpressure_active:
+            self._downstream_backpressure_active = False
+            self.logger.info("Downstream backpressure cleared; resuming stream reads")
+
     async def _drain_pending(self) -> bool:
         """Re-process messages left in the Pending Entries List (PEL).
 
@@ -429,13 +482,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             start_id = "0-0"
             while self.running:
                 active_count = self._get_active_task_count()
-                if active_count >= messaging_env.max_pending_indexing_tasks:
+                pending_ceiling = concurrency.pending_task_ceiling(self)
+                if active_count >= pending_ceiling:
                     await asyncio.sleep(0.5)
                     continue
                 try:
-                    available_capacity = (
-                        messaging_env.max_pending_indexing_tasks - active_count
-                    )
+                    available_capacity = pending_ceiling - active_count
                     result = await self.redis.xautoclaim(  # type: ignore
                         topic,
                         self.config.group_id,
@@ -454,7 +506,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             continue
                         if (
                             self._get_active_task_count()
-                            >= messaging_env.max_pending_indexing_tasks
+                            >= concurrency.pending_task_ceiling(self)
                         ):
                             break
                         try:
@@ -484,13 +536,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             last_pending_id = "0"
             while self.running:
                 active_count = self._get_active_task_count()
-                if active_count >= messaging_env.max_pending_indexing_tasks:
+                pending_ceiling = concurrency.pending_task_ceiling(self)
+                if active_count >= pending_ceiling:
                     await asyncio.sleep(0.5)
                     continue
                 try:
-                    available_capacity = (
-                        messaging_env.max_pending_indexing_tasks - active_count
-                    )
+                    available_capacity = pending_ceiling - active_count
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.consumer_name,
@@ -517,7 +568,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 continue
                             if (
                                 self._get_active_task_count()
-                                >= messaging_env.max_pending_indexing_tasks
+                                >= concurrency.pending_task_ceiling(self)
                             ):
                                 break
                             drained_any = True
@@ -565,11 +616,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         try:
             self.logger.info("Starting Redis Streams consumer loop")
             # Initial drain on startup
+            await self._wait_out_backpressure()
             await self._drain_pending()
             while self.running:
                 try:
+                    await self._wait_out_backpressure()
                     active_count = self._get_active_task_count()
-                    if active_count >= messaging_env.max_pending_indexing_tasks:
+                    pending_ceiling = concurrency.pending_task_ceiling(self)
+                    if active_count >= pending_ceiling:
                         if not self._backpressure_active:
                             self.logger.warning(
                                 "Backpressure engaged: %d active tasks",
@@ -582,14 +636,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         self.logger.info(
                             "Backpressure cleared: %d/%d",
                             active_count,
-                            messaging_env.max_pending_indexing_tasks,
+                            pending_ceiling,
                         )
                         self._backpressure_active = False
 
                     streams = dict.fromkeys(self.config.topics, ">")
-                    available_capacity = (
-                        messaging_env.max_pending_indexing_tasks - active_count
-                    )
+                    available_capacity = pending_ceiling - active_count
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.consumer_name,
@@ -619,7 +671,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 break
                             if (
                                 self._get_active_task_count()
-                                >= messaging_env.max_pending_indexing_tasks
+                                >= concurrency.pending_task_ceiling(self)
                             ):
                                 break
                             try:
@@ -961,12 +1013,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         indexing_complete = False
         shutting_down = False
         acked = False
+        parsing_admission: concurrency.ParsingAdmission | None = None
         distributed_leases = DistributedLeaseSet()
         renewal_task: asyncio.Future[None] | None = None
         lease_owner = f"{self.consumer_name}:{message_id}:{uuid.uuid4().hex}"
 
-        if not self.parsing_semaphore or not self.indexing_semaphore:
-            self.logger.error("Semaphores not initialized for %s", message_id)
+        if not self.indexing_semaphore or (
+            self.governor is None and not self.parsing_semaphore
+        ):
+            self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
 
         # Parse (and, for re-queued messages, wait out any backoff) before
@@ -1018,7 +1073,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not await self._acquire_distributed_slot(
                     "indexing",
                     lease_owner,
-                    messaging_env.max_concurrent_indexing,
+                    concurrency.index_ceiling(self),
                 ):
                     return False
                 distributed_leases.add("indexing", lease_owner)
@@ -1067,7 +1122,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 token = set_context(ctx.root_id)
 
                 async def consume_handler_events() -> None:
-                    nonlocal parsing_held, indexing_held, indexing_complete, shutting_down
+                    nonlocal parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission
                     async with asyncio.timeout(messaging_env.record_processing_timeout):
                         event_gen = self.message_handler(parsed_message)
                         try:
@@ -1075,13 +1130,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 if (
                                     event.event == IndexingEvent.START_PARSING
                                     and not parsing_held
-                                    and self.parsing_semaphore
                                 ):
                                     if self.concurrency_manager is not None:
                                         if not await self._acquire_distributed_slot(
                                             "parsing",
                                             lease_owner,
-                                            messaging_env.max_concurrent_parsing,
+                                            concurrency.parse_ceiling(self),
                                         ):
                                             # Only reason try_acquire gives up
                                             # (no deadline here) is self.running
@@ -1091,18 +1145,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                             shutting_down = True
                                             return
                                         distributed_leases.add("parsing", lease_owner)
-                                    await self.parsing_semaphore.acquire()
+                                    parsing_admission = await concurrency.acquire_parsing_slot(
+                                        self,
+                                        event.data.tier if event.data else None,
+                                        event.data.size_bytes if event.data else None,
+                                    )
                                     parsing_held = True
                                 elif (
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
-                                    and self.parsing_semaphore
                                 ):
                                     distributed_leases.discard("parsing")
                                     await self._release_distributed_slot(
                                         "parsing", lease_owner
                                     )
-                                    self.parsing_semaphore.release()
+                                    concurrency.release_parsing_slot(parsing_admission)
+                                    parsing_admission = None
                                     parsing_held = False
                                 elif (
                                     event.event == IndexingEvent.INDEXING_COMPLETE
@@ -1276,10 +1334,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if renewal_task is not None:
                 renewal_task.cancel()
                 await asyncio.gather(renewal_task, return_exceptions=True)
-            if parsing_held and self.parsing_semaphore:
+            if parsing_held:
                 if distributed_leases.discard("parsing") is not None:
                     await self._release_distributed_slot("parsing", lease_owner)
-                self.parsing_semaphore.release()
+                concurrency.release_parsing_slot(parsing_admission)
+                parsing_admission = None
             if indexing_held and self.indexing_semaphore:
                 if distributed_leases.discard("indexing") is not None:
                     await self._release_distributed_slot("indexing", lease_owner)

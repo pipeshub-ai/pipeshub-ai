@@ -807,8 +807,25 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
-    """Run the application"""
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+    """Run the application.
+
+    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
+    matching docling/indexing/parsing's own env-var pattern). Raising this
+    above 1 gives the single-threaded event loop more headroom to serve
+    concurrent ``/stream/record`` requests during a large sync instead of
+    queuing behind it — but every uvicorn worker is a separate OS process,
+    and this service's cross-request dedup (``sync_task_manager`` /
+    ``reindex_task_manager`` in
+    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
+    per process, not shared across workers. With >1 worker, a duplicate
+    sync/reindex request landing on a different worker than the in-flight
+    one will not be recognised as a duplicate and can run concurrently.
+    Only raise this if that is an acceptable tradeoff for your deployment,
+    or once that dedup is moved to a shared store (Redis lock/lease).
+    """
+    if workers is None:
+        workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

@@ -36,6 +36,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.base_client import ServiceUnavailableError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.resource_governor import classify
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -703,10 +704,17 @@ class EventProcessor:
                 )
 
             # Ask the consumer for a nested parsing slot only after the record
-            # is already IN_PROGRESS under the outer indexing gate.
+            # is already IN_PROGRESS under the outer indexing gate. Tier/size
+            # are already known here (extension, mime and content_len were
+            # read above) so the consumer can route to the matching
+            # resource_governor pool instead of re-deriving format itself.
             yield PipelineEvent(
                 event=IndexingEvent.START_PARSING,
-                data=PipelineEventData(record_id=record_id),
+                data=PipelineEventData(
+                    record_id=record_id,
+                    tier=classify(extension, mime_type),
+                    size_bytes=content_len,
+                ),
             )
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──

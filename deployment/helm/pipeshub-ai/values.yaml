@@ -271,9 +271,13 @@ config:
   # also capped by the record-events topic's partition count, regardless
   # of these settings. Increase the topic's partition count too if you
   # raise these values on Kafka.
-  maxConcurrentParsing: 5
-  maxConcurrentIndexing: 10
-  maxPendingIndexingTasks: 40
+  #
+  # Left as empty strings by default: the resource governor derives each
+  # ceiling from its own pod's cgroup/CPU limits (i.e. resources.limits
+  # below) at startup. Set an explicit integer only to pin a hard ceiling.
+  maxConcurrentParsing: ""
+  maxConcurrentIndexing: ""
+  maxPendingIndexingTasks: ""
   distributedIndexingConcurrency: true
   indexingConcurrencyLeaseSeconds: 120
   indexingConcurrencyRedisTimeoutSeconds: 5

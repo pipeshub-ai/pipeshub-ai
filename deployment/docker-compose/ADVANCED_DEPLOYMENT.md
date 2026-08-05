@@ -11,6 +11,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Developer / local build](#developer--local-build)
+- [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
 
 ---
 
@@ -132,3 +133,85 @@ docker compose -f docker-compose.build.neo4j.yml -p pipeshub-ai down
 
 The main `Dockerfile` pulls pre-built base layers from `pipeshubai/pipeshub-ai-base:python-deps` and `pipeshubai/pipeshub-ai-base:runtime` (see [`Dockerfile.base`](Dockerfile.base) for build/push instructions).  
 Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environment variables to use locally built tags.
+
+---
+
+## Soak-testing adaptive concurrency
+
+The indexing/parsing pipeline sizes its own concurrency from the
+`pipeshub-ai` container's cgroup memory/CPU limits (the resource governor —
+see `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` in
+[`env.template`](env.template)). These two runs are a manual regression
+check for that behaviour before a release; they are not part of CI.
+
+Both commands below assume the compose project is up (`docker compose -p
+pipeshub-ai up -d`) and run against the always-on `pipeshub-ai` container —
+`8091`/`8092` (indexing/parsing health) and the app's own logs are not
+published to the host, so reach them with `docker compose exec`/`logs`
+rather than a host-side `curl`.
+
+```bash
+# Resource-governor snapshot for each service (ceilings, current limits,
+# per-pool demand). Re-run this throughout a soak to watch limits move.
+docker compose -p pipeshub-ai exec pipeshub-ai curl -s http://localhost:8091/health | jq .resource_governor
+docker compose -p pipeshub-ai exec pipeshub-ai curl -s http://localhost:8092/health | jq .resource_governor
+
+# Every limit change the governor makes, with the pressure/CPU reading that
+# triggered it (one INFO line per change, not per sample).
+docker compose -p pipeshub-ai logs -f pipeshub-ai | grep --line-buffered "ResourceGovernor limits changed"
+
+# Container RSS vs. its cgroup ceiling, live.
+docker stats pipeshub-ai
+```
+
+### 1. Mixed-size upload under a tight memory ceiling
+
+Reproduces plan section 10.1: a constrained container must shrink under
+memory pressure, keep small files completing while large ones are still
+parsing, and finish every record without an OOM kill — with or without an
+operator-pinned `MAX_CONCURRENT_INDEXING`.
+
+1. In `.env`, set `APP_MEMORY_LIMIT=8G` and leave `MAX_CONCURRENT_PARSING` /
+   `MAX_CONCURRENT_INDEXING` / `MAX_PENDING_INDEXING_TASKS` empty (the
+   shipped default — derived from the container's own limits).
+2. `docker compose -p pipeshub-ai up -d --force-recreate pipeshub-ai`
+3. Upload roughly 200 files through a knowledge base: ~150 small
+   Markdown/CSV files and ~50 large PDFs, including a few scanned
+   (image-only, OCR-requiring) ones.
+4. While the batch runs, watch `docker stats pipeshub-ai` and the two
+   commands above.
+5. **Expect:** RSS plateaus below ~85% of `APP_MEMORY_LIMIT` (the governor's
+   hard-pressure threshold) and the container is never OOM-killed
+   (`docker compose -p pipeshub-ai ps` shows no restart); the limits-changed
+   log shows at least one shrink while the PDFs are parsing, and a later
+   recovery once the batch drains; several Markdown/CSV records reach a
+   terminal `indexingStatus` while PDFs are still `IN_PROGRESS`; every
+   record eventually reaches a terminal status (`COMPLETED`, `EMPTY`, or
+   `FAILED` — none stuck `IN_PROGRESS`/`QUEUED`).
+6. Repeat with `MAX_CONCURRENT_INDEXING=200` pinned and re-run step 2-5.
+   **Expect:** the same outcome — the governor's derived ceiling (visible in
+   `ceilings.index` from the `/health` snapshot) still caps effective
+   concurrency well under 200, so a deliberately reckless operator setting
+   does not change the result.
+
+### 2. Small-record connector sync (Confluence/Jira shape)
+
+Reproduces plan section 10.2 and is the operational proof for the
+regression tests in `tests/integration/test_small_record_scaling.py`: many
+millisecond-scale records must ramp `INDEX` concurrency up on an idle-CPU
+host, rather than aliasing to "no demand" or capping on `cpu_quota`.
+
+1. On a host with idle/low background CPU load, run a Confluence or Jira
+   sync of at least 5,000 records (a full-space/project backfill, or a
+   connector's reindex action).
+2. Poll `.resource_governor.limits.index` and `.resource_governor.demand.index`
+   from the indexing `/health` snapshot (command above) every few seconds
+   for the duration of the sync.
+3. **Expect:** `limits.index` ramps up from the floor (2) over the first
+   several samples rather than sitting there for the whole sync;
+   `resource_governor.cpu_utilisation` in the same snapshot reads as a
+   real interval mean (comparable to what `top`/`docker stats` shows for
+   the container), not ~0%, even though each record is milliseconds of
+   work; the ramp stops and holds once `demand.index.completions` per
+   interval stops increasing between samples, instead of climbing all the
+   way to `ceilings.index` regardless of downstream throughput.

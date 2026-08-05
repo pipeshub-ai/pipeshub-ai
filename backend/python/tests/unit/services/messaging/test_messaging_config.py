@@ -123,11 +123,15 @@ class TestMessagingEnvConfig:
         assert messaging_env.message_batch_size_simple == 20
 
     def test_message_batch_size_indexing_default(self, monkeypatch):
-        """Test message_batch_size_indexing defaults to 1."""
+        """Test message_batch_size_indexing defaults to 10 (plan: "Fix 6 —
+        MESSAGE_BATCH_SIZE_INDEXING Default Increase"). Reading one message
+        per consumer-loop iteration added a full round-trip of latency
+        between every task spawn even though pending_task_ceiling already
+        bounds in-flight tasks, so a bigger batch cannot cause overcommit."""
         from app.services.messaging.config import messaging_env
-        
+
         monkeypatch.delenv("MESSAGE_BATCH_SIZE_INDEXING", raising=False)
-        assert messaging_env.message_batch_size_indexing == 1
+        assert messaging_env.message_batch_size_indexing == 10
 
     def test_message_batch_size_indexing_from_env(self, monkeypatch):
         """Test message_batch_size_indexing can be overridden."""
@@ -149,3 +153,96 @@ class TestMessagingEnvConfig:
         
         monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "5000")
         assert messaging_env.message_timeout_ms == 5000
+
+
+class TestConcurrencyCeilingEnvVars:
+    """Phase 6: MAX_CONCURRENT_PARSING/INDEXING and MAX_PENDING_INDEXING_TASKS
+    ship in compose/helm as ``${VAR:-}`` (present but empty) so the
+    ResourceGovernor derives ceilings from cgroup/CPU limits by default.
+    These properties must treat "unset" and "empty string" identically
+    rather than raising on ``int("")``."""
+
+    def test_max_concurrent_parsing_defaults_when_unset(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("MAX_CONCURRENT_PARSING", raising=False)
+        assert messaging_env.max_concurrent_parsing == 5
+
+    def test_max_concurrent_parsing_defaults_when_empty(self, monkeypatch):
+        """Compose's ``${MAX_CONCURRENT_PARSING:-}`` sets the var to ``\"\"``
+        (present, not absent) when the operator hasn't pinned a value."""
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "")
+        assert messaging_env.max_concurrent_parsing == 5
+
+    def test_max_concurrent_parsing_respects_explicit_value(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "12")
+        assert messaging_env.max_concurrent_parsing == 12
+
+    def test_max_concurrent_indexing_defaults_when_unset(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("MAX_CONCURRENT_INDEXING", raising=False)
+        assert messaging_env.max_concurrent_indexing == 7
+
+    def test_max_concurrent_indexing_defaults_when_empty(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_INDEXING", "")
+        assert messaging_env.max_concurrent_indexing == 7
+
+    def test_max_concurrent_indexing_respects_explicit_value(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_INDEXING", "20")
+        assert messaging_env.max_concurrent_indexing == 20
+
+    def test_env_max_concurrent_parsing_none_when_unset_or_empty(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("MAX_CONCURRENT_PARSING", raising=False)
+        assert messaging_env.env_max_concurrent_parsing is None
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "")
+        assert messaging_env.env_max_concurrent_parsing is None
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "9")
+        assert messaging_env.env_max_concurrent_parsing == 9
+
+    def test_env_max_concurrent_indexing_none_when_unset_or_empty(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("MAX_CONCURRENT_INDEXING", raising=False)
+        assert messaging_env.env_max_concurrent_indexing is None
+
+        monkeypatch.setenv("MAX_CONCURRENT_INDEXING", "")
+        assert messaging_env.env_max_concurrent_indexing is None
+
+        monkeypatch.setenv("MAX_CONCURRENT_INDEXING", "11")
+        assert messaging_env.env_max_concurrent_indexing == 11
+
+    def test_max_pending_indexing_tasks_derives_when_unset(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("MAX_PENDING_INDEXING_TASKS", raising=False)
+        monkeypatch.delenv("MAX_CONCURRENT_PARSING", raising=False)
+        monkeypatch.delenv("MAX_CONCURRENT_INDEXING", raising=False)
+        assert messaging_env.max_pending_indexing_tasks == max(5, 7) * 4
+
+    def test_max_pending_indexing_tasks_derives_when_empty(self, monkeypatch):
+        """Same empty-string-as-unset handling as the ceilings above."""
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_PENDING_INDEXING_TASKS", "")
+        monkeypatch.delenv("MAX_CONCURRENT_PARSING", raising=False)
+        monkeypatch.delenv("MAX_CONCURRENT_INDEXING", raising=False)
+        assert messaging_env.max_pending_indexing_tasks == max(5, 7) * 4
+
+    def test_max_pending_indexing_tasks_respects_explicit_value(self, monkeypatch):
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_PENDING_INDEXING_TASKS", "17")
+        assert messaging_env.max_pending_indexing_tasks == 17

@@ -1,0 +1,677 @@
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING
+
+import pytest
+
+from app.services.resource_governor import policy as policy_mod
+from app.services.resource_governor.models import (
+    Ceilings,
+    ControllerState,
+    Limits,
+    Pool,
+    PoolDemand,
+    ResourceSnapshot,
+)
+from app.services.resource_governor.policy import (
+    GROW_CONFIRM_SAMPLES,
+    HEAVY_START_BUCKET_CAPACITY,
+    HEAVY_START_INTERVAL_SECONDS,
+    HEAVY_START_RATE_CEILING_DIVISOR,
+    INCIDENT_COOLDOWN_SECONDS,
+    MEM_SOFT,
+    SAMPLE_INTERVAL_SECONDS,
+    floor_for,
+    next_limits,
+    resolve_ceilings,
+    start_rate_limiter_params,
+    warm_start_limits,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+INTERVAL = SAMPLE_INTERVAL_SECONDS
+
+
+def _snapshot(
+    *,
+    cpu_quota: float = 4.0,
+    cpu_utilisation: float | None = 0.1,
+    cpu_throttled_ratio: float | None = 0.0,
+    cpu_pressure: float | None = 0.0,
+    mem_limit_bytes: int | None = 4 * 1024 ** 3,
+    mem_working_set_bytes: int | None = 1 * 1024 ** 3,
+    source: str = "test",
+) -> ResourceSnapshot:
+    return ResourceSnapshot(
+        cpu_quota=cpu_quota,
+        cpu_utilisation=cpu_utilisation,
+        cpu_throttled_ratio=cpu_throttled_ratio,
+        cpu_pressure=cpu_pressure,
+        mem_limit_bytes=mem_limit_bytes,
+        mem_working_set_bytes=mem_working_set_bytes,
+        source=source,
+    )
+
+
+def _no_demand() -> dict[Pool, PoolDemand]:
+    return {pool: PoolDemand.empty() for pool in Pool}
+
+
+def _saturated_demand(limit: int, interval: float = INTERVAL) -> dict[Pool, PoolDemand]:
+    """Demand that clearly indicates every pool is under contention."""
+    return {
+        pool: PoolDemand(permit_seconds=limit * interval, blocked_acquires=5, completions=100)
+        for pool in Pool
+    }
+
+
+class TestResolveCeilings:
+    def test_small_host_2cpu_4gib(self) -> None:
+        snap = _snapshot(cpu_quota=2.0, mem_limit_bytes=4 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 2  # min(2 cpu, 4GiB/1.5GB) floored, clamped to [2,12]
+        assert 4 <= ceilings.index <= 48
+        assert 8 <= ceilings.light <= 64
+
+    def test_medium_host_8cpu_16gib(self) -> None:
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 8
+        assert ceilings.index == min(8 * 3, 48)
+
+    def test_large_host_32cpu_64gib(self) -> None:
+        snap = _snapshot(cpu_quota=32.0, mem_limit_bytes=64 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        # clamped to the max parse ceiling even though both CPU and RAM allow more
+        assert ceilings.heavy == 12
+        assert ceilings.index == 36  # 12 * _INDEX_CEILING_PARSE_MULTIPLIER, within [4, 48]
+        assert ceilings.light == 64  # clamped to _LIGHT_CEILING_MAX
+
+    def test_unknown_memory_falls_back_to_cpu_only(self) -> None:
+        snap = _snapshot(cpu_quota=6.0, mem_limit_bytes=None, mem_working_set_bytes=None)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 6
+
+    def test_explicit_ceilings_honoured_including_one(self) -> None:
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=32 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, env_parse=1, env_index=1, worker_count=1)
+        assert ceilings.heavy == 1
+        assert ceilings.index == 1
+
+    def test_explicit_ceilings_honoured_when_very_high(self) -> None:
+        snap = _snapshot(cpu_quota=4.0, mem_limit_bytes=8 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, env_parse=200, env_index=200, worker_count=1)
+        assert ceilings.heavy == 200
+        assert ceilings.index == 200
+
+    def test_worker_count_divides_ceilings(self) -> None:
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        one_worker = resolve_ceilings(snap, None, None, worker_count=1)
+        four_workers = resolve_ceilings(snap, None, None, worker_count=4)
+        assert four_workers.heavy == max(1, one_worker.heavy // 4)
+        assert four_workers.index == max(1, one_worker.index // 4)
+
+
+class TestFloorFor:
+    def test_count_pool_floor_is_two_unless_ceiling_smaller(self) -> None:
+        assert floor_for(Pool.HEAVY_PARSE, 12) == 2
+        assert floor_for(Pool.HEAVY_PARSE, 1) == 1
+
+    def test_bytes_pool_floor(self) -> None:
+        assert floor_for(Pool.DOWNLOAD_BYTES, 1024 ** 4) == 256 * 1024 * 1024
+
+
+class TestStartRateLimiterParams:
+    """Regression coverage for the "5-10 docs forever regardless of
+    MAX_CONCURRENT_*" bug: StartRateLimiter's sustained rate is exactly
+    1/interval (capacity only bounds burst — see gate.py), so a fixed
+    interval caps admissions independent of the pool's ceiling unless this
+    scales with it."""
+
+    def test_small_derived_ceiling_keeps_original_conservative_rate(self) -> None:
+        interval, capacity = start_rate_limiter_params(2)
+        assert interval == HEAVY_START_INTERVAL_SECONDS
+        assert capacity == HEAVY_START_BUCKET_CAPACITY
+
+    def test_large_explicit_ceiling_yields_much_higher_sustained_rate(self) -> None:
+        interval, capacity = start_rate_limiter_params(1000)
+        sustained_rate = 1.0 / interval
+        assert sustained_rate == 1000 / HEAVY_START_RATE_CEILING_DIVISOR
+        assert sustained_rate > 1.0 / HEAVY_START_INTERVAL_SECONDS
+        assert capacity == 1000 // HEAVY_START_RATE_CEILING_DIVISOR
+
+    def test_rate_never_falls_below_the_original_default(self) -> None:
+        for ceiling in (0, 1, 2, 5, 10):
+            interval, _ = start_rate_limiter_params(ceiling)
+            assert 1.0 / interval >= 1.0 / HEAVY_START_INTERVAL_SECONDS
+
+    def test_capacity_never_falls_below_the_original_default(self) -> None:
+        for ceiling in (0, 1, 2, 5, 10):
+            _, capacity = start_rate_limiter_params(ceiling)
+            assert capacity >= HEAVY_START_BUCKET_CAPACITY
+
+    def test_rate_scales_monotonically_with_ceiling(self) -> None:
+        small_interval, _ = start_rate_limiter_params(100)
+        large_interval, _ = start_rate_limiter_params(1000)
+        assert large_interval < small_interval
+
+
+class TestNextLimitsPressure:
+    def _ceilings(self) -> Ceilings:
+        return Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)
+
+    def test_hard_pressure_halves_and_starts_cooldown(self) -> None:
+        ceilings = self._ceilings()
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        snap = _snapshot(mem_working_set_bytes=int(0.9 * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
+        state = ControllerState.initial()
+
+        new_limits, new_state = next_limits(current, snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
+
+        assert new_limits.get(Pool.HEAVY_PARSE) == 4
+        assert new_limits.get(Pool.INDEX) == 8
+        assert new_state.get(Pool.INDEX).cooldown_until > 0.0
+
+    def test_soft_pressure_decrements_by_one(self) -> None:
+        ceilings = self._ceilings()
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        snap = _snapshot(mem_working_set_bytes=int((MEM_SOFT + 0.02) * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
+        state = ControllerState.initial()
+
+        new_limits, _ = next_limits(current, snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
+
+        assert new_limits.get(Pool.HEAVY_PARSE) == 7
+        assert new_limits.get(Pool.INDEX) == 15
+
+    def test_cpu_brake_decrements_even_when_memory_is_fine(self) -> None:
+        ceilings = self._ceilings()
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        snap = _snapshot(cpu_utilisation=0.95, mem_working_set_bytes=int(0.1 * 4 * 1024 ** 3))
+        state = ControllerState.initial()
+
+        new_limits, _ = next_limits(current, snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
+
+        assert new_limits.get(Pool.HEAVY_PARSE) == 7
+
+    def test_memory_unknown_freezes_at_current(self) -> None:
+        ceilings = self._ceilings()
+        current = Limits(values={Pool.HEAVY_PARSE: 3, Pool.LIGHT_PARSE: 10, Pool.INDEX: 6, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        snap = _snapshot(mem_limit_bytes=None, mem_working_set_bytes=None, cpu_utilisation=0.1)
+        state = ControllerState.initial()
+
+        new_limits, _ = next_limits(current, snap, ceilings, state, _saturated_demand(3), now=0.0, interval=INTERVAL)
+
+        for pool in Pool:
+            assert new_limits.get(pool) == current.get(pool)
+
+
+class TestNextLimitsGrowth:
+    def _ceilings(self) -> Ceilings:
+        return Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)
+
+    def _healthy_snapshot(self) -> ResourceSnapshot:
+        return _snapshot(
+            cpu_quota=8.0, cpu_utilisation=0.1,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+    def test_no_growth_without_demand(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._healthy_snapshot()
+
+        for _ in range(GROW_CONFIRM_SAMPLES + 2):
+            limits, state = next_limits(limits, snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
+
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+
+    def test_growth_blocked_during_confirm_window(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._healthy_snapshot()
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+
+        for _ in range(GROW_CONFIRM_SAMPLES - 1):
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=0.0, interval=INTERVAL)
+
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+
+    def test_growth_after_confirm_window_with_demand(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._healthy_snapshot()
+
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=float(_) * INTERVAL, interval=INTERVAL)
+
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy) + 1
+
+    def test_growth_capped_at_one_step_per_interval(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._healthy_snapshot()
+
+        before = limits.get(Pool.HEAVY_PARSE)
+        for i in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=float(i) * INTERVAL, interval=INTERVAL)
+
+        assert limits.get(Pool.HEAVY_PARSE) - before <= 1
+
+    def test_growth_cooldown_blocks_regrowth_after_shrink(self) -> None:
+        ceilings = self._ceilings()
+        limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 10, Pool.INDEX: 8, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        state = ControllerState.initial()
+
+        hard_snap = _snapshot(mem_working_set_bytes=int(0.9 * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
+        limits, state = next_limits(limits, hard_snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
+        assert limits.get(Pool.HEAVY_PARSE) == 2
+
+        healthy_snap = self._healthy_snapshot()
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        for i in range(1, GROW_CONFIRM_SAMPLES + 1):
+            limits, state = next_limits(limits, healthy_snap, ceilings, state, demand, now=float(i) * 1.0, interval=INTERVAL)
+
+        # Still inside the 60s incident cooldown at these small `now` values.
+        assert limits.get(Pool.HEAVY_PARSE) == 2
+
+    def test_index_grows_on_idle_cpu_high_demand_confluence_case(self) -> None:
+        """The aliasing/CPU-derived-cap regression: an I/O-bound sync with
+        near-idle CPU must still grow the INDEX pool once demand is proven,
+        because index_target is the ceiling, not a cpu_quota expression."""
+        ceilings = Ceilings(heavy=2, light=16, index=24, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=2.0, cpu_utilisation=0.02,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+        for i in range(GROW_CONFIRM_SAMPLES):
+            demand = {
+                Pool.INDEX: PoolDemand(
+                    permit_seconds=limits.get(Pool.INDEX) * INTERVAL, blocked_acquires=50, completions=2000,
+                ),
+                Pool.HEAVY_PARSE: PoolDemand.empty(),
+                Pool.LIGHT_PARSE: PoolDemand.empty(),
+                Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+            }
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=float(i) * INTERVAL, interval=INTERVAL)
+
+        assert limits.get(Pool.INDEX) == floor_for(Pool.INDEX, ceilings.index) + 1
+
+    def test_index_does_not_grow_when_throughput_gradient_is_flat(self) -> None:
+        ceilings = Ceilings(heavy=2, light=16, index=24, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=2.0, cpu_utilisation=0.02,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+        def demand_at(limit: int) -> dict[Pool, PoolDemand]:
+            return {
+                Pool.INDEX: PoolDemand(permit_seconds=limit * INTERVAL, blocked_acquires=50, completions=100),
+                Pool.HEAVY_PARSE: PoolDemand.empty(),
+                Pool.LIGHT_PARSE: PoolDemand.empty(),
+                Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+            }
+
+        now = 0.0
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            limits, state = next_limits(limits, snap, ceilings, state, demand_at(limits.get(Pool.INDEX)), now=now, interval=INTERVAL)
+            now += INTERVAL
+        grown_to = limits.get(Pool.INDEX)
+        assert grown_to == floor_for(Pool.INDEX, ceilings.index) + 1
+
+        # Completions per second stay flat (same 100 completions/interval)
+        # even though the limit went up -> gradient must hold, not grow again.
+        for _ in range(5):
+            limits, state = next_limits(limits, snap, ceilings, state, demand_at(limits.get(Pool.INDEX)), now=now, interval=INTERVAL)
+            now += INTERVAL
+
+        assert limits.get(Pool.INDEX) == grown_to
+
+
+class TestExponentialGrowth:
+    """TCP-slow-start-inspired growth (plan section 4, Phase A/C).
+
+    Uses HEAVY_PARSE throughout so the INDEX-only throughput-gradient gate
+    (``_gradient_permits_growth``) never interferes — these tests isolate
+    the resource-delta step-sizing mechanism itself. A separate test below
+    covers the INDEX gradient's interaction with slow start.
+    """
+
+    def _ceilings(self) -> Ceilings:
+        return Ceilings(heavy=1000, light=32, index=24, bytes_max=2 * 1024 ** 3)
+
+    def _snap_with_working_set(self, working_set_gb: float) -> ResourceSnapshot:
+        # cpu_quota/mem_limit fixed and generous throughout so `_target_for`
+        # never caps growth before ~17 permits — only the resource-delta
+        # step logic under test can hold or throttle it.
+        return _snapshot(
+            cpu_quota=64.0, cpu_utilisation=0.1,
+            mem_limit_bytes=64 * 1024 ** 3, mem_working_set_bytes=int(working_set_gb * 1024 ** 3),
+        )
+
+    def _confirm_and_grow_once(
+        self, limits: Limits, state: ControllerState, ceilings: Ceilings, snap: ResourceSnapshot, start_now: float,
+    ) -> tuple[Limits, ControllerState, float]:
+        """Run GROW_CONFIRM_SAMPLES healthy+demand samples, triggering
+        exactly one grow (the first, always step=1 since there is no prior
+        baseline). Returns the updated state and the next `now` to use."""
+        now = start_now
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=now, interval=INTERVAL)
+            now += INTERVAL
+        return limits, state, now
+
+    def test_step_doubles_each_successful_grow_with_stable_resources(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._snap_with_working_set(1.0)
+        floor = floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+
+        limits, state, now = self._confirm_and_grow_once(limits, state, ceilings, snap, start_now=0.0)
+        assert limits.get(Pool.HEAVY_PARSE) == floor + 1  # first grow: no baseline yet, step=1
+
+        # Every following healthy+demand sample keeps growing (healthy_streak
+        # stays >= GROW_CONFIRM_SAMPLES) with the SAME stable snapshot, so
+        # each step should double: +2, +4, +8.
+        expected_steps = [2, 4, 8]
+        running_total = floor + 1
+        for step in expected_steps:
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=now, interval=INTERVAL)
+            now += INTERVAL
+            running_total += step
+            assert limits.get(Pool.HEAVY_PARSE) == running_total
+
+        assert state.get(Pool.HEAVY_PARSE).in_slow_start is True
+
+    def test_moderate_resource_delta_switches_to_linear_permanently(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        baseline_snap = self._snap_with_working_set(1.0)  # mem_pressure ~= 0.0156
+
+        limits, state, now = self._confirm_and_grow_once(limits, state, ceilings, baseline_snap, start_now=0.0)
+        after_first_grow = limits.get(Pool.HEAVY_PARSE)
+
+        # ~11% delta vs. the recorded baseline: moderate impact.
+        moderate_snap = self._snap_with_working_set(8.0)  # mem_pressure = 0.125
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        limits, state = next_limits(limits, moderate_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        now += INTERVAL
+
+        assert limits.get(Pool.HEAVY_PARSE) == after_first_grow + 1  # switched to linear, not doubled
+        assert state.get(Pool.HEAVY_PARSE).in_slow_start is False
+
+        # Even back on the calm baseline snapshot, growth stays linear —
+        # exiting slow start is permanent until a shrink re-arms it.
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        limits, state = next_limits(limits, baseline_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        assert limits.get(Pool.HEAVY_PARSE) == after_first_grow + 2
+
+    def test_large_resource_delta_holds_without_abandoning_slow_start(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        baseline_snap = self._snap_with_working_set(1.0)  # mem_pressure ~= 0.0156
+
+        limits, state, now = self._confirm_and_grow_once(limits, state, ceilings, baseline_snap, start_now=0.0)
+        held_at = limits.get(Pool.HEAVY_PARSE)
+
+        # ~30% delta vs. the recorded baseline: large impact -> hold.
+        spike_snap = self._snap_with_working_set(20.0)  # mem_pressure = 0.3125
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        limits, state = next_limits(limits, spike_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        now += INTERVAL
+
+        assert limits.get(Pool.HEAVY_PARSE) == held_at  # unchanged this round
+        assert state.get(Pool.HEAVY_PARSE).in_slow_start is True  # still armed
+
+        # Back to the calm baseline: doubling resumes from the step size
+        # that had already been earned (2), not reset to 1.
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        limits, state = next_limits(limits, baseline_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        assert limits.get(Pool.HEAVY_PARSE) == held_at + 2
+
+    def test_recovery_after_shrink_reenters_slow_start(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        baseline_snap = self._snap_with_working_set(1.0)
+
+        # Grow twice under stable resources: +1, then +2 (slow_start_step
+        # has doubled to 4 for the *next* grow at this point).
+        limits, state, now = self._confirm_and_grow_once(limits, state, ceilings, baseline_snap, start_now=0.0)
+        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        limits, state = next_limits(limits, baseline_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        now += INTERVAL
+        grown_limit = limits.get(Pool.HEAVY_PARSE)
+        assert state.get(Pool.HEAVY_PARSE).slow_start_step == 4
+
+        # A hard-pressure incident halves the limit and must reset slow
+        # start entirely (plan: "Reset to slow-start").
+        hard_snap = _snapshot(mem_working_set_bytes=int(0.9 * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
+        limits, state = next_limits(limits, hard_snap, ceilings, state, demand, now=now, interval=INTERVAL)
+        now += INTERVAL
+        assert limits.get(Pool.HEAVY_PARSE) == grown_limit // 2
+        halved_state = state.get(Pool.HEAVY_PARSE)
+        assert halved_state.in_slow_start is True
+        assert halved_state.slow_start_step == 1
+        assert halved_state.prev_grow_mem_pressure is None
+
+        # After the incident cooldown clears and resources are healthy
+        # again, the first grow back must be +1 (fresh slow start), not a
+        # jump that continues the pre-shrink step size.
+        now += INCIDENT_COOLDOWN_SECONDS + 1.0
+        before_recovery = limits.get(Pool.HEAVY_PARSE)
+        limits, state, _ = self._confirm_and_grow_once(limits, state, ceilings, baseline_snap, start_now=now)
+        assert limits.get(Pool.HEAVY_PARSE) == before_recovery + 1
+
+    def test_index_exits_slow_start_when_gradient_flattens(self) -> None:
+        ceilings = Ceilings(heavy=2, light=16, index=24, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=2.0, cpu_utilisation=0.02,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+        def demand_at(limit: int) -> dict[Pool, PoolDemand]:
+            return {
+                Pool.INDEX: PoolDemand(permit_seconds=limit * INTERVAL, blocked_acquires=50, completions=100),
+                Pool.HEAVY_PARSE: PoolDemand.empty(),
+                Pool.LIGHT_PARSE: PoolDemand.empty(),
+                Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+            }
+
+        now = 0.0
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            limits, state = next_limits(limits, snap, ceilings, state, demand_at(limits.get(Pool.INDEX)), now=now, interval=INTERVAL)
+            now += INTERVAL
+        assert state.get(Pool.INDEX).in_slow_start is True  # first grow alone doesn't prove flatness
+
+        # Completions stay flat on the next sample -> gradient holds, and
+        # slow start must be abandoned (this pool's ceiling is downstream,
+        # not local resources; further doubling would just queue more work).
+        limits, state = next_limits(limits, snap, ceilings, state, demand_at(limits.get(Pool.INDEX)), now=now, interval=INTERVAL)
+        assert state.get(Pool.INDEX).in_slow_start is False
+        assert state.get(Pool.INDEX).slow_start_step == 1
+
+
+class TestWarmStartExplicitCeiling:
+    """When an operator explicitly sets MAX_CONCURRENT_*, the warm-start limit
+    must equal the ceiling (not the floor), preserving pre-governor semaphore
+    semantics — full throughput immediately, adaptive governor only shrinks."""
+
+    def test_explicit_index_starts_at_ceiling(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index=1000, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings, env_parse=None, env_index=1000)
+        assert limits.get(Pool.INDEX) == 1000
+
+    def test_explicit_parse_starts_heavy_and_light_at_ceiling(self) -> None:
+        ceilings = Ceilings(heavy=500, light=32, index=24, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings, env_parse=500, env_index=None)
+        assert limits.get(Pool.HEAVY_PARSE) == 500
+        assert limits.get(Pool.LIGHT_PARSE) == 32
+
+    def test_both_explicit_starts_all_at_ceiling(self) -> None:
+        ceilings = Ceilings(heavy=100, light=64, index=200, bytes_max=4 * 1024 ** 3)
+        limits = warm_start_limits(ceilings, env_parse=100, env_index=200)
+        assert limits.get(Pool.HEAVY_PARSE) == 100
+        assert limits.get(Pool.LIGHT_PARSE) == 64
+        assert limits.get(Pool.INDEX) == 200
+
+    def test_derived_still_starts_at_floor(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)  # no env_* → derived
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, 8)
+        assert limits.get(Pool.LIGHT_PARSE) == floor_for(Pool.LIGHT_PARSE, 32)
+        assert limits.get(Pool.INDEX) == floor_for(Pool.INDEX, 24)
+
+    def test_bytes_pool_always_starts_at_floor_regardless_of_explicit(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index=24, bytes_max=4 * 1024 ** 3)
+        limits = warm_start_limits(ceilings, env_parse=8, env_index=24)
+        assert limits.get(Pool.DOWNLOAD_BYTES) == floor_for(Pool.DOWNLOAD_BYTES, 4 * 1024 ** 3)
+
+
+class TestNextLimitsBytesPool:
+    def test_bytes_pool_grows_by_percentage_step(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index=24, bytes_max=4 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=8.0, cpu_utilisation=0.1,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+        before = limits.get(Pool.DOWNLOAD_BYTES)
+
+        for i in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.DOWNLOAD_BYTES))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=float(i) * INTERVAL, interval=INTERVAL)
+
+        assert limits.get(Pool.DOWNLOAD_BYTES) > before
+
+
+class TestEnvFloatHelper:
+    """``_env_float`` backs GOVERNOR_MEM_SOFT/HARD/GROW_BAND (plan: "Fix 3 —
+    Make MEM_SOFT/MEM_HARD/GROW_BAND configurable") — a typo'd or absent
+    override must never crash startup or push the governor into a
+    degenerate state."""
+
+    def test_returns_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TEST_ENV_FLOAT_VAR", raising=False)
+        assert policy_mod._env_float("TEST_ENV_FLOAT_VAR", 0.5, low=0.0, high=1.0) == 0.5
+
+    def test_returns_default_on_malformed_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_ENV_FLOAT_VAR", "not-a-number")
+        assert policy_mod._env_float("TEST_ENV_FLOAT_VAR", 0.5, low=0.0, high=1.0) == 0.5
+
+    def test_clamps_value_above_high(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_ENV_FLOAT_VAR", "5.0")
+        assert policy_mod._env_float("TEST_ENV_FLOAT_VAR", 0.5, low=0.0, high=1.0) == 1.0
+
+    def test_clamps_value_below_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_ENV_FLOAT_VAR", "-5.0")
+        assert policy_mod._env_float("TEST_ENV_FLOAT_VAR", 0.5, low=0.0, high=1.0) == 0.0
+
+    def test_valid_value_within_range_passes_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_ENV_FLOAT_VAR", "0.42")
+        assert policy_mod._env_float("TEST_ENV_FLOAT_VAR", 0.5, low=0.0, high=1.0) == 0.42
+
+
+class TestConfigurableThresholds:
+    """MEM_SOFT/MEM_HARD/GROW_BAND are read from the environment once at
+    module import (plan: "Fix 3"). These tests reload the module with the
+    env var set, then reload it again on teardown so every other test in
+    the suite keeps seeing the original defaults — module globals are
+    shared by every function in ``policy.py`` via ``__globals__``, so a
+    leaked override would silently change behaviour for unrelated tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_module_after(self) -> "Generator[None, None, None]":
+        yield
+        for var in ("GOVERNOR_MEM_SOFT", "GOVERNOR_MEM_HARD", "GOVERNOR_GROW_BAND"):
+            import os
+            os.environ.pop(var, None)
+        importlib.reload(policy_mod)
+
+    def test_mem_soft_override_takes_effect_after_reload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GOVERNOR_MEM_SOFT", "0.90")
+        importlib.reload(policy_mod)
+
+        assert policy_mod.MEM_SOFT == 0.90
+
+    def test_mem_hard_stays_strictly_above_overridden_mem_soft_even_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # GOVERNOR_MEM_HARD deliberately left unset: its own default (0.85)
+        # would sit *below* an overridden MEM_SOFT of 0.90 without the
+        # invariant enforcement in policy.py.
+        monkeypatch.setenv("GOVERNOR_MEM_SOFT", "0.90")
+        importlib.reload(policy_mod)
+
+        assert policy_mod.MEM_HARD > policy_mod.MEM_SOFT
+
+    def test_grow_band_never_pushes_growth_threshold_negative(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("GOVERNOR_MEM_SOFT", "0.10")
+        monkeypatch.setenv("GOVERNOR_GROW_BAND", "0.50")
+        importlib.reload(policy_mod)
+
+        assert policy_mod.MEM_SOFT - policy_mod.GROW_BAND >= 0.0
+
+    def test_module_reload_without_overrides_restores_original_defaults(self) -> None:
+        importlib.reload(policy_mod)
+
+        assert policy_mod.MEM_SOFT == 0.75
+        assert policy_mod.MEM_HARD == 0.85
+        assert policy_mod.GROW_BAND == 0.05
+
+    def test_raised_mem_soft_permits_growth_at_a_pressure_that_would_otherwise_shrink_forever(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end: a deployment with a persistent ~78% baseline (e.g. a
+        co-located idle Docling process) can raise GOVERNOR_MEM_SOFT so the
+        governor stops shrinking every interval despite idle CPU."""
+        monkeypatch.setenv("GOVERNOR_MEM_SOFT", "0.85")
+        monkeypatch.setenv("GOVERNOR_MEM_HARD", "0.95")
+        importlib.reload(policy_mod)
+
+        ceilings = Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)
+        limits = policy_mod.warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        # 78% raw pressure on a large-enough container that plenty of
+        # *absolute* free memory remains for HEAVY_PARSE's own per-slot
+        # budget (_target_for) — isolating the MEM_SOFT/GROW_BAND effect
+        # from that separate, unrelated constraint. With the original
+        # MEM_SOFT=0.75 this pressure would have forced a shrink every
+        # interval; with the overridden 0.85 it reads as healthy.
+        snap = _snapshot(
+            cpu_quota=8.0, cpu_utilisation=0.1,
+            mem_limit_bytes=64 * 1024 ** 3, mem_working_set_bytes=int(0.78 * 64 * 1024 ** 3),
+        )
+        before = limits.get(Pool.HEAVY_PARSE)
+
+        now = 0.0
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = policy_mod.next_limits(limits, snap, ceilings, state, demand, now=now, interval=INTERVAL)
+            now += INTERVAL
+
+        assert limits.get(Pool.HEAVY_PARSE) > before

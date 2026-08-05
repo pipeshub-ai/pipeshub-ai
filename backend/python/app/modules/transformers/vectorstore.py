@@ -14,6 +14,7 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import os
 import re
 import time
 import uuid
@@ -56,7 +57,12 @@ from app.utils.llm import get_llm
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
-_DEFAULT_CONCURRENCY_LIMIT = 5
+# Bounds concurrent remote-embedding batch calls per record (the local-CPU
+# path is sequential and unaffected — see use_local_sequential below).
+# Tunable via EMBEDDING_BATCH_CONCURRENCY since it interacts with
+# EMBEDDING_SERVER_MAX_CONCURRENCY: too high here just queues on the server.
+_env_batch_concurrency = os.getenv("EMBEDDING_BATCH_CONCURRENCY")
+_DEFAULT_CONCURRENCY_LIMIT = int(_env_batch_concurrency) if _env_batch_concurrency else 5
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
