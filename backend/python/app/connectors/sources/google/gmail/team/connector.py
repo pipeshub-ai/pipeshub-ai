@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -65,7 +65,6 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
-from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -89,12 +88,15 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
-# Dedicated executor capacity for this connector's blocking Google API calls.
-# Every GoogleGmailDataSource / GoogleAdminDataSource instance this connector
-# constructs (service-account and per-user impersonated alike) borrows this
-# same pool; the connector owns creation and shutdown so a large workspace
-# sync never spins up one pool per user.
-_GMAIL_TEAM_EXECUTOR_MAX_WORKERS = 4
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Cap on this connector's simultaneous borrow from the shared connector thread
+# pool. Every GoogleGmailDataSource / GoogleAdminDataSource this connector
+# constructs (service-account and per-user impersonated alike) shares the cap, so
+# a large workspace sync cannot crowd out other tenants. Six covers
+# max_concurrent_batches users, the admin data source, and streaming headroom.
+_GMAIL_TEAM_MAX_CONCURRENCY = 6
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -244,13 +246,8 @@ class GoogleGmailTeamConnector(BaseConnector):
         self.config: Optional[Dict] = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
-        # Dedicated executor for this connector's blocking Google API calls.
-        # The connector owns creation and shutdown so cleanup() can guarantee
-        # no orphaned threads.
-        self._gmail_executor = TrackedThreadPoolExecutor(
-            max_workers=_GMAIL_TEAM_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"gmail-team-{connector_id[:8]}",
-        )
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._gmail_executor: ThreadPoolLease | None = None
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -258,6 +255,8 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the Google Gmail workspace connector with service account credentials and services."""
         try:
+            self._gmail_executor = self._thread_lease(_GMAIL_TEAM_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -919,7 +918,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.info(f"Starting sync for user {user_email}")
 
             # Create user-specific Gmail client with impersonation
-            user_gmail_datasource = await self._create_user_gmail_datasource(user_email)
+            user_gmail_datasource = await self._create_user_gmail_client(user_email)
 
             # Get sync point for this user
             sync_point_key = generate_record_sync_point_key(RecordType.MAIL.value, "user", user_email)
@@ -1751,6 +1750,10 @@ class GoogleGmailTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error creating Gmail client for user {user_email}: {e}")
             raise
+
+    async def _create_user_gmail_client(self, user_email: str) -> GoogleGmailDataSource:
+        """Create a user-specific Gmail datasource for workspace operations."""
+        return await self._create_user_gmail_datasource(user_email)
 
     def _parse_gmail_headers(self, headers: List[Dict]) -> Dict[str, str]:
         """
@@ -2870,7 +2873,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             gmail_data_source = None
             if user_email:
                 try:
-                    gmail_data_source = await self._create_user_gmail_datasource(user_email)
+                    gmail_data_source = await self._create_user_gmail_client(user_email)
                     self.logger.info(f"Using user-impersonated Gmail client for {user_email}")
                 except Exception as e:
                     self.logger.error(f"Failed to create user-specific client for {user_email}: {e}")
@@ -3002,7 +3005,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.warning(f"User found but email is missing for record {record.id}")
                 return None
 
-            user_gmail_data_source = await self._create_user_gmail_datasource(user_email)
+            user_gmail_data_source = await self._create_user_gmail_client(user_email)
 
             # Route to appropriate handler based on record type
             record_type = record.record_type
@@ -3320,9 +3323,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Gmail workspace connector resources")
 
-            if hasattr(self, '_gmail_executor') and self._gmail_executor:
-                await self._gmail_executor.shutdown_and_drain()
-                self._gmail_executor = None
+            await self._release_thread_lease()
 
             # Clear data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:

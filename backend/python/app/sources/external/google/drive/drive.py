@@ -1,5 +1,5 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor
 from threading import Lock
 from typing import Any, Callable, Dict, Optional, TypeVar
 
@@ -20,13 +20,14 @@ class GoogleDriveDataSource:
         self,
         client: GoogleClient,
         *,
-        executor: Optional[ThreadPoolExecutor] = None
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with Google Drive API client.
         Args:
             client: Google Drive API client from build('drive', 'v3', credentials=credentials)
-            executor: Optional dedicated thread pool to run blocking calls on. When
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
                 omitted, falls back to the event loop's default executor.
         """
         self.client = client

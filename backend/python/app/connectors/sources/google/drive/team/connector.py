@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -68,7 +68,6 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     PLACEHOLDER_SWEEP_SAFETY_MAX,
@@ -98,11 +97,14 @@ from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
-# Dedicated executor capacity for this connector's blocking Google API calls.
-# Isolating Drive sync on its own pool means a slow/hung Google response can
-# only stall this connector's work, never the loop's shared default executor
-# (which other connectors and platform file I/O also depend on).
-_DRIVE_TEAM_EXECUTOR_MAX_WORKERS = 4
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Cap on this connector's simultaneous borrow from the shared connector thread
+# pool. Sync itself walks users one at a time (max_concurrent_batches), but
+# stream_record builds a fresh GoogleDriveDataSource per HTTP request, so
+# concurrent user downloads are genuinely parallel and must not be serialized.
+_DRIVE_TEAM_MAX_CONCURRENCY = 6
 
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
@@ -296,15 +298,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.config: Optional[Dict] = None
         logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
-        # Dedicated executor for this connector's blocking Google API calls.
-        # Every GoogleDriveDataSource / GoogleAdminDataSource instance this
-        # connector constructs (service-account and per-user impersonated
-        # alike) borrows this same pool; the connector owns creation and
-        # shutdown so a large workspace sync never spins up one pool per user.
-        self._drive_executor = TrackedThreadPoolExecutor(
-            max_workers=_DRIVE_TEAM_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"gdrive-team-{connector_id[:8]}",
-        )
+        # Acquired in init(), once the factory has injected the shared pool.
+        # Every GoogleDriveDataSource / GoogleAdminDataSource this connector
+        # constructs (service-account and per-user impersonated alike) shares the
+        # one lease, so a large workspace sync stays within its cap.
+        self._drive_executor: ThreadPoolLease | None = None
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -313,6 +311,8 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
         try:
+            self._drive_executor = self._thread_lease(_DRIVE_TEAM_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -3450,9 +3450,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Drive enterprise connector resources")
 
-            if hasattr(self, '_drive_executor') and self._drive_executor:
-                await self._drive_executor.shutdown_and_drain()
-                self._drive_executor = None
+            await self._release_thread_lease()
 
             # Clear data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:

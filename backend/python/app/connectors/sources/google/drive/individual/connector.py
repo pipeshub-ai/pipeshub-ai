@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -62,7 +62,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
-from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
@@ -94,12 +93,14 @@ from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
-# Dedicated executor capacity for this connector's blocking Google API calls.
-# Isolating this connector's work on its own pool means a slow/hung Google
-# response can only stall this connector's work, never the loop's shared
-# default executor (which other connectors and platform file I/O also
-# depend on).
-_DRIVE_INDIVIDUAL_EXECUTOR_MAX_WORKERS = 4
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Cap on this connector's simultaneous borrow from the shared connector thread
+# pool. Sync and the download paths both go through the one persistent
+# GoogleDriveDataSource, whose transport lock already serializes them to a single
+# in-flight call, so this only needs to be non-zero with a little headroom.
+_DRIVE_INDIVIDUAL_MAX_CONCURRENCY = 2
 
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
@@ -255,18 +256,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # credentials out from under each other.
         self._datasource_refresh_lock = asyncio.Lock()
 
-        # Dedicated executor for this connector's blocking Google API calls
-        # (sync via GoogleDriveDataSource, plus MediaIoBaseDownload chunk reads
-        # in the streaming/download paths below). The connector owns creation
-        # and shutdown so cleanup() can guarantee no orphaned threads.
-        self._drive_executor = TrackedThreadPoolExecutor(
-            max_workers=_DRIVE_INDIVIDUAL_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"gdrive-individual-{connector_id[:8]}",
-        )
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._drive_executor: ThreadPoolLease | None = None
 
     async def init(self) -> bool:
         """Initialize the Google Drive connector with credentials and services."""
         try:
+            self._drive_executor = self._thread_lease(_DRIVE_INDIVIDUAL_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -1754,9 +1751,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Drive connector resources")
 
-            if hasattr(self, '_drive_executor') and self._drive_executor:
-                await self._drive_executor.shutdown_and_drain()
-                self._drive_executor = None
+            await self._release_thread_lease()
 
             # Clear client and data source references
             if hasattr(self, 'drive_data_source') and self.drive_data_source:

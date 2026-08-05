@@ -7,7 +7,7 @@ import tempfile
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -64,7 +64,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
-from app.connectors.sources.google.common.executor import TrackedThreadPoolExecutor
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -87,12 +86,15 @@ from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-# Dedicated executor capacity for this connector's blocking Google API calls.
-# Isolating this connector's work on its own pool means a slow/hung Google
-# response can only stall this connector's work, never the loop's shared
-# default executor (which other connectors and platform file I/O also
-# depend on).
-_GMAIL_INDIVIDUAL_EXECUTOR_MAX_WORKERS = 4
+if TYPE_CHECKING:
+    from app.connectors.core.thread_pool import ThreadPoolLease
+
+# Cap on this connector's simultaneous borrow from the shared connector thread
+# pool. Bounded so a slow/hung Google response can only stall this connector's
+# work, never other tenants'. Two covers the real peak: the persistent Gmail
+# data source (serialized by its own transport lock) plus a transient Drive data
+# source while fetching an attachment.
+_GMAIL_INDIVIDUAL_MAX_CONCURRENCY = 3
 
 
 @ConnectorBuilder("Gmail")\
@@ -221,17 +223,14 @@ class GoogleGmailIndividualConnector(BaseConnector):
         self.config: Optional[Dict] = None
         self._datasource_refresh_lock = asyncio.Lock()
 
-        # Dedicated executor for this connector's blocking Google API calls.
-        # The connector owns creation and shutdown so cleanup() can guarantee
-        # no orphaned threads.
-        self._gmail_executor = TrackedThreadPoolExecutor(
-            max_workers=_GMAIL_INDIVIDUAL_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"gmail-individual-{connector_id[:8]}",
-        )
+        # Acquired in init(), once the factory has injected the shared pool.
+        self._gmail_executor: ThreadPoolLease | None = None
 
     async def init(self) -> bool:
         """Initialize the Google Gmail connector with credentials and services."""
         try:
+            self._gmail_executor = self._thread_lease(_GMAIL_INDIVIDUAL_MAX_CONCURRENCY)
+
             # Load connector config
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config"
@@ -2447,9 +2446,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         try:
             self.logger.info("Cleaning up Google Gmail connector resources")
 
-            if hasattr(self, '_gmail_executor') and self._gmail_executor:
-                await self._gmail_executor.shutdown_and_drain()
-                self._gmail_executor = None
+            await self._release_thread_lease()
 
             # Clear client and data source references
             if hasattr(self, 'gmail_data_source') and self.gmail_data_source:

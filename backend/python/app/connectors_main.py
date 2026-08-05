@@ -34,6 +34,10 @@ from app.connectors.core.registry.connector_registry import (
 )
 from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.thread_pool import (
+    SharedConnectorThreadPool,
+    get_shared_connector_thread_pool,
+)
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
 from app.containers.connector import (
@@ -45,6 +49,7 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
+from app.telemetry.modules.thread_pool_metrics import set_connector_thread_pool
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -369,6 +374,15 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
 
+        # Last, and the only place the shared pool is ever shut down — connector
+        # cleanup() only drains its own lease, since other connectors share this.
+        thread_pool = getattr(container, "connector_thread_pool", None)
+        if thread_pool is not None:
+            try:
+                thread_pool.shutdown(wait=False)
+            except Exception as e:
+                logger.warning(f"Error shutting down connector thread pool: {e}")
+
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:
@@ -389,6 +403,22 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
             raise
         except Exception as e:
             logger.warning(f"Failed to refresh connector_active gauge: {e}")
+        await asyncio.sleep(interval_s)
+
+
+async def refresh_thread_pool_metrics(
+    pool: SharedConnectorThreadPool,
+    logger: logging.Logger,
+    interval_s: int = 30,
+) -> None:
+    """Periodically publish shared thread pool utilisation; never fatal."""
+    while True:
+        try:
+            set_connector_thread_pool(pool.snapshot())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to refresh connector thread pool gauges: {e}")
         await asyncio.sleep(interval_s)
 
 
@@ -427,6 +457,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.connector_metrics_task = asyncio.create_task(
         refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
+    )
+
+    # Every connector's blocking vendor-SDK calls run here, each through a capped
+    # lease. Created before _post_startup so resume_sync_services and the event
+    # service both find it already on the container.
+    app_container.connector_thread_pool = get_shared_connector_thread_pool()
+    logger.info(
+        "✅ Shared connector thread pool ready (max_workers=%d)",
+        app_container.connector_thread_pool.max_workers,
+    )
+    app.state.thread_pool_metrics_task = asyncio.create_task(
+        refresh_thread_pool_metrics(
+            app_container.connector_thread_pool, logger, interval_s=30
+        ),
+        name="thread_pool_metrics_refresh",
     )
 
     # Start token refresh service at app startup (database-agnostic)
@@ -501,13 +546,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
-    if connector_metrics_task is not None and not connector_metrics_task.done():
-        connector_metrics_task.cancel()
-        try:
-            await connector_metrics_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task_name in ("connector_metrics_task", "thread_pool_metrics_task"):
+        metrics_task = getattr(app.state, task_name, None)
+        if metrics_task is not None and not metrics_task.done():
+            metrics_task.cancel()
+            try:
+                await metrics_task
+            except (asyncio.CancelledError, Exception):
+                pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     # Shutdown all container resources

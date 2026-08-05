@@ -458,7 +458,7 @@ Generated from Google Discovery API schema definitions.
         
         # Generate class header
         class_code = f'''import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -478,13 +478,14 @@ class {class_name}:
         self,
         client: object,
         *,
-        executor: Optional[ThreadPoolExecutor] = None
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with {service_description} client.
         Args:
             client: {service_description} client from build('{self.service_name}', '{self.version}', credentials=credentials)
-            executor: Optional dedicated thread pool to run blocking calls on. When
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
                 omitted, falls back to the event loop's default executor.
         """
         self.client = client
