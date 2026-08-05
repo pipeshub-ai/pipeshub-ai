@@ -14,7 +14,6 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
-import re
 import time
 import uuid
 from typing import Any, List, Optional
@@ -33,11 +32,14 @@ from app.exceptions.indexing_exceptions import (
     MetadataProcessingError,
     VectorStoreError,
 )
-from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.models.blocks import Block, BlockType, BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.embeddings.multimodal.config import MultimodalProviderConfig
+from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
+from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
@@ -51,6 +53,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.image_utils import normalize_image_to_base64
 from app.utils.llm import get_llm
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
@@ -161,6 +164,7 @@ def _build_text_documents(
             "blockIndex": block.index,
             "orgId": org_id,
             "isBlockGroup": False,
+            "blockType": BlockType.TEXT.value,
         }
 
         if len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
@@ -222,10 +226,12 @@ class VectorStore(Transformer):
         self.api_key = None
         self.model_name = None
         self.embedding_provider = None
+        self.embedding_size: Optional[int] = None
         self.is_multimodal_embedding = False
         self.region_name = None
         self.aws_access_key_id = None
         self.aws_secret_access_key = None
+        self.base_url: Optional[str] = None
 
         self._capabilities = self.vector_db_service.get_capabilities()
 
@@ -331,6 +337,7 @@ class VectorStore(Transformer):
             "isBlockGroup": False,
             "isBlock": False,
             "isRecordSummary": True,
+            "blockType": BlockType.RECORD_SUMMARY.value,
         }
         return Document(page_content=summary, metadata=metadata)
 
@@ -355,29 +362,36 @@ class VectorStore(Transformer):
     # Image helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _image_block_description(block: Block) -> str:
+        """Best-effort human-readable text for an image block's vector payload.
+
+        Image ``page_content`` must never hold the raw base64 data URI — it is
+        useless for lexical/BM25 search, bloats point payloads, and can leak
+        image bytes into DB text indexes. Prefer caption/footnote/annotation
+        metadata captured by parsers (e.g. markdown/HTML alt text); fall back
+        to an empty string when no textual description exists. The base64 URI
+        itself always remains recoverable from blob storage via blockId.
+        """
+        image_metadata = getattr(block, "image_metadata", None)
+        if image_metadata is None:
+            return ""
+        parts: List[str] = []
+        for field in ("captions", "footnotes", "annotations"):
+            values = getattr(image_metadata, field, None)
+            if values:
+                parts.extend(v for v in values if v)
+        return " ".join(parts).strip()
+
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
-        try:
-            if not image_uri or not isinstance(image_uri, str):
-                return None
-            uri = image_uri.strip()
-            if uri.startswith("data:"):
-                comma_index = uri.find(",")
-                if comma_index == -1:
-                    return None
-                b64_part = uri[comma_index + 1:].strip()
-                missing = (-len(b64_part)) % 4
-                if missing:
-                    b64_part += "=" * missing
-                return b64_part
-            candidate = uri.replace("\n", "").replace("\r", "").replace(" ", "")
-            if not re.fullmatch(r"[A-Za-z0-9+/=_-]+", candidate):
-                return None
-            missing = (-len(candidate)) % 4
-            if missing:
-                candidate += "=" * missing
-            return candidate
-        except Exception:
-            return None
+        """Delegates to the shared ``app.utils.image_utils`` helper.
+
+        Kept as an instance method (rather than removed) since it is part of
+        this class's existing public-ish surface and covered by tests; the
+        actual parsing logic lives in one place shared with the multimodal
+        embedding providers.
+        """
+        return normalize_image_to_base64(image_uri)
     async def index_record_summary(
         self,
         record_id: str,
@@ -555,6 +569,7 @@ class VectorStore(Transformer):
 
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
+        self.embedding_size = embedding_size
         self.api_key = (
             configuration.get("apiKey") if configuration and "apiKey" in configuration else None
         )
@@ -562,6 +577,9 @@ class VectorStore(Transformer):
         self.region_name = (
             configuration.get("region") if configuration else None
         )
+        # Ollama / OpenAI-compatible / LM Studio multimodal providers need the
+        # configured endpoint to reach the right server.
+        self.base_url = configuration.get("endpoint") if configuration else None
         if provider == EmbeddingProvider.AWS_BEDROCK.value and configuration:
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
@@ -655,225 +673,76 @@ class VectorStore(Transformer):
             raise EmbeddingError(f"Failed to delete embeddings: {e}")
 
     # ------------------------------------------------------------------
-    # Image embedding helpers (provider-specific)
+    # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
     # ------------------------------------------------------------------
 
-    async def _process_image_embeddings_cohere(
-        self, image_chunks: List[dict], image_base64s: List[str]
+    def _multimodal_provider_config(self) -> MultimodalProviderConfig:
+        """Build the config the factory needs from this transformer's state.
+
+        ``normalize_fn`` is bound to ``self._normalize_image_to_base64``
+        (rather than the provider defaulting to the module-level utility) so
+        tests that patch that instance method keep working unchanged even
+        though the normalisation call itself now lives inside the provider.
+        """
+        return MultimodalProviderConfig(
+            provider=self.embedding_provider,
+            api_key=self.api_key,
+            model_name=self.model_name,
+            region_name=self.region_name,
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            base_url=getattr(self, "base_url", None),
+            dense_embeddings=self.dense_embeddings,
+            normalize_fn=self._normalize_image_to_base64,
+            logger=self.logger,
+        )
+
+    def _build_image_points(
+        self, image_chunks: List[dict], results: List[ImageEmbeddingResult]
     ) -> List[VectorPoint]:
-        import cohere
+        """Zip provider results back to their source chunk and build points.
 
-        co = cohere.ClientV2(api_key=self.api_key)
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def embed_single(i: int, image_base64: str) -> Optional[VectorPoint]:
-            image_input = {
-                "content": [{"type": "image_url", "image_url": {"url": image_base64}}]
-            }
-            try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: co.embed(
-                        model=self.model_name,
-                        input_type="image",
-                        embedding_types=["float"],
-                        inputs=[image_input],
-                    ),
+        Skips any index that errored or came back without an embedding —
+        provider implementations always return one result per input index
+        (never raise), so this is the single place that decides what
+        "failed to embed" means for indexing purposes. Also skips any result
+        whose dimension doesn't match the collection: mixing dimensions in
+        one collection makes cosine similarity meaningless and some vector
+        DBs would otherwise reject the whole upsert batch over one bad point.
+        """
+        points: List[VectorPoint] = []
+        for result in results:
+            if result.embedding is None:
+                if result.error:
+                    self.logger.warning(
+                        f"Image embedding failed for index {result.index}: {result.error}"
+                    )
+                continue
+            if self.embedding_size is not None and len(result.embedding) != self.embedding_size:
+                self.logger.error(
+                    f"Image embedding dimension mismatch for index {result.index}: "
+                    f"got {len(result.embedding)}, expected {self.embedding_size}. Skipping point."
                 )
-                chunk = image_chunks[i]
-                embedding = response.embeddings.float[0]
-                return VectorPoint(
+                continue
+            chunk = image_chunks[result.index]
+            points.append(
+                VectorPoint(
                     id=str(uuid.uuid4()),
-                    dense_vector=embedding,
+                    dense_vector=result.embedding,
                     payload={
                         "metadata": chunk.get("metadata", {}),
-                        "page_content": chunk.get("image_uri", ""),
+                        # Never the raw base64 URI — useless for lexical search and
+                        # bloats payloads. The URI stays recoverable via blockId.
+                        "page_content": chunk.get("description", ""),
                     },
                 )
-            except Exception as e:
-                if "image size must be at most" in str(e):
-                    self.logger.warning(f"Skipping image {i}: {e}")
-                    return None
-                raise
-
-        async def limited(i, b64):
-            async with semaphore:
-                return await embed_single(i, b64)
-
-        results = await asyncio.gather(
-            *[limited(i, b64) for i, b64 in enumerate(image_base64s)],
-            return_exceptions=True,
-        )
-        return [r for r in results if isinstance(r, VectorPoint)]
-
-    async def _process_image_embeddings_voyage(
-        self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[VectorPoint]:
-        batch_size = getattr(self.dense_embeddings, "batch_size", 7)
-        concurrency_limit = 5
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def process_batch(batch_start: int, batch_imgs: List[str]) -> List[VectorPoint]:
-            async with semaphore:
-                try:
-                    embeddings = await self.dense_embeddings.aembed_documents(batch_imgs)
-                    return [
-                        VectorPoint(
-                            id=str(uuid.uuid4()),
-                            dense_vector=embedding,
-                            payload={
-                                "metadata": image_chunks[batch_start + i].get("metadata", {}),
-                                "page_content": image_chunks[batch_start + i].get("image_uri", ""),
-                            },
-                        )
-                        for i, embedding in enumerate(embeddings)
-                    ]
-                except Exception as e:
-                    self.logger.warning(f"Voyage batch {batch_start} failed: {e}")
-                    return []
-
-        batches = [
-            (start, image_base64s[start:start + batch_size])
-            for start in range(0, len(image_base64s), batch_size)
-        ]
-        results = await asyncio.gather(*[process_batch(s, imgs) for s, imgs in batches])
-        points: List[VectorPoint] = []
-        for r in results:
-            if isinstance(r, list):
-                points.extend(r)
-        return points
-
-    async def _process_image_embeddings_bedrock(
-        self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[VectorPoint]:
-        import json
-
-        import boto3
-        from botocore.exceptions import ClientError, NoCredentialsError
-
-        client_kwargs: dict = {"service_name": "bedrock-runtime"}
-        if self.aws_access_key_id and self.aws_secret_access_key and self.region_name:
-            client_kwargs.update(
-                {
-                    "aws_access_key_id": self.aws_access_key_id,
-                    "aws_secret_access_key": self.aws_secret_access_key,
-                    "region_name": self.region_name,
-                }
             )
-        try:
-            bedrock = boto3.client(**client_kwargs)
-        except NoCredentialsError as e:
-            raise EmbeddingError("AWS credentials not found for Bedrock image embeddings.") from e
-
-        concurrency_limit = 10
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def embed_single(i: int, image_ref: str) -> Optional[VectorPoint]:
-            normalized = await self._normalize_image_to_base64(image_ref)
-            if not normalized:
-                return None
-            try:
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: bedrock.invoke_model(
-                        modelId=self.model_name,
-                        body=json.dumps({
-                            "inputImage": normalized,
-                            "embeddingConfig": {"outputEmbeddingLength": 1024},
-                        }),
-                        contentType="application/json",
-                        accept="application/json",
-                    ),
-                )
-                body = json.loads(response["body"].read())
-                return VectorPoint(
-                    id=str(uuid.uuid4()),
-                    dense_vector=body["embedding"],
-                    payload={
-                        "metadata": image_chunks[i].get("metadata", {}),
-                        "page_content": image_chunks[i].get("image_uri", ""),
-                    },
-                )
-            except (NoCredentialsError, ClientError) as e:
-                self.logger.warning(f"Bedrock embed failed for index {i}: {e}")
-                return None
-
-        async def limited(i, ref):
-            async with semaphore:
-                return await embed_single(i, ref)
-
-        results = await asyncio.gather(
-            *[limited(i, ref) for i, ref in enumerate(image_base64s)],
-            return_exceptions=True,
-        )
-        return [r for r in results if isinstance(r, VectorPoint)]
-
-    async def _process_image_embeddings_jina(
-        self, image_chunks: List[dict], image_base64s: List[str]
-    ) -> List[VectorPoint]:
-        batch_size = 32
-        concurrency_limit = 5
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def process_batch(
-            client: httpx.AsyncClient, batch_start: int, batch_imgs: List[str]
-        ) -> List[VectorPoint]:
-            async with semaphore:
-                try:
-                    normalized = await asyncio.gather(
-                        *[self._normalize_image_to_base64(img) for img in batch_imgs]
-                    )
-                    valid = [(batch_start + j, n) for j, n in enumerate(normalized) if n]
-                    if not valid:
-                        return []
-                    resp = await client.post(
-                        "https://api.jina.ai/v1/embeddings",
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {self.api_key}",
-                        },
-                        json={
-                            "model": self.model_name,
-                            "input": [{"image": n} for _, n in valid],
-                        },
-                    )
-                    data = resp.json().get("data", [])
-                    return [
-                        VectorPoint(
-                            id=str(uuid.uuid4()),
-                            dense_vector=item["embedding"],
-                            payload={
-                                "metadata": image_chunks[valid[i][0]].get("metadata", {}),
-                                "page_content": image_chunks[valid[i][0]].get("image_uri", ""),
-                            },
-                        )
-                        for i, item in enumerate(data)
-                    ]
-                except Exception as e:
-                    self.logger.warning(f"Jina batch {batch_start} failed: {e}")
-                    return []
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            batches = [
-                (start, image_base64s[start:start + batch_size])
-                for start in range(0, len(image_base64s), batch_size)
-            ]
-            results = await asyncio.gather(
-                *[process_batch(client, s, imgs) for s, imgs in batches]
-            )
-        points: List[VectorPoint] = []
-        for r in results:
-            if isinstance(r, list):
-                points.extend(r)
         return points
 
     async def _process_image_embeddings(
         self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
     ) -> List[VectorPoint]:
-        """Process image embeddings based on the configured provider.
+        """Embed images via the provider the factory resolves for this config.
 
         Guard: skip entirely if the record was deleted mid-flight.
         """
@@ -886,19 +755,18 @@ class VectorStore(Transformer):
             )
             return []
 
-        if self.embedding_provider == EmbeddingProvider.COHERE.value:
-            return await self._process_image_embeddings_cohere(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
-            return await self._process_image_embeddings_voyage(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
-            return await self._process_image_embeddings_bedrock(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
-            return await self._process_image_embeddings_jina(image_chunks, image_base64s)
-        else:
+        if not image_base64s:
+            return []
+
+        provider = MultimodalEmbeddingFactory.create(self._multimodal_provider_config())
+        if provider is None or not provider.supports_multimodal():
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
             )
             return []
+
+        results = await provider.embed_images(image_base64s)
+        return self._build_image_points(image_chunks, results)
 
     async def _store_image_points(self, points: List[VectorPoint]) -> None:
         if not points:
@@ -1223,6 +1091,7 @@ class VectorStore(Transformer):
                                 documents_to_embed.append(
                                     {
                                         "image_uri": block.data.get("uri"),
+                                        "description": self._image_block_description(block),
                                         "metadata": {
                                             "virtualRecordId": virtual_record_id,
                                             "blockId": block.id,
@@ -1230,6 +1099,8 @@ class VectorStore(Transformer):
                                             "orgId": org_id,
                                             "isBlock": True,
                                             "isBlockGroup": False,
+                                            "blockType": BlockType.IMAGE.value,
+                                            "isImage": True,
                                         },
                                     }
                                 )
@@ -1247,6 +1118,8 @@ class VectorStore(Transformer):
                                                 "orgId": org_id,
                                                 "isBlock": True,
                                                 "isBlockGroup": False,
+                                                "blockType": BlockType.IMAGE.value,
+                                                "isImage": True,
                                             },
                                         )
                                     )
@@ -1282,6 +1155,7 @@ class VectorStore(Transformer):
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
+                        "blockType": sub_type,
                     }
 
                     if sub_type == "sql_table":
@@ -1360,6 +1234,7 @@ class VectorStore(Transformer):
                                         "orgId": org_id,
                                         "isBlock": False,
                                         "isBlockGroup": True,
+                                        "blockType": BlockType.TABLE.value,
                                     },
                                 )
                             )
@@ -1379,6 +1254,7 @@ class VectorStore(Transformer):
                                 "orgId": org_id,
                                 "isBlock": True,
                                 "isBlockGroup": False,
+                                "blockType": BlockType.TABLE_ROW.value,
                             },
                         )
                     )
@@ -1407,6 +1283,7 @@ class VectorStore(Transformer):
                                         "orgId": org_id,
                                         "isBlock": False,
                                         "isBlockGroup": True,
+                                        "blockType": BlockType.TABLE.value,
                                     },
                                 )
                             )
@@ -1424,6 +1301,7 @@ class VectorStore(Transformer):
                                         "orgId": org_id,
                                         "isBlock": True,
                                         "isBlockGroup": False,
+                                        "blockType": BlockType.TABLE_ROW.value,
                                     },
                                 )
                             )

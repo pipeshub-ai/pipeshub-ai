@@ -328,6 +328,35 @@ class TestGetEmbeddingModelInstance:
             result = await vs.get_embedding_model_instance()
 
         assert result is True
+        # embedding_size must be captured so image points can be validated
+        # against the collection's dimension before upsert.
+        assert vs.embedding_size == 1536
+
+    @pytest.mark.asyncio
+    async def test_captures_base_url_for_local_endpoints(self):
+        """Ollama / LM Studio / OpenAI-compatible multimodal providers need
+        the configured endpoint on the instance to reach the right server."""
+        vs = _make_vectorstore()
+
+        config = {
+            "provider": "ollama",
+            "configuration": {"endpoint": "http://localhost:11434", "model": "nomic-embed-text"},
+            "isDefault": True,
+            "isMultimodal": True,
+        }
+        vs.config_service.get_config = AsyncMock(return_value={
+            "embedding": [config],
+        })
+        vs._initialize_collection = AsyncMock()
+
+        mock_embed = MagicMock()
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)
+        mock_embed.model_name = "nomic-embed-text"
+
+        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+            await vs.get_embedding_model_instance()
+
+        assert vs.base_url == "http://localhost:11434"
 
     @pytest.mark.asyncio
     async def test_embed_query_failure_raises(self):
@@ -529,313 +558,6 @@ class TestCleanupOrphanedEmbeddings:
 
 
 # ===================================================================
-# _process_image_embeddings (dispatch)
-# ===================================================================
-
-class TestProcessImageEmbeddings:
-    """Tests for VectorStore._process_image_embeddings dispatch."""
-
-    @pytest.mark.asyncio
-    async def test_unsupported_provider_returns_empty(self):
-        """Unsupported provider returns empty list."""
-        vs = _make_vectorstore()
-        vs.embedding_provider = "UNSUPPORTED_PROVIDER"
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-
-        result = await vs._process_image_embeddings([], [], "rec-1")
-
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_record_not_found_skips_embedding(self):
-        """Skips image embedding when record is not found in graph database."""
-        from app.utils.aimodels import EmbeddingProvider
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.COHERE.value
-        vs.graph_provider.get_document = AsyncMock(return_value=None)
-        vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
-
-        result = await vs._process_image_embeddings(
-            [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
-        )
-
-        vs.graph_provider.get_document.assert_awaited_once()
-        vs._process_image_embeddings_cohere.assert_not_awaited()
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_cohere_dispatch(self):
-        """Cohere provider dispatches to _process_image_embeddings_cohere."""
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.COHERE.value
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
-
-        await vs._process_image_embeddings([], [], "rec-1")
-
-        vs._process_image_embeddings_cohere.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_voyage_dispatch(self):
-        """Voyage provider dispatches to _process_image_embeddings_voyage."""
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.VOYAGE.value
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
-
-        await vs._process_image_embeddings([], [], "rec-1")
-
-        vs._process_image_embeddings_voyage.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_bedrock_dispatch(self):
-        """AWS Bedrock dispatches to _process_image_embeddings_bedrock."""
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.AWS_BEDROCK.value
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
-
-        await vs._process_image_embeddings([], [], "rec-1")
-
-        vs._process_image_embeddings_bedrock.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_jina_dispatch(self):
-        """Jina AI dispatches to _process_image_embeddings_jina."""
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.JINA_AI.value
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_jina = AsyncMock(return_value=[])
-
-        await vs._process_image_embeddings([], [], "rec-1")
-
-        vs._process_image_embeddings_jina.assert_awaited_once()
-
-
-# ===================================================================
-# _store_image_points
-# ===================================================================
-
-class TestStoreImagePoints:
-    """Tests for VectorStore._store_image_points."""
-
-    @pytest.mark.asyncio
-    async def test_stores_points(self):
-        """Stores points in vector DB."""
-        vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = AsyncMock()
-
-        mock_point = MagicMock()
-        await vs._store_image_points([mock_point])
-
-        vs.vector_db_service.upsert_points.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_empty_points_logs(self):
-        """Empty points list logs but doesn't upsert."""
-        vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = AsyncMock()
-
-        await vs._store_image_points([])
-
-        vs.vector_db_service.upsert_points.assert_not_awaited()
-        vs.logger.info.assert_called()
-
-
-# ===================================================================
-# _is_local_cpu_embedding
-# ===================================================================
-
-class TestIsLocalCpuEmbedding:
-    """Tests for VectorStore._is_local_cpu_embedding."""
-
-    def test_none_provider_is_local(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = None
-        assert vs._is_local_cpu_embedding() is True
-
-    def test_default_provider_is_local(self):
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.DEFAULT.value
-        assert vs._is_local_cpu_embedding() is True
-
-    def test_sentence_transformers_is_local(self):
-        from app.utils.aimodels import EmbeddingProvider
-        vs = _make_vectorstore()
-        vs.embedding_provider = EmbeddingProvider.SENTENCE_TRANSFOMERS.value
-        assert vs._is_local_cpu_embedding() is True
-
-    def test_openai_is_not_local(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = "openai"
-        assert vs._is_local_cpu_embedding() is False
-
-
-# ===================================================================
-# _process_document_chunks
-# ===================================================================
-
-class TestProcessDocumentChunks:
-    """Tests for VectorStore._process_document_chunks."""
-
-    @pytest.mark.asyncio
-    async def test_local_sequential_processing(self):
-        """Local CPU embedding uses sequential processing."""
-        from langchain_core.documents import Document
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = None  # local
-        vs._embed_and_upsert_documents = AsyncMock()
-
-        chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "rec-1")
-
-        vs._embed_and_upsert_documents.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_remote_concurrent_processing(self):
-        """Remote embedding uses concurrent processing."""
-        from langchain_core.documents import Document
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = "openai"
-        vs._embed_and_upsert_documents = AsyncMock()
-
-        chunks = [Document(page_content=f"test {i}", metadata={}) for i in range(5)]
-        await vs._process_document_chunks(chunks, "rec-1")
-
-        vs._embed_and_upsert_documents.assert_awaited()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found_skips_embedding(self):
-        """Skips embedding when record is not found in graph database."""
-        from langchain_core.documents import Document
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = None
-        # Don't mock _embed_and_upsert_documents so real implementation runs
-        vs.graph_provider.get_document = AsyncMock(return_value=None)
-
-        chunks = [Document(page_content="test", metadata={})]
-        await vs._process_document_chunks(chunks, "rec-1")
-
-        vs.graph_provider.get_document.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_local_batch_failure_raises(self):
-        """Raises VectorStoreError when local batch fails."""
-        from langchain_core.documents import Document
-        from app.exceptions.indexing_exceptions import VectorStoreError
-
-        vs = _make_vectorstore()
-        vs.embedding_provider = None  # local
-        vs._embed_and_upsert_documents = AsyncMock(side_effect=RuntimeError("fail"))
-
-        chunks = [Document(page_content="test", metadata={})]
-        with pytest.raises(VectorStoreError):
-            await vs._process_document_chunks(chunks, "rec-1")
-
-
-# ===================================================================
-# _create_embeddings
-# ===================================================================
-
-class TestCreateEmbeddings:
-    """Tests for VectorStore._create_embeddings."""
-
-    @pytest.mark.asyncio
-    async def test_no_chunks_raises(self):
-        """Raises EmbeddingError when no chunks provided."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
-        vs = _make_vectorstore()
-
-        with pytest.raises(EmbeddingError, match="No chunks"):
-            await vs._create_embeddings([], "rec-1", "vr-1")
-
-    @pytest.mark.asyncio
-    async def test_separates_document_and_image_chunks(self):
-        """Separates Document chunks from image dict chunks."""
-        from langchain_core.documents import Document
-
-        vs = _make_vectorstore()
-        vs.delete_embeddings = AsyncMock()
-        vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
-        vs._store_image_points = AsyncMock()
-
-        doc = Document(page_content="text", metadata={})
-        img = {"image_uri": "base64data", "metadata": {}}
-
-        await vs._create_embeddings([doc, img], "rec-1", "vr-1")
-
-        vs._process_document_chunks.assert_awaited_once()
-        vs._process_image_embeddings.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_only_documents(self):
-        """Only Document chunks are processed."""
-        from langchain_core.documents import Document
-
-        vs = _make_vectorstore()
-        vs.delete_embeddings = AsyncMock()
-        vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock()
-
-        doc = Document(page_content="text", metadata={})
-
-        await vs._create_embeddings([doc], "rec-1", "vr-1")
-
-        vs._process_document_chunks.assert_awaited_once()
-        vs._process_image_embeddings.assert_not_awaited()
-
-
-# ===================================================================
-# describe_image_async / describe_images
-# ===================================================================
-
-class TestDescribeImages:
-    """Tests for VectorStore.describe_image_async and describe_images."""
-
-    @pytest.mark.asyncio
-    async def test_describe_image_async(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content="A cat sitting on a desk")
-
-        result = await vs.describe_image_async("base64data", mock_vlm)
-        assert result == "A cat sitting on a desk"
-
-    @pytest.mark.asyncio
-    async def test_describe_images_success(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.return_value = MagicMock(content="Description")
-
-        results = await vs.describe_images(["img1", "img2"], mock_vlm)
-        assert len(results) == 2
-        assert results[0]["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_describe_images_failure(self):
-        vs = _make_vectorstore()
-        mock_vlm = AsyncMock()
-        mock_vlm.ainvoke.side_effect = RuntimeError("API error")
-
-        results = await vs.describe_images(["img1"], mock_vlm)
-        assert results[0]["success"] is False
-
-
-# ===================================================================
-# _create_custom_tokenizer
-# ===================================================================
-
-# ===================================================================
 # index_documents
 # ===================================================================
 
@@ -915,10 +637,43 @@ class TestIndexDocuments:
         chunks = vs._create_embeddings.call_args[0][0]
         # Should have image dict chunks
         assert any(isinstance(c, dict) and "image_uri" in c for c in chunks)
+        image_chunk = next(c for c in chunks if isinstance(c, dict) and "image_uri" in c)
+        assert image_chunk["metadata"]["blockType"] == "image"
+        assert image_chunk["metadata"]["isImage"] is True
+
+    @pytest.mark.asyncio
+    async def test_image_blocks_with_multimodal_embedding_carries_caption_description(self):
+        """The image chunk dict built for multimodal embedding must carry a
+        'description' derived from image_metadata.captions, so the eventual
+        VectorPoint.page_content is the caption rather than raw base64."""
+        from app.models.blocks import Block, BlocksContainer, ImageMetadata
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=True)
+        vs._create_embeddings = AsyncMock()
+
+        block = Block(
+            index=0,
+            type="image",
+            format="bin",
+            data={"uri": "base64data"},
+            comments=[],
+            image_metadata=ImageMetadata(captions=["Architecture diagram"]),
+        )
+        container = BlocksContainer(blocks=[block], block_groups=[])
+
+        with patch("app.modules.transformers.vectorstore.get_llm", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
+            await vs.index_documents(container, "org-1", "rec-1", "vr-1")
+
+        chunks = vs._create_embeddings.call_args[0][0]
+        image_chunk = next(c for c in chunks if isinstance(c, dict) and "image_uri" in c)
+        assert image_chunk["description"] == "Architecture diagram"
 
     @pytest.mark.asyncio
     async def test_image_blocks_with_multimodal_llm_describes(self):
         """Image blocks described by LLM when embedding not multimodal but LLM is."""
+        from langchain_core.documents import Document
+
         from app.models.blocks import Block, BlocksContainer
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
@@ -936,6 +691,10 @@ class TestIndexDocuments:
 
         assert result is True
         vs.describe_images.assert_awaited_once()
+        chunks = vs._create_embeddings.call_args[0][0]
+        vlm_doc = next(c for c in chunks if isinstance(c, Document) and c.page_content == "A photo")
+        assert vlm_doc.metadata["blockType"] == "image"
+        assert vlm_doc.metadata["isImage"] is True
 
     @pytest.mark.asyncio
     async def test_table_block_groups_create_summary_embeddings(self):
@@ -977,6 +736,10 @@ class TestIndexDocuments:
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
+        from langchain_core.documents import Document
+        chunks = vs._create_embeddings.call_args[0][0]
+        row_doc = next(c for c in chunks if isinstance(c, Document))
+        assert row_doc.metadata["blockType"] == "table_row"
 
     @pytest.mark.asyncio
     async def test_no_documents_after_filter_returns_true(self):
@@ -1198,6 +961,7 @@ class TestBuildTextDocuments:
         docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
         assert len(docs) == 1
         assert docs[0].metadata["isBlock"] is True
+        assert docs[0].metadata["blockType"] == "text"
 
     def test_multi_sentence_block_yields_sentences_plus_block(self):
         from app.models.blocks import Block
@@ -1528,55 +1292,84 @@ class TestGetEmbeddingModelInstance:
 # ===================================================================
 
 class TestProcessImageEmbeddings:
-    """Tests for _process_image_embeddings dispatching."""
+    """Tests for _process_image_embeddings dispatching via MultimodalEmbeddingFactory."""
 
     @pytest.mark.asyncio
-    async def test_cohere_dispatch(self):
-        """Should dispatch to Cohere handler."""
+    async def test_dispatches_to_factory_resolved_provider(self):
+        """Resolves a provider via the factory and builds points from its results."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
         vs = _make_vectorstore()
         vs.embedding_provider = "cohere"
         vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_cohere = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "rec-1")
-        vs._process_image_embeddings_cohere.assert_awaited_once()
+
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal.return_value = True
+        mock_provider.embed_images = AsyncMock(
+            return_value=[ImageEmbeddingResult(index=0, embedding=[0.1, 0.2])]
+        )
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=mock_provider,
+        ):
+            result = await vs._process_image_embeddings(
+                [{"metadata": {}, "description": ""}], ["data:image/png;base64,abc"], "rec-1"
+            )
+
+        mock_provider.embed_images.assert_awaited_once_with(["data:image/png;base64,abc"])
+        assert len(result) == 1
+        assert result[0].dense_vector == [0.1, 0.2]
 
     @pytest.mark.asyncio
-    async def test_voyage_dispatch(self):
-        """Should dispatch to Voyage handler."""
-        vs = _make_vectorstore()
-        vs.embedding_provider = "voyage"
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_voyage = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "rec-1")
-        vs._process_image_embeddings_voyage.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_bedrock_dispatch(self):
-        """Should dispatch to Bedrock handler."""
-        vs = _make_vectorstore()
-        vs.embedding_provider = "bedrock"
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_bedrock = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "rec-1")
-        vs._process_image_embeddings_bedrock.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_jina_dispatch(self):
-        """Should dispatch to Jina handler."""
-        vs = _make_vectorstore()
-        vs.embedding_provider = "jinaAI"
-        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        vs._process_image_embeddings_jina = AsyncMock(return_value=[])
-        result = await vs._process_image_embeddings([], [], "rec-1")
-        vs._process_image_embeddings_jina.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_unsupported_provider(self):
-        """Unsupported provider should return empty list."""
+    async def test_unsupported_provider_returns_empty(self):
+        """When the factory can't resolve a provider, returns empty list without erroring."""
         vs = _make_vectorstore()
         vs.embedding_provider = "unknown_provider"
         vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
-        result = await vs._process_image_embeddings([], [], "rec-1")
+
+        result = await vs._process_image_embeddings(
+            [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
+        )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_provider_that_does_not_support_multimodal_returns_empty(self):
+        """A resolved provider that reports supports_multimodal()=False (e.g. Ollama on
+        current builds) must not attempt embedding — the caller should have already
+        routed images through the VLM-description fallback instead."""
+        vs = _make_vectorstore()
+        vs.embedding_provider = "ollama"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+
+        mock_provider = MagicMock()
+        mock_provider.supports_multimodal.return_value = False
+        mock_provider.embed_images = AsyncMock()
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=mock_provider,
+        ):
+            result = await vs._process_image_embeddings(
+                [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
+            )
+
+        mock_provider.embed_images.assert_not_awaited()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_empty_image_list_short_circuits_before_factory(self):
+        vs = _make_vectorstore()
+        vs.embedding_provider = "cohere"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create"
+        ) as mock_create:
+            result = await vs._process_image_embeddings([], [], "rec-1")
+
+        mock_create.assert_not_called()
         assert result == []
 
 
@@ -1852,6 +1645,16 @@ class TestIndexDocumentsAdditional:
             result = await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
         assert result is True
+        from langchain_core.documents import Document
+        chunks = vs._create_embeddings.call_args[0][0]
+        table_summary_doc = next(
+            c for c in chunks if isinstance(c, Document) and c.page_content == "Sales data for Q1"
+        )
+        assert table_summary_doc.metadata["blockType"] == "table"
+        table_row_doc = next(
+            c for c in chunks if isinstance(c, Document) and c.page_content == "Row 1 text"
+        )
+        assert table_row_doc.metadata["blockType"] == "table_row"
 
     @pytest.mark.asyncio
     async def test_empty_blocks_returns_none(self):
@@ -1919,6 +1722,7 @@ class TestIndexDocumentsAdditional:
         assert len(summary_chunks) == 1
         assert summary_chunks[0].page_content == "Document overview"
         assert summary_chunks[0].metadata.get("blockId") == VS.record_summary_block_id("vr-1")
+        assert summary_chunks[0].metadata.get("blockType") == "record_summary"
 
     @pytest.mark.asyncio
     async def test_embedding_model_instance_failure(self):
@@ -1985,244 +1789,257 @@ class TestIndexDocumentsAdditional:
 
 
 # ===================================================================
-# _process_image_embeddings_cohere (lines 428-490)
+# _image_block_description
 # ===================================================================
 
-class TestProcessImageEmbeddingsCohere:
-    """Tests for VectorStore._process_image_embeddings_cohere."""
+class TestImageBlockDescription:
+    """Tests for VectorStore._image_block_description — the text derived from
+    an image block's metadata (captions/footnotes/annotations) for use as the
+    vector payload's page_content, instead of the raw base64 URI."""
 
-    @pytest.mark.asyncio
-    async def test_cohere_success(self):
-        """Cohere embedding returns PointStruct."""
+    def test_no_image_metadata_returns_empty_string(self):
+        from app.models.blocks import Block, BlockType
+        from app.modules.transformers.vectorstore import VectorStore
+
+        block = Block(index=0, type=BlockType.IMAGE, data={"uri": "data:image/png;base64,abc"})
+        assert VectorStore._image_block_description(block) == ""
+
+    def test_captions_are_joined(self):
+        from app.models.blocks import Block, BlockType, ImageMetadata
+        from app.modules.transformers.vectorstore import VectorStore
+
+        block = Block(
+            index=0,
+            type=BlockType.IMAGE,
+            data={"uri": "data:image/png;base64,abc"},
+            image_metadata=ImageMetadata(captions=["Figure 1", "Network topology"]),
+        )
+        assert VectorStore._image_block_description(block) == "Figure 1 Network topology"
+
+    def test_empty_captions_list_returns_empty_string(self):
+        from app.models.blocks import Block, BlockType, ImageMetadata
+        from app.modules.transformers.vectorstore import VectorStore
+
+        block = Block(
+            index=0,
+            type=BlockType.IMAGE,
+            data={"uri": "data:image/png;base64,abc"},
+            image_metadata=ImageMetadata(captions=[]),
+        )
+        assert VectorStore._image_block_description(block) == ""
+
+    def test_footnotes_and_annotations_included(self):
+        from app.models.blocks import Block, BlockType, ImageMetadata
+        from app.modules.transformers.vectorstore import VectorStore
+
+        block = Block(
+            index=0,
+            type=BlockType.IMAGE,
+            data={"uri": "data:image/png;base64,abc"},
+            image_metadata=ImageMetadata(
+                captions=["Caption"], footnotes=["Footnote"], annotations=["Annotation"]
+            ),
+        )
+        description = VectorStore._image_block_description(block)
+        assert "Caption" in description
+        assert "Footnote" in description
+        assert "Annotation" in description
+
+
+# ===================================================================
+# _build_image_points — zips provider ImageEmbeddingResults back to their
+# source chunk and builds VectorPoints (provider-agnostic; the individual
+# providers' own embed_images() behaviour is covered under
+# tests/unit/services/embeddings/multimodal/).
+# ===================================================================
+
+class TestBuildImagePoints:
+    """Tests for VectorStore._build_image_points."""
+
+    def test_successful_result_becomes_point(self):
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
         vs = _make_vectorstore()
-        vs.api_key = "test-key"
-        vs.model_name = "embed-v3"
+        image_chunks = [{"metadata": {"orgId": "org1"}, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
 
-        mock_response = MagicMock()
-        mock_response.embeddings.float = [[0.1, 0.2, 0.3]]
+        points = vs._build_image_points(image_chunks, results)
 
-        mock_co = MagicMock()
-        mock_co.embed.return_value = mock_response
+        assert len(points) == 1
+        assert points[0].dense_vector == [0.1, 0.2, 0.3]
+        assert points[0].payload["metadata"] == {"orgId": "org1"}
 
-        image_chunks = [{"metadata": {"orgId": "org1"}, "image_uri": "base64data"}]
-        image_base64s = ["base64data"]
+    def test_error_result_is_skipped_and_logged(self):
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 
-        with patch("cohere.ClientV2", return_value=mock_co):
-            points = await vs._process_image_embeddings_cohere(image_chunks, image_base64s)
+        vs = _make_vectorstore()
+        image_chunks = [{"metadata": {}, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, error="image size must be at most 5MB")]
+
+        points = vs._build_image_points(image_chunks, results)
+
+        assert points == []
+        vs.logger.warning.assert_called()
+
+    def test_page_content_is_never_the_raw_base64_uri(self):
+        """Image VectorPoint.page_content must never be the raw base64 URI —
+        only a text description (or empty string) — regardless of provider."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        long_base64_uri = "data:image/png;base64," + ("A" * 5000)
+        image_chunks = [{"metadata": {}, "image_uri": long_base64_uri, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
+
+        points = vs._build_image_points(image_chunks, results)
+
+        assert points[0].payload["page_content"] == ""
+        assert long_base64_uri not in points[0].payload["page_content"]
+
+    def test_page_content_uses_caption_description_when_present(self):
+        """When a chunk carries a 'description' (derived from image captions),
+        it is used as page_content instead of an empty string."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        image_chunks = [
+            {
+                "metadata": {},
+                "image_uri": "data:image/png;base64,abc",
+                "description": "Network diagram",
+            }
+        ]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
+
+        points = vs._build_image_points(image_chunks, results)
+
+        assert points[0].payload["page_content"] == "Network diagram"
+
+    def test_mixed_success_and_failure_only_returns_successful_points(self):
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        image_chunks = [
+            {"metadata": {"i": 0}, "description": ""},
+            {"metadata": {"i": 1}, "description": ""},
+            {"metadata": {"i": 2}, "description": ""},
+        ]
+        results = [
+            ImageEmbeddingResult(index=0, embedding=[0.1]),
+            ImageEmbeddingResult(index=1, error="invalid image data"),
+            ImageEmbeddingResult(index=2, embedding=[0.3]),
+        ]
+
+        points = vs._build_image_points(image_chunks, results)
+
+        assert len(points) == 2
+        assert points[0].payload["metadata"] == {"i": 0}
+        assert points[1].payload["metadata"] == {"i": 2}
+
+    def test_dimension_mismatch_is_skipped_and_logged(self):
+        """A result whose dimension doesn't match the collection's expected
+        embedding size must be dropped, not upserted with a mismatched
+        vector (which would corrupt cosine similarity for the collection)."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        vs.embedding_size = 4
+        image_chunks = [{"metadata": {}, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
+
+        points = vs._build_image_points(image_chunks, results)
+
+        assert points == []
+        vs.logger.error.assert_called()
+
+    def test_matching_dimension_is_kept(self):
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        vs.embedding_size = 3
+        image_chunks = [{"metadata": {}, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
+
+        points = vs._build_image_points(image_chunks, results)
 
         assert len(points) == 1
 
-    @pytest.mark.asyncio
-    async def test_cohere_size_limit_skipped(self):
-        """Cohere skips images that exceed size limit."""
+    def test_no_embedding_size_set_skips_validation(self):
+        """When embedding_size hasn't been resolved yet (e.g. instance not
+        fully initialised), dimension checking is skipped rather than
+        dropping every point."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
         vs = _make_vectorstore()
-        vs.api_key = "test-key"
-        vs.model_name = "embed-v3"
+        vs.embedding_size = None
+        image_chunks = [{"metadata": {}, "description": ""}]
+        results = [ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3])]
 
-        mock_co = MagicMock()
-        mock_co.embed.side_effect = Exception("image size must be at most 5MB")
+        points = vs._build_image_points(image_chunks, results)
 
-        image_chunks = [{"metadata": {}, "image_uri": "large_image"}]
-        image_base64s = ["large_image"]
-
-        with patch("cohere.ClientV2", return_value=mock_co):
-            points = await vs._process_image_embeddings_cohere(image_chunks, image_base64s)
-
-        assert len(points) == 0
-
-    @pytest.mark.asyncio
-    async def test_cohere_other_error_logged(self):
-        """Non-size-limit errors are raised."""
-        vs = _make_vectorstore()
-        vs.api_key = "test-key"
-        vs.model_name = "embed-v3"
-
-        mock_co = MagicMock()
-        mock_co.embed.side_effect = RuntimeError("API error")
-
-        image_chunks = [{"metadata": {}, "image_uri": "data"}]
-        image_base64s = ["data"]
-
-        with patch("cohere.ClientV2", return_value=mock_co):
-            points = await vs._process_image_embeddings_cohere(image_chunks, image_base64s)
-
-        # Exception result is logged as warning, returns empty
-        assert len(points) == 0
-
-
-# ===================================================================
-# _process_image_embeddings_voyage (lines 496-548)
-# ===================================================================
-
-class TestProcessImageEmbeddingsVoyage:
-    """Tests for VectorStore._process_image_embeddings_voyage."""
-
-    @pytest.mark.asyncio
-    async def test_voyage_success(self):
-        """Voyage embedding returns points."""
-        vs = _make_vectorstore()
-        vs.dense_embeddings = MagicMock()
-        vs.dense_embeddings.batch_size = 2
-        vs.dense_embeddings.aembed_documents = AsyncMock(return_value=[[0.1, 0.2]])
-
-        image_chunks = [{"metadata": {}, "image_uri": "img1"}]
-        image_base64s = ["img1"]
-
-        points = await vs._process_image_embeddings_voyage(image_chunks, image_base64s)
         assert len(points) == 1
 
-    @pytest.mark.asyncio
-    async def test_voyage_batch_failure(self):
-        """Failed batch returns empty points."""
+    def test_dimension_mismatch_among_multiple_results_only_drops_bad_one(self):
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
         vs = _make_vectorstore()
-        vs.dense_embeddings = MagicMock()
-        vs.dense_embeddings.batch_size = 2
-        vs.dense_embeddings.aembed_documents = AsyncMock(side_effect=RuntimeError("fail"))
+        vs.embedding_size = 3
+        image_chunks = [
+            {"metadata": {"i": 0}, "description": ""},
+            {"metadata": {"i": 1}, "description": ""},
+        ]
+        results = [
+            ImageEmbeddingResult(index=0, embedding=[0.1, 0.2, 0.3]),
+            ImageEmbeddingResult(index=1, embedding=[0.1, 0.2]),
+        ]
 
-        image_chunks = [{"metadata": {}, "image_uri": "img1"}]
-        image_base64s = ["img1"]
+        points = vs._build_image_points(image_chunks, results)
 
-        points = await vs._process_image_embeddings_voyage(image_chunks, image_base64s)
-        assert len(points) == 0
+        assert len(points) == 1
+        assert points[0].payload["metadata"] == {"i": 0}
 
 
 # ===================================================================
-# _process_image_embeddings_bedrock (lines 554-641)
+# _multimodal_provider_config
 # ===================================================================
 
-class TestProcessImageEmbeddingsBedrock:
-    """Tests for VectorStore._process_image_embeddings_bedrock."""
+class TestMultimodalProviderConfig:
+    """Tests for VectorStore._multimodal_provider_config."""
 
-    @pytest.mark.asyncio
-    async def test_bedrock_success(self):
-        """Bedrock embedding returns points."""
-        import json
+    def test_builds_config_from_instance_state(self):
         vs = _make_vectorstore()
-        vs.aws_access_key_id = "AKID"
-        vs.aws_secret_access_key = "secret"
+        vs.embedding_provider = "cohere"
+        vs.api_key = "key"
+        vs.model_name = "embed-v4.0"
         vs.region_name = "us-east-1"
-        vs.model_name = "amazon.titan-embed-image-v1"
-
-        mock_body = MagicMock()
-        mock_body.read.return_value = json.dumps({"embedding": [0.1, 0.2]}).encode()
-
-        mock_client = MagicMock()
-        mock_client.invoke_model.return_value = {"body": mock_body}
-
-        image_chunks = [{"metadata": {}, "image_uri": "img"}]
-        image_base64s = ["aW1hZ2U="]  # valid base64
-
-        with patch("boto3.client", return_value=mock_client):
-            points = await vs._process_image_embeddings_bedrock(image_chunks, image_base64s)
-
-        assert len(points) == 1
-
-    @pytest.mark.asyncio
-    async def test_bedrock_no_credentials(self):
-        """No credentials raises EmbeddingError."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
-        vs = _make_vectorstore()
-        vs.aws_access_key_id = None
-        vs.aws_secret_access_key = None
-        vs.region_name = None
-
-        from botocore.exceptions import NoCredentialsError
-        with patch("boto3.client", side_effect=NoCredentialsError()):
-            with pytest.raises(EmbeddingError, match="AWS credentials"):
-                await vs._process_image_embeddings_bedrock([], [])
-
-    @pytest.mark.asyncio
-    async def test_bedrock_invalid_image_skipped(self):
-        """Invalid base64 images are skipped."""
-        vs = _make_vectorstore()
-        vs.aws_access_key_id = "AKID"
+        vs.aws_access_key_id = "akid"
         vs.aws_secret_access_key = "secret"
-        vs.region_name = "us-east-1"
-        vs.model_name = "titan"
+        vs.dense_embeddings = MagicMock()
 
-        image_chunks = [{"metadata": {}, "image_uri": "img"}]
-        image_base64s = ["not!valid@base64#"]  # invalid
+        config = vs._multimodal_provider_config()
 
-        mock_client = MagicMock()
-        with patch("boto3.client", return_value=mock_client):
-            points = await vs._process_image_embeddings_bedrock(image_chunks, image_base64s)
-
-        assert len(points) == 0
-
-
-# ===================================================================
-# _process_image_embeddings_jina (lines 648-736)
-# ===================================================================
-
-class TestProcessImageEmbeddingsJina:
-    """Tests for VectorStore._process_image_embeddings_jina."""
+        assert config.provider == "cohere"
+        assert config.api_key == "key"
+        assert config.model_name == "embed-v4.0"
+        assert config.region_name == "us-east-1"
+        assert config.aws_access_key_id == "akid"
+        assert config.aws_secret_access_key == "secret"
+        assert config.dense_embeddings is vs.dense_embeddings
+        assert config.logger is vs.logger
 
     @pytest.mark.asyncio
-    async def test_jina_success(self):
-        """Jina AI embedding returns points."""
+    async def test_normalize_fn_is_bound_to_instance_method(self):
+        """The injected normalize_fn must be the VectorStore's own instance
+        method so tests (and callers) that patch it keep working even though
+        normalisation now happens inside the provider classes."""
         vs = _make_vectorstore()
-        vs.api_key = "jina-key"
-        vs.model_name = "jina-clip-v1"
+        vs._normalize_image_to_base64 = AsyncMock(return_value="patched-value")
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": [{"embedding": [0.1, 0.2]}]
-        }
+        config = vs._multimodal_provider_config()
+        result = await config.normalize_fn("anything")
 
-        image_chunks = [{"metadata": {}, "image_uri": "img"}]
-        image_base64s = ["aW1hZ2U="]  # valid base64
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            points = await vs._process_image_embeddings_jina(image_chunks, image_base64s)
-
-        assert len(points) == 1
-
-    @pytest.mark.asyncio
-    async def test_jina_batch_failure(self):
-        """Failed Jina batch returns empty."""
-        vs = _make_vectorstore()
-        vs.api_key = "jina-key"
-        vs.model_name = "jina-clip-v1"
-
-        image_chunks = [{"metadata": {}, "image_uri": "img"}]
-        image_base64s = ["aW1hZ2U="]
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.side_effect = RuntimeError("API error")
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            points = await vs._process_image_embeddings_jina(image_chunks, image_base64s)
-
-        assert len(points) == 0
-
-    @pytest.mark.asyncio
-    async def test_jina_invalid_images_filtered(self):
-        """Invalid base64 images are filtered out."""
-        vs = _make_vectorstore()
-        vs.api_key = "jina-key"
-        vs.model_name = "jina-clip-v1"
-
-        image_chunks = [{"metadata": {}, "image_uri": "img"}]
-        image_base64s = ["not!valid@base64#"]
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
-            points = await vs._process_image_embeddings_jina(image_chunks, image_base64s)
-
-        assert len(points) == 0
+        assert result == "patched-value"
+        vs._normalize_image_to_base64.assert_awaited_once_with("anything")
 
 
 # ===================================================================

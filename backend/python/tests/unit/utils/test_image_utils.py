@@ -15,8 +15,61 @@ from app.utils.image_utils import (
     get_image_info_from_url,
     get_mime_type_from_base64,
     mime_to_extension,
+    normalize_image_to_base64,
     supported_mime_types,
 )
+
+
+# ---------------------------------------------------------------------------
+# normalize_image_to_base64
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeImageToBase64:
+    def test_strips_data_uri_prefix(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64,iVBORw0KGgo=") == "iVBORw0KGgo="
+
+    def test_data_uri_without_comma_returns_none(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64") is None
+
+    def test_plain_base64_passthrough(self) -> None:
+        assert normalize_image_to_base64("aGVsbG8=") == "aGVsbG8="
+
+    def test_pads_missing_base64_padding(self) -> None:
+        result = normalize_image_to_base64("aGVsbG8")
+        assert result is not None
+        assert result.endswith("=")
+        assert len(result) % 4 == 0
+
+    def test_pads_data_uri_missing_padding(self) -> None:
+        result = normalize_image_to_base64("data:image/png;base64,AAAAA")
+        assert result.endswith("=")
+        assert len(result) % 4 == 0
+
+    def test_none_input_returns_none(self) -> None:
+        assert normalize_image_to_base64(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert normalize_image_to_base64("") is None
+
+    def test_non_string_returns_none(self) -> None:
+        assert normalize_image_to_base64(12345) is None  # type: ignore[arg-type]
+
+    def test_invalid_charset_returns_none(self) -> None:
+        assert normalize_image_to_base64("not valid base64 with spaces!@#") is None
+
+    def test_strips_whitespace_and_newlines(self) -> None:
+        result = normalize_image_to_base64("  SGVs\nbG8=  ")
+        assert result is not None
+        assert "SGVs" in result
+
+    def test_exception_during_normalization_returns_none(self) -> None:
+        """Any unexpected exception while parsing must be swallowed, not raised —
+        a single malformed image must not abort the whole batch."""
+        broken_pattern = MagicMock()
+        broken_pattern.fullmatch.side_effect = RuntimeError("regex crashed")
+        with patch("app.utils.image_utils._BASE64_CHARSET_RE", broken_pattern):
+            assert normalize_image_to_base64("some_valid_string") is None
 
 
 # ---------------------------------------------------------------------------

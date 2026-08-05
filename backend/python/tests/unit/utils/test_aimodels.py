@@ -682,6 +682,50 @@ class TestGetEmbeddingModel:
 
 
 # ---------------------------------------------------------------------------
+# Regression: GoogleGenerativeAIEmbeddings.embed_documents must return one
+# vector per input text (not a single aggregated vector for the whole batch).
+#
+# https://github.com/langchain-ai/langchain/issues/37728 —
+# `embed_documents` returned len(texts) == 1 regardless of batch size because
+# the SDK's content transformer merged a bare `list[str]` into a single
+# multi-part `Content`. Fixed in `google-genai>=1.72.0` / `t_contents_for_embed`
+# (each string becomes its own `Content`) and shipped in
+# `langchain-google-genai==4.3.2` (pinned in pyproject.toml). This test
+# exercises the real embedding class (not the factory) with a stubbed
+# `embed_content` call so a dependency downgrade or SDK regression is caught.
+# ---------------------------------------------------------------------------
+class TestGeminiEmbedDocumentsBatchCountRegression:
+    """Guards against the Gemini SDK collapsing N texts into 1 embedding."""
+
+    def test_embed_documents_returns_one_vector_per_text(self) -> None:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+        texts = ["hello world", "foo bar", "lorem ipsum"]
+
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-001",
+            google_api_key="fake-api-key",
+        )
+
+        fake_embeddings = [MagicMock(values=[float(i)] * 8) for i in range(len(texts))]
+        fake_result = MagicMock(embeddings=fake_embeddings)
+        embeddings.client = MagicMock()
+        embeddings.client.models.embed_content.return_value = fake_result
+
+        result = embeddings.embed_documents(texts)
+
+        assert len(result) == len(texts), (
+            f"Expected {len(texts)} embeddings (one per text), got {len(result)}. "
+            "This indicates the Gemini batch-embedding bug has regressed — "
+            "check google-genai / langchain-google-genai pinned versions."
+        )
+        # The SDK must receive the batch as a bare list of strings; t_contents_for_embed
+        # (google-genai>=1.72.0) is responsible for splitting it into per-text Content.
+        call_kwargs = embeddings.client.models.embed_content.call_args.kwargs
+        assert call_kwargs["contents"] == texts
+
+
+# ---------------------------------------------------------------------------
 # get_generator_model - provider branches
 # ---------------------------------------------------------------------------
 class TestGetGeneratorModel:

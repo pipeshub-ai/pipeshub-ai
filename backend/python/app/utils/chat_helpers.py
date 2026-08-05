@@ -2327,13 +2327,21 @@ def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> di
             "bounding_boxes": metadata.get("bounding_box")
         }
 
+        block_type = metadata.get("blockType","text")
+
         extension = metadata.get("extension")
-        if extension == "docx":
+        if block_type == BlockType.IMAGE.value:
+            # Image points never carry the raw base64 URI in page_content (only a
+            # text description, or empty — see VectorStore._build_image_points).
+            # Wrap as a dict with no "uri" so downstream image handling in
+            # _process_flattened_results takes its existing "missing uri" skip
+            # path instead of crashing on `str.get`.
+            data = {"uri": None, "description": page_content}
+        elif extension == "docx":
             data = page_content
         else:
             data = metadata.get("blockText",page_content)
 
-        block_type = metadata.get("blockType","text")
         # Create the Block structure
         return {
             "id": str(uuid4()),  # Generate unique ID
