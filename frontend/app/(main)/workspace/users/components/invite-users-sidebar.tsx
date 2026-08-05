@@ -302,7 +302,13 @@ export function InviteUsersSidebar({
               if (cell == null) return;
               const value = String(cell).trim();
               // 254 = max email length per RFC 5321.
-              if (value.length <= 254 && value.includes('@')) found.push(value);
+              if (
+                found.length <= MAX_IMPORT_EMAILS &&
+                value.length <= 254 &&
+                value.includes('@')
+              ) {
+                found.push(value);
+              }
             });
           });
         });
@@ -313,6 +319,14 @@ export function InviteUsersSidebar({
               'workspace.users.invite.importNoEmails',
               'No email addresses found in the file'
             )
+          );
+        }
+        if (found.length > MAX_IMPORT_EMAILS) {
+          throw new Error(
+            t('workspace.users.invite.importTooMany', {
+              defaultValue: 'File exceeds the {{max}}-user limit',
+              max: MAX_IMPORT_EMAILS,
+            })
           );
         }
 
@@ -344,10 +358,7 @@ export function InviteUsersSidebar({
           );
         }
 
-        const validTotal =
-          current.filter((tag) => tag.isValid !== false).length +
-          added.filter((tag) => tag.isValid).length;
-        if (validTotal > MAX_IMPORT_EMAILS) {
+        if (current.length + added.length > MAX_IMPORT_EMAILS) {
           throw new Error(
             t('workspace.users.invite.importTooMany', {
               defaultValue: 'File exceeds the {{max}}-user limit',
