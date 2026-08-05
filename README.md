@@ -4,7 +4,7 @@
 <a href="https://www.pipeshub.com"><img src="https://raw.githubusercontent.com/pipeshub-ai/media-assets/refs/heads/main/images/pipeshub-logo.svg" alt="PipesHub" width="280"/></a>
 
 <h3>The Open-Source Workplace AI Platform</h3>
-
+testing integration test
 <p>
   <a href="https://www.pipeshub.com/">Website</a> ·
   <a href="https://docs.pipeshub.com/">Docs</a> ·
