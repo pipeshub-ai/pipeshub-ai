@@ -882,6 +882,7 @@ export function createUserRouter(container: Container) {
         // Rebind services depending on AppConfig
         container.rebind<MailService>('MailService').toDynamicValue(() => {
           return new MailService(
+            updatedConfig,
             logger,
             container.get<MailProducer>(MailProducer),
           );
