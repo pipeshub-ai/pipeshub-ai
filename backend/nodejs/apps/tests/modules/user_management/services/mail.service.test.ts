@@ -29,7 +29,7 @@ describe('MailService', () => {
       isConnected: sinon.stub().returns(true),
     };
 
-    mailService = new MailService(mockLogger, mockMailProducer);
+    mailService = new MailService(mockConfig, mockLogger, mockMailProducer);
   });
 
   afterEach(() => {
@@ -43,6 +43,7 @@ describe('MailService', () => {
         initiator: { jwtAuthToken: 'test-token', orgId: '507f1f77bcf86cd799439012' },
         usersMails: ['user@test.com'],
         subject: 'Test Subject',
+        deliverAsync: true,
       });
 
       expect(result.statusCode).to.equal(200);
@@ -62,6 +63,7 @@ describe('MailService', () => {
         initiator: { jwtAuthToken: 'test-token' },
         usersMails: ['user@test.com'],
         subject: 'Test Subject',
+        deliverAsync: true,
       });
 
       expect(result.statusCode).to.equal(500);
@@ -149,11 +151,26 @@ describe('MailService', () => {
         initiator: { jwtAuthToken: 'test-token' },
         usersMails: ['user@test.com'],
         subject: 'Test Subject',
+        deliverAsync: true,
       });
 
       expect(result.statusCode).to.equal(500);
       expect(result.data).to.be.a('string');
       expect(mockLogger.error.called).to.be.true;
+    });
+
+    it('sends inline unless the caller asks for broker delivery', async () => {
+      // Small invites stay synchronous so the admin gets a real result rather
+      // than a "queued" that may still fail minutes later.
+      const result = await mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: { jwtAuthToken: 'test-token' },
+        usersMails: ['user@test.com'],
+        subject: 'Test Subject',
+      });
+
+      expect(mockMailProducer.publishEvent.called).to.be.false;
+      expect(result.data?.queued).to.not.equal(true);
     });
 
     it('should carry attachments and ccEmails onto the published event', async () => {
@@ -164,6 +181,7 @@ describe('MailService', () => {
         subject: 'Test Subject',
         attachedDocuments: [{ filename: 'test.pdf', content: 'data' }],
         ccEmails: ['cc@test.com'],
+        deliverAsync: true,
       });
 
       expect(result.statusCode).to.equal(200);
