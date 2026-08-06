@@ -425,7 +425,10 @@ def _conversation_id_from_stream(resp: requests.Response) -> str:
     raise AssertionError("conversation stream ended without a RUN_FINISHED event")
 
 
-def _bot_and_user_message_ids(body: dict[str, Any]) -> tuple[str, str]:
+def _bot_and_user_message_ids(body: Any) -> tuple[str, str]:
+    assert isinstance(body, dict), (
+        f"Expected a JSON object response body, got: {body!r}"
+    )
     conversation = body.get("conversation")
     assert isinstance(conversation, dict), (
         f"Expected conversation object, got: {body!r}"

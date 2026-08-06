@@ -462,12 +462,20 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
             f"query={SEARCH_QUERY!r}: {outcome.answer[:500]!r}"
         )
 
-        conv = (outcome.result or {}).get("conversation") or {}
+        result = outcome.result or {}
+        conv = result.get("conversation")
+        assert isinstance(conv, dict), (
+            f"RUN_FINISHED result carried no conversation object: {result!r}"
+        )
         assert conv.get("_id") == conversation_id, (
             f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
         )
+        messages = conv.get("messages")
+        assert isinstance(messages, list), (
+            f"RUN_FINISHED conversation.messages was not a list: {messages!r}"
+        )
         non_empty_contents = [
-            m.get("content") for m in (conv.get("messages") or [])
+            m.get("content") for m in messages
             if isinstance(m, dict) and (m.get("content") or "").strip()
         ]
         assert len(non_empty_contents) >= 2, (
