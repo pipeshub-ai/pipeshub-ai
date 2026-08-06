@@ -34,7 +34,7 @@ def _compact_reference(msg: ToolMessage) -> str:
     """Build the compact reference string that replaces full content."""
     meta = msg.artifact_meta
     if meta is None:
-        return msg.content
+        return msg.text
 
     lines = [f"[artifact:{meta.artifact_id}]"]
     content_type = meta.tool_name.replace("__", ".") if meta.tool_name else "tool_result"

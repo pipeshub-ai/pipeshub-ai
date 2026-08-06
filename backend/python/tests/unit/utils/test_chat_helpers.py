@@ -2192,6 +2192,28 @@ class TestCreateBlockFromMetadata:
         assert block["format"] == "txt"
         assert "data" in block
 
+    def test_image_block_wraps_data_as_dict_without_uri(self):
+        """Image points never carry the raw base64 URI in page_content (only a
+        text description or empty string), so there is no URI to recover here.
+        ``data`` must still be a dict (not a bare string) so downstream image
+        handling in _process_flattened_results can safely call .get("uri")
+        instead of raising AttributeError on a str."""
+        meta = {"blockType": "image", "blockNum": [1]}
+        block = create_block_from_metadata(meta, "A network diagram")
+
+        assert block["type"] == "image"
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+        assert block["data"].get("description") == "A network diagram"
+
+    def test_image_block_with_docx_extension_still_wraps_as_dict(self):
+        """The docx-specific page_content branch must not override image handling."""
+        meta = {"blockType": "image", "blockNum": [0], "extension": "docx"}
+        block = create_block_from_metadata(meta, "")
+
+        assert isinstance(block["data"], dict)
+        assert block["data"].get("uri") is None
+
 
 # ===================================================================
 # get_record (async)

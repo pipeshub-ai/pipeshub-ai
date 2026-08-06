@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
-from app.utils.chat_helpers import is_base64_image
+from app.utils.chat_helpers import ImageBudget, is_base64_image
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -28,6 +28,7 @@ async def resolve_attachments(
     logger: logging.Logger,
     ref_mapper: Any = None,
     out_records: dict[str, dict[str, Any]] | None = None,
+    image_budget: ImageBudget | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -57,6 +58,9 @@ async def resolve_attachments(
     """
     if not attachments:
         return []
+
+    if image_budget is None:
+        image_budget = ImageBudget()
 
     blocks: list[dict[str, Any]] = []
 
@@ -97,7 +101,10 @@ async def resolve_attachments(
                 logger=logger,
                 unavailable_log_msg="blob_store not available; cannot resolve image attachment %s",
                 fallback_block={"type": "text", "text": f"[Image attached by user: {record_name}]\n"},
-                empty_content_fallback=lambda record: _extract_image_blocks(record, record_name, logger),
+                empty_content_fallback=lambda record: _extract_image_blocks(
+                    record, record_name, logger, image_budget,
+                ),
+                image_budget=image_budget,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -116,6 +123,7 @@ async def resolve_attachments(
                 logger=logger,
                 unavailable_log_msg="blob_store not available; cannot resolve attachment %s",
                 fallback_block={"type": "text", "text": f"[Document attached by user: {record_name}]\n"},
+                image_budget=image_budget,
             )
             if doc_content:
                 blocks.extend(doc_content)
@@ -138,6 +146,7 @@ async def _resolve_attachment_content(
     unavailable_log_msg: str,
     fallback_block: dict[str, Any],
     empty_content_fallback: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
+    image_budget: ImageBudget | None = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -172,6 +181,7 @@ async def _resolve_attachment_content(
 
         content, ref_mapper = record_to_message_content(
             record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm,
+            image_budget=image_budget,
         )
         if not content and empty_content_fallback is not None:
             content = empty_content_fallback(record)
@@ -191,6 +201,7 @@ def _extract_image_blocks(
     record: dict[str, Any],
     record_name: str,
     logger: logging.Logger,
+    image_budget: ImageBudget | None = None,
 ) -> list[dict[str, Any]]:
     """Extract ``image_url`` content blocks from a stored record dict.
 
@@ -200,9 +211,15 @@ def _extract_image_blocks(
         record["block_containers"]["blocks"][i]["data"]["uri"] == "data:image/...;base64,..."
 
     Older records may store blocks directly under ``record["blocks"]``; both
-    layouts are handled here.
+    layouts are handled here. Respects the shared conversation-wide
+    ``image_budget`` (defaults to a fresh, effectively-unbounded one when not
+    supplied) the same way ``record_to_message_content`` does, so this
+    fallback path — only reached when that function returns zero content for
+    an image record — cannot bypass the 50-image cap.
     """
     result: list[dict[str, Any]] = []
+    if image_budget is None:
+        image_budget = ImageBudget()
 
     block_containers = record.get("block_containers")
     if isinstance(block_containers, dict):
@@ -226,9 +243,18 @@ def _extract_image_blocks(
         if not uri:
             continue
 
+        if not image_budget.can_add():
+            logger.debug(
+                "Skipping image from %s: conversation image budget exhausted",
+                record_name,
+            )
+            continue
+
         if uri.startswith(("https://", "http://")):
+            image_budget.try_consume(1)
             result.append({"type": "image_url", "image_url": {"url": uri}})
         elif uri.startswith(_SUPPORTED_IMAGE_PREFIXES):
+            image_budget.try_consume(1)
             result.append({"type": "image_url", "image_url": {"url": uri}})
         else:
             logger.debug(
@@ -310,6 +336,11 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             state["citation_ref_mapper"] = ref_mapper
 
         attachment_records: dict[str, dict[str, Any]] = {}
+        # Shared with retrieval/prefetch/citations/history-replay via the
+        # SAME `state["image_budget"]` instance (see `context.py`'s
+        # `_seed_tool_state`) so attachment images debit the one
+        # conversation-wide 50-image cap instead of an independent budget.
+        image_budget = state.setdefault("image_budget", ImageBudget())
         blocks = await resolve_attachments(
             attachments=raw_attachments,
             blob_store=blob_store,
@@ -318,6 +349,7 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             logger=logger,
             ref_mapper=ref_mapper,
             out_records=attachment_records,
+            image_budget=image_budget,
         )
 
         if attachment_records:

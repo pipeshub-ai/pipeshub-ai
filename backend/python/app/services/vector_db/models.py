@@ -56,11 +56,26 @@ class FilterExpression:
 
 @dataclass
 class VectorChunkMetadata:
-    """Known metadata fields stored on indexed vector points."""
+    """Known metadata fields stored on indexed vector points.
+
+    blockType: mirrors ``app.models.blocks.BlockType`` (e.g. "text", "image",
+        "table_row", "record_summary", "sql_table", "sql_view") — set on every
+        point at indexing time so retrieval can filter/branch on it without
+        sniffing ``page_content`` (e.g. base64 detection). Points written
+        before this field existed simply omit it (``None``); callers must
+        treat ``None`` as "unknown" and fall back to legacy heuristics.
+    isImage: True when the point's dense vector is a native image embedding
+        (i.e. produced by a multimodal embedding provider from raw image
+        bytes) rather than a text embedding of a description. Absent/None on
+        VLM-description-fallback image points, which are text embeddings and
+        should be treated like any other text point for search purposes.
+    """
     orgId: Optional[str] = None
     virtualRecordId: Optional[str] = None
     blockId: Optional[str] = None
     blockIndex: Optional[int] = None
+    blockType: Optional[str] = None
+    isImage: Optional[bool] = None
 
 
 @dataclass
@@ -83,6 +98,8 @@ class VectorChunkPayload:
             virtualRecordId=meta_raw.get("virtualRecordId"),
             blockId=meta_raw.get("blockId"),
             blockIndex=meta_raw.get("blockIndex"),
+            blockType=meta_raw.get("blockType"),
+            isImage=meta_raw.get("isImage"),
         )
         return cls(page_content=data.get("page_content", ""), metadata=metadata)
 

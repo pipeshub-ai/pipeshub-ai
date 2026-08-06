@@ -99,7 +99,7 @@ async def qdrant_service():
 
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", "6334"))
-    config = QdrantConfig(host=host, port=port)
+    config = QdrantConfig.from_dict({"host": host, "port": port})
     svc = QdrantService(config)
     try:
         await svc.connect()

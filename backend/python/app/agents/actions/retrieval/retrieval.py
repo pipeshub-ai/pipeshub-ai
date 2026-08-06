@@ -26,13 +26,16 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
+    ImageBudget,
     build_message_content_array,
     enrich_records_with_graph_context,
     get_flattened_results,
     get_record_id_shortener_if_enabled,
+    image_dict_to_part,
 )
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -290,7 +293,7 @@ class Retrieval:
         self,
         query: str | None = None,
         connector_ids: list[str] | None = None,
-    ) -> str:
+    ) -> "str | list[Part]":
         """Search internal knowledge bases and return formatted results."""
         search_query = query
 
@@ -503,16 +506,12 @@ class Retrieval:
                 graph_provider=graph_provider
             )
 
-            is_multimodal_llm = False
-            try:
-                llm_config = self.state.get("llm")
-                if hasattr(llm_config, 'model_name'):
-                    model_name = str(llm_config.model_name).lower()
-                    is_multimodal_llm = any(m in model_name for m in [
-                        'gpt-4-vision', 'gpt-4o', 'claude-3', 'gemini-pro-vision'
-                    ])
-            except Exception:
-                pass
+            # `is_multimodal_llm` is the authoritative flag set from the LLM
+            # config's `isMultimodal` field (see `context.py`'s
+            # `AgentContext.is_multimodal_llm`, seeded onto this same
+            # `tool_state` dict) — NOT a substring match against the model
+            # name, which misses GPT-5, Gemini 2.x, Ollama VLMs, etc.
+            is_multimodal_llm = bool(self.state.get("is_multimodal_llm", False))
 
             virtual_record_id_to_result = {}
             # Enrich records with graph-DB metadata (record type, web URL, etc.)
@@ -664,9 +663,15 @@ class Retrieval:
                 key=lambda x: (x.get("virtual_record_id") or "", -1 if x.get("block_index") is None else x.get("block_index"))
             )
             ref_mapper = self.state.get("citation_ref_mapper") or CitationRefMapper()
+            image_budget: ImageBudget = self.state.setdefault(
+                "image_budget", ImageBudget(),
+            )
+            collected_images: list[dict[str, Any]] = []
             message_content_array, ref_mapper = build_message_content_array(
                 sorted_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True,
                 record_id_shortener=record_id_shortener,
+                collected_images=collected_images,
+                image_budget=image_budget,
             )
             self.state["citation_ref_mapper"] = ref_mapper
 
@@ -691,9 +696,38 @@ class Retrieval:
                 f"(ranked sample — other records may match).\n\n"
                 f"{coverage_note}"
             )
-            return summary + "\n".join(formatted_records) + compose_result_tail(
+            text_output = summary + "\n".join(formatted_records) + compose_result_tail(
                 virtual_record_id_to_result, candidate_suffix,
             )
+
+            if collected_images and is_multimodal_llm:
+                # Multipart return: `_normalize_legacy_output` (decorators.py)
+                # wraps a non-str/non-(bool,str) return as
+                # `ToolOutput(data=result)`, and `executor.py` copies
+                # `ToolOutput.data` straight into `ToolResult.content` — so
+                # this list of Parts flows through unchanged into a
+                # multipart `ToolMessage` (see `agent/__init__.py`'s
+                # `_tool_result_content_to_message_content`). Only stash a
+                # fallback copy when the transport actually needs one —
+                # models with native multipart tool-result support (the
+                # `supports_multipart_tool_result=True` default) already
+                # get the images via the multipart return above, so
+                # `shape_retrieved_image_injection` (which alone consumes
+                # this stash) is never registered for them; retaining the
+                # images here regardless would just leak memory across
+                # turns. Ollama's transport strips images back out at
+                # format time — that fallback hook re-injects them via
+                # `UserMessage` using this same `pending_tool_images` stash.
+                if not self.state.get("supports_multipart_tool_result", True):
+                    self.state.setdefault("pending_tool_images", []).extend(collected_images)
+                from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
+                image_parts = [
+                    part for img in collected_images
+                    if (part := image_dict_to_part(img)) is not None
+                ]
+                return [TextPart(text=text_output), *image_parts]
+
+            return text_output
 
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger

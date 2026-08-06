@@ -23,6 +23,7 @@ from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdown
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
@@ -140,8 +141,16 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     # PDF
     # ----------------------------------------------------------------
-    registry.register("pdf", ParserProvider.DOCLING, SmartPDFParser(docling_svc_parser, docling_ocr_parser))
-    registry.register("pdf", ParserProvider.DEFAULT, SmartPDFParser(docling_svc_parser, default_ocr_parser))
+    smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
+    smart_pdf_default = SmartPDFParser(docling_svc_parser, default_ocr_parser)
+    registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
+    registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
+
+    # EPUB is converted to PDF via LibreOffice, then delegated to the same
+    # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
+    # OCR selection stays entirely inside SmartPDFParser).
+    registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
+    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
