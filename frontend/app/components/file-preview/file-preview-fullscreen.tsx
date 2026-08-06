@@ -43,6 +43,15 @@ export function FilePreviewFullscreen({
   const hasError = !isLoading && !!error;
   const canDownload =
     !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
+  const externalWebUrl = (() => {
+    const fromFile = file.webUrl?.trim();
+    if (fromFile && /^https?:\/\//i.test(fromFile)) return fromFile;
+    const fromRecord =
+      _recordDetails?.record.webUrl?.trim() ||
+      _recordDetails?.record.fileRecord?.webUrl?.trim();
+    if (fromRecord && /^https?:\/\//i.test(fromRecord)) return fromRecord;
+    return null;
+  })();
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
@@ -160,6 +169,25 @@ export function FilePreviewFullscreen({
           >
             {file.name}
           </Text>
+          {externalWebUrl && (
+            <a
+              href={externalWebUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open ${file.name} in source`}
+              title="Open in source"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                color: 'var(--accent-9)',
+                lineHeight: 0,
+              }}
+            >
+              <MaterialIcon name="open_in_new" size={ICON_SIZES.HEADER} color="var(--accent-9)" />
+            </a>
+          )}
           {file.version !== undefined && onVersionChange && (
             <VersionSwitcher
               version={file.version}
