@@ -585,6 +585,13 @@ class PipesHubPromptBuilder:
         knowledge_context = _build_knowledge_context(state, log, catalog=catalog, tool_names=tool_names)
         tpl.set("knowledge_sources", knowledge_context or None)
 
+        # ── Native filter search (Band B) ─────────────────────────────────────
+        # Rendered ahead of time (async graph reads) by `preload_native_filter_
+        # search` in `factory.py::create` — this builder only reads the result
+        # back synchronously.
+        from app.agents.actions.filtered_search.prompt_preload import STATE_KEY as _NATIVE_FILTER_STATE_KEY
+        tpl.set("native_filter_search", state.get(_NATIVE_FILTER_STATE_KEY) or None)
+
         # ── Capability summary (Band B) ───────────────────────────────────────
         tpl.set("capability_summary", build_capability_summary(state) or None)
 

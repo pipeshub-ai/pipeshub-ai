@@ -59,6 +59,10 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # before it in Band A still caches even if this block invalidates.
     ("available_tools",            Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
+    # One line per filter-capable connector (name, id, tool to call) for
+    # the native-query filter-search tools (hybrid native-filter +
+    # retrieval search) — see `agents/actions/filtered_search/prompt_preload.py`.
+    ("native_filter_search",       Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
     ("skills_overview",            Volatility.CONV),
