@@ -48,7 +48,7 @@ def coerce_message_content_to_text(content: Any) -> str:
                 parts.append(block)
             elif isinstance(block, dict):
                 text = block.get("text")
-                if isinstance(text, str):
+                if isinstance(text, str) and text.strip():
                     parts.append(text)
             elif block is not None:
                 parts.append(str(block))

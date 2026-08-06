@@ -45,15 +45,11 @@ import { useUserStore } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
-import { SIDEBAR_CONVERSATIONS_PAGE_SIZE } from './constants';
+import {
+  SIDEBAR_CONVERSATIONS_PAGE_SIZE,
+  chatContentColumnStyle,
+} from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
-
-// Space reserved below content views to clear the absolutely-positioned chat input.
-const CHAT_INPUT_OFFSET = { mobile: 120, desktop: 128 };
-// Space reserved when input is hidden — just enough to clear the footer links.
-const FOOTER_ONLY_OFFSET = { mobile: 48, desktop: 48 };
-// Extra breathing room above the chat input for the search results list.
-const SEARCH_RESULTS_EXTRA_OFFSET = { mobile: 0, desktop: 70 };
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -1242,155 +1238,121 @@ function ChatContent() {
         </Box>
       )}
 
-      {showInitialLoading ? (
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          style={{ flex: 1, position: 'relative', zIndex: 10, width: '100%' }}
-        >
-          <LottieLoader variant="loader" size={48} showLabel />
-        </Flex>
-      ) : showSearchView ? (
-        <Flex
-          direction="column"
-          style={{
-            flex: 1,
-            width: '100%',
-            overflow: 'hidden',
-            marginBottom: showChatInput
-              ? `${(isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop) + (isMobile ? SEARCH_RESULTS_EXTRA_OFFSET.mobile : SEARCH_RESULTS_EXTRA_OFFSET.desktop)}px`
-              : `${isMobile ? FOOTER_ONLY_OFFSET.mobile : FOOTER_ONLY_OFFSET.desktop}px`,
-          }}
-        >
-          <SearchResultsView />
-        </Flex>
-      ) : showNewChatView ? (
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          style={{
-            flex: 1,
-            position: 'relative',
-            zIndex: 10,
-            marginTop: isInputCentered
-              ? (isMobile ? '0' : '-40px')
-              : isMobile
-              ? historyAndShareAgentId
-                ? '36px'
-                : '0'
-              : historyAndShareAgentId
-              ? '-44px'
-              : '-80px',
-            paddingBottom: isInputCentered ? '0' : isMobile ? '140px' : '0',
-            width: '100%',
-          }}
-        >
-          <Box style={{ marginBottom: 'var(--space-4)' }}>
-            <LottieLoader autoplay loop style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }} />
-          </Box>
-
-          <Box
-            style={{
-              textAlign: 'center',
-              marginBottom: isInputCentered
-                ? isMobile
-                  ? 'var(--space-5)'
-                  : 'var(--space-6)'
-                : isMobile
-                ? 'var(--space-8)'
-                : '48px',
-              fontFamily: 'Manrope, sans-serif',
-              padding: isMobile ? '0 var(--space-4)' : undefined,
-            }}
-          >
-            <Text
-              size="4"
-              weight="medium"
-              style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
-            >
-              {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
-            </Text>
-            <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('chat.greeting')}
-            </Text>
-          </Box>
-
-          {isInputCentered && showChatInput && (
-            <Box
-              style={{
-                width: '100%',
-                display: 'flex',
-                justifyContent: 'center',
-                padding: isMobile ? '0 var(--space-4)' : undefined,
-              }}
-            >
-              <ChatInputWrapper />
-            </Box>
-          )}
-        </Flex>
-      ) : showLoading ? (
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          style={{ flex: 1, position: 'relative', zIndex: 10 }}
-        >
-          <LottieLoader variant="loader" size={48} showLabel />
-        </Flex>
-      ) : (
-        <Flex
-          direction="column"
-          style={{
-            flex: 1,
-            position: 'relative',
-            zIndex: 10,
-            width: '100%',
-            overflow: 'hidden',
-            minHeight: '300px',
-            marginBottom: showChatInput
-              ? `${isMobile ? CHAT_INPUT_OFFSET.mobile : CHAT_INPUT_OFFSET.desktop}px`
-              : `${isMobile ? FOOTER_ONLY_OFFSET.mobile : FOOTER_ONLY_OFFSET.desktop}px`,
-            paddingTop: isMobile
+      {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
+          Message content + composer share chatContentColumnStyle so widths match. */}
+      <Flex
+        direction="column"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          width: '100%',
+          position: 'relative',
+          zIndex: 10,
+          overflow: 'hidden',
+          paddingTop: showNewChatView
+            ? undefined
+            : isMobile
               ? historyAndShareAgentId
                 ? '76px'
                 : '60px'
               : historyAndShareAgentId
-              ? '56px'
-              : '40px',
-          }}
-        >
-          <MessageList />
-        </Flex>
-      )}
-
-      {/* Chat input: spans the full chat column width, content centered within.
-          Using left:0/right:0 ensures correct sizing in narrow split-pane mode
-          (avoids the 50rem ChatInput overflowing a narrow panel).
-          pointerEvents:'none' on the positioning shell makes it transparent to
-          clicks in areas where no child element sits (e.g. the scrollbar at the
-          right edge), while children restore interactivity with their own default
-          pointer-events:auto. */}
-      <Box
-        style={{
-          position: 'absolute',
-          bottom: isMobile ? 0 : 'var(--space-4)',
-          left: 0,
-          right: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          padding: isMobile ? '0 var(--space-4) var(--space-4)' : '0 var(--space-5)',
-          zIndex: 20,
-          pointerEvents: 'none',
+                ? '56px'
+                : '40px',
         }}
       >
-        <Box style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', pointerEvents: 'auto' }}>
-          {!isInputCentered && showChatInput && <ChatInputWrapper />}
-          <ChatFooterLinks />
-        </Box>
-      </Box>
+        {showInitialLoading || showLoading ? (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            style={{ flex: 1, width: '100%' }}
+          >
+            <LottieLoader variant="loader" size={48} showLabel />
+          </Flex>
+        ) : showSearchView ? (
+          <Flex
+            direction="column"
+            align="center"
+            style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden' }}
+          >
+            <Box style={{ ...chatContentColumnStyle(isMobile), flex: 1, minHeight: 0, display: 'flex' }}>
+              <SearchResultsView />
+            </Box>
+          </Flex>
+        ) : showNewChatView ? (
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            style={{
+              flex: 1,
+              width: '100%',
+              marginTop: isMobile ? '0' : '-40px',
+            }}
+          >
+            <Box style={{ ...chatContentColumnStyle(isMobile) }}>
+              <Flex direction="column" align="center" style={{ width: '100%' }}>
+                <Box style={{ marginBottom: 'var(--space-4)' }}>
+                  <LottieLoader
+                    autoplay
+                    loop
+                    style={{ width: isMobile ? 64 : 80, height: isMobile ? 64 : 80 }}
+                  />
+                </Box>
+                <Box
+                  style={{
+                    textAlign: 'center',
+                    marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)',
+                    fontFamily: 'Manrope, sans-serif',
+                  }}
+                >
+                  <Text
+                    size="4"
+                    weight="medium"
+                    style={{ color: 'var(--slate-12)', display: 'block', marginBottom: 'var(--space-1)' }}
+                  >
+                    {t('chat.heyUser', { name: greetingName || t('chat.heyUserDefaultName') })}
+                  </Text>
+                  <Text size="4" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                    {t('chat.greeting')}
+                  </Text>
+                </Box>
+                {isInputCentered && showChatInput && (
+                  <Box style={{ width: '100%' }}>
+                    <ChatInputWrapper />
+                  </Box>
+                )}
+              </Flex>
+            </Box>
+          </Flex>
+        ) : (
+          <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
+            <MessageList />
+          </Box>
+        )}
+
+        <Flex
+          direction="column"
+          align="center"
+          className="chat-composer-row"
+          style={{
+            width: '100%',
+            flexShrink: 0,
+            paddingBottom: isMobile ? 'var(--space-2)' : 0,
+          }}
+        >
+          <Box
+            style={{
+              ...chatContentColumnStyle(isMobile),
+              paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
+              paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+            }}
+          >
+            {!isInputCentered && showChatInput && <ChatInputWrapper />}
+            <ChatFooterLinks />
+          </Box>
+        </Flex>
+      </Flex>
     </>
   );
   // ─────────────────────────────────────────────────────────────────────────
@@ -1416,7 +1378,7 @@ function ChatContent() {
         {/* Chat column — stable DOM node */}
         <Flex
           direction="column"
-          align="center"
+          align="stretch"
           style={{
             flex: showSplitPane ? `0 0 ${chatPanelWidthPx}px` : '1',
             minWidth: showSplitPane ? `${CHAT_PANEL_MIN_PX}px` : undefined,

@@ -252,6 +252,21 @@ class TestComplete:
         assert response.stop_reason == StopReason.MAX_TOKENS
         assert response.message.truncated is True
 
+    async def test_max_tokens_stop_reason_from_responses_api_incomplete_details(self) -> None:
+        """The Responses API reports truncation as `incomplete_details`
+        instead of the Chat Completions `finish_reason="length"`."""
+        ai_message = AIMessage(
+            content=[{"type": "text", "text": "cut off mid-sen", "annotations": []}],
+            response_metadata={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        )
+        transport = LangChainTransport(_FakeModel(ai_message))
+        response = await transport.complete([UserMessage(content="write an essay")])
+        assert response.stop_reason == StopReason.MAX_TOKENS
+        assert response.message.truncated is True
+
     async def test_tool_use_stop_reason_from_finish_reason_metadata_without_tool_calls(self) -> None:
         """Some providers report `finish_reason="tool_calls"` in metadata
         even on an intermediate/malformed response with no parsed

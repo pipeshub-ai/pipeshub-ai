@@ -1,0 +1,33 @@
+# Omnigent directory-agent example for PipesHub knowledge.
+# setup.sh copies this to config.yaml and sets the MCP url field.
+#
+# Requires Omnigent >= 0.7.0
+# Tool allowlist uses inline MCP (directory tools/mcp/*.yaml ignores
+# the tools: filter in Omnigent 0.7.0).
+
+spec_version: 1
+name: pipeshub-knowledge
+description: Answers questions using enterprise knowledge indexed by PipesHub.
+instructions: AGENTS.md
+
+executor:
+  type: omnigent
+  config:
+    harness: claude-sdk
+
+tools:
+  pipeshub:
+    type: mcp
+    transport: http
+    # setup.sh replaces the value below
+    url: "__PIPESHUB_MCP_URL__"
+    headers:
+      Authorization: "Bearer ${PIPESHUB_MCP_TOKEN}"
+    tools:
+      - pipeshub_chat
+      - pipeshub_search
+      - pipeshub_sources
+      - pipeshub_directory
+      - pipeshub_download_record
+      - pipeshub_agents
+    timeout: 120

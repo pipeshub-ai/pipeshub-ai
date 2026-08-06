@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Box, Button, Tooltip } from '@radix-ui/themes';
+import { Box, Button, Callout, Flex, HoverCard, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -12,7 +12,7 @@ import {
   SelectDropdown,
   SearchableCheckboxDropdown,
 } from '../../components';
-import type { SelectOption, CheckboxOption } from '../../components';
+import type { SelectOption, CheckboxOption, TagItem } from '../../components';
 import { useUsersStore } from '../store';
 import { UsersApi } from '../api';
 import { GroupsApi } from '../../groups/api';
@@ -29,6 +29,18 @@ const ROLE_OPTIONS: SelectOption[] = INVITE_ROLE_OPTIONS.map((r) => ({
   label: r.label,
   description: r.description,
 }));
+
+// Matches MAX_BULK_INVITE on the server.
+const MAX_IMPORT_EMAILS = 1000;
+
+const SAMPLE_CELL_STYLE: React.CSSProperties = {
+  padding: '4px var(--space-2)',
+  textAlign: 'left',
+  borderBottom: '1px solid var(--olive-4)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
 
 // ========================================
 // Helpers
@@ -135,6 +147,11 @@ export function InviteUsersSidebar({
   // Form validation (role hidden — not required for now)
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
   const isFormValid = hasValidEmails;
+
+  const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
+  const isGrantingAdmin = Boolean(
+    adminGroupId && inviteGroupIds.includes(adminGroupId)
+  );
 
   // Group options for dropdown
   const groupOptions: CheckboxOption[] = groups.map((g) => ({
@@ -254,8 +271,8 @@ export function InviteUsersSidebar({
     t,
   ]);
 
-  // Upload a CSV/Excel file of emails — the server parses and invites in the
-  // background, so we just report that the import started.
+  // Fills the email box for review rather than inviting straight away — nothing
+  // is sent until the user presses Send Invite.
   const handleImportFile = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -264,21 +281,124 @@ export function InviteUsersSidebar({
 
       setIsImporting(true);
       try {
-        await UsersApi.inviteUsersFromFile(
-          file,
-          inviteGroupIds.length > 0 ? inviteGroupIds : undefined
+        // Loaded on demand so the parser stays out of the page bundle.
+        const XLSX = await import('xlsx');
+        const workbook = XLSX.read(await file.arrayBuffer(), {
+          type: 'array',
+          codepage: 65001,
+          sheetRows: MAX_IMPORT_EMAILS + 5,
+        });
+
+        const found: string[] = [];
+        workbook.SheetNames.forEach((sheetName) => {
+          const sheet = workbook.Sheets[sheetName];
+          if (!sheet) return;
+          const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+            header: 1,
+            blankrows: false,
+          });
+          rows.forEach((row) => {
+            row.forEach((cell) => {
+              if (cell == null) return;
+              const value = String(cell).trim();
+              // 254 = max email length per RFC 5321.
+              if (
+                found.length <= MAX_IMPORT_EMAILS &&
+                value.length <= 254 &&
+                value.includes('@')
+              ) {
+                found.push(value);
+              }
+            });
+          });
+        });
+
+        if (found.length === 0) {
+          throw new Error(
+            t(
+              'workspace.users.invite.importNoEmails',
+              'No email addresses found in the file'
+            )
+          );
+        }
+        if (found.length > MAX_IMPORT_EMAILS) {
+          throw new Error(
+            t('workspace.users.invite.importTooMany', {
+              defaultValue: 'File exceeds the {{max}}-user limit',
+              max: MAX_IMPORT_EMAILS,
+            })
+          );
+        }
+
+        const { isInvitePanelOpen: stillOpen, inviteEmails: current } =
+          useUsersStore.getState();
+        if (!stillOpen) return;
+
+        const seen = new Set(
+          current.map((tag) => tag.value.trim().toLowerCase())
         );
+        const added: TagItem[] = [];
+        found.forEach((raw) => {
+          const value = raw.toLowerCase();
+          if (seen.has(value)) return;
+          seen.add(value);
+          added.push({
+            id: `tag-import-${added.length}-${Math.random().toString(36).slice(2, 7)}`,
+            value,
+            isValid: validateEmail(value) === null,
+          });
+        });
+
+        if (added.length === 0) {
+          throw new Error(
+            t(
+              'workspace.users.invite.importAllDuplicates',
+              'Every address in the file is already listed'
+            )
+          );
+        }
+
+        if (current.length + added.length > MAX_IMPORT_EMAILS) {
+          throw new Error(
+            t('workspace.users.invite.importTooMany', {
+              defaultValue: 'File exceeds the {{max}}-user limit',
+              max: MAX_IMPORT_EMAILS,
+            })
+          );
+        }
+
+        setInviteEmails([...current, ...added]);
+
+        const invalidCount = added.filter((tag) => !tag.isValid).length;
+        const duplicateCount = found.length - added.length;
         addToast({
           variant: 'success',
-          title: t('workspace.users.invite.importStarted', 'Import started'),
+          title: t('workspace.users.invite.importLoaded', {
+            defaultValue: '{{count}} address(es) added',
+            count: added.length,
+          }),
           description: t(
-            'workspace.users.invite.importStartedDescription',
-            "We'll notify you when the invites finish."
+            'workspace.users.invite.importLoadedDescription',
+            'Review the list, then press Send Invite.'
           ),
           duration: 4000,
         });
-        closeInvitePanel();
-        onInviteSuccess?.();
+        if (invalidCount > 0 || duplicateCount > 0) {
+          addToast({
+            variant: 'warning',
+            title: t('workspace.users.invite.importSkipped', {
+              defaultValue:
+                '{{invalid}} invalid, {{duplicate}} duplicate address(es)',
+              invalid: invalidCount,
+              duplicate: duplicateCount,
+            }),
+            description: t(
+              'workspace.users.invite.importSkippedDescription',
+              'Invalid entries are marked in the list — remove them before sending.'
+            ),
+            duration: 6000,
+          });
+        }
       } catch (err) {
         addToast({
           variant: 'error',
@@ -295,7 +415,7 @@ export function InviteUsersSidebar({
         setIsImporting(false);
       }
     },
-    [inviteGroupIds, addToast, t, closeInvitePanel, onInviteSuccess]
+    [inviteEmails, setInviteEmails, addToast, t]
   );
 
   // Panel title & button labels change in edit mode
@@ -325,24 +445,81 @@ export function InviteUsersSidebar({
               style={{ display: 'none' }}
               onChange={handleImportFile}
             />
-            <Tooltip
-              content={t(
-                'workspace.users.invite.importTooltip',
-                'Supports CSV and Excel files (.csv, .xlsx, .xls)'
-              )}
-            >
-              <Button
-                variant="outline"
-                color="gray"
-                size="2"
-                disabled={isImporting}
-                onClick={() => fileInputRef.current?.click()}
-                style={{ cursor: isImporting ? 'default' : 'pointer' }}
-              >
-                <MaterialIcon name="upload" size={16} />
-                {t('workspace.users.invite.import', 'Import')}
-              </Button>
-            </Tooltip>
+            <HoverCard.Root>
+              <HoverCard.Trigger>
+                <Button
+                  variant="outline"
+                  color="gray"
+                  size="2"
+                  disabled={isImporting}
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ cursor: isImporting ? 'default' : 'pointer' }}
+                >
+                  <MaterialIcon name="upload" size={16} />
+                  {t('workspace.users.invite.import', 'Import')}
+                </Button>
+              </HoverCard.Trigger>
+              <HoverCard.Content size="2" maxWidth="330px">
+                <Flex direction="column" gap="2">
+                  <Text size="2" weight="medium">
+                    {t(
+                      'workspace.users.invite.importFormatTitle',
+                      'CSV or Excel — any layout works'
+                    )}
+                  </Text>
+                  <Box
+                    style={{
+                      border: '1px solid var(--olive-5)',
+                      borderRadius: 'var(--radius-2)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <table
+                      style={{
+                        width: '100%',
+                        borderCollapse: 'collapse',
+                        tableLayout: 'fixed',
+                      }}
+                    >
+                      <thead>
+                        <tr style={{ backgroundColor: 'var(--olive-3)' }}>
+                          <th style={SAMPLE_CELL_STYLE}>
+                            <Text size="1" weight="medium">
+                              email
+                            </Text>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {['alice@acme.com', 'bob@acme.com'].map((email) => (
+                          <tr key={email}>
+                            <td style={SAMPLE_CELL_STYLE}>
+                              <Text size="1">{email}</Text>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </Box>
+                  <Flex direction="column" gap="1">
+                    {[
+                      t(
+                        'workspace.users.invite.importHintHeader',
+                        'Header row optional — extra columns ignored'
+                      ),
+                      t(
+                        'workspace.users.invite.importHintLimit',
+                        'Up to 1000 users per file (.csv, .xlsx, .xls)'
+                      ),
+                    ].map((hint) => (
+                      <Text key={hint} size="1" color="gray">
+                        • {hint}
+                      </Text>
+                    ))}
+                  </Flex>
+                </Flex>
+              </HoverCard.Content>
+            </HoverCard.Root>
           </>
         ) : undefined
       }
@@ -417,6 +594,21 @@ export function InviteUsersSidebar({
                 : 'No groups available'
             }
           />
+          {isGrantingAdmin ? (
+            <Box mt="2">
+              <Callout.Root color="amber" variant="soft" size="1">
+                <Callout.Icon>
+                  <MaterialIcon name="warning" size={16} />
+                </Callout.Icon>
+                <Callout.Text size="1" style={{ lineHeight: 1.45 }}>
+                  {t('workspace.users.invite.adminGroupWarning', {
+                    defaultValue:
+                      'Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings.',
+                  })}
+                </Callout.Text>
+              </Callout.Root>
+            </Box>
+          ) : null}
         </FormField>
       </Box>
     </WorkspaceRightPanel>

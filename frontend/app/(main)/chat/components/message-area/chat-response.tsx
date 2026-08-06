@@ -468,6 +468,13 @@ export const ChatResponse = React.memo(function ChatResponse({
     [effectiveParts, isStreaming],
   );
   const hasVisibleActivity = visibleActivityParts.length > 0;
+  // Collapse control is offered once narration/answer has started (or for
+  // completed messages). While only thinking/tools are streaming, keep the
+  // timeline always-visible with no collapse chrome.
+  const canCollapseActivity =
+    !isStreaming ||
+    !!displayContent ||
+    visibleActivityParts.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -498,45 +505,36 @@ export const ChatResponse = React.memo(function ChatResponse({
                 While streaming, the live status ("Thinking...", "Using
                 Jira Search...") renders as the LAST timeline entry instead
                 of a disconnected element below the answer — see
-                AgentActivityTimeline's `currentStatus` prop. Once the
-                response is complete, a multi-step transcript collapses
-                behind a one-line summary so the reader's eye lands on the
-                answer rather than the full ReAct trace on every reload.
+                AgentActivityTimeline's `currentStatus` prop. Once narration
+                or the answer starts (or the response is complete), wrap in
+                CollapsibleActivitySection so the user can collapse the
+                trace if they want — never auto-collapsed while live.
                 Gated on `hasVisibleActivity` (not raw part count) — a
                 completed simple response's `effectiveParts` is just the one
-                `isFinal` text part, which the timeline itself filters out;
-                rendering `CollapsibleActivitySection` around that would show
-                an expand chevron over a summary ("Worked on this") that
-                reveals nothing on click. `isStreaming && multiStep` is
-                OR'd in so the timeline (and its status entry) stays
+                `isFinal` text part, which the timeline itself filters out.
+                `isStreaming && multiStep` is OR'd in so the timeline stays
                 reachable while a multi-step run is active but hasn't
-                produced a visible part yet (e.g. right after
-                TEXT_MESSAGE_START, before the first token lands). */}
+                produced a visible part yet. */}
             {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && !askQuestionMatchesRow && !persistedAskUserQuestion && (
-              isStreaming ? (
-                <AgentActivityTimeline
-                  parts={effectiveParts}
-                  isStreaming
-                  // Only the multi-step timeline owns the status entry — until a
-                  // tool call/reasoning block proves this, the trailing part is
-                  // just a placeholder (e.g. an empty text part from
-                  // TEXT_MESSAGE_START) that gets filtered out of `visible`,
-                  // which would otherwise leave the timeline showing ONLY the
-                  // status while `StatusMessageComponent` below (gated on
-                  // `!multiStep`) shows the exact same status a second time.
-                  currentStatus={multiStep ? streamingStatusToShow : null}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                />
-              ) : (
-                <CollapsibleActivitySection parts={effectiveParts}>
+              canCollapseActivity ? (
+                <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
                   <AgentActivityTimeline
                     parts={effectiveParts}
-                    isStreaming={false}
+                    isStreaming={isStreaming}
+                    // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+                    currentStatus={multiStep ? streamingStatusToShow : null}
                     citationMaps={effectiveCitationMaps}
                     citationCallbacks={wrappedCallbacks}
                   />
                 </CollapsibleActivitySection>
+              ) : (
+                <AgentActivityTimeline
+                  parts={effectiveParts}
+                  isStreaming={isStreaming}
+                  currentStatus={multiStep ? streamingStatusToShow : null}
+                  citationMaps={effectiveCitationMaps}
+                  citationCallbacks={wrappedCallbacks}
+                />
               )
             )}
 
@@ -546,6 +544,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 timeline itself filtered out) and content to show below. */}
             {hasVisibleActivity && displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <Box
+                className="agent-activity-enter"
                 style={{
                   borderTop: '1px solid var(--slate-4)',
                   marginTop: 'var(--space-1)',

@@ -1771,6 +1771,29 @@ class TestDescribeImages:
         assert results[0]["success"] is True
         assert results[1]["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_describe_image_async_flattens_content_blocks(self):
+        """OpenAI's Responses API returns `content` as a list of blocks
+        (reasoning + text) rather than a plain string."""
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "reasoning", "summary": [], "id": "rs_1"},
+            {"type": "text", "text": "A diagram showing flow.", "annotations": []},
+        ])
+        result = await vs.describe_image_async("base64data", mock_vlm)
+        assert result == "A diagram showing flow."
+
+    @pytest.mark.asyncio
+    async def test_describe_images_with_content_blocks(self):
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "text", "text": "  A red square.  ", "annotations": []},
+        ])
+        results = await vs.describe_images(["img1"], mock_vlm)
+        assert results == [{"index": 0, "success": True, "description": "A red square."}]
+
 
 # ===================================================================
 # index_documents additional paths (lines 1051-1052, 1064->1061, etc.)

@@ -1488,6 +1488,39 @@ class TestHandleSimpleMode:
         assert len(complete_events) == 1
         assert complete_events[0]["data"]["reason"] is None
 
+    async def test_fast_path_ai_message_with_content_blocks(self):
+        """A pre-computed answer from an OpenAI Responses API call arrives as
+        a list of content blocks — it must still take the fast path instead of
+        falling back to a redundant LLM call."""
+        from app.utils.streaming import handle_simple_mode
+
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "summary": [], "id": "rs_1"},
+                    {"type": "text", "text": "Simple fast path", "annotations": []},
+                ]
+            )
+        ]
+        test_logger = logging.getLogger("test")
+
+        called = MagicMock()
+        with patch("app.utils.streaming.call_aiter_llm_stream_simple", side_effect=called):
+            events = []
+            async for event in handle_simple_mode(
+                llm=MagicMock(),
+                messages=messages,
+                final_results=[],
+                records=[],
+                logger=test_logger,
+            ):
+                events.append(event)
+
+        called.assert_not_called()
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert len(complete_events) == 1
+        assert complete_events[0]["data"]["answer"] == "Simple fast path"
+
     async def test_streaming_from_llm(self):
         """Normal streaming from LLM via call_aiter_llm_stream_simple."""
         from app.utils.streaming import handle_simple_mode
