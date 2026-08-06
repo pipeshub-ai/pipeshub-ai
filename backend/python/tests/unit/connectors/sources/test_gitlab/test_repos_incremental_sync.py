@@ -22,7 +22,7 @@ Async test execution:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -935,10 +935,11 @@ class TestBlobRecordVersion:
             return_value=paged_res([tree_entry("src/b.py", name="b.py", sha="sha-new")])
         )
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         old_external_id, new_record, _ = moves[0]
         assert old_external_id == f"/{_PROJECT_PATH}/-/blob/HEAD/lib/a.py"
         assert new_record.version == 0
+        assert new_record.source_created_at is None
+        assert new_record.source_updated_at is None
