@@ -201,6 +201,23 @@ class ResourceGovernor:
     def stop(self) -> None:
         self._running = False
 
+    def close(self) -> None:
+        """Unsubscribe every gate created by this governor from the
+        registry (see ``AdmissionGate.close``).
+
+        Call once at shutdown, after ``stop()``/awaiting the sample task —
+        a gate that outlives the event loop it was bound to would otherwise
+        leak a registry callback that bounces onto a closed loop the next
+        time a limit changes (harmless for a process that is exiting
+        anyway, but avoided here since some lifespans re-run within the
+        same process, e.g. under a test harness or a reload).
+        """
+        with self._gates_lock:
+            gates = list(self._gates.values())
+            self._gates.clear()
+        for gate in gates:
+            gate.close()
+
     async def _sample_once(self) -> None:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)

@@ -864,6 +864,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     except Exception as e:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
+    governor.close()
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:

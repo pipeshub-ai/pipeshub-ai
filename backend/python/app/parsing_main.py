@@ -268,6 +268,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     except Exception:
         app_logger.exception("Error during resource governor shutdown")
+    governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
     try:
         config_service.close()

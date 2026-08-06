@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     except Exception:
         logger.exception("Error during resource governor shutdown")
+    governor.close()
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
 
