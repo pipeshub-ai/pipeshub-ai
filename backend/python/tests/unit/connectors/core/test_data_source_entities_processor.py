@@ -4198,6 +4198,7 @@ def _make_code_record(
     external_revision_id: str = "sha-new",
     indexing_status: str | None = None,
     is_internal: bool = False,
+    version: int = 0,
 ) -> MagicMock:
     """Build a minimal Record mock suitable for on_records_moved tests.
 
@@ -4213,6 +4214,7 @@ def _make_code_record(
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
     rec.is_internal = is_internal
+    rec.version = version
     rec.org_id = "org-1"
     rec.record_name = f"file_{record_id}.py"
     rec.to_kafka_record = MagicMock(return_value={"id": record_id})
@@ -4224,12 +4226,14 @@ def _make_old_record(
     record_id: str = "old-rec-1",
     external_revision_id: str = "sha-old",
     indexing_status: str = ProgressStatus.NOT_STARTED.value,
+    version: int = 1,
 ) -> MagicMock:
     """Build a minimal existing DB record mock returned by get_record_by_external_id."""
     rec = MagicMock()
     rec.id = record_id
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
+    rec.version = version
     return rec
 
 
@@ -4388,6 +4392,45 @@ class TestOnRecordsMovedReindex:
 
         # After the call, new_record.id must have been set to old_record.id
         assert new_record.id == "original-id"
+
+    async def test_content_change_bumps_version_from_old_record(self) -> None:
+        """version=0 + changed SHA → old.version + 1 (same contract as _process_record)."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(
+            record_id="rec-v",
+            external_revision_id="sha-before",
+            version=7,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",
+            version=0,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.version == 8
+
+    async def test_pure_rename_carries_version_without_bump(self) -> None:
+        """version=0 + same SHA → keep old.version (metadata-only move)."""
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(
+            record_id="rec-v",
+            external_revision_id=shared_sha,
+            version=7,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,
+            version=0,
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.version == 7
 
     async def test_empty_moves_is_noop(self) -> None:
         """Empty moves list → no DB or Kafka calls."""

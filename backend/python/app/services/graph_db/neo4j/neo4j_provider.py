@@ -14183,6 +14183,7 @@ class Neo4jProvider(IGraphDBProvider):
                 recordType: record.recordType,
                 recordGroupType: null,
                 indexingStatus: record.indexingStatus,
+                reason: record.reason,
                 createdAt: coalesce(record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.updatedAtTimestamp, 0),
                 sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),

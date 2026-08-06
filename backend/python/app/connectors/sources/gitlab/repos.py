@@ -747,6 +747,7 @@ class ReposSync:
             record_group_type=RecordGroupType.PROJECT.value,
             external_record_group_id=external_group_id,
             mime_type=_blob_mime_type(file_name, extension),
+            extension=extension,
             external_revision_id=str(blob_sha) if blob_sha else "",
             preview_renderable=extension in PREVIEW_RENDERABLE_EXTENSIONS if extension else False,
             file_path=file_path,

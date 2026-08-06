@@ -2525,6 +2525,7 @@ class CodeFileRecord(Record):
 
     file_path: str | None = None
     file_hash: str | None = None
+    extension: str | None = None
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2535,6 +2536,7 @@ class CodeFileRecord(Record):
             "connectorName": self.connector_name.value,
             "connectorId": self.connector_id,
             "mimeType": self.mime_type,
+            "extension": self.extension,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "origin": self.origin.value,
@@ -2552,6 +2554,7 @@ class CodeFileRecord(Record):
             "name": self.record_name,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "extension": self.extension,
         }
 
     @staticmethod
@@ -2564,6 +2567,13 @@ class CodeFileRecord(Record):
             connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
+        extension = arango_base_code_file_record.get("extension")
+        if not extension:
+            # Older code-file docs omitted extension; derive from name for reindex.
+            name = arango_base_record.get("recordName") or ""
+            base = name.rsplit("/", 1)[-1]
+            if "." in base:
+                extension = base.rsplit(".", 1)[-1].lower()
         return CodeFileRecord(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
@@ -2603,6 +2613,7 @@ class CodeFileRecord(Record):
             reason=arango_base_record.get("reason"),
             file_path=arango_base_code_file_record.get("filePath"),
             file_hash=arango_base_code_file_record.get("fileHash"),
+            extension=extension,
         )
 
 

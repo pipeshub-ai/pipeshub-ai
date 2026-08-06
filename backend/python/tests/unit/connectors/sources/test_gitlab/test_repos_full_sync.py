@@ -225,6 +225,8 @@ class TestBuildCodeFileRecords:
         updates = repos._process_records.call_args.args[0]
         assert len(updates) == 1
         assert updates[0].record.record_name == "main.py"
+        assert updates[0].record.extension == "py"
+        assert updates[0].record.to_kafka_record()["extension"] == "py"
 
     async def test_dotfile_blob_skipped(self) -> None:
         c = make_mock_connector()

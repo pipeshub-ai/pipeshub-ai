@@ -15293,6 +15293,10 @@ class TestGetAppChildrenSubquery:
         sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
         assert "raw_children" in sub_query
 
+    def test_kb_app_children_projects_reason(self, connected_provider):
+        sub_query, _ = connected_provider._get_app_children_subquery("app1", "org1", "uk1")
+        assert "reason: record.reason" in sub_query
+
 
 # ---------------------------------------------------------------------------
 # _get_record_group_children_split

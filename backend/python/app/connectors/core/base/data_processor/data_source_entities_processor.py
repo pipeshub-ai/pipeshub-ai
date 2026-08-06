@@ -1271,7 +1271,12 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-                    
+
+                    # Same contract as _process_record: connectors that leave version
+                    # at 0 (GitLab) inherit the stored value and bump only on content change.
+                    if new_record.version == 0:
+                        new_record.version = old_record.version + (1 if content_changed else 0)
+
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
                             # If the old record is completed and content hasn't changed,

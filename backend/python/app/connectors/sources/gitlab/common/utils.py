@@ -2,6 +2,35 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models.blocks import BlockGroup
+
+
+def wire_block_group_parent_children(block_groups: list[BlockGroup]) -> None:
+    """Set parent.children.block_group_ranges from each child's parent_index.
+
+    Keeps existing block_ranges on the parent when present.
+    """
+    from app.models.blocks import BlockGroupChildren
+
+    children_map: dict[int, list[int]] = defaultdict(list)
+    for bg in block_groups:
+        if bg.parent_index is not None:
+            children_map[bg.parent_index].append(bg.index)
+
+    for bg in block_groups:
+        child_indices = children_map.get(bg.index)
+        if not child_indices:
+            continue
+        wired = BlockGroupChildren.from_indices(block_group_indices=sorted(child_indices))
+        if bg.children is None:
+            bg.children = wired
+        else:
+            bg.children.block_group_ranges = wired.block_group_ranges
+
 
 def parse_item_id_from_url(url: str) -> int:
     """Return the numeric item ID from a GitLab web URL.

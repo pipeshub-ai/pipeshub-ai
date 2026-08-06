@@ -899,8 +899,8 @@ class TestResolveBlobShaByPath:
 
 
 class TestBlobRecordVersion:
-    async def test_upsert_carries_stored_version_forward(self) -> None:
-        """A re-synced blob counts up from what is stored, not back to 0."""
+    async def test_upsert_leaves_version_zero_for_processor(self) -> None:
+        """GitLab emits version=0; ``_process_record`` carries/bumps the stored value."""
         c, repos = _make_incremental_connector()
         repos = ReposSync(c)
         repos._ensure_folder_records_for_paths = AsyncMock()
@@ -908,14 +908,11 @@ class TestBlobRecordVersion:
         c.runtime.paged_list = AsyncMock(
             return_value=paged_res([tree_entry("src/main.py", sha="sha-new")])
         )
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(
-            return_value=MagicMock(version=2)
-        )
 
         await repos._upsert_code_files_by_paths(_PROJECT_ID, _PROJECT_PATH, ["src/main.py"])
 
         updates = repos._process_records.call_args.args[0]
-        assert updates[0].record.version == 3
+        assert updates[0].record.version == 0
 
     async def test_upsert_of_unseen_blob_starts_at_zero(self) -> None:
         c, repos = _make_incremental_connector()
@@ -925,33 +922,25 @@ class TestBlobRecordVersion:
         c.runtime.paged_list = AsyncMock(
             return_value=paged_res([tree_entry("src/main.py", sha="sha-new")])
         )
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await repos._upsert_code_files_by_paths(_PROJECT_ID, _PROJECT_PATH, ["src/main.py"])
 
         updates = repos._process_records.call_args.args[0]
         assert updates[0].record.version == 0
 
-    async def test_rename_carries_version_from_old_path(self) -> None:
-        """The move reuses the old vertex, so the version continues from the old id."""
+    async def test_rename_leaves_version_zero_for_on_records_moved(self) -> None:
+        """Rename emits version=0; ``on_records_moved`` carries/bumps from the old vertex."""
         c, repos = _make_incremental_connector()
         repos = ReposSync(c)
         repos._ensure_folder_records_for_paths = AsyncMock()
         c.runtime.paged_list = AsyncMock(
             return_value=paged_res([tree_entry("src/b.py", name="b.py", sha="sha-new")])
         )
-        lookups: list[str] = []
-
-        async def _lookup(_connector_id: str, external_id: str) -> MagicMock:
-            lookups.append(external_id)
-            return MagicMock(version=7)
-
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=_lookup)
 
         with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
             await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
 
-        assert lookups == [f"/{_PROJECT_PATH}/-/blob/HEAD/lib/a.py"]
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
-        _, new_record, _ = moves[0]
-        assert new_record.version == 8
+        old_external_id, new_record, _ = moves[0]
+        assert old_external_id == f"/{_PROJECT_PATH}/-/blob/HEAD/lib/a.py"
+        assert new_record.version == 0
