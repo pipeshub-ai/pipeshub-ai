@@ -20,7 +20,15 @@ from app.connectors.sources.google.common.scopes import (
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
 
-GOOGLE_HTTP_TIMEOUT_SECONDS = 60
+# httplib2's default (unset) timeout blocks forever on a stalled socket, which
+# under the shared connector thread pool would pin a worker permanently since a
+# blocked read can't be cancelled. 300s bounds that without cutting off slow-but-
+# legitimate calls (e.g. exporting a large Doc/Sheet to PDF).
+GOOGLE_HTTP_TIMEOUT_SECONDS = 300
+
+# Retries passed to googleapiclient's own execute() backoff so a timeout or
+# transient network error doesn't surface as an outright failure.
+GOOGLE_HTTP_NUM_RETRIES = 3
 
 
 def configure_google_http_timeout(client: object) -> object:

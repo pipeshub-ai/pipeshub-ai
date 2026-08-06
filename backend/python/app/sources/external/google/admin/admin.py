@@ -1,9 +1,10 @@
 import asyncio
+import functools
 from concurrent.futures import Executor
 from threading import Lock
 from typing import Any, Callable, Dict, Optional, TypeVar
 
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
 
 
 T = TypeVar("T")
@@ -50,7 +51,9 @@ class GoogleAdminDataSource:
         )
 
     async def _execute(self, request: Any) -> Dict[str, Any]:
-        return await self.execute(request.execute)
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
     async def chromeosdevices_action(
         self,

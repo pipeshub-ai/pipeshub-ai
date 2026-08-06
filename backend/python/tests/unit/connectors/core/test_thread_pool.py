@@ -15,7 +15,7 @@ from app.connectors.core.thread_pool import (
 def test_cap_enforced_under_over_submission() -> None:
     """A lease never occupies more of the pool than its cap, however wide it fans out."""
     pool = SharedConnectorThreadPool(max_workers=8, thread_name_prefix="test-cap")
-    lease = pool.lease(max_concurrency=2, label="cap", connector_type="TEST")
+    lease = pool.lease(max_concurrency=2, label="cap")
     counter_lock = threading.Lock()
     current = 0
     high_water = 0
@@ -48,7 +48,7 @@ def test_submit_does_not_block_caller() -> None:
     _finish -> _start in one chain once the blocker releases.
     """
     pool = SharedConnectorThreadPool(max_workers=4, thread_name_prefix="test-nonblock")
-    lease = pool.lease(max_concurrency=1, label="nonblock", connector_type="TEST")
+    lease = pool.lease(max_concurrency=1, label="nonblock")
     release = threading.Event()
 
     try:
@@ -74,8 +74,8 @@ def test_submit_does_not_block_caller() -> None:
 async def test_drain_does_not_shut_down_shared_pool() -> None:
     """Draining one connector's lease must not disturb any other connector."""
     pool = SharedConnectorThreadPool(max_workers=4, thread_name_prefix="test-drain")
-    lease_a = pool.lease(max_concurrency=2, label="a", connector_type="A")
-    lease_b = pool.lease(max_concurrency=2, label="b", connector_type="B")
+    lease_a = pool.lease(max_concurrency=2, label="a")
+    lease_b = pool.lease(max_concurrency=2, label="b")
 
     try:
         await lease_a.shutdown_and_drain()
@@ -95,7 +95,7 @@ async def test_drain_does_not_shut_down_shared_pool() -> None:
 
 async def test_drain_cancels_queued_and_awaits_inflight() -> None:
     pool = SharedConnectorThreadPool(max_workers=4, thread_name_prefix="test-cancel")
-    lease = pool.lease(max_concurrency=1, label="cancel", connector_type="TEST")
+    lease = pool.lease(max_concurrency=1, label="cancel")
     release = threading.Event()
 
     try:
@@ -122,7 +122,7 @@ def test_lease_is_loop_agnostic() -> None:
     loop is running at all. An asyncio.Semaphore-based cap would fail here.
     """
     pool = SharedConnectorThreadPool(max_workers=4, thread_name_prefix="test-loops")
-    lease = pool.lease(max_concurrency=2, label="loops", connector_type="TEST")
+    lease = pool.lease(max_concurrency=2, label="loops")
     results: list[int] = []
     errors: list[BaseException] = []
 
@@ -157,7 +157,7 @@ def test_lease_is_loop_agnostic() -> None:
 
 async def test_run_in_executor_propagates_exceptions() -> None:
     pool = SharedConnectorThreadPool(max_workers=2, thread_name_prefix="test-exc")
-    lease = pool.lease(max_concurrency=1, label="exc", connector_type="TEST")
+    lease = pool.lease(max_concurrency=1, label="exc")
 
     def boom() -> None:
         raise ValueError("upstream blew up")
@@ -174,33 +174,6 @@ def test_no_injection_falls_back_to_shared_thread_pool() -> None:
     """A connector with no pool injected (mocks, direct construction) falls back
     to the process-wide shared thread pool from get_shared_connector_thread_pool().
     """
-    lease = acquire_connector_lease(
-        MagicMock(), 2, label="fallback", connector_type="TEST"
-    )
+    lease = acquire_connector_lease(MagicMock(), 2, label="fallback")
     assert lease.submit(lambda: "ok").result(timeout=20) == "ok"
     assert lease._pool is get_shared_connector_thread_pool()
-
-
-def test_snapshot_reports_utilisation() -> None:
-    pool = SharedConnectorThreadPool(max_workers=4, thread_name_prefix="test-snap")
-    lease = pool.lease(max_concurrency=1, label="snap", connector_type="TEST")
-    release = threading.Event()
-
-    try:
-        lease.submit(release.wait, 20)
-        queued = [lease.submit(int) for _ in range(3)]
-
-        snapshot = pool.snapshot()
-        assert snapshot.max_workers == 4
-        assert snapshot.dispatched == 1
-        assert snapshot.lease_queued == 3
-        assert snapshot.leases == 1
-        assert snapshot.per_type_inflight == {"TEST": 1}
-        assert snapshot.live_threads >= 1
-
-        release.set()
-        for future in queued:
-            future.result(timeout=20)
-    finally:
-        release.set()
-        pool.shutdown(wait=True)

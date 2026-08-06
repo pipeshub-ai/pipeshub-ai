@@ -458,10 +458,12 @@ Generated from Google Discovery API schema definitions.
         
         # Generate class header
         class_code = f'''import asyncio
+import functools
 from concurrent.futures import Executor
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES
 
 T = TypeVar("T")
 
@@ -508,7 +510,9 @@ class {class_name}:
         )
 
     async def _execute(self, request: Any) -> Dict[str, Any]:
-        return await self.execute(request.execute)
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
 '''
         

@@ -102,7 +102,6 @@ class BaseConnector(ABC):
                 self,
                 max_concurrency,
                 label=f"{self.connector_name}-{self.connector_id[:8]}",
-                connector_type=str(self.connector_name),
             )
             self._thread_pool_lease = lease
         return lease

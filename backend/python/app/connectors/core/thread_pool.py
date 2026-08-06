@@ -30,7 +30,6 @@ import functools
 import logging
 import os
 import threading
-import weakref
 from collections import deque
 from concurrent.futures import (
     CancelledError,
@@ -39,7 +38,6 @@ from concurrent.futures import (
     InvalidStateError,
     ThreadPoolExecutor,
 )
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, override
 
 if TYPE_CHECKING:
@@ -103,12 +101,10 @@ class ThreadPoolLease(Executor):
         pool: SharedConnectorThreadPool,
         max_concurrency: int,
         label: str,
-        connector_type: str,
     ) -> None:
         self._pool = pool
         self._max = max(1, max_concurrency)
         self._label = label
-        self._connector_type = connector_type
         self._lock = threading.Lock()
         self._queue: deque[_QueuedCall] = deque()
         self._active: set[_QueuedCall] = set()
@@ -117,10 +113,6 @@ class ThreadPoolLease(Executor):
     @property
     def label(self) -> str:
         return self._label
-
-    @property
-    def connector_type(self) -> str:
-        return self._connector_type
 
     @property
     def max_concurrency(self) -> int:
@@ -290,19 +282,6 @@ class ThreadPoolLease(Executor):
             self._start(successor)
 
 
-@dataclass(frozen=True)
-class PoolSnapshot:
-    """Point-in-time view of the shared pool, for metrics."""
-
-    max_workers: int
-    live_threads: int
-    dispatched: int
-    lease_queued: int
-    pool_queued: int
-    leases: int
-    per_type_inflight: dict[str, int]
-
-
 class SharedConnectorThreadPool:
     """The one pool. Only process shutdown may shut it down."""
 
@@ -316,9 +295,6 @@ class SharedConnectorThreadPool:
             max_workers=self._max_workers,
             thread_name_prefix=thread_name_prefix,
         )
-        # Weak so a connector dropped without cleanup() does not pin its lease.
-        self._leases: weakref.WeakSet[ThreadPoolLease] = weakref.WeakSet()
-        self._leases_lock = threading.Lock()
 
     @property
     def max_workers(self) -> int:
@@ -329,12 +305,8 @@ class SharedConnectorThreadPool:
         *,
         max_concurrency: int,
         label: str,
-        connector_type: str,
     ) -> ThreadPoolLease:
-        lease = ThreadPoolLease(self, max_concurrency, label, connector_type)
-        with self._leases_lock:
-            self._leases.add(lease)
-        return lease
+        return ThreadPoolLease(self, max_concurrency, label)
 
     def submit_raw(
         self,
@@ -346,45 +318,8 @@ class SharedConnectorThreadPool:
         """Submit straight to the pool, bypassing every cap. Leases only."""
         return self._tpe.submit(fn, *args, **kwargs)
 
-    def snapshot(self) -> PoolSnapshot:
-        with self._leases_lock:
-            leases = list(self._leases)
-        dispatched = 0
-        lease_queued = 0
-        per_type: dict[str, int] = {}
-        for lease in leases:
-            active = lease.inflight
-            dispatched += active
-            lease_queued += lease.queued
-            per_type[lease.connector_type] = (
-                per_type.get(lease.connector_type, 0) + active
-            )
-        return PoolSnapshot(
-            max_workers=self._max_workers,
-            live_threads=self._live_threads(),
-            dispatched=dispatched,
-            lease_queued=lease_queued,
-            pool_queued=self._pool_queued(),
-            leases=len(leases),
-            per_type_inflight=per_type,
-        )
-
     def shutdown(self, *, wait: bool = False) -> None:
         self._tpe.shutdown(wait=wait, cancel_futures=not wait)
-
-    def _live_threads(self) -> int:
-        """Threads the pool has actually spawned. -1 if CPython internals moved."""
-        try:
-            return len(self._tpe._threads)  # type: ignore[attr-defined]
-        except Exception:
-            return -1
-
-    def _pool_queued(self) -> int:
-        """Dispatched calls waiting for a worker. -1 if CPython internals moved."""
-        try:
-            return self._tpe._work_queue.qsize()  # type: ignore[attr-defined]
-        except Exception:
-            return -1
 
 
 _shared_pool: SharedConnectorThreadPool | None = None
@@ -413,7 +348,6 @@ def acquire_connector_lease(
     max_concurrency: int,
     *,
     label: str,
-    connector_type: str,
 ) -> ThreadPoolLease:
     """Lease from the pool injected onto ``owner``, or the process-wide one.
 
@@ -424,8 +358,4 @@ def acquire_connector_lease(
     pool = getattr(owner, "_shared_thread_pool", None)
     if not isinstance(pool, SharedConnectorThreadPool):
         pool = get_shared_connector_thread_pool()
-    return pool.lease(
-        max_concurrency=max_concurrency,
-        label=label,
-        connector_type=connector_type,
-    )
+    return pool.lease(max_concurrency=max_concurrency, label=label)

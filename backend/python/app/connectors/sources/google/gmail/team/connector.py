@@ -98,6 +98,11 @@ if TYPE_CHECKING:
 # max_concurrent_batches users, the admin data source, and streaming headroom.
 _GMAIL_TEAM_MAX_CONCURRENCY = 6
 
+# Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
+# 100 MB, which buffers a whole slice in memory before any of it reaches the
+# client and keeps one executor thread busy for that entire transfer.
+_GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+
 
 @ConnectorBuilder("Gmail Workspace")\
     .in_group("Google Workspace")\
@@ -2390,7 +2395,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         request = drive_service.files().get_media(
                             fileId=drive_file_id
                         )
-                        downloader = MediaIoBaseDownload(f, request)
+                        downloader = MediaIoBaseDownload(f, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
 
                         done = False
                         while not done:
@@ -2424,7 +2429,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     request = drive_service.files().get_media(
                         fileId=drive_file_id
                     )
-                    downloader = MediaIoBaseDownload(buffer, request)
+                    downloader = MediaIoBaseDownload(buffer, request, chunksize=_GMAIL_DOWNLOAD_CHUNK_SIZE)
                     done = False
 
                     self.logger.info(f"Starting Drive file stream for {drive_file_id}")
