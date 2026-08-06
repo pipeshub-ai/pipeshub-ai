@@ -505,8 +505,6 @@ class ReposSync:
                         name_map[str(entry_path)] = str(entry_name)
 
         external_group_id = f"{project_id}-code-repository"
-        from app.utils.time_conversion import get_epoch_timestamp_in_ms
-        current_timestamp = get_epoch_timestamp_in_ms()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -524,6 +522,8 @@ class ReposSync:
             weburl = f"{c._gitlab_base_url}{web_path}"
             parent_dir = new_path.rpartition("/")[0] if "/" in new_path else None
             parent_external_record_id = _code_tree_web_path(project_path, parent_dir) if parent_dir else None
+            # Leave source timestamps unset — on_records_moved keeps the stored
+            # Git timestamps rather than overwriting with sync time.
             new_record = self._build_blob_record(
                 file_name=file_name,
                 file_path=new_path,
@@ -532,8 +532,6 @@ class ReposSync:
                 blob_sha=blob_sha,
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
-                source_created_at=current_timestamp,
-                source_updated_at=current_timestamp,
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))

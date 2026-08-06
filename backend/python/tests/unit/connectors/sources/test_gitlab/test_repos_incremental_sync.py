@@ -523,10 +523,13 @@ class TestApplyCodeRenames:
         repos._delete_code_files_by_paths = AsyncMock()
         repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         c.data_entities_processor.on_records_moved.assert_called_once()
+        moves = c.data_entities_processor.on_records_moved.call_args.args[0]
+        _, new_record, _ = moves[0]
+        assert new_record.source_created_at is None
+        assert new_record.source_updated_at is None
 
     async def test_cross_directory_move_sets_correct_parent_external_id(self) -> None:
         c, repos = _make_incremental_connector()
@@ -537,8 +540,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("lib/a.py", "src/b.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]
@@ -554,8 +556,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]
@@ -571,8 +572,7 @@ class TestApplyCodeRenames:
         repos._delete_code_files_by_paths = AsyncMock()
         repos._upsert_code_files_by_paths = AsyncMock(return_value=True)
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", "b.py")])
 
         repos._delete_code_files_by_paths.assert_called_once()
         repos._upsert_code_files_by_paths.assert_called_once()
@@ -586,8 +586,7 @@ class TestApplyCodeRenames:
         repos._ensure_folder_records_for_paths = AsyncMock()
         repos._delete_code_files_by_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", ".hidden")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("a.py", ".hidden")])
 
         repos._delete_code_files_by_paths.assert_called_once()
         c.data_entities_processor.on_records_moved.assert_not_called()
@@ -611,8 +610,7 @@ class TestApplyCodeRenames:
         )
         repos._ensure_folder_records_for_paths = AsyncMock()
 
-        with patch("app.utils.time_conversion.get_epoch_timestamp_in_ms", return_value=1000):
-            await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("src/old.py", "src/new.py")])
+        await repos._apply_code_renames(_PROJECT_ID, _PROJECT_PATH, [("src/old.py", "src/new.py")])
 
         moves = c.data_entities_processor.on_records_moved.call_args.args[0]
         _, new_record, _ = moves[0]

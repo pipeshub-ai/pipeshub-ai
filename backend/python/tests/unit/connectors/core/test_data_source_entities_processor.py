@@ -3600,6 +3600,32 @@ class TestOnRecordContentUpdate:
 
 
 # ===========================================================================
+# _preserve_indexing_state
+# ===========================================================================
+
+
+class TestPreserveIndexingState:
+    def test_keeps_incoming_zero_byte_size(self) -> None:
+        """Empty-file size 0 must not be replaced by a stored nonzero size."""
+        proc = _make_processor()
+        incoming = _make_record()
+        incoming.size_in_bytes = 0
+        existing = _make_record()
+        existing.size_in_bytes = 4096
+        proc._preserve_indexing_state(incoming, existing)
+        assert incoming.size_in_bytes == 0
+
+    def test_falls_back_when_size_unset(self) -> None:
+        proc = _make_processor()
+        incoming = _make_record()
+        incoming.size_in_bytes = None
+        existing = _make_record()
+        existing.size_in_bytes = 4096
+        proc._preserve_indexing_state(incoming, existing)
+        assert incoming.size_in_bytes == 4096
+
+
+# ===========================================================================
 # on_record_metadata_update & on_record_deleted (lines 927-937)
 # ===========================================================================
 
@@ -4431,6 +4457,31 @@ class TestOnRecordsMovedReindex:
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
 
         assert new_record.version == 7
+
+    async def test_pure_rename_preserves_source_timestamps_when_unset(self) -> None:
+        """Null source timestamps on the move payload keep stored Git times."""
+        tx_store = _make_tx_store()
+        shared_sha = "sha-identical"
+        old_record = _make_old_record(
+            record_id="rec-ts",
+            external_revision_id=shared_sha,
+            version=3,
+        )
+        old_record.source_created_at = 1_700_000_000_000
+        old_record.source_updated_at = 1_700_000_100_000
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id=shared_sha,
+            version=0,
+        )
+        new_record.source_created_at = None
+        new_record.source_updated_at = None
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert new_record.source_created_at == 1_700_000_000_000
+        assert new_record.source_updated_at == 1_700_000_100_000
 
     async def test_empty_moves_is_noop(self) -> None:
         """Empty moves list → no DB or Kafka calls."""

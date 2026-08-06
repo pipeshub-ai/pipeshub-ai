@@ -1193,8 +1193,10 @@ class DataSourceEntitiesProcessor:
         record.is_vlm_ocr_processed = existing_record.is_vlm_ocr_processed
         # A connector may legitimately report these from the source, so keep its
         # value when it has one and fall back to what is stored otherwise.
+        # size_in_bytes=0 is valid (empty file) — only fall back when unset.
         record.md5_hash = record.md5_hash or existing_record.md5_hash
-        record.size_in_bytes = record.size_in_bytes or existing_record.size_in_bytes
+        if record.size_in_bytes is None:
+            record.size_in_bytes = existing_record.size_in_bytes
         record.storage_document_id = (
             record.storage_document_id or existing_record.storage_document_id
         )
@@ -1271,6 +1273,13 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
+
+                    # Keep stored Git/source timestamps when the connector did not
+                    # supply real ones (e.g. rename path with null timestamps).
+                    if new_record.source_created_at is None:
+                        new_record.source_created_at = old_record.source_created_at
+                    if new_record.source_updated_at is None:
+                        new_record.source_updated_at = old_record.source_updated_at
 
                     # Same contract as _process_record: connectors that leave version
                     # at 0 (GitLab) inherit the stored value and bump only on content change.
