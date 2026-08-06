@@ -1,6 +1,8 @@
+import axios from 'axios';
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { AppConfig } from '../../tokens_manager/config/config';
 import { MailProducer } from '../../mail/services/mail.producer';
 import { MailEventType } from '../../mail/types/mail-event.types';
 import { MailBody } from '../../mail/middlewares/types';
@@ -13,7 +15,10 @@ interface SendMailParams {
   fromEmailDomain?: string;
   attachedDocuments?: any[];
   ccEmails?: string[];
+  deliverAsync?: boolean;
 }
+
+const SEND_MAIL_TIMEOUT_MS = 30_000;
 
 interface SendMailResponse {
   statusCode: number;
@@ -23,6 +28,7 @@ interface SendMailResponse {
 @injectable()
 export class MailService {
   constructor(
+    @inject('AppConfig') private userConfig: AppConfig,
     @inject('Logger') private logger: Logger,
     @inject(MailProducer) private readonly mailProducer: MailProducer,
   ) {}
@@ -36,6 +42,7 @@ export class MailService {
     fromEmailDomain,
     attachedDocuments,
     ccEmails,
+    deliverAsync,
   }: SendMailParams): Promise<SendMailResponse> {
     try {
       this.logger.debug('sending mail ...');
@@ -63,20 +70,43 @@ export class MailService {
         data.sendCcTo = ccEmails;
       }
 
-      // 200 now means "accepted for delivery", not "sent" — MailConsumer
-      // notifies admins if delivery ultimately fails.
-      await this.mailProducer.publishEvent({
-        eventType: MailEventType.SendMailEvent,
-        timestamp: Date.now(),
-        payload: { mail: data, orgId: initiator.orgId },
-      });
-      return { statusCode: 200, data: { message: 'Email queued for delivery' } };
+      if (deliverAsync) {
+        // 200 here means "accepted for delivery", not "sent" — MailConsumer
+        // notifies admins if delivery ultimately fails.
+        await this.mailProducer.publishEvent({
+          eventType: MailEventType.SendMailEvent,
+          timestamp: Date.now(),
+          payload: { mail: data, orgId: initiator.orgId },
+        });
+        return {
+          statusCode: 200,
+          data: { message: 'Email queued for delivery', queued: true },
+        };
+      }
+
+      const config = {
+        method: 'post' as const,
+        url: `${this.userConfig.communicationBackend}/api/v1/mail/emails/sendEmail`,
+        headers: {
+          Authorization: `Bearer ${initiator.jwtAuthToken}`,
+          'Content-Type': 'application/json',
+        },
+        data,
+        timeout: SEND_MAIL_TIMEOUT_MS,
+      };
+      const response = await axios(config);
+      return { statusCode: 200, data: response.data };
     } catch (error: any) {
-      // Always 500: callers only branch on `statusCode !== 200`.
-      this.logger.error('Error queueing mail', { error: error?.message });
+      this.logger.error('Error sending mail', {
+        error: error?.response?.data ?? error?.message,
+      });
       return {
-        statusCode: 500,
-        data: error?.message || 'Error sending mail.',
+        statusCode: error?.response?.status || 500,
+        data:
+          error?.response?.data?.error?.message ||
+          error?.response?.data?.message ||
+          error?.message ||
+          'Error sending mail.',
       };
     }
   }
