@@ -1335,15 +1335,6 @@ class TestDriveWorkspaceEntitySync:
                 drive_workspace_datasource, folder_id, second_email
             )
 
-            await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
-
-            await _wait_record_present(
-                graph_provider,
-                connector_id,
-                folder_id,
-                description=f"{folder_name} ({folder_id}) in graph after SD share",
-            )
-
             async def _sd_and_b_swm() -> bool:
                 on_sd = await graph_provider.record_belongs_to_external_group(
                     connector_id, folder_id, sd_id
@@ -1356,11 +1347,11 @@ class TestDriveWorkspaceEntitySync:
                 )
                 return on_sd and on_swm and has_perm
 
-            await wait_until_graph_condition(
+            await _drive_changes.sync_until(
+                pipeshub_client,
+                graph_provider,
                 connector_id,
                 check=_sd_and_b_swm,
-                timeout=_SYNC_TIMEOUT_SEC,
-                poll_interval=10,
                 description=(
                     f"{folder_name} BELONGS_TO SD {sd_id} + SWM {b_swm_id} "
                     f"+ PERMISSION {second_email}"
@@ -1371,18 +1362,17 @@ class TestDriveWorkspaceEntitySync:
             await unshare_drive_item_from_user(
                 drive_workspace_datasource, folder_id, second_email
             )
-            await _sync_and_wait(pipeshub_client, graph_provider, connector_id)
 
             async def _b_perm_gone() -> bool:
                 return not await graph_provider.user_has_direct_record_permission(
                     connector_id, second_email, folder_id
                 )
 
-            await wait_until_graph_condition(
+            await _drive_changes.sync_until(
+                pipeshub_client,
+                graph_provider,
                 connector_id,
                 check=_b_perm_gone,
-                timeout=_SYNC_TIMEOUT_SEC,
-                poll_interval=10,
                 description=f"{folder_name}: B ({second_email}) PERMISSION removed",
             )
 

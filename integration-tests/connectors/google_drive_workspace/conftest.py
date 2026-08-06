@@ -42,6 +42,7 @@ from helper.clients.users_client import UsersClient  # type: ignore[import-not-f
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import (  # type: ignore[import-not-found]
     async_poll_until,
+    sync_until_condition,
     wait_for_sync_completion,
     wait_until_graph_condition,
 )
@@ -398,7 +399,7 @@ async def drive_workspace_entity_connector(
         child_file_id = fixtures["child_file_id"]
         sample_ids = [s["id"] for s in entity_sample_files]
 
-        async def _seed_child_and_samples_present() -> bool:
+        async def _entity_graph_ready() -> bool:
             seed = await graph_provider.get_record_by_external_id(
                 connector_id, seed_folder_id
             )
@@ -408,26 +409,49 @@ async def drive_workspace_entity_connector(
             if seed is None or child is None:
                 return False
             for sid in sample_ids:
-                if await graph_provider.get_record_by_external_id(connector_id, sid) is None:
+                record = await graph_provider.get_record_by_external_id(
+                    connector_id, sid
+                )
+                if record is None:
+                    return False
+            for drive_id in entity_shared_drive_ids:
+                record_group = await graph_provider.get_record_group_by_external_id(
+                    connector_id, drive_id
+                )
+                if record_group is None:
                     return False
             return True
 
-        try:
-            await wait_until_graph_condition(
+        async def _resync() -> None:
+            pipeshub_client.toggle_sync(connector_id, enable=False)
+            pipeshub_client.wait(5)
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+            pipeshub_client.wait(8)
+            await wait_for_sync_completion(
+                pipeshub_client,
+                graph_provider,
                 connector_id,
-                check=_seed_child_and_samples_present,
                 timeout=_SYNC_TIMEOUT_SEC,
-                poll_interval=10,
-                description=(
-                    f"seed folder + child.txt + {len(sample_ids)} sample files "
-                    f"in graph for {test_user}"
-                ),
             )
+
+        try:
+            if not await _entity_graph_ready():
+                await sync_until_condition(
+                    connector_id,
+                    sync_fn=_resync,
+                    check=_entity_graph_ready,
+                    timeout=_SYNC_TIMEOUT_SEC,
+                    description=(
+                        f"entity records + {len(entity_shared_drive_ids)} Shared Drive "
+                        f"RecordGroups in graph for {test_user}"
+                    ),
+                )
         except TimeoutError:
             raise TimeoutError(
-                f"Timed out waiting for entity seed records. "
+                f"Timed out waiting for entity records and Shared Drive RecordGroups. "
                 f"connector_id={connector_id} user={test_user} "
-                f"seed={seed_folder_id} child={child_file_id} samples={sample_ids}"
+                f"seed={seed_folder_id} child={child_file_id} samples={sample_ids} "
+                f"shared_drives={entity_shared_drive_ids}"
             ) from None
 
         logger.info(

@@ -2488,6 +2488,7 @@ class TestSyncPersonalDrive:
         mock_ds.files_list = AsyncMock(return_value={"files": []})
 
         await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
+        assert mock_ds.files_list.await_args.kwargs["q"] == "trashed=false"
         conn.drive_delta_sync_point.update_sync_point.assert_called_once()
 
     @pytest.mark.asyncio
@@ -2651,6 +2652,7 @@ class TestSyncSharedDrives:
         mock_ds.files_list = AsyncMock(return_value={"files": []})
 
         await conn.sync_shared_drives(user, mock_ds, "perm-id")
+        assert mock_ds.files_list.await_args.kwargs["q"] == "trashed=false"
         conn.drive_delta_sync_point.update_sync_point.assert_called_once()
 
     @pytest.mark.asyncio

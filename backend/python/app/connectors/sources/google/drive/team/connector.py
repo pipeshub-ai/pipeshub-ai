@@ -2304,6 +2304,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             while True:
                 # Prepare files_list parameters
                 list_params = {
+                    "q": "trashed=false",
                     "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
                 }
 
@@ -2601,6 +2602,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     list_params = {
                                         "driveId": drive_id,
                                         "corpora": "drive",
+                                        "q": "trashed=false",
                                         "supportsAllDrives": True,
                                         "includeItemsFromAllDrives": True,  # Required when driveId is specified
                                         "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
