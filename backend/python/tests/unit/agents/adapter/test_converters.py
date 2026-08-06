@@ -148,6 +148,40 @@ class TestAssistantMessageFromLangchain:
         result = convert_assistant_message_from_langchain(ai_message)
         assert result.truncated is True
 
+    def test_truncated_response_from_responses_api_incomplete_details(self) -> None:
+        """OpenAI's Responses API never sets `finish_reason` — it reports a
+        cut-off answer as `status="incomplete"` plus `incomplete_details`."""
+        ai_message = AIMessage(
+            content=[{"type": "text", "text": "cut off", "annotations": []}],
+            response_metadata={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.truncated is True
+
+    def test_completed_responses_api_answer_is_not_truncated(self) -> None:
+        ai_message = AIMessage(
+            content=[{"type": "text", "text": "all done", "annotations": []}],
+            response_metadata={"status": "completed", "incomplete_details": None},
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.truncated is False
+
+    def test_content_filter_incomplete_is_not_truncation(self) -> None:
+        """`incomplete_details.reason` also carries non-length stops, which
+        must not be mistaken for hitting the output-token cap."""
+        ai_message = AIMessage(
+            content=[{"type": "text", "text": "", "annotations": []}],
+            response_metadata={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.truncated is False
+
     def test_tool_call_round_trip(self) -> None:
         call = convert_tool_call_from_langchain({"name": "foo", "args": {"a": 1}, "id": "x1"})
         assert call.name == "foo"

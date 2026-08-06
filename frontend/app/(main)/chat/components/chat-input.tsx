@@ -1253,11 +1253,38 @@ export function ChatInput({
     );
   }
 
+  const composerActive =
+    !isStreaming && (isInputFocused || message.trim() || isEditMode || isListening);
+
+  const textareaLayoutStyle: React.CSSProperties = {
+    width: '100%',
+    backgroundColor: 'transparent',
+    outline: 'none',
+    border: 'none',
+    fontSize: 'var(--font-size-2)',
+    lineHeight: 1.5,
+    resize: 'none',
+    minHeight: '24px',
+    maxHeight: '120px',
+    fontFamily: 'Manrope, sans-serif',
+    height: 'auto',
+    overflow: 'auto',
+    padding: 0,
+    margin: 0,
+  };
+
+  const syncTextareaHeight = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const target = e.currentTarget;
+    target.style.height = 'auto';
+    target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
+  };
+
   return (
     <>
     <Flex
       ref={containerRef}
       direction="column"
+      align="stretch"
       onAnimationEnd={() => setIsAnimatingIn(false)}
       onPaste={handlePaste}
       onDragEnter={handlePanelDragEnter}
@@ -1265,25 +1292,35 @@ export function ChatInput({
       onDragLeave={handlePanelDragLeave}
       onDrop={handlePanelDrop}
       style={{
-        width: isMobile ? '100%' : 'min(50rem, 100%)',
+        width: '100%',
+        minWidth: 0,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
         fontFamily: 'Manrope, sans-serif',
+        backdropFilter: 'blur(25px)',
+        background:
+          composerActive || message.trim() || isListening
+            ? 'var(--olive-2)'
+            : 'var(--effects-translucent)',
+        transition: 'background 0.15s ease, border-color 0.15s ease',
+        border: composerActive ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
+        borderRadius: 'var(--radius-2)',
         ...(isAnimatingIn && {
           animation: 'chatWidgetExpandIn 220ms ease-out',
         }),
       }}
     >
-      {/* Selected Collection Cards — shown above the main input, matching Figma spec */}
+      {/* Selected filters — same horizontal padding as the textarea/toolbar */}
       {showSelectedCollectionsRow && (
         <Flex
           align="center"
           style={{
+            width: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
             backgroundColor: 'var(--slate-1)',
-            borderTop: '1px solid var(--slate-5)',
-            borderLeft: '1px solid var(--slate-5)',
-            borderRight: '1px solid var(--slate-5)',
-            borderTopLeftRadius: 'var(--radius-1)',
-            borderTopRightRadius: 'var(--radius-1)',
-            padding: 'var(--space-2) var(--space-3)',
+            borderBottom: '1px solid var(--slate-5)',
+            padding: 'var(--space-2) var(--space-4)',
           }}
         >
           <SelectedCollections
@@ -1294,26 +1331,16 @@ export function ChatInput({
         </Flex>
       )}
 
-      {/* Uploaded Files Preview — separate container above the main input, matching Figma spec */}
+      {/* Uploaded Files Preview — inside the same bordered composer */}
       {uploadedFiles.length > 0 && (
         <Flex
           align="center"
           style={{
+            width: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
             backgroundColor: 'var(--slate-1)',
-            borderTop:
-              showSelectedCollectionsRow
-                ? 'none'
-                : '1px solid var(--slate-5)',
-            borderLeft: '1px solid var(--slate-5)',
-            borderRight: '1px solid var(--slate-5)',
-            borderTopLeftRadius:
-              showSelectedCollectionsRow
-                ? '0'
-                : 'var(--radius-1)',
-            borderTopRightRadius:
-              showSelectedCollectionsRow
-                ? '0'
-                : 'var(--radius-1)',
+            borderBottom: '1px solid var(--slate-5)',
             padding: 'var(--space-3) var(--space-4)',
             gap: 'var(--space-1)',
           }}
@@ -1523,16 +1550,15 @@ export function ChatInput({
         </Flex>
       )}
 
-      {/* Action pill bar — sits above the main input container when edit or regenerate is active. */}
+      {/* Action pill bar — edit / regenerate chrome inside the composer */}
       {isActionMode && activeMessageAction && (
         <Flex
           style={{
+            width: '100%',
+            minWidth: 0,
+            boxSizing: 'border-box',
             background: 'var(--olive-1)',
-            borderTop: '1px solid var(--olive-5)',
-            borderLeft: '1px solid var(--olive-5)',
-            borderRight: '1px solid var(--olive-5)',
-            borderTopLeftRadius: 'var(--radius-2)',
-            borderTopRightRadius: 'var(--radius-2)',
+            borderBottom: '1px solid var(--olive-5)',
             padding: 'var(--space-3) var(--space-4)',
           }}
         >
@@ -1544,28 +1570,16 @@ export function ChatInput({
         </Flex>
       )}
 
-      {/* Main Chat Input */}
+      {/* Textarea + toolbar */}
       <Flex
       direction="column"
       gap="2"
       style={{
+        width: '100%',
+        minWidth: 0,
+        boxSizing: 'border-box',
         position: 'relative',
-        backdropFilter: 'blur(25px)',
-        background: (isInputFocused || message.trim() || isListening) ? 'var(--olive-2)' : 'var(--effects-translucent)',
-        transition: 'background 0.15s ease',
-        border: (!isStreaming && (isInputFocused || message.trim() || isEditMode || isListening)) ? '1px solid var(--accent-11)' : '1px solid var(--slate-3)',
-        // Flatten top corners whenever there is an element directly above (collections bar,
-        // uploaded files preview, or the action pill bar) to avoid a double-radius gap.
-        borderRadius:
-          (selectedCollections.length > 0 &&
-            !isAgentChat &&
-            !isCollectionsPanelOpen &&
-            !modeChromeOpen) ||
-          uploadedFiles.length > 0 ||
-          isActionMode
-            ? '0 0 var(--radius-2) var(--radius-2)'
-            : 'var(--radius-2)',
-        padding: isMobile ? 'var(--space-3) var(--space-4)' : 'var(--space-2) var(--space-4)',
+        padding: 'var(--space-3) var(--space-4)',
       }}
     >
       {/* Hidden file input - always rendered so add button can access it */}
@@ -1709,25 +1723,8 @@ export function ChatInput({
           onBlur={() => setIsInputFocused(false)}
           placeholder={resolvedPlaceholder}
           rows={1}
-          style={{
-            width: '100%',
-            backgroundColor: 'transparent',
-            outline: 'none',
-            border: 'none',
-            fontSize: 'var(--font-size-2)',
-            color: 'var(--slate-11)',
-            resize: 'none',
-            minHeight: '24px',
-            maxHeight: '120px',
-            fontFamily: 'Manrope, sans-serif',
-            height: 'auto',
-            overflow: 'auto',
-          }}
-          onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement;
-            target.style.height = 'auto';
-            target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
-          }}
+          style={{ ...textareaLayoutStyle, color: 'var(--slate-11)' }}
+          onInput={syncTextareaHeight}
         />
       ) : !showUploadArea || isActionMode ? (
         // isActionMode keeps the textarea visible even when showUploadArea is true,
@@ -1745,32 +1742,18 @@ export function ChatInput({
           disabled={isRegenerateMode}
           rows={1}
           style={{
-            width: '100%',
-            backgroundColor: 'transparent',
-            outline: 'none',
-            border: 'none',
-            fontSize: 'var(--font-size-2)',
+            ...textareaLayoutStyle,
             color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--slate-12)',
-            resize: 'none',
-            minHeight: isMobile ? '36px' : '44px',
-            maxHeight: '120px',
-            fontFamily: 'Manrope, sans-serif',
-            height: 'auto',
-            overflow: 'auto',
           }}
-          onInput={(e) => {
-            const target = e.target as HTMLTextAreaElement;
-            target.style.height = 'auto';
-            target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
-          }}
+          onInput={syncTextareaHeight}
         />
       ) : null}
 
-      {/* Bottom controls */}
-      <Flex align="center" justify="between">
+      {/* Bottom controls — fixed 32px row so left/right share one baseline */}
+      <Flex align="center" justify="between" style={{ width: '100%', minWidth: 0, minHeight: 32 }}>
         {/* Left side — search-view toggle (hidden for agent-scoped chats, which don't
             support the keyword-search-results view), plus the "+" attach & capabilities button. */}
-        <Flex align="center" gap="1">
+        <Flex align="center" gap="1" style={{ minWidth: 0 }}>
           {!isAgentChat && (
             <Tooltip
               content={isSearchMode ? t('chat.backToChat', { defaultValue: 'Back to chat' }) : t('form.search')}
@@ -1847,7 +1830,7 @@ export function ChatInput({
         </Flex>
 
         {/* Right side - Controls */}
-        <Flex align="center" gap="2">
+        <Flex align="center" gap="2" style={{ minWidth: 0, flexShrink: 0 }}>
           {isMobile ? (
             /* Mobile: meatball opens bottom sheet; mic stays inline (attach files lives in the + menu). */
             <Flex align="center" gap="1">

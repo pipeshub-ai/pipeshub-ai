@@ -1,0 +1,5 @@
+# Generated local config and secrets — never commit these.
+.local/
+agent/config.yaml
+*.env
+credentials.env
