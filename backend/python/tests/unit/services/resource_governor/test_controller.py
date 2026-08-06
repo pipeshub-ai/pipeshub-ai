@@ -211,7 +211,7 @@ class TestResourceGovernorController:
 
         assert set(stats.keys()) == {
             "probe_source", "cpu_quota", "cpu_utilisation", "mem_pressure", "mem_limit_bytes",
-            "mem_working_set_raw_bytes", "mem_baseline_bytes",
+            "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "limits", "in_use", "demand",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}

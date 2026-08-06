@@ -257,25 +257,27 @@ class ResourceGovernor:
             )
             shrank = any(new_value < old_value for _, old_value, new_value in changed)
             if shrank and snapshot.mem_baseline_bytes:
-                # Baseline subtraction can be *why* pressure still forced a
-                # shrink despite genuinely idle CPU — surface both readings
-                # so an operator doesn't have to guess whether the fix in
-                # probe.py's BaselineMemoryTracker is under-crediting a
-                # co-located idle service.
+                # Surface raw and adjusted side by side so an operator can
+                # see how much of the cgroup a co-located idle service is
+                # holding, and judge whether the shrink reflects real
+                # workload growth or a container that is simply too small
+                # for its resident footprint.
                 self._logger.info(
                     "ResourceGovernor shrink context: raw_mem_pressure=%s "
-                    "(working_set=%s) adjusted_mem_pressure=%s (baseline "
-                    "subtracted=%s) — raise GOVERNOR_BASELINE_MEMORY_MB or "
-                    "GOVERNOR_MEM_SOFT if the baseline looks too small for "
-                    "this deployment's idle footprint",
+                    "(working_set=%s of %s) adjusted_mem_pressure=%s "
+                    "(baseline=%s subtracted from both sides, usable=%s) — "
+                    "raise GOVERNOR_MEM_SOFT if this deployment can safely "
+                    "run closer to its cgroup limit",
                     _fmt_ratio(
                         snapshot.mem_working_set_raw_bytes / snapshot.mem_limit_bytes
                         if snapshot.mem_working_set_raw_bytes is not None and snapshot.mem_limit_bytes
                         else None
                     ),
                     _fmt_bytes(snapshot.mem_working_set_raw_bytes),
+                    _fmt_bytes(snapshot.mem_limit_bytes),
                     _fmt_ratio(snapshot.mem_pressure),
                     _fmt_bytes(snapshot.mem_baseline_bytes),
+                    _fmt_bytes(snapshot.mem_usable_bytes),
                 )
 
         rate_limited = {
@@ -350,6 +352,7 @@ class ResourceGovernor:
             "cpu_utilisation": snapshot.cpu_utilisation,
             "mem_pressure": snapshot.mem_pressure,
             "mem_limit_bytes": snapshot.mem_limit_bytes,
+            "mem_usable_bytes": snapshot.mem_usable_bytes,
             "mem_working_set_raw_bytes": snapshot.mem_working_set_raw_bytes,
             "mem_baseline_bytes": snapshot.mem_baseline_bytes,
             "worker_count": self._worker_count,

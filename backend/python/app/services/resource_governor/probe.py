@@ -52,6 +52,12 @@ _MEM_V1_NO_LIMIT_SENTINEL = 1 << 62
 # Baseline memory calibration (plan: "Fix 1 — Baseline Memory Reservation").
 _BASELINE_MEMORY_ENV_VAR = "GOVERNOR_BASELINE_MEMORY_MB"
 _BASELINE_CALIBRATION_SAMPLES = 3
+# Most of the cgroup limit the baseline may claim. ``mem_pressure`` nets the
+# baseline out of both sides of its ratio, so any value still reads 1.0 on a
+# full cgroup; this cap is about keeping the remaining denominator wide
+# enough that one document's working set can't swing the reading from idle
+# to critical and set the controller oscillating.
+_MAX_BASELINE_LIMIT_FRACTION = 0.5
 
 
 class ResourceProbe(Protocol):
@@ -291,11 +297,14 @@ def _resolve_memory() -> tuple[int | None, int | None, str]:
 
 
 # ---------------------------------------------------------------------------
-# Baseline memory — subtract co-located idle services (e.g. Docling's model
-# weights sitting in the same cgroup/container) from the working set before
-# it feeds mem_pressure, so MEM_SOFT/MEM_HARD react to *workload* memory
-# rather than a fixed baseline the container carries at all times (plan:
-# "Fix 1 — Baseline Memory Reservation").
+# Baseline memory — estimate what co-located idle services (e.g. Docling's
+# model weights sitting in the same cgroup/container) hold, so MEM_SOFT/
+# MEM_HARD react to *workload* memory rather than a fixed baseline the
+# container carries at all times (plan: "Fix 1 — Baseline Memory
+# Reservation"). ``ResourceSnapshot.mem_pressure`` subtracts this figure
+# from the cgroup limit as well as from the working set — netting it out of
+# only the working set would put the brake thresholds beyond the largest
+# reading the probe can ever produce.
 # ---------------------------------------------------------------------------
 
 
@@ -324,6 +333,9 @@ class BaselineMemoryTracker:
       low-water mark is applied and keeps ratcheting down (never up) as
       lower idle readings arrive, so it also self-corrects if the initial
       calibration window overlapped with real workload memory.
+
+    Either way the result is capped at ``_MAX_BASELINE_LIMIT_FRACTION`` of
+    the cgroup limit when one is known.
 
     This is a heuristic, not a measurement of any specific process's RSS —
     it cannot know that the co-located memory belongs to "Docling"
@@ -365,15 +377,23 @@ class BaselineMemoryTracker:
             return None
         return self._low_water_mark
 
-    def adjust(self, working_set: int | None) -> tuple[int | None, int | None]:
+    def adjust(
+        self, working_set: int | None, limit_bytes: int | None = None
+    ) -> tuple[int | None, int | None]:
         """Returns ``(adjusted_working_set, baseline_used)``. Both are
         ``None`` if *working_set* itself is unknown; ``baseline_used`` is
-        ``None`` (no adjustment) while still calibrating."""
+        ``None`` (no adjustment) while still calibrating.
+
+        *limit_bytes*, when known, caps the baseline at
+        ``_MAX_BASELINE_LIMIT_FRACTION`` of the cgroup limit.
+        """
         if working_set is None:
             return None, None
         baseline = self.baseline_bytes(working_set)
         if baseline is None:
             return working_set, None
+        if limit_bytes is not None and limit_bytes > 0:
+            baseline = min(baseline, int(limit_bytes * _MAX_BASELINE_LIMIT_FRACTION))
         return max(0, working_set - baseline), baseline
 
 
@@ -605,7 +625,7 @@ class SystemResourceProbe:
             cpu_quota = _resolve_cpu_quota()
             mem_limit, mem_working_set_raw, mem_source = _resolve_memory()
             mem_working_set, mem_baseline = (
-                self._baseline_tracker.adjust(mem_working_set_raw)
+                self._baseline_tracker.adjust(mem_working_set_raw, mem_limit)
             )
             cpu_usage_usec, cpu_source = _resolve_cpu_usage_usec()
             throttled_usec = _cgroup_v2_cpu_throttled_usec()

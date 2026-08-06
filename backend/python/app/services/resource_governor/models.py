@@ -59,18 +59,40 @@ class ResourceSnapshot:
     applied (baseline still calibrating, or none configured)."""
 
     @property
-    def mem_pressure(self) -> float | None:
-        """Fraction of the memory limit currently in use, or ``None`` if
-        either the limit or the working set is unknown.
+    def mem_usable_bytes(self) -> int | None:
+        """The limit less the baseline: memory this workload can actually
+        grow into, and the denominator ``mem_pressure`` divides by."""
+        if self.mem_limit_bytes is None or self.mem_limit_bytes <= 0:
+            return None
+        usable = self.mem_limit_bytes - (self.mem_baseline_bytes or 0)
+        return usable if usable > 0 else None
 
-        Uses ``mem_working_set_bytes`` — already baseline-adjusted by the
-        probe when auto-calibration or ``GOVERNOR_BASELINE_MEMORY_MB`` is in
-        effect — not the raw cgroup reading."""
-        if self.mem_limit_bytes is None or self.mem_working_set_bytes is None:
+    @property
+    def mem_pressure(self) -> float | None:
+        """Fraction of the memory available to this workload currently in
+        use, or ``None`` if either the limit or the working set is unknown.
+
+        Both sides of the ratio exclude the baseline, so a genuinely full
+        cgroup still reads 1.0. Dividing the baseline-adjusted working set
+        by the *raw* limit would cap the achievable reading at
+        ``1 - baseline / limit``; with the multi-GB baseline of an
+        all-in-one container that ceiling falls below MEM_SOFT, and no
+        amount of real pressure could ever trip the brake before the kernel
+        OOM-kills the container.
+        """
+        if self.mem_working_set_bytes is None:
             return None
-        if self.mem_limit_bytes <= 0:
-            return None
-        return self.mem_working_set_bytes / self.mem_limit_bytes
+        usable = self.mem_usable_bytes
+        if usable is None:
+            if self.mem_limit_bytes is None or self.mem_limit_bytes <= 0:
+                return None
+            # A baseline swallowing the whole limit leaves no headroom to
+            # reason about. Report the raw ratio (~1.0) rather than the
+            # adjusted one (~0.0), which would read as idle and invite
+            # growth into a cgroup that is already full.
+            raw = self.mem_working_set_raw_bytes
+            return (raw if raw is not None else self.mem_working_set_bytes) / self.mem_limit_bytes
+        return self.mem_working_set_bytes / usable
 
 
 @dataclass(frozen=True)

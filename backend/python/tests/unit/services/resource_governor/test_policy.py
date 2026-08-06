@@ -43,6 +43,8 @@ def _snapshot(
     cpu_pressure: float | None = 0.0,
     mem_limit_bytes: int | None = 4 * 1024 ** 3,
     mem_working_set_bytes: int | None = 1 * 1024 ** 3,
+    mem_working_set_raw_bytes: int | None = None,
+    mem_baseline_bytes: int | None = None,
     source: str = "test",
 ) -> ResourceSnapshot:
     return ResourceSnapshot(
@@ -52,6 +54,8 @@ def _snapshot(
         cpu_pressure=cpu_pressure,
         mem_limit_bytes=mem_limit_bytes,
         mem_working_set_bytes=mem_working_set_bytes,
+        mem_working_set_raw_bytes=mem_working_set_raw_bytes,
+        mem_baseline_bytes=mem_baseline_bytes,
         source=source,
     )
 
@@ -113,6 +117,33 @@ class TestResolveCeilings:
         four_workers = resolve_ceilings(snap, None, None, worker_count=4)
         assert four_workers.heavy == max(1, one_worker.heavy // 4)
         assert four_workers.index == max(1, one_worker.index // 4)
+
+    def test_memory_already_resident_is_not_offered_to_the_parse_pool(self) -> None:
+        """The all-in-one container: six sibling services plus model weights
+        hold ~9 of 12 GiB before the first document arrives. Sizing off the
+        full limit would derive 12/1.5 = 8 heavy slots and hand out a budget
+        the cgroup cannot honour."""
+        snap = _snapshot(
+            cpu_quota=16.0,
+            mem_limit_bytes=12 * 1024 ** 3,
+            mem_working_set_raw_bytes=9 * 1024 ** 3,
+        )
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 2  # (12 - 9) / 1.5, at the floor
+
+    def test_free_memory_uses_the_raw_working_set_not_the_adjusted_one(self) -> None:
+        """A baseline-credited working set says nothing about how much of
+        the cgroup is physically free — memory held by a co-located service
+        is unavailable to a parse slot whoever it is attributed to."""
+        snap = _snapshot(
+            cpu_quota=16.0,
+            mem_limit_bytes=12 * 1024 ** 3,
+            mem_working_set_bytes=0,
+            mem_working_set_raw_bytes=9 * 1024 ** 3,
+            mem_baseline_bytes=9 * 1024 ** 3,
+        )
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 2
 
 
 class TestFloorFor:

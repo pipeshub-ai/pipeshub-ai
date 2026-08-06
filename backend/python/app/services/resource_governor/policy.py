@@ -115,6 +115,22 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _free_memory_gb(snap: ResourceSnapshot) -> float | None:
+    """Memory in the cgroup not already spoken for, in GiB.
+
+    Uses the *raw* working set, never the baseline-adjusted one: the
+    question here is how much of the cgroup is physically free, and memory
+    held by a co-located service is unavailable to a parse slot no matter
+    which process it is attributed to.
+    """
+    if snap.mem_limit_bytes is None:
+        return None
+    resident = snap.mem_working_set_raw_bytes
+    if resident is None:
+        resident = snap.mem_working_set_bytes or 0
+    return max(0.0, (snap.mem_limit_bytes - resident) / (1024 ** 3))
+
+
 # ---------------------------------------------------------------------------
 # Ceilings — resolved once at startup
 # ---------------------------------------------------------------------------
@@ -136,13 +152,18 @@ def resolve_ceilings(
     workers below, since each worker process runs its own governor.
     """
     workers = max(1, worker_count)
-    mem_limit_gb = snap.mem_limit_bytes / (1024 ** 3) if snap.mem_limit_bytes else None
+    # Sized from memory that is actually free at startup, not the whole
+    # limit: in the all-in-one container six other services (including
+    # Docling's and the embedding server's model weights) are already
+    # resident before the first document arrives, so limit / per-parse cost
+    # would hand the parse pool a budget the cgroup cannot honour.
+    free_gb = _free_memory_gb(snap)
 
     if env_parse is not None:
         parse_ceiling = max(1, env_parse)
     else:
-        if mem_limit_gb is not None:
-            derived = min(snap.cpu_quota, mem_limit_gb / HEAVY_PARSE_WORKING_SET_GB)
+        if free_gb is not None:
+            derived = min(snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
         else:
             derived = snap.cpu_quota
         parse_ceiling = int(_clamp(math.floor(derived), _PARSE_CEILING_MIN, _PARSE_CEILING_MAX))
@@ -250,14 +271,12 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
 def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
-    avail_bytes: int | None = None
-    if snap.mem_limit_bytes is not None and snap.mem_working_set_bytes is not None:
-        avail_bytes = max(0, snap.mem_limit_bytes - snap.mem_working_set_bytes)
+    free_gb = _free_memory_gb(snap)
+    avail_bytes = None if free_gb is None else int(free_gb * 1024 ** 3)
 
     if pool is Pool.HEAVY_PARSE:
-        if avail_bytes is not None:
-            avail_gb = avail_bytes / (1024 ** 3)
-            bound = min(ceilings.heavy, snap.cpu_quota, avail_gb / HEAVY_PARSE_WORKING_SET_GB)
+        if free_gb is not None:
+            bound = min(ceilings.heavy, snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
         else:
             bound = min(ceilings.heavy, snap.cpu_quota)
         floor = floor_for(pool, ceilings.heavy)

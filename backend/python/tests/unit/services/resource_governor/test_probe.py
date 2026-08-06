@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services.resource_governor import probe as probe_mod
+from app.services.resource_governor.policy import MEM_HARD, MEM_SOFT
 from app.services.resource_governor.probe import BaselineMemoryTracker, SystemResourceProbe
 
 if TYPE_CHECKING:
@@ -370,8 +371,12 @@ class TestSystemResourceProbeBaselineIntegration:
         snap = sut.snapshot()
 
         assert snap.mem_working_set_raw_bytes == 6000000000
-        assert snap.mem_baseline_bytes == 6000000000
-        assert snap.mem_working_set_bytes == 0
+        # The low-water mark is the entire 6 GB working set, but the probe
+        # caps the baseline at half the 8 GiB limit so the pressure ratio
+        # keeps a usable denominator instead of attributing every byte in
+        # the cgroup to co-located services.
+        assert snap.mem_baseline_bytes == 4 * 1024 ** 3
+        assert snap.mem_working_set_bytes == 6000000000 - 4 * 1024 ** 3
 
     def test_snapshot_uses_raw_working_set_while_baseline_still_calibrating(
         self, tmp_path: Path,
@@ -396,5 +401,42 @@ class TestSystemResourceProbeBaselineIntegration:
         snap = sut.snapshot()
 
         raw_pressure = snap.mem_working_set_raw_bytes / snap.mem_limit_bytes
-        assert raw_pressure > 0.75  # would have forced a shrink pre-fix
-        assert snap.mem_pressure < 0.70  # adjusted pressure now permits growth
+        assert raw_pressure > MEM_SOFT  # would have forced a shrink pre-baseline
+        # Crediting the co-located 3000 MiB pulls this back under the shrink
+        # threshold, which is the whole point of the baseline...
+        assert snap.mem_pressure < MEM_SOFT
+        # ...but only just: the container really is ~78% full, so the reading
+        # must stay well clear of idle rather than collapsing toward zero.
+        assert snap.mem_pressure > 0.65
+
+    def test_pressure_still_reaches_one_on_a_full_cgroup_despite_a_baseline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The regression that let the all-in-one container OOM.
+
+        Subtracting the baseline from the working set but not the limit caps
+        mem_pressure at ``1 - baseline / limit``. With a 5 GiB baseline in a
+        12 GiB container that ceiling is 0.58 — below both MEM_SOFT and
+        MEM_HARD — so neither brake could fire however full the cgroup got.
+        """
+        monkeypatch.setenv("GOVERNOR_BASELINE_MEMORY_MB", "5120")  # 5 GiB
+        limit = 12 * 1024 ** 3
+        _write(tmp_path / "memory.max", str(limit))
+        _write(tmp_path / "memory.current", str(limit))  # cgroup completely full
+
+        snap = SystemResourceProbe().snapshot()
+
+        assert snap.mem_pressure == pytest.approx(1.0)
+        assert snap.mem_pressure > MEM_HARD
+
+    def test_baseline_is_capped_at_half_the_limit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GOVERNOR_BASELINE_MEMORY_MB", str(11 * 1024))  # 11 GiB of a 12 GiB limit
+        limit = 12 * 1024 ** 3
+        _write(tmp_path / "memory.max", str(limit))
+        _write(tmp_path / "memory.current", str(limit))
+
+        snap = SystemResourceProbe().snapshot()
+
+        assert snap.mem_baseline_bytes == limit // 2
+        assert snap.mem_usable_bytes == limit // 2
+        assert snap.mem_pressure == pytest.approx(1.0)
