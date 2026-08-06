@@ -641,6 +641,33 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_router_proxying_gemini_disables_ctx_length_check(self, mock_cls):
+        """Regression: a router/gateway (e.g. Requesty) configured as an
+        OpenAI-compatible entry that forwards to a Gemini embedding model
+        must still disable `check_embedding_ctx_length` even though its
+        base_url is the router's own host, not Google's -- otherwise
+        langchain tiktoken-tokenizes the input into `list[list[int]]`,
+        which such routers reject with "input: unsupported: only string,
+        array of strings and array of objects are supported"."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("vertex/google/gemini-embedding-2-preview")
+        config["configuration"]["endpoint"] = "https://router.eu.requesty.ai/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_generic_model_on_router_keeps_ctx_length_check(self, mock_cls):
+        """A router proxying to a genuinely OpenAI-tiktoken-compatible model
+        keeps the existing behavior (tokenized input is safe to send)."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("openai/text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://router.eu.requesty.ai/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is True
+
     @patch("app.utils.custom_embeddings.TogetherEmbeddings")
     def test_together(self, mock_cls):
         mock_cls.return_value = MagicMock()

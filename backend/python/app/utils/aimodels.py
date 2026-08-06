@@ -367,8 +367,23 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         from langchain_openai.embeddings import OpenAIEmbeddings
 
         base_url = configuration['endpoint']
-        providers_to_skip_check = ("google", "cohere", "voyage")
-        check_embedding_ctx_length = not any(p in base_url for p in providers_to_skip_check)
+        # Routers/gateways (Requesty, LiteLLM proxy, Portkey, OpenRouter,
+        # ...) proxy to many backends behind one generic base_url that
+        # never mentions the underlying provider — only the model NAME
+        # does (e.g. "vertex/google/gemini-embedding-2-preview"). Checking
+        # base_url alone misses this and leaves `check_embedding_ctx_length`
+        # True, which makes langchain tiktoken-tokenize the input into
+        # `list[list[int]]`; Gemini/Cohere/Voyage (and most non-OpenAI
+        # embedding backends behind such routers) reject that shape with
+        # "input: unsupported: only string, array of strings and array of
+        # objects are supported". Same router-vs-model-name gap
+        # `get_generator_model`'s gpt-5.x Responses-API heuristic already
+        # accounts for below — mirrored here for the embedding side.
+        providers_to_skip_check = ("google", "gemini", "cohere", "voyage")
+        check_embedding_ctx_length = not any(
+            p in base_url.lower() or p in (model_name or "").lower()
+            for p in providers_to_skip_check
+        )
 
         compat_kwargs: Dict[str, Any] = dict(
             model=model_name,
