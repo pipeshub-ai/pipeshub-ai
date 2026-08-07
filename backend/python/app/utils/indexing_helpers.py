@@ -51,7 +51,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
     """
     try:
         # Get LLM
-        llm, _ = await get_llm_for_role(config, "indexing")
+        llm, _ = await get_llm_for_role(config, "indexing", reasoning_effort="low")
 
         # Convert table data to text representation
         if isinstance(table_data, list):

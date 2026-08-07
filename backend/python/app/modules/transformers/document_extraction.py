@@ -267,7 +267,7 @@ class DocumentExtraction(Transformer):
         rather than making a graph call.
         """
         self.logger.info("🎯 Extracting domain metadata (pre-fetched departments)")
-        self.llm, config = await get_llm_for_role(self.config_service, "indexing")
+        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.info(f"Context length: {context_length}")
@@ -312,7 +312,7 @@ class DocumentExtraction(Transformer):
         Extract metadata from document content.
         """
         self.logger.info("🎯 Extracting domain metadata")
-        self.llm, config = await get_llm_for_role(self.config_service, "indexing")
+        self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
         is_multimodal_llm = config.get("isMultimodal")
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 

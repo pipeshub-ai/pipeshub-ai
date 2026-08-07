@@ -1110,7 +1110,7 @@ class VectorStore(Transformer):
             )
 
         try:
-            llm, config = await get_llm(self.config_service)
+            llm, config = await get_llm(self.config_service, reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
         except Exception as e:
             raise IndexingError("Failed to get LLM: " + str(e), details={"error": str(e)})
