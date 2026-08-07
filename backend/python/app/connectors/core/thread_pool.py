@@ -47,14 +47,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Ceiling on blocking connector calls in flight process-wide. These threads sit in
-# socket.recv() with the GIL released, so cores are irrelevant — the binding limit
-# is upstream API quota (Drive is ~120 QPS/project), which 64 threads already
-# exceed at typical call latencies. It exists to absorb latency spikes without
-# collapsing to serial, and to bound the startup burst where resume_sync_services
-# starts every connector's sync at once.
+# Maximum concurrent blocking connector calls process-wide. Override with
+# CONNECTOR_THREAD_POOL_MAX_WORKERS; defaults to 4 to bound startup bursts.
 CONNECTOR_THREAD_POOL_MAX_WORKERS = max(
-    1, int(os.getenv("CONNECTOR_THREAD_POOL_MAX_WORKERS", "64"))
+    1, int(os.getenv("CONNECTOR_THREAD_POOL_MAX_WORKERS", "4"))
 )
 
 # Wall-clock budget for draining one lease during connector cleanup. A worker
