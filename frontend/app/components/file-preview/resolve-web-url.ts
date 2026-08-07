@@ -1,3 +1,5 @@
+'use client';
+
 /**
  * Shared web-URL resolution for record / file preview surfaces.
  *
@@ -25,8 +27,9 @@ function normalizeWebUrlCandidate(
 
   // Relative / non-http upload paths — same-origin absolute URL (record-view-shell).
   if (origin === 'UPLOAD') {
-    if (typeof window === 'undefined') return url;
-    return `${window.location.protocol}//${window.location.host}${url}`;
+    const path = url.startsWith('/') ? url : `/${url}`;
+    if (typeof window === 'undefined') return path;
+    return `${window.location.protocol}//${window.location.host}${path}`;
   }
 
   return null;
