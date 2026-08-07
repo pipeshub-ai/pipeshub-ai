@@ -100,11 +100,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 if TYPE_CHECKING:
     from app.connectors.core.thread_pool import ThreadPoolLease
 
-# Cap on this connector's simultaneous borrow from the shared connector thread
-# pool. Sync itself walks users one at a time (max_concurrent_batches), but
-# stream_record builds a fresh GoogleDriveDataSource per HTTP request, so
-# concurrent user downloads are genuinely parallel and must not be serialized.
-_DRIVE_TEAM_MAX_CONCURRENCY = 6
+# Maximum concurrent borrows from the shared connector thread pool.
+_DRIVE_TEAM_MAX_CONCURRENCY = 4
 
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the

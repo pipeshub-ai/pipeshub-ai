@@ -89,12 +89,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 if TYPE_CHECKING:
     from app.connectors.core.thread_pool import ThreadPoolLease
 
-# Cap on this connector's simultaneous borrow from the shared connector thread
-# pool. Bounded so a slow/hung Google response can only stall this connector's
-# work, never other tenants'. Two covers the real peak: the persistent Gmail
-# data source (serialized by its own transport lock) plus a transient Drive data
-# source while fetching an attachment.
-_GMAIL_INDIVIDUAL_MAX_CONCURRENCY = 3
+# Maximum concurrent borrows from the shared connector thread pool.
+_GMAIL_INDIVIDUAL_MAX_CONCURRENCY = 4
 
 # Bytes fetched per MediaIoBaseDownload.next_chunk() call. The library default is
 # 100 MB, which buffers a whole slice in memory before any of it reaches the
