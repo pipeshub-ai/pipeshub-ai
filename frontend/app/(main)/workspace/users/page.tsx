@@ -173,11 +173,11 @@ function UsersPageContent() {
       }
     },
   });
-  // Filter out "everyone" group from displayed options
+  // Filter out system groups from displayed options
   const groupOptions = useMemo(
     () => groupFilter.options.filter((o) => {
       const group = groupsRef.current.find((g) => g._id === o.value);
-      return !group || group.type !== GroupType.EVERYONE;
+      return !group || (group.type !== GroupType.EVERYONE && group.type !== GroupType.ADMIN);
     }),
     [groupFilter.options]
   );
@@ -790,25 +790,10 @@ function UsersPageContent() {
       const currentRole = user.role || 'Member';
       if (newRole === currentRole) return;
 
-      const adminGroup = adminGroupRef.current;
-      if (!adminGroup) {
-        addToast({
-          variant: 'error',
-          title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
-          description: 'Admin group not found',
-          duration: 5000,
-        });
-        return;
-      }
-
       try {
-        if (newRole === 'Admin') {
-          // Add user to admin group
-          await GroupsApi.addUsersToGroups([user.userId], [adminGroup._id]);
-        } else {
-          // Remove user from admin group
-          await GroupsApi.removeUsersFromGroups([user.userId], [adminGroup._id]);
-        }
+        await UsersApi.updateUser(user.userId, {
+          role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+        });
 
         addToast({
           variant: 'success',

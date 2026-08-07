@@ -149,15 +149,17 @@ export function InviteUsersSidebar({
   const isFormValid = hasValidEmails;
 
   const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
-  const isGrantingAdmin = Boolean(
-    adminGroupId && inviteGroupIds.includes(adminGroupId)
-  );
+  const isGrantingAdmin =
+    inviteRole === USER_ROLES.ADMIN ||
+    Boolean(adminGroupId && inviteGroupIds.includes(adminGroupId));
 
-  // Group options for dropdown
-  const groupOptions: CheckboxOption[] = groups.map((g) => ({
-    id: g._id,
-    label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-  }));
+  // Group options for dropdown — hide legacy admin + everyone system groups
+  const groupOptions: CheckboxOption[] = groups
+    .filter((g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN)
+    .map((g) => ({
+      id: g._id,
+      label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
+    }));
 
   // Handle submit — create invite or update existing invite
   const handleSubmit = useCallback(async () => {
@@ -177,16 +179,11 @@ export function InviteUsersSidebar({
         const currentRole = editingInviteUser.role || USER_ROLES.MEMBER;
         const newRole = inviteRole || USER_ROLES.MEMBER;
 
-        // Find admin group from the fetched groups list
-        const adminGroup = groups.find((g) => g.type === GroupType.ADMIN);
-
-        // Update role if changed
-        if (adminGroup && newRole !== currentRole) {
-          if (newRole === USER_ROLES.ADMIN) {
-            await GroupsApi.addUsersToGroups([userId], [adminGroup._id]);
-          } else {
-            await GroupsApi.removeUsersFromGroups([userId], [adminGroup._id]);
-          }
+        // Update role if changed (stored on User.role, not admin group)
+        if (newRole !== currentRole) {
+          await UsersApi.updateUser(userId, {
+            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+          });
         }
 
         // Update group memberships
@@ -225,7 +222,11 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        await UsersApi.inviteUsers(validEmails, inviteGroupIds.length > 0 ? inviteGroupIds : undefined);
+        await UsersApi.inviteUsers(
+          validEmails,
+          inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
+          inviteRole || USER_ROLES.MEMBER,
+        );
 
         const emailDisplay =
           validEmails.length === 1

@@ -8,10 +8,13 @@ import { GroupType } from './groups/types';
 
 /**
  * Group kinds from the userGroups API — enum lives in `./groups/types`.
- * - admin    : system group — members have the Admin role
+ * - admin    : legacy system group (soft-deleted after role migration)
  * - everyone : system group — every workspace member is in this group
  * - standard : user-created group (non-system)
  * - custom   : user-created group (non-system)
+ *
+ * Org Admin privilege is stored on User.role ('admin' | 'member'), not via
+ * membership in the admin group.
  */
 
 /**

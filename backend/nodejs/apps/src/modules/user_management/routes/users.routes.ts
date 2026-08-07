@@ -20,7 +20,6 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
@@ -62,6 +61,7 @@ const createUserBody = z.object({
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
+  role: z.enum(['admin', 'member', 'Admin', 'Member']).optional(),
 });
 
 const updateUserBody = z.object({
@@ -88,6 +88,7 @@ const updateUserBody = z.object({
     .optional(),
   dataCollectionConsent: z.boolean().optional(),
   hasLoggedIn: z.boolean().optional(),
+  role: z.enum(['admin', 'member', 'Admin', 'Member']).optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
@@ -359,22 +360,15 @@ export function createUserRouter(container: Container) {
           return;
         }
 
-        const adminGroups = await UserGroups.find({
+        const adminUsers = await Users.find({
           orgId,
-          type: 'admin',
+          role: 'admin',
           isDeleted: false,
-        }).select('users');
-        type AdminGroupUsers = {
-          users?: Array<{ toString: () => string }>;
-        };
+        })
+          .select('_id')
+          .lean();
 
-        const adminUserIds = [
-          ...new Set(
-            adminGroups.flatMap((group: AdminGroupUsers) =>
-              (group.users || []).map((id) => id.toString()),
-            ),
-          ),
-        ];
+        const adminUserIds = adminUsers.map((u) => String(u._id));
 
         res.status(200).json({ adminUserIds });
         return;

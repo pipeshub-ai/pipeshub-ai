@@ -30,6 +30,7 @@ import {
   submitConnectorFileEventUploads,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
@@ -61,6 +62,14 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     }
 
     next = sinon.stub()
+
+    // Role-based admin check reads Users first; leave role unset so existing
+    // UserGroups stubs still exercise the legacy fallback path.
+    sinon.stub(Users, 'findOne').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves(null),
+      }),
+    } as any)
   })
 
   afterEach(() => {
@@ -71,7 +80,19 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // isUserAdmin
   // =========================================================================
   describe('isUserAdmin', () => {
-    it('should return true when user is in admin group', async () => {
+    it('should return true when user.role is admin', async () => {
+      (Users.findOne as sinon.SinonStub).restore()
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().resolves({ role: 'admin' }),
+        }),
+      } as any)
+
+      const result = await isUserAdmin(req)
+      expect(result).to.be.true
+    })
+
+    it('should return true when user is in admin group (legacy fallback)', async () => {
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'admin' }]),
       } as any)

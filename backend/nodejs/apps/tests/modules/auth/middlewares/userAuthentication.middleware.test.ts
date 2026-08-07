@@ -15,6 +15,7 @@ import {
   BadRequestError,
 } from '../../../../src/libs/errors/http.errors';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 
 describe('userAuthentication middlewares', () => {
@@ -163,10 +164,10 @@ describe('userAuthentication middlewares', () => {
       };
       const res: any = {};
 
-      // Return groups that do not include admin
-      const mockGroups = [{ type: 'everyone' }];
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves(mockGroups),
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().resolves({ role: 'member' }),
+        }),
       } as any);
 
       await adminValidator(req, res, next);
@@ -191,9 +192,10 @@ describe('userAuthentication middlewares', () => {
       };
       const res: any = {};
 
-      const mockGroups = [{ type: 'admin' }, { type: 'everyone' }];
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves(mockGroups),
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().resolves({ role: 'admin' }),
+        }),
       } as any);
 
       await adminValidator(req, res, next);

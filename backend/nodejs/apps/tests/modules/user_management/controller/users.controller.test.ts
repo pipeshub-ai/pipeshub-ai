@@ -1117,7 +1117,7 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
-      expect(error.message).to.equal('User cannot be deleted. Please remove the user from the admin group first.');
+      expect(error.message).to.equal('User cannot be deleted. Please demote the user from admin first.');
     });
 
     it('should soft delete user, remove from groups, and publish event', async () => {
@@ -2465,7 +2465,7 @@ describe('UserController', () => {
       await controller.deleteUser(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('User cannot be deleted. Please remove the user from the admin group first.');
+      expect(next.firstCall.args[0].message).to.include('User cannot be deleted. Please demote the user from admin first.');
     });
   });
 

@@ -12,6 +12,7 @@ import {
 } from '../../../libs/utils/createJwt';
 import {
   BadRequestError,
+  ForbiddenError,
   InternalServerError,
   LargePayloadError,
   NotFoundError,
@@ -35,6 +36,11 @@ import type {
   GraphUserListResponse,
   UserGroupSummary,
 } from '../types/user_management.types';
+import {
+  isUserOrgAdmin,
+  toDisplayUserRole,
+  normalizeUserRole,
+} from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
@@ -230,7 +236,10 @@ export class UserController {
         createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
         updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
         profilePicture: dpMap.get(uid),
-        role: groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member',
+        role: toDisplayUserRole(
+          (u as { role?: string }).role ??
+            (groups.some((g) => g.type === 'admin') ? 'admin' : 'member'),
+        ),
         groupCount: groups.filter((g) => g.type !== 'everyone').length,
         userGroups: groups,
       };
@@ -509,6 +518,7 @@ export class UserController {
       const newUser = new Users({
         ...req.body,
         orgId: req.user?.orgId,
+        role: normalizeUserRole(req.body?.role) ?? 'member',
       });
 
       await UserGroups.updateOne(
@@ -557,6 +567,7 @@ export class UserController {
       orgId,
       hasLoggedIn: false,
       isDeleted: false,
+      role: 'member',
     });
 
     await newUser.save();
@@ -625,6 +636,7 @@ export class UserController {
       orgId,
       hasLoggedIn: false,
       isDeleted: false,
+      role: 'member',
     });
 
     await newUser.save();
@@ -760,6 +772,7 @@ export class UserController {
         'address',
         'dataCollectionConsent',
         'hasLoggedIn',
+        'role',
       ] as const;
 
       // List of sensitive system fields that must never be updated via API
@@ -778,6 +791,22 @@ export class UserController {
         throw new BadRequestError(
           `Cannot update restricted fields: ${restrictedFieldsFound.join(', ')}`,
         );
+      }
+
+      // Role changes require org admin (userAdminOrSelfCheck alone is not enough)
+      if ('role' in req.body && req.body.role !== undefined) {
+        const requesterIsAdmin = await isUserOrgAdmin(
+          req.user.userId,
+          req.user.orgId,
+        );
+        if (!requesterIsAdmin) {
+          throw new ForbiddenError('Only admins can change user roles');
+        }
+        const normalizedRole = normalizeUserRole(req.body.role);
+        if (!normalizedRole) {
+          throw new BadRequestError('Invalid role. Must be admin or member');
+        }
+        req.body.role = normalizedRole;
       }
 
       // Extract only allowed fields from request body
@@ -1202,12 +1231,12 @@ export class UserController {
         isDeleted: false,
       }).select('type');
 
-      const isAdmin = groups.find(
-        (userGroup: any) => userGroup.type === 'admin',
-      );
+      const isAdmin =
+        user.role === 'admin' ||
+        groups.some((userGroup: { type: string }) => userGroup.type === 'admin');
 
       if (isAdmin) {
-        throw new BadRequestError('User cannot be deleted. Please remove the user from the admin group first.');
+        throw new BadRequestError('User cannot be deleted. Please demote the user from admin first.');
       }
 
       await UserGroups.updateMany(
@@ -1451,7 +1480,7 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { emails, groupIds } = req.body;
+      const { emails, groupIds, role: rawRole } = req.body;
 
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -1468,6 +1497,8 @@ export class UserController {
         throw new BadRequestError('Invalid emails are found');
       }
 
+      const inviteRole = normalizeUserRole(rawRole) ?? 'member';
+
       const orgId = req.user.orgId;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });
       const normalizedEmails = this.normalizeEmails(emails);
@@ -1483,6 +1514,7 @@ export class UserController {
         orgId,
         req.user?.fullName,
         org,
+        inviteRole,
       );
 
       if (
@@ -1670,6 +1702,7 @@ export class UserController {
     orgId: string,
     inviterName: string | undefined,
     org: { registeredName?: string; shortName?: string } | null,
+    inviteRole: 'admin' | 'member' = 'member',
   ): Promise<InviteResult> {
     const existingUsers = await Users.find({ email: { $in: emails }, orgId });
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
@@ -1744,8 +1777,23 @@ export class UserController {
           isDeleted: false,
           hasLoggedIn: false,
           orgId,
+          role: inviteRole,
         })),
       );
+    }
+
+    // Apply invite role to restored / re-invited pending users when promoting to admin
+    if (inviteRole === 'admin') {
+      const promoteIds = [
+        ...restoredUsers.map((u) => u._id),
+        ...pendingUsersToReinvite.map((u) => u._id),
+      ].filter(Boolean);
+      if (promoteIds.length > 0) {
+        await Users.updateMany(
+          { _id: { $in: promoteIds }, orgId },
+          { $set: { role: 'admin' } },
+        );
+      }
     }
 
     // Password-auth is an org-wide setting, so resolve it once for the whole
@@ -2088,7 +2136,7 @@ export class UserController {
           Users.find({
             _id: { $in: userMongoIds },
             orgId: orgIdObj,
-          }).select('_id hasLoggedIn fullName').lean().exec(),
+          }).select('_id hasLoggedIn fullName role').lean().exec(),
           UserGroups.find({
             orgId: orgIdObj,
             isDeleted: false,
@@ -2105,9 +2153,16 @@ export class UserController {
           }
         }
 
-        const mongoUserMap = new Map<string, { hasLoggedIn?: boolean; fullName?: string }>();
+        const mongoUserMap = new Map<
+          string,
+          { hasLoggedIn?: boolean; fullName?: string; role?: string }
+        >();
         for (const mu of mongoUsers) {
-          mongoUserMap.set(mu._id.toString(), { hasLoggedIn: mu.hasLoggedIn, fullName: mu.fullName });
+          mongoUserMap.set(mu._id.toString(), {
+            hasLoggedIn: mu.hasLoggedIn,
+            fullName: mu.fullName,
+            role: (mu as { role?: string }).role,
+          });
         }
 
         // Build per-user groups
@@ -2139,7 +2194,10 @@ export class UserController {
           const groups = userGroupsMap.get(uid) ?? [];
           user.userGroups = groups;
           user.groupCount = groups.filter((g) => g.type !== 'everyone').length;
-          user.role = groups.some((g) => g.type === 'admin') ? 'Admin' : 'Member';
+          const mongoRole = mongoUserMap.get(uid)?.role;
+          user.role = toDisplayUserRole(
+            mongoRole ?? (groups.some((g) => g.type === 'admin') ? 'admin' : 'member'),
+          );
         }
       }
 

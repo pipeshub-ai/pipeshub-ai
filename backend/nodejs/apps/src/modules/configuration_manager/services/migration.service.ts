@@ -12,6 +12,7 @@ import { CrawlingSchedulerService } from '../../crawling_manager/services/crawli
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
+import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 export interface MigrationDependencies {
@@ -39,7 +40,31 @@ export class MigrationService {
     // await this.aiModelsMigration();  NO LONGER NEEDED
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
+    await this.adminRoleMigration();
     this.logger.info('✅ Migration completed');
+  }
+
+  async adminRoleMigration(): Promise<void> {
+    this.logger.info('Migrating admin group membership to user.role');
+    try {
+      const result = await new AdminRoleMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Admin-role migration finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Admin role migrated', result);
+      }
+    } catch (error) {
+      this.logger.error('Admin-role migration failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async chatKbFiltersMigration(): Promise<void> {

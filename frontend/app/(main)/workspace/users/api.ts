@@ -78,6 +78,17 @@ export const UsersApi = {
   },
 
   /**
+   * Update a user (admin or self). Pass `{ role: 'admin' | 'member' }` to change org role.
+   * PUT /api/v1/users/:userId
+   */
+  async updateUser(
+    userId: string,
+    payload: { role?: string; fullName?: string; [key: string]: unknown }
+  ): Promise<void> {
+    await apiClient.put(`${BASE_URL}/${userId}`, payload);
+  },
+
+  /**
    * Unblock a user. PUT /api/v1/users/:userId/unblock (admin)
    */
   async unblockUser(userId: string): Promise<void> {
@@ -127,10 +138,13 @@ export const UsersApi = {
    * Invite users by email, optionally adding them to groups.
    * POST /api/v1/users/bulk/invite
    */
-  async inviteUsers(emails: string[], groupIds?: string[]): Promise<void> {
-    const payload: { emails: string[]; groupIds?: string[] } = { emails };
+  async inviteUsers(emails: string[], groupIds?: string[], role?: string): Promise<void> {
+    const payload: { emails: string[]; groupIds?: string[]; role?: string } = { emails };
     if (groupIds && groupIds.length > 0) {
       payload.groupIds = groupIds;
+    }
+    if (role) {
+      payload.role = role === 'Admin' || role === 'admin' ? 'admin' : 'member';
     }
     await apiClient.post(`${BASE_URL}/bulk/invite`, payload);
   },

@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, TextField, Badge } from '@radix-ui/themes';
+import { TextField } from '@radix-ui/themes';
 import { SettingsSection } from './settings-section';
 import { SettingsRow } from './settings-row';
 
@@ -12,6 +12,7 @@ import { SettingsRow } from './settings-row';
 
 export interface RolesPermissionsSectionProps {
   role: string;
+  /** Kept for callers; groups UI is currently hidden. */
   groups: Array<{ name: string; type: string }>;
 }
 
@@ -19,7 +20,7 @@ export interface RolesPermissionsSectionProps {
 // Component
 // ========================================
 
-export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectionProps) {
+export function RolesPermissionsSection({ role }: RolesPermissionsSectionProps) {
   const { t } = useTranslation();
   return (
     <SettingsSection title={t('workspace.profile.rolesPermissions.title')}>
@@ -33,7 +34,8 @@ export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectio
         />
       </SettingsRow>
 
-      {/* Groups */}
+      {/* Groups — hidden for all roles (admin + member) while org admin moves to User.role */}
+      {/*
       <SettingsRow label={t('workspace.profile.rolesPermissions.groups')} description={t('workspace.profile.rolesPermissions.groupsDescription')}>
         {groups.length === 0 ? (
           <Text size="2" style={{ color: 'var(--gray-9)' }}>
@@ -49,6 +51,7 @@ export function RolesPermissionsSection({ role, groups }: RolesPermissionsSectio
           </Flex>
         )}
       </SettingsRow>
+      */}
 
     </SettingsSection>
   );

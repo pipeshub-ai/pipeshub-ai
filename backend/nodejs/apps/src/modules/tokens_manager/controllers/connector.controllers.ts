@@ -21,12 +21,12 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
 import {
   executeConnectorCommand,
   handleBackendError,
   handleConnectorResponse,
 } from '../utils/connector.utils';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,
@@ -390,19 +390,10 @@ const fireConnectorScheduleReconcile = (
 
 export const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
   const { userId, orgId } = req.user || {};
-  if (!userId) {
+  if (!userId || !orgId) {
     throw new UnauthorizedError('User authentication required');
   }
-  const groups = await UserGroups.find({
-    orgId,
-    users: { $in: [userId] },
-    isDeleted: false,
-  }).select('type');
-  const isAdmin = groups.find((userGroup: any) => userGroup.type === 'admin');
-  if (!isAdmin) {
-    return false;
-  }
-  return true;
+  return isUserOrgAdmin(userId, orgId);
 };
 
 // ============================================================================

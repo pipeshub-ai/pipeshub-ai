@@ -5,6 +5,9 @@ import { jurisdictions } from '../../../libs/utils/juridiction.utils';
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
 
+export const userRoles = ['admin', 'member'] as const;
+export type UserRole = (typeof userRoles)[number];
+
 export interface User extends Document, Address {
   slug?: string;
   orgId: Types.ObjectId;
@@ -16,6 +19,8 @@ export interface User extends Document, Address {
   mobile?: string;
   hasLoggedIn?: boolean;
   designation?: string;
+  /** Org privilege: admin | member (replaces membership in type=admin UserGroup) */
+  role?: UserRole;
   address?: Address;
   isDeleted?: boolean;
   deletedBy?: string;
@@ -38,6 +43,11 @@ const userSchema = new Schema<User>(
     mobile: { type: String },
     hasLoggedIn: { type: Boolean, default: false },
     designation: { type: String, trim: true },
+    role: {
+      type: String,
+      enum: userRoles,
+      default: 'member',
+    },
     address: {
       type: {
         addressLine1: { type: String },
