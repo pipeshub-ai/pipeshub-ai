@@ -13,6 +13,7 @@ import { VersionSwitcher } from './version-switcher';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
+import { resolveWebUrl } from './resolve-web-url';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -43,6 +44,7 @@ export function FilePreviewFullscreen({
   const hasError = !isLoading && !!error;
   const canDownload =
     !!showDownload && !isLoading && !hasError && (!!file.blob || !!file.url);
+  const externalWebUrl = resolveWebUrl(_recordDetails?.record, file.webUrl);
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
@@ -160,6 +162,25 @@ export function FilePreviewFullscreen({
           >
             {file.name}
           </Text>
+          {externalWebUrl && (
+            <a
+              href={externalWebUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open ${file.name} in source`}
+              title="Open in source"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                color: 'var(--accent-9)',
+                lineHeight: 0,
+              }}
+            >
+              <MaterialIcon name="open_in_new" size={ICON_SIZES.HEADER} color="var(--accent-9)" />
+            </a>
+          )}
           {file.version !== undefined && onVersionChange && (
             <VersionSwitcher
               version={file.version}
@@ -263,7 +284,7 @@ export function FilePreviewFullscreen({
                 fileName={file.name}
                 fileType={file.type}
                 fileBlob={file.blob}
-                webUrl={file.webUrl}
+                webUrl={externalWebUrl ?? undefined}
                 previewRenderable={file.previewRenderable}
                 pagination={paginationControls}
                 highlightBox={hasCitations ? syncHighlightBox : highlightBox}
