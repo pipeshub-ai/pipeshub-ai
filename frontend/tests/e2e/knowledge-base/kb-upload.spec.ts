@@ -771,7 +771,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('folder selection shows hierarchy with nested files and folders', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-'));
     mkdirSync(join(dir, 'docs'));
@@ -806,7 +806,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('removing a nested file via X updates the folder tree', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-rm-file-'));
     mkdirSync(join(dir, 'docs'));
@@ -833,7 +833,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('removing a subfolder via X removes all files under it', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-rm-folder-'));
     mkdirSync(join(dir, 'docs'));
@@ -865,7 +865,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
     page,
   }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await expect(page.getByTestId('upload-input-file')).toBeAttached();
     await expect(page.getByTestId('upload-add-file-compact')).toHaveCount(0);
@@ -881,7 +881,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('compact + button adds more files to the selection', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await input!.setInputFiles(makeFiles(1, { prefix: 'compact-a' }));
     await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(1);
@@ -894,7 +894,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('removing a selected file via X updates the file list', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     await input!.setInputFiles(makeFiles(2, { prefix: 'rm-file' }));
     await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(2);
@@ -906,7 +906,7 @@ test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
 
   test('after selecting a folder, compact folder + button appears', async ({ page }) => {
     const input = await openUploadSidebar(page, kbId);
-    test.skip(!input, 'Upload affordance not reachable');
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
 
     const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-compact-'));
     writeFileSync(join(dir, 'only.pdf'), 'only');
