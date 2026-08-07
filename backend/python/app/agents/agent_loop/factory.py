@@ -749,6 +749,9 @@ class PipesHubAgentFactory:
                 # `_find_web_record_by_url`'s page-level fallback for why
                 # that's an acceptable, not fully solved, trade-off).
                 "dynamic__web_search", "dynamic__fetch_url",
+                # Same reasoning: fetch_full_record results carry [refN]
+                # markers that AnswerFinalizer needs to build citations.
+                "knowledgegraph__fetch_record",
             }),
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
