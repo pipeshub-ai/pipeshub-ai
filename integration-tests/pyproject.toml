@@ -125,7 +125,7 @@ include = ["helper", "connectors", "connectors.*", "messaging*", "response-valid
 validation = ["schemas/*.yaml", "schemas/edges/*.yaml"]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.uv.sources]
