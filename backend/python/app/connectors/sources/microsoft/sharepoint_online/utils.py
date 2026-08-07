@@ -9,6 +9,7 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from bs4 import BeautifulSoup
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 # =====================================================
 # ATTRIBUTES TO STRIP (SharePoint bloat)
@@ -195,6 +196,19 @@ def sanitize_azure_error(error: Exception) -> str:
     if isinstance(description, str) and description.strip():
         return description.strip()
     return str(error).strip()
+
+
+def sanitize_graph_error(error: ODataError) -> str:
+    """Return useful Graph error fields without SDK internals or request IDs."""
+    graph_error = error.error
+    error_code = graph_error.code.strip() if graph_error and graph_error.code else ""
+    error_message = graph_error.message.strip() if graph_error and graph_error.message else ""
+    status_code = error.response_status_code
+
+    details = ": ".join(part for part in (error_code, error_message) if part)
+    if status_code:
+        return f"{details or 'Microsoft Graph request failed'} (HTTP {status_code})"
+    return details or "Microsoft Graph request failed"
 
 
 def get_aad_error_code(error: Exception) -> Optional[int]:
