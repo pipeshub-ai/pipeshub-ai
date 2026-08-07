@@ -27,6 +27,7 @@ import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
+import { isProcessedError } from '@/lib/api';
 import { USER_ROLES, INVITE_ROLE_OPTIONS } from '../constants';
 import { GroupType, type Group } from '../groups/types';
 import { useUsersStore } from './store';
@@ -811,10 +812,12 @@ function UsersPageContent() {
 
         // Refresh users list to reflect the change
         fetchUsers();
-      } catch {
+      } catch (err: unknown) {
+        const description = isProcessedError(err) ? err.message : undefined;
         addToast({
           variant: 'error',
           title: t('workspace.users.actions.changeRoleError', 'Failed to change role'),
+          ...(description ? { description } : {}),
           duration: 5000,
         });
       }

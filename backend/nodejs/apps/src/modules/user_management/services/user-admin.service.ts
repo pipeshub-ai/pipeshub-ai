@@ -1,5 +1,6 @@
 import { Users, type UserRole } from '../schema/users.schema';
 import { UserGroups, type UserGroup } from '../schema/userGroup.schema';
+import { BadRequestError } from '../../../libs/errors/http.errors';
 
 /** Normalize API/UI role labels to the stored enum. */
 export function normalizeUserRole(role: string | undefined | null): UserRole | null {
@@ -46,4 +47,31 @@ export const isUserOrgAdmin = async (
   }).select('type');
 
   return groups.some((userGroup: UserGroup) => userGroup.type === 'admin');
+};
+
+/**
+ * Blocks demoting an org admin when no other User.role=admin remains.
+ * Call only when the target is being changed to member.
+ */
+export const assertNotLastOrgAdminDemotion = async (
+  userId: string,
+  orgId: string,
+): Promise<void> => {
+  const isAdmin = await isUserOrgAdmin(userId, orgId);
+  if (!isAdmin) {
+    return;
+  }
+
+  const otherAdmins = await Users.countDocuments({
+    orgId,
+    _id: { $ne: userId },
+    role: 'admin',
+    isDeleted: false,
+  });
+
+  if (otherAdmins === 0) {
+    throw new BadRequestError(
+      'Cannot demote the last admin. Promote another user to admin first.',
+    );
+  }
 };

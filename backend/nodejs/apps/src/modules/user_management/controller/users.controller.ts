@@ -40,6 +40,7 @@ import {
   isUserOrgAdmin,
   toDisplayUserRole,
   normalizeUserRole,
+  assertNotLastOrgAdminDemotion,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -836,6 +837,15 @@ export class UserController {
 
       if (!user) {
         throw new NotFoundError('User not found');
+      }
+
+      // Prevent locking the org with zero admins
+      if (updateFields.role === 'member') {
+        const orgId = req.user.orgId;
+        if (!id || !orgId) {
+          throw new BadRequestError('User or organization not found');
+        }
+        await assertNotLastOrgAdminDemotion(String(id), String(orgId));
       }
 
       // Apply updates only for whitelisted fields

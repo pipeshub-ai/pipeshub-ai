@@ -80,20 +80,23 @@ export function useProfilePage() {
           designation: userData.designation ?? '',
         });
 
+        // Org admin is stored on User.role ('admin' | 'member')
+        const roleLower =
+          typeof userData.role === 'string'
+            ? userData.role.trim().toLowerCase()
+            : '';
+        setRole(roleLower === 'admin' ? USER_ROLES.ADMIN : USER_ROLES.MEMBER);
+
         if (avatarObjectUrl) setAvatarUrl(avatarObjectUrl);
 
         setLoading(false);
 
-        // Fetch groups + derive role from group membership (best-effort, non-blocking)
+        // Groups for badges (best-effort, non-blocking) — role no longer comes from Admin group
         getUserGroupsForProfile(uid).then((allGroups) => {
-          // Exclude system groups (admin, everyone) from the badge display
           const displayGroups = allGroups.filter(
-            (g) => g.type !== GroupType.EVERYONE
+            (g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN
           );
           setGroups(displayGroups);
-          // Role is derived from group membership: admin group → Admin
-          const isAdmin = allGroups.some((g) => g.type === GroupType.ADMIN);
-          setRole(isAdmin ? USER_ROLES.ADMIN : USER_ROLES.MEMBER);
         });
       } catch {
         addToast({

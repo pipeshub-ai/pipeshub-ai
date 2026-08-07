@@ -946,6 +946,83 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
     });
 
+    it('should reject demoting the last admin', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'member' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Only Admin',
+        email: 'admin@test.com',
+        role: 'admin',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+      // assertNotLastOrgAdminDemotion → isUserOrgAdmin(target)
+      findOneStub.onThirdCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal(
+        'Cannot demote the last admin. Promote another user to admin first.',
+      );
+      expect(mockUser.save.called).to.be.false;
+    });
+
+    it('should demote an admin when another admin exists', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'Member' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Second Admin',
+        email: 'second@test.com',
+        role: 'admin',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({
+          _id: targetId,
+          role: 'member',
+          email: 'second@test.com',
+        }),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+      findOneStub.onThirdCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(1);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockUser.role).to.equal('member');
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
     it('should reject duplicate email when updating email', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { email: 'new@test.com' };

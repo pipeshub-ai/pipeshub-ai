@@ -6,6 +6,7 @@ import {
   normalizeUserRole,
   toDisplayUserRole,
   isUserOrgAdmin,
+  assertNotLastOrgAdminDemotion,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -122,6 +123,46 @@ describe('user-admin.service', () => {
         orgId,
         isDeleted: false,
       });
+    });
+  });
+
+  describe('assertNotLastOrgAdminDemotion', () => {
+    it('allows demotion when the user is not an admin', async () => {
+      stubUsersFindOne('member');
+      const countStub = sinon.stub(Users, 'countDocuments');
+
+      await assertNotLastOrgAdminDemotion(userId, orgId);
+
+      expect(countStub.called).to.equal(false);
+    });
+
+    it('allows demotion when another admin exists', async () => {
+      stubUsersFindOne('admin');
+      const countStub = sinon.stub(Users, 'countDocuments').resolves(1);
+
+      await assertNotLastOrgAdminDemotion(userId, orgId);
+
+      expect(countStub.calledOnce).to.equal(true);
+      expect(countStub.firstCall.args[0]).to.deep.equal({
+        orgId,
+        _id: { $ne: userId },
+        role: 'admin',
+        isDeleted: false,
+      });
+    });
+
+    it('rejects demotion when this is the last admin', async () => {
+      stubUsersFindOne('admin');
+      sinon.stub(Users, 'countDocuments').resolves(0);
+
+      try {
+        await assertNotLastOrgAdminDemotion(userId, orgId);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(
+          'Cannot demote the last admin. Promote another user to admin first.',
+        );
+      }
     });
   });
 });
