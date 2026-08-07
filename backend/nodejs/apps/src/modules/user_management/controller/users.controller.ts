@@ -793,10 +793,15 @@ export class UserController {
         );
       }
 
-      // Role changes require org admin (userAdminOrSelfCheck alone is not enough)
+      // Role changes require org admin (userAdminOrSelfCheck alone is not enough).
+      // After userExists, req.user is the target document but still carries JWT userId.
       if ('role' in req.body && req.body.role !== undefined) {
+        const actorUserId = req.user.userId;
+        if (!actorUserId) {
+          throw new ForbiddenError('Only admins can change user roles');
+        }
         const requesterIsAdmin = await isUserOrgAdmin(
-          req.user.userId,
+          actorUserId,
           req.user.orgId,
         );
         if (!requesterIsAdmin) {
@@ -1248,7 +1253,7 @@ export class UserController {
 
       user.isDeleted = true;
       user.hasLoggedIn = false;
-      user.deletedBy = req.user._id;
+      user.deletedBy = req.user.userId ?? req.user._id;
 
       await UserCredentials.updateOne(
         { userId },

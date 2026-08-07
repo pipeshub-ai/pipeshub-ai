@@ -898,6 +898,54 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
     });
 
+    it('should reject role change when actor userId is missing', async () => {
+      req.user = { orgId: '507f1f77bcf86cd799439012' };
+      req.params.id = '507f1f77bcf86cd799439011';
+      req.body = { role: 'admin' };
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Only admins can change user roles');
+    });
+
+    it('should update role when actor is admin', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'Admin' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Member',
+        email: 'member@test.com',
+        role: 'member',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({
+          _id: targetId,
+          role: 'admin',
+          email: 'member@test.com',
+        }),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      // isUserOrgAdmin looks up actor role first
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      // updateUser loads the target
+      findOneStub.onSecondCall().resolves(mockUser as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockUser.role).to.equal('admin');
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
     it('should reject duplicate email when updating email', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { email: 'new@test.com' };
