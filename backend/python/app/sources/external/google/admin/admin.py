@@ -1,6 +1,13 @@
-from typing import Any, Dict, Optional
+import asyncio
+import functools
+from concurrent.futures import Executor
+from threading import Lock
+from typing import Any, Callable, Dict, Optional, TypeVar
 
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
+
+
+T = TypeVar("T")
 
 
 class GoogleAdminDataSource:
@@ -12,14 +19,41 @@ class GoogleAdminDataSource:
     """
     def __init__(
         self,
-        client: GoogleClient
+        client: object,
+        *,
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with Google Admin SDK Directory API client.
         Args:
             client: Google Admin SDK Directory API client from build('admin', 'directory_v1', credentials=credentials)
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
+                omitted, falls back to the event loop's default executor.
         """
         self.client = client
+        self._executor = executor
+        # googleapiclient services share one httplib2.Http per instance, which is
+        # not thread-safe, so at most one in-flight request per datasource instance.
+        self._transport_lock = Lock()
+
+    def _run_transport_operation(self, operation: Callable[[], T]) -> T:
+        with self._transport_lock:
+            return operation()
+
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._run_transport_operation,
+            operation,
+        )
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
     async def chromeosdevices_action(
         self,
@@ -49,7 +83,7 @@ class GoogleAdminDataSource:
             request = self.client.chromeosdevices().action(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().action(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def chromeosdevices_get(
         self,
@@ -78,7 +112,7 @@ class GoogleAdminDataSource:
             kwargs['projection'] = projection
 
         request = self.client.chromeosdevices().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def chromeosdevices_list(
         self,
@@ -131,7 +165,7 @@ class GoogleAdminDataSource:
             kwargs['includeChildOrgunits'] = includeChildOrgunits
 
         request = self.client.chromeosdevices().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def chromeosdevices_move_devices_to_ou(
         self,
@@ -161,7 +195,7 @@ class GoogleAdminDataSource:
             request = self.client.chromeosdevices().moveDevicesToOu(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().moveDevicesToOu(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def chromeosdevices_patch(
         self,
@@ -195,7 +229,7 @@ class GoogleAdminDataSource:
             request = self.client.chromeosdevices().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def chromeosdevices_update(
         self,
@@ -229,7 +263,7 @@ class GoogleAdminDataSource:
             request = self.client.chromeosdevices().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.chromeosdevices().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customer_devices_chromeos_issue_command(
         self,
@@ -259,7 +293,7 @@ class GoogleAdminDataSource:
             request = self.client.customer_devices_chromeos().issueCommand(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customer_devices_chromeos().issueCommand(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customer_devices_chromeos_batch_change_status(
         self,
@@ -285,7 +319,7 @@ class GoogleAdminDataSource:
             request = self.client.customer_devices_chromeos().batchChangeStatus(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customer_devices_chromeos().batchChangeStatus(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customer_devices_chromeos_commands_get(
         self,
@@ -314,7 +348,7 @@ class GoogleAdminDataSource:
             kwargs['commandId'] = commandId
 
         request = self.client.customer_devices_chromeos_commands().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def asps_delete(
         self,
@@ -339,7 +373,7 @@ class GoogleAdminDataSource:
             kwargs['codeId'] = codeId
 
         request = self.client.asps().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def asps_get(
         self,
@@ -364,7 +398,7 @@ class GoogleAdminDataSource:
             kwargs['codeId'] = codeId
 
         request = self.client.asps().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def asps_list(
         self,
@@ -385,7 +419,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.asps().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def channels_stop(self) -> Dict[str, Any]:
         """Google Admin SDK Directory API: Stops watching resources through this channel.
@@ -404,7 +438,7 @@ class GoogleAdminDataSource:
             request = self.client.channels().stop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channels().stop(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_get(
         self,
@@ -425,7 +459,7 @@ class GoogleAdminDataSource:
             kwargs['customerKey'] = customerKey
 
         request = self.client.customers().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_update(
         self,
@@ -451,7 +485,7 @@ class GoogleAdminDataSource:
             request = self.client.customers().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_patch(
         self,
@@ -477,7 +511,7 @@ class GoogleAdminDataSource:
             request = self.client.customers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_list_printer_models(
         self,
@@ -510,7 +544,7 @@ class GoogleAdminDataSource:
             kwargs['filter'] = filter
 
         request = self.client.customers_chrome_printers().listPrinterModels(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_list(
         self,
@@ -551,7 +585,7 @@ class GoogleAdminDataSource:
             kwargs['orderBy'] = orderBy
 
         request = self.client.customers_chrome_printers().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_get(
         self,
@@ -572,7 +606,7 @@ class GoogleAdminDataSource:
             kwargs['name'] = name
 
         request = self.client.customers_chrome_printers().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_create(
         self,
@@ -598,7 +632,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printers().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_batch_create_printers(
         self,
@@ -624,7 +658,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printers().batchCreatePrinters(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().batchCreatePrinters(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_patch(
         self,
@@ -658,7 +692,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_delete(
         self,
@@ -679,7 +713,7 @@ class GoogleAdminDataSource:
             kwargs['name'] = name
 
         request = self.client.customers_chrome_printers().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_printers_batch_delete_printers(
         self,
@@ -705,7 +739,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printers().batchDeletePrinters(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printers().batchDeletePrinters(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_list(
         self,
@@ -746,7 +780,7 @@ class GoogleAdminDataSource:
             kwargs['orderBy'] = orderBy
 
         request = self.client.customers_chrome_printServers().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_get(
         self,
@@ -767,7 +801,7 @@ class GoogleAdminDataSource:
             kwargs['name'] = name
 
         request = self.client.customers_chrome_printServers().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_create(
         self,
@@ -793,7 +827,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printServers().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_batch_create_print_servers(
         self,
@@ -819,7 +853,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printServers().batchCreatePrintServers(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().batchCreatePrintServers(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_patch(
         self,
@@ -849,7 +883,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printServers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_delete(
         self,
@@ -870,7 +904,7 @@ class GoogleAdminDataSource:
             kwargs['name'] = name
 
         request = self.client.customers_chrome_printServers().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def customers_chrome_print_servers_batch_delete_print_servers(
         self,
@@ -896,7 +930,7 @@ class GoogleAdminDataSource:
             request = self.client.customers_chrome_printServers().batchDeletePrintServers(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers_chrome_printServers().batchDeletePrintServers(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domain_aliases_delete(
         self,
@@ -921,7 +955,7 @@ class GoogleAdminDataSource:
             kwargs['domainAliasName'] = domainAliasName
 
         request = self.client.domainAliases().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domain_aliases_get(
         self,
@@ -946,7 +980,7 @@ class GoogleAdminDataSource:
             kwargs['domainAliasName'] = domainAliasName
 
         request = self.client.domainAliases().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domain_aliases_insert(
         self,
@@ -972,7 +1006,7 @@ class GoogleAdminDataSource:
             request = self.client.domainAliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domainAliases().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domain_aliases_list(
         self,
@@ -997,7 +1031,7 @@ class GoogleAdminDataSource:
             kwargs['parentDomainName'] = parentDomainName
 
         request = self.client.domainAliases().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domains_delete(
         self,
@@ -1022,7 +1056,7 @@ class GoogleAdminDataSource:
             kwargs['domainName'] = domainName
 
         request = self.client.domains().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domains_get(
         self,
@@ -1047,7 +1081,7 @@ class GoogleAdminDataSource:
             kwargs['domainName'] = domainName
 
         request = self.client.domains().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domains_insert(
         self,
@@ -1073,7 +1107,7 @@ class GoogleAdminDataSource:
             request = self.client.domains().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domains().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def domains_list(
         self,
@@ -1094,7 +1128,7 @@ class GoogleAdminDataSource:
             kwargs['customer'] = customer
 
         request = self.client.domains().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_delete(
         self,
@@ -1115,7 +1149,7 @@ class GoogleAdminDataSource:
             kwargs['groupKey'] = groupKey
 
         request = self.client.groups().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_get(
         self,
@@ -1136,7 +1170,7 @@ class GoogleAdminDataSource:
             kwargs['groupKey'] = groupKey
 
         request = self.client.groups().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_insert(self) -> Dict[str, Any]:
         """Google Admin SDK Directory API: Creates a group.
@@ -1155,7 +1189,7 @@ class GoogleAdminDataSource:
             request = self.client.groups().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_list(
         self,
@@ -1204,7 +1238,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.groups().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_update(
         self,
@@ -1230,7 +1264,7 @@ class GoogleAdminDataSource:
             request = self.client.groups().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_patch(
         self,
@@ -1256,7 +1290,7 @@ class GoogleAdminDataSource:
             request = self.client.groups().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_aliases_delete(
         self,
@@ -1281,7 +1315,7 @@ class GoogleAdminDataSource:
             kwargs['alias'] = alias
 
         request = self.client.groups_aliases().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_aliases_insert(
         self,
@@ -1307,7 +1341,7 @@ class GoogleAdminDataSource:
             request = self.client.groups_aliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.groups_aliases().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def groups_aliases_list(
         self,
@@ -1328,7 +1362,7 @@ class GoogleAdminDataSource:
             kwargs['groupKey'] = groupKey
 
         request = self.client.groups_aliases().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_delete(
         self,
@@ -1353,7 +1387,7 @@ class GoogleAdminDataSource:
             kwargs['memberKey'] = memberKey
 
         request = self.client.members().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_get(
         self,
@@ -1378,7 +1412,7 @@ class GoogleAdminDataSource:
             kwargs['memberKey'] = memberKey
 
         request = self.client.members().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_has_member(
         self,
@@ -1403,7 +1437,7 @@ class GoogleAdminDataSource:
             kwargs['memberKey'] = memberKey
 
         request = self.client.members().hasMember(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_insert(
         self,
@@ -1429,7 +1463,7 @@ class GoogleAdminDataSource:
             request = self.client.members().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_list(
         self,
@@ -1466,7 +1500,7 @@ class GoogleAdminDataSource:
             kwargs['roles'] = roles
 
         request = self.client.members().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_update(
         self,
@@ -1496,7 +1530,7 @@ class GoogleAdminDataSource:
             request = self.client.members().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def members_patch(
         self,
@@ -1526,7 +1560,7 @@ class GoogleAdminDataSource:
             request = self.client.members().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.members().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def mobiledevices_action(
         self,
@@ -1556,7 +1590,7 @@ class GoogleAdminDataSource:
             request = self.client.mobiledevices().action(**kwargs, body=body) # type: ignore
         else:
             request = self.client.mobiledevices().action(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def mobiledevices_delete(
         self,
@@ -1581,7 +1615,7 @@ class GoogleAdminDataSource:
             kwargs['resourceId'] = resourceId
 
         request = self.client.mobiledevices().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def mobiledevices_get(
         self,
@@ -1610,7 +1644,7 @@ class GoogleAdminDataSource:
             kwargs['projection'] = projection
 
         request = self.client.mobiledevices().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def mobiledevices_list(
         self,
@@ -1655,7 +1689,7 @@ class GoogleAdminDataSource:
             kwargs['sortOrder'] = sortOrder
 
         request = self.client.mobiledevices().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_delete(
         self,
@@ -1680,7 +1714,7 @@ class GoogleAdminDataSource:
             kwargs['orgUnitPath'] = orgUnitPath
 
         request = self.client.orgunits().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_get(
         self,
@@ -1705,7 +1739,7 @@ class GoogleAdminDataSource:
             kwargs['orgUnitPath'] = orgUnitPath
 
         request = self.client.orgunits().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_insert(
         self,
@@ -1731,7 +1765,7 @@ class GoogleAdminDataSource:
             request = self.client.orgunits().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_list(
         self,
@@ -1760,7 +1794,7 @@ class GoogleAdminDataSource:
             kwargs['type'] = type
 
         request = self.client.orgunits().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_update(
         self,
@@ -1790,7 +1824,7 @@ class GoogleAdminDataSource:
             request = self.client.orgunits().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def orgunits_patch(
         self,
@@ -1820,7 +1854,7 @@ class GoogleAdminDataSource:
             request = self.client.orgunits().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.orgunits().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def privileges_list(
         self,
@@ -1841,7 +1875,7 @@ class GoogleAdminDataSource:
             kwargs['customer'] = customer
 
         request = self.client.privileges().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def role_assignments_delete(
         self,
@@ -1866,7 +1900,7 @@ class GoogleAdminDataSource:
             kwargs['roleAssignmentId'] = roleAssignmentId
 
         request = self.client.roleAssignments().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def role_assignments_get(
         self,
@@ -1891,7 +1925,7 @@ class GoogleAdminDataSource:
             kwargs['roleAssignmentId'] = roleAssignmentId
 
         request = self.client.roleAssignments().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def role_assignments_insert(
         self,
@@ -1917,7 +1951,7 @@ class GoogleAdminDataSource:
             request = self.client.roleAssignments().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roleAssignments().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def role_assignments_list(
         self,
@@ -1958,7 +1992,7 @@ class GoogleAdminDataSource:
             kwargs['includeIndirectRoleAssignments'] = includeIndirectRoleAssignments
 
         request = self.client.roleAssignments().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_delete(
         self,
@@ -1983,7 +2017,7 @@ class GoogleAdminDataSource:
             kwargs['buildingId'] = buildingId
 
         request = self.client.resources_buildings().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_get(
         self,
@@ -2008,7 +2042,7 @@ class GoogleAdminDataSource:
             kwargs['buildingId'] = buildingId
 
         request = self.client.resources_buildings().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_insert(
         self,
@@ -2038,7 +2072,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_buildings().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_list(
         self,
@@ -2067,7 +2101,7 @@ class GoogleAdminDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.resources_buildings().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_update(
         self,
@@ -2101,7 +2135,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_buildings().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_buildings_patch(
         self,
@@ -2135,7 +2169,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_buildings().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_buildings().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_delete(
         self,
@@ -2160,7 +2194,7 @@ class GoogleAdminDataSource:
             kwargs['calendarResourceId'] = calendarResourceId
 
         request = self.client.resources_calendars().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_get(
         self,
@@ -2185,7 +2219,7 @@ class GoogleAdminDataSource:
             kwargs['calendarResourceId'] = calendarResourceId
 
         request = self.client.resources_calendars().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_insert(
         self,
@@ -2211,7 +2245,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_calendars().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_list(
         self,
@@ -2248,7 +2282,7 @@ class GoogleAdminDataSource:
             kwargs['query'] = query
 
         request = self.client.resources_calendars().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_update(
         self,
@@ -2278,7 +2312,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_calendars().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_calendars_patch(
         self,
@@ -2308,7 +2342,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_calendars().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_calendars().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_delete(
         self,
@@ -2333,7 +2367,7 @@ class GoogleAdminDataSource:
             kwargs['featureKey'] = featureKey
 
         request = self.client.resources_features().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_get(
         self,
@@ -2358,7 +2392,7 @@ class GoogleAdminDataSource:
             kwargs['featureKey'] = featureKey
 
         request = self.client.resources_features().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_insert(
         self,
@@ -2384,7 +2418,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_features().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_list(
         self,
@@ -2413,7 +2447,7 @@ class GoogleAdminDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.resources_features().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_rename(
         self,
@@ -2443,7 +2477,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_features().rename(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().rename(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_update(
         self,
@@ -2473,7 +2507,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_features().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def resources_features_patch(
         self,
@@ -2503,7 +2537,7 @@ class GoogleAdminDataSource:
             request = self.client.resources_features().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.resources_features().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_delete(
         self,
@@ -2528,7 +2562,7 @@ class GoogleAdminDataSource:
             kwargs['roleId'] = roleId
 
         request = self.client.roles().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_get(
         self,
@@ -2553,7 +2587,7 @@ class GoogleAdminDataSource:
             kwargs['roleId'] = roleId
 
         request = self.client.roles().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_insert(
         self,
@@ -2579,7 +2613,7 @@ class GoogleAdminDataSource:
             request = self.client.roles().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_list(
         self,
@@ -2608,7 +2642,7 @@ class GoogleAdminDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.roles().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_update(
         self,
@@ -2638,7 +2672,7 @@ class GoogleAdminDataSource:
             request = self.client.roles().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def roles_patch(
         self,
@@ -2668,7 +2702,7 @@ class GoogleAdminDataSource:
             request = self.client.roles().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_delete(
         self,
@@ -2693,7 +2727,7 @@ class GoogleAdminDataSource:
             kwargs['schemaKey'] = schemaKey
 
         request = self.client.schemas().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_get(
         self,
@@ -2718,7 +2752,7 @@ class GoogleAdminDataSource:
             kwargs['schemaKey'] = schemaKey
 
         request = self.client.schemas().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_insert(
         self,
@@ -2744,7 +2778,7 @@ class GoogleAdminDataSource:
             request = self.client.schemas().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_list(
         self,
@@ -2765,7 +2799,7 @@ class GoogleAdminDataSource:
             kwargs['customerId'] = customerId
 
         request = self.client.schemas().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_patch(
         self,
@@ -2795,7 +2829,7 @@ class GoogleAdminDataSource:
             request = self.client.schemas().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def schemas_update(
         self,
@@ -2825,7 +2859,7 @@ class GoogleAdminDataSource:
             request = self.client.schemas().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.schemas().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def tokens_delete(
         self,
@@ -2850,7 +2884,7 @@ class GoogleAdminDataSource:
             kwargs['clientId'] = clientId
 
         request = self.client.tokens().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def tokens_get(
         self,
@@ -2875,7 +2909,7 @@ class GoogleAdminDataSource:
             kwargs['clientId'] = clientId
 
         request = self.client.tokens().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def tokens_list(
         self,
@@ -2896,7 +2930,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.tokens().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def two_step_verification_turn_off(
         self,
@@ -2922,7 +2956,7 @@ class GoogleAdminDataSource:
             request = self.client.twoStepVerification().turnOff(**kwargs, body=body) # type: ignore
         else:
             request = self.client.twoStepVerification().turnOff(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_delete(
         self,
@@ -2943,7 +2977,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.users().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_get(
         self,
@@ -2976,7 +3010,7 @@ class GoogleAdminDataSource:
             kwargs['viewType'] = viewType
 
         request = self.client.users().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_insert(
         self,
@@ -3002,7 +3036,7 @@ class GoogleAdminDataSource:
             request = self.client.users().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_list(
         self,
@@ -3067,7 +3101,7 @@ class GoogleAdminDataSource:
             kwargs['viewType'] = viewType
 
         request = self.client.users().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_make_admin(
         self,
@@ -3093,7 +3127,7 @@ class GoogleAdminDataSource:
             request = self.client.users().makeAdmin(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().makeAdmin(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_patch(
         self,
@@ -3119,7 +3153,7 @@ class GoogleAdminDataSource:
             request = self.client.users().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_undelete(
         self,
@@ -3145,7 +3179,7 @@ class GoogleAdminDataSource:
             request = self.client.users().undelete(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().undelete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_update(
         self,
@@ -3171,7 +3205,7 @@ class GoogleAdminDataSource:
             request = self.client.users().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_watch(
         self,
@@ -3241,7 +3275,7 @@ class GoogleAdminDataSource:
             request = self.client.users().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().watch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_sign_out(
         self,
@@ -3267,7 +3301,7 @@ class GoogleAdminDataSource:
             request = self.client.users().signOut(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().signOut(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_aliases_delete(
         self,
@@ -3292,7 +3326,7 @@ class GoogleAdminDataSource:
             kwargs['alias'] = alias
 
         request = self.client.users_aliases().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_aliases_insert(
         self,
@@ -3318,7 +3352,7 @@ class GoogleAdminDataSource:
             request = self.client.users_aliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_aliases().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_aliases_list(
         self,
@@ -3343,7 +3377,7 @@ class GoogleAdminDataSource:
             kwargs['event'] = event
 
         request = self.client.users_aliases().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_aliases_watch(
         self,
@@ -3373,7 +3407,7 @@ class GoogleAdminDataSource:
             request = self.client.users_aliases().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_aliases().watch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_photos_delete(
         self,
@@ -3394,7 +3428,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.users_photos().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_photos_get(
         self,
@@ -3415,7 +3449,7 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.users_photos().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_photos_update(
         self,
@@ -3441,7 +3475,7 @@ class GoogleAdminDataSource:
             request = self.client.users_photos().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_photos().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_photos_patch(
         self,
@@ -3467,7 +3501,7 @@ class GoogleAdminDataSource:
             request = self.client.users_photos().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_photos().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def verification_codes_generate(
         self,
@@ -3493,7 +3527,7 @@ class GoogleAdminDataSource:
             request = self.client.verificationCodes().generate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().generate(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def verification_codes_invalidate(
         self,
@@ -3519,7 +3553,7 @@ class GoogleAdminDataSource:
             request = self.client.verificationCodes().invalidate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().invalidate(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def verification_codes_list(
         self,
@@ -3540,8 +3574,8 @@ class GoogleAdminDataSource:
             kwargs['userKey'] = userKey
 
         request = self.client.verificationCodes().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
-    async def get_client(self) -> object:
+    def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client

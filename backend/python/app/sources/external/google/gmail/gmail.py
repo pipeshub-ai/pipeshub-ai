@@ -1,6 +1,13 @@
-from typing import Any, Dict, Optional
+import asyncio
+import functools
+from concurrent.futures import Executor
+from threading import Lock
+from typing import Any, Callable, Dict, Optional, TypeVar
 
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
+
+
+T = TypeVar("T")
 
 
 class GoogleGmailDataSource:
@@ -12,14 +19,45 @@ class GoogleGmailDataSource:
     """
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
+        *,
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with Gmail API client.
         Args:
             client: Gmail API client from build('gmail', 'v1', credentials=credentials)
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
+                omitted, falls back to the event loop's default executor.
         """
         self.client = client
+        self._executor = executor
+        # googleapiclient services share one httplib2.Http per instance, which is
+        # not thread-safe, so at most one in-flight request per datasource instance.
+        self._execute_lock = asyncio.Lock()
+        # Cancellation releases an asyncio lock without stopping executor work.
+        # This worker-held lock keeps the transport exclusive until the call returns.
+        self._transport_lock = Lock()
+
+    def _run_transport_operation(self, operation: Callable[[], T]) -> T:
+        with self._transport_lock:
+            return operation()
+
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
+        async with self._execute_lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self._run_transport_operation,
+                operation,
+            )
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
     async def users_get_profile(
         self,
@@ -40,7 +78,7 @@ class GoogleGmailDataSource:
         if userId is not None:
             kwargs['userId'] = userId
         request = self.client.users().getProfile(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_watch(
         self,
@@ -67,7 +105,7 @@ class GoogleGmailDataSource:
             request = self.client.users().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().watch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_stop(
         self,
@@ -94,7 +132,7 @@ class GoogleGmailDataSource:
             request = self.client.users().stop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().stop(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_delete(
         self,
@@ -120,7 +158,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().drafts().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_create(
         self,
@@ -147,7 +185,7 @@ class GoogleGmailDataSource:
             request = self.client.users().drafts().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().drafts().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_get(
         self,
@@ -177,7 +215,7 @@ class GoogleGmailDataSource:
             kwargs['format'] = format
 
         request = self.client.users().drafts().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_list(
         self,
@@ -215,7 +253,7 @@ class GoogleGmailDataSource:
             kwargs['includeSpamTrash'] = includeSpamTrash
 
         request = self.client.users().drafts().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_send(
         self,
@@ -242,7 +280,7 @@ class GoogleGmailDataSource:
             request = self.client.users().drafts().send(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().drafts().send(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_drafts_update(
         self,
@@ -273,7 +311,7 @@ class GoogleGmailDataSource:
             request = self.client.users().drafts().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().drafts().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_history_list(
         self,
@@ -315,7 +353,7 @@ class GoogleGmailDataSource:
             kwargs['historyTypes'] = historyTypes
 
         request = self.client.users().history().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_trash(
         self,
@@ -346,7 +384,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().trash(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().trash(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_untrash(
         self,
@@ -377,7 +415,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().untrash(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().untrash(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_delete(
         self,
@@ -403,7 +441,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().messages().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_batch_delete(
         self,
@@ -430,7 +468,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().batchDelete(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().batchDelete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_import(
         self,
@@ -473,7 +511,7 @@ class GoogleGmailDataSource:
             request = getattr(self.client.users().messages(), 'import')(**kwargs, body=body) # type: ignore
         else:
             request = getattr(self.client.users().messages(), 'import')(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_insert(
         self,
@@ -508,7 +546,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_get(
         self,
@@ -542,7 +580,7 @@ class GoogleGmailDataSource:
             kwargs['metadataHeaders'] = metadataHeaders
 
         request = self.client.users().messages().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_send(
         self,
@@ -569,7 +607,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().send(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().send(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_list(
         self,
@@ -611,7 +649,7 @@ class GoogleGmailDataSource:
             kwargs['includeSpamTrash'] = includeSpamTrash
 
         request = self.client.users().messages().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_modify(
         self,
@@ -642,7 +680,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().modify(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().modify(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_batch_modify(
         self,
@@ -669,7 +707,7 @@ class GoogleGmailDataSource:
             request = self.client.users().messages().batchModify(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().messages().batchModify(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_messages_attachments_get(
         self,
@@ -699,7 +737,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().messages().attachments().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_create(
         self,
@@ -726,7 +764,7 @@ class GoogleGmailDataSource:
             request = self.client.users().labels().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().labels().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_delete(
         self,
@@ -752,7 +790,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().labels().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_get(
         self,
@@ -777,7 +815,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().labels().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_list(
         self,
@@ -798,7 +836,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().labels().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_update(
         self,
@@ -828,7 +866,7 @@ class GoogleGmailDataSource:
             request = self.client.users().labels().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().labels().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_labels_patch(
         self,
@@ -858,7 +896,7 @@ class GoogleGmailDataSource:
             request = self.client.users().labels().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().labels().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_trash(
         self,
@@ -889,7 +927,7 @@ class GoogleGmailDataSource:
             request = self.client.users().threads().trash(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().threads().trash(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_untrash(
         self,
@@ -920,7 +958,7 @@ class GoogleGmailDataSource:
             request = self.client.users().threads().untrash(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().threads().untrash(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_delete(
         self,
@@ -946,7 +984,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users().threads().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_get(
         self,
@@ -980,7 +1018,7 @@ class GoogleGmailDataSource:
             kwargs['metadataHeaders'] = metadataHeaders
 
         request = self.client.users().threads().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_list(
         self,
@@ -1022,7 +1060,7 @@ class GoogleGmailDataSource:
             kwargs['includeSpamTrash'] = includeSpamTrash
 
         request = self.client.users().threads().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_threads_modify(
         self,
@@ -1053,7 +1091,7 @@ class GoogleGmailDataSource:
             request = self.client.users().threads().modify(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().threads().modify(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_get_imap(
         self,
@@ -1075,7 +1113,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().settings().getImap(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_update_imap(
         self,
@@ -1102,7 +1140,7 @@ class GoogleGmailDataSource:
             request = self.client.users().settings().updateImap(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().settings().updateImap(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_get_pop(
         self,
@@ -1124,7 +1162,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().settings().getPop(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_update_pop(
         self,
@@ -1151,7 +1189,7 @@ class GoogleGmailDataSource:
             request = self.client.users().settings().updatePop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().settings().updatePop(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_get_vacation(
         self,
@@ -1173,7 +1211,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().settings().getVacation(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_update_vacation(
         self,
@@ -1200,7 +1238,7 @@ class GoogleGmailDataSource:
             request = self.client.users().settings().updateVacation(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().settings().updateVacation(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_get_language(
         self,
@@ -1222,7 +1260,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().settings().getLanguage(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_update_language(
         self,
@@ -1249,7 +1287,7 @@ class GoogleGmailDataSource:
             request = self.client.users().settings().updateLanguage(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().settings().updateLanguage(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_get_auto_forwarding(
         self,
@@ -1271,7 +1309,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users().settings().getAutoForwarding(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_update_auto_forwarding(
         self,
@@ -1298,7 +1336,7 @@ class GoogleGmailDataSource:
             request = self.client.users().settings().updateAutoForwarding(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users().settings().updateAutoForwarding(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_list(
         self,
@@ -1319,7 +1357,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users_settings_sendAs().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_get(
         self,
@@ -1345,7 +1383,7 @@ class GoogleGmailDataSource:
             kwargs['sendAsEmail'] = sendAsEmail
 
         request = self.client.users_settings_sendAs().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_create(
         self,
@@ -1372,7 +1410,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_update(
         self,
@@ -1403,7 +1441,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_patch(
         self,
@@ -1434,7 +1472,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_delete(
         self,
@@ -1460,7 +1498,7 @@ class GoogleGmailDataSource:
             kwargs['sendAsEmail'] = sendAsEmail
 
         request = self.client.users_settings_sendAs().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_verify(
         self,
@@ -1491,7 +1529,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs().verify(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs().verify(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_smime_info_list(
         self,
@@ -1517,7 +1555,7 @@ class GoogleGmailDataSource:
             kwargs['sendAsEmail'] = sendAsEmail
 
         request = self.client.users_settings_sendAs_smimeInfo().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_smime_info_get(
         self,
@@ -1547,7 +1585,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users_settings_sendAs_smimeInfo().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_smime_info_insert(
         self,
@@ -1578,7 +1616,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs_smimeInfo().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs_smimeInfo().insert(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_smime_info_delete(
         self,
@@ -1608,7 +1646,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users_settings_sendAs_smimeInfo().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_send_as_smime_info_set_default(
         self,
@@ -1643,7 +1681,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_sendAs_smimeInfo().setDefault(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_sendAs_smimeInfo().setDefault(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_identities_create(
         self,
@@ -1670,7 +1708,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_identities().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_identities().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_identities_delete(
         self,
@@ -1696,7 +1734,7 @@ class GoogleGmailDataSource:
             kwargs['cseEmailAddress'] = cseEmailAddress
 
         request = self.client.users_settings_cse_identities().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_identities_get(
         self,
@@ -1722,7 +1760,7 @@ class GoogleGmailDataSource:
             kwargs['cseEmailAddress'] = cseEmailAddress
 
         request = self.client.users_settings_cse_identities().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_identities_list(
         self,
@@ -1752,7 +1790,7 @@ class GoogleGmailDataSource:
             kwargs['pageSize'] = pageSize
 
         request = self.client.users_settings_cse_identities().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_identities_patch(
         self,
@@ -1783,7 +1821,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_identities().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_identities().patch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_create(
         self,
@@ -1810,7 +1848,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_keypairs().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_keypairs().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_disable(
         self,
@@ -1841,7 +1879,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_keypairs().disable(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_keypairs().disable(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_enable(
         self,
@@ -1872,7 +1910,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_keypairs().enable(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_keypairs().enable(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_get(
         self,
@@ -1898,7 +1936,7 @@ class GoogleGmailDataSource:
             kwargs['keyPairId'] = keyPairId
 
         request = self.client.users_settings_cse_keypairs().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_list(
         self,
@@ -1928,7 +1966,7 @@ class GoogleGmailDataSource:
             kwargs['pageSize'] = pageSize
 
         request = self.client.users_settings_cse_keypairs().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_cse_keypairs_obliterate(
         self,
@@ -1959,7 +1997,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_cse_keypairs().obliterate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_cse_keypairs().obliterate(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_filters_list(
         self,
@@ -1981,7 +2019,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users_settings_filters().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_filters_get(
         self,
@@ -2007,7 +2045,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users_settings_filters().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_filters_create(
         self,
@@ -2034,7 +2072,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_filters().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_filters().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_filters_delete(
         self,
@@ -2060,7 +2098,7 @@ class GoogleGmailDataSource:
             kwargs['id'] = id
 
         request = self.client.users_settings_filters().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_forwarding_addresses_list(
         self,
@@ -2082,7 +2120,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users_settings_forwardingAddresses().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_forwarding_addresses_get(
         self,
@@ -2108,7 +2146,7 @@ class GoogleGmailDataSource:
             kwargs['forwardingEmail'] = forwardingEmail
 
         request = self.client.users_settings_forwardingAddresses().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_forwarding_addresses_create(
         self,
@@ -2135,7 +2173,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_forwardingAddresses().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_forwardingAddresses().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_forwarding_addresses_delete(
         self,
@@ -2161,7 +2199,7 @@ class GoogleGmailDataSource:
             kwargs['forwardingEmail'] = forwardingEmail
 
         request = self.client.users_settings_forwardingAddresses().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_delegates_list(
         self,
@@ -2183,7 +2221,7 @@ class GoogleGmailDataSource:
             kwargs['userId'] = userId
 
         request = self.client.users_settings_delegates().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_delegates_get(
         self,
@@ -2209,7 +2247,7 @@ class GoogleGmailDataSource:
             kwargs['delegateEmail'] = delegateEmail
 
         request = self.client.users_settings_delegates().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_delegates_create(
         self,
@@ -2236,7 +2274,7 @@ class GoogleGmailDataSource:
             request = self.client.users_settings_delegates().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.users_settings_delegates().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def users_settings_delegates_delete(
         self,
@@ -2262,7 +2300,7 @@ class GoogleGmailDataSource:
             kwargs['delegateEmail'] = delegateEmail
 
         request = self.client.users_settings_delegates().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def get_client(self) -> object:
         """Get the underlying Google API client."""

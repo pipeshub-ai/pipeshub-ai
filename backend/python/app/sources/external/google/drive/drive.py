@@ -1,6 +1,13 @@
-from typing import Any, Dict, Optional
+import asyncio
+import functools
+from concurrent.futures import Executor
+from threading import Lock
+from typing import Any, Callable, Dict, Optional, TypeVar
 
-from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClient
+
+
+T = TypeVar("T")
 
 
 class GoogleDriveDataSource:
@@ -12,14 +19,45 @@ class GoogleDriveDataSource:
     """
     def __init__(
         self,
-        client: GoogleClient
+        client: GoogleClient,
+        *,
+        executor: Optional[Executor] = None
     ) -> None:
         """
         Initialize with Google Drive API client.
         Args:
             client: Google Drive API client from build('drive', 'v3', credentials=credentials)
+            executor: Optional executor to run blocking calls on -- normally the
+                connector's capped lease on the shared connector thread pool. When
+                omitted, falls back to the event loop's default executor.
         """
         self.client = client
+        self._executor = executor
+        # googleapiclient services share one httplib2.Http per instance, which is
+        # not thread-safe, so at most one in-flight request per datasource instance.
+        self._execute_lock = asyncio.Lock()
+        # Cancellation releases an asyncio lock without stopping executor work.
+        # This worker-held lock keeps the transport exclusive until the call returns.
+        self._transport_lock = Lock()
+
+    def _run_transport_operation(self, operation: Callable[[], T]) -> T:
+        with self._transport_lock:
+            return operation()
+
+    async def execute(self, operation: Callable[[], T]) -> T:
+        """Run one blocking operation without overlapping this client's HTTP transport."""
+        async with self._execute_lock:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self._run_transport_operation,
+                operation,
+            )
+
+    async def _execute(self, request: Any) -> Dict[str, Any]:
+        return await self.execute(
+            functools.partial(request.execute, num_retries=GOOGLE_HTTP_NUM_RETRIES)
+        )
 
     async def operations_get(
         self,
@@ -40,7 +78,7 @@ class GoogleDriveDataSource:
             kwargs['name'] = name
 
         request = self.client.operations().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def about_get(self, fields: Optional[str] = None) -> Dict[str, Any]:
         kwargs = {}
@@ -48,7 +86,7 @@ class GoogleDriveDataSource:
             fields = 'user(displayName,emailAddress,permissionId),storageQuota'
         kwargs['fields'] = fields
         request = self.client.about().get(**kwargs)
-        return request.execute()
+        return await self._execute(request)
 
     async def apps_get(
         self,
@@ -69,7 +107,7 @@ class GoogleDriveDataSource:
             kwargs['appId'] = appId
 
         request = self.client.apps().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def apps_list(
         self,
@@ -98,7 +136,7 @@ class GoogleDriveDataSource:
             kwargs['languageCode'] = languageCode
 
         request = self.client.apps().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def changes_get_start_page_token(
         self,
@@ -131,7 +169,7 @@ class GoogleDriveDataSource:
             kwargs['teamDriveId'] = teamDriveId
 
         request = self.client.changes().getStartPageToken(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def changes_list(
         self,
@@ -208,7 +246,7 @@ class GoogleDriveDataSource:
             kwargs['fields'] = fields
 
         request = self.client.changes().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def changes_watch(
         self,
@@ -286,7 +324,7 @@ class GoogleDriveDataSource:
             request = self.client.changes().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.changes().watch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def channels_stop(self) -> Dict[str, Any]:
         """Google Drive API: Stops watching resources through this channel. For more information, see [Notifications for resource changes](https://developers.google.com/workspace/drive/api/guides/push).
@@ -305,7 +343,7 @@ class GoogleDriveDataSource:
             request = self.client.channels().stop(**kwargs, body=body) # type: ignore
         else:
             request = self.client.channels().stop(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def comments_create(
         self,
@@ -331,7 +369,7 @@ class GoogleDriveDataSource:
             request = self.client.comments().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def comments_delete(
         self,
@@ -356,7 +394,7 @@ class GoogleDriveDataSource:
             kwargs['commentId'] = commentId
 
         request = self.client.comments().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def comments_get(
         self,
@@ -385,7 +423,7 @@ class GoogleDriveDataSource:
             kwargs['includeDeleted'] = includeDeleted
 
         request = self.client.comments().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def comments_list(
         self,
@@ -422,7 +460,7 @@ class GoogleDriveDataSource:
             kwargs['startModifiedTime'] = startModifiedTime
 
         request = self.client.comments().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def comments_update(
         self,
@@ -452,7 +490,7 @@ class GoogleDriveDataSource:
             request = self.client.comments().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.comments().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_create(
         self,
@@ -478,7 +516,7 @@ class GoogleDriveDataSource:
             request = self.client.drives().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.drives().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_delete(
         self,
@@ -507,7 +545,7 @@ class GoogleDriveDataSource:
             kwargs['allowItemDeletion'] = allowItemDeletion
 
         request = self.client.drives().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_get(
         self,
@@ -532,7 +570,7 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
 
         request = self.client.drives().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_hide(
         self,
@@ -558,7 +596,7 @@ class GoogleDriveDataSource:
             request = self.client.drives().hide(**kwargs, body=body) # type: ignore
         else:
             request = self.client.drives().hide(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_list(
         self,
@@ -591,7 +629,7 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
 
         request = self.client.drives().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_unhide(
         self,
@@ -617,7 +655,7 @@ class GoogleDriveDataSource:
             request = self.client.drives().unhide(**kwargs, body=body) # type: ignore
         else:
             request = self.client.drives().unhide(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def drives_update(
         self,
@@ -647,7 +685,7 @@ class GoogleDriveDataSource:
             request = self.client.drives().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.drives().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_copy(
         self,
@@ -705,7 +743,7 @@ class GoogleDriveDataSource:
             request = self.client.files().copy(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().copy(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_create(
         self,
@@ -766,7 +804,7 @@ class GoogleDriveDataSource:
             request = self.client.files().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_create_with_media(
         self,
@@ -837,7 +875,7 @@ class GoogleDriveDataSource:
             fields='id,name,mimeType,webViewLink,parents,size',
             **kwargs
         ) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_delete(
         self,
@@ -870,7 +908,7 @@ class GoogleDriveDataSource:
             kwargs['enforceSingleParent'] = enforceSingleParent
 
         request = self.client.files().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_empty_trash(
         self,
@@ -895,7 +933,7 @@ class GoogleDriveDataSource:
             kwargs['driveId'] = driveId
 
         request = self.client.files().emptyTrash(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_export(
         self,
@@ -920,7 +958,7 @@ class GoogleDriveDataSource:
             kwargs['mimeType'] = mimeType
 
         request = self.client.files().export(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_generate_ids(
         self,
@@ -949,7 +987,7 @@ class GoogleDriveDataSource:
             kwargs['type'] = type
 
         request = self.client.files().generateIds(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_get(
         self,
@@ -994,7 +1032,7 @@ class GoogleDriveDataSource:
             kwargs['fields'] = fields
 
         request = self.client.files().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_list(
         self,
@@ -1076,7 +1114,7 @@ class GoogleDriveDataSource:
             kwargs['fields'] = fields
 
         request = self.client.files().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_list_labels(
         self,
@@ -1105,7 +1143,7 @@ class GoogleDriveDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.files().listLabels(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_modify_labels(
         self,
@@ -1131,7 +1169,7 @@ class GoogleDriveDataSource:
             request = self.client.files().modifyLabels(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().modifyLabels(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_update(
         self,
@@ -1197,7 +1235,7 @@ class GoogleDriveDataSource:
             request = self.client.files().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_watch(
         self,
@@ -1243,7 +1281,7 @@ class GoogleDriveDataSource:
             request = self.client.files().watch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().watch(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def files_download(
         self,
@@ -1277,7 +1315,7 @@ class GoogleDriveDataSource:
             request = self.client.files().download(**kwargs, body=body) # type: ignore
         else:
             request = self.client.files().download(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def permissions_create(
         self,
@@ -1339,7 +1377,7 @@ class GoogleDriveDataSource:
             request = self.client.permissions().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.permissions().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def permissions_delete(
         self,
@@ -1380,7 +1418,7 @@ class GoogleDriveDataSource:
             kwargs['enforceExpansiveAccess'] = enforceExpansiveAccess
 
         request = self.client.permissions().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def permissions_get(
         self,
@@ -1417,7 +1455,7 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
 
         request = self.client.permissions().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def permissions_list(
         self,
@@ -1466,7 +1504,7 @@ class GoogleDriveDataSource:
             kwargs['fields'] = fields
 
         request = self.client.permissions().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def permissions_update(
         self,
@@ -1520,7 +1558,7 @@ class GoogleDriveDataSource:
             request = self.client.permissions().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.permissions().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def replies_create(
         self,
@@ -1550,7 +1588,7 @@ class GoogleDriveDataSource:
             request = self.client.replies().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.replies().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def replies_delete(
         self,
@@ -1579,7 +1617,7 @@ class GoogleDriveDataSource:
             kwargs['replyId'] = replyId
 
         request = self.client.replies().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def replies_get(
         self,
@@ -1612,7 +1650,7 @@ class GoogleDriveDataSource:
             kwargs['includeDeleted'] = includeDeleted
 
         request = self.client.replies().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def replies_list(
         self,
@@ -1649,7 +1687,7 @@ class GoogleDriveDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.replies().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def replies_update(
         self,
@@ -1683,7 +1721,7 @@ class GoogleDriveDataSource:
             request = self.client.replies().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.replies().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def revisions_delete(
         self,
@@ -1708,7 +1746,7 @@ class GoogleDriveDataSource:
             kwargs['revisionId'] = revisionId
 
         request = self.client.revisions().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def revisions_get(
         self,
@@ -1737,7 +1775,7 @@ class GoogleDriveDataSource:
             kwargs['acknowledgeAbuse'] = acknowledgeAbuse
 
         request = self.client.revisions().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def revisions_list(
         self,
@@ -1766,7 +1804,7 @@ class GoogleDriveDataSource:
             kwargs['pageToken'] = pageToken
 
         request = self.client.revisions().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def revisions_update(
         self,
@@ -1796,7 +1834,7 @@ class GoogleDriveDataSource:
             request = self.client.revisions().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.revisions().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def teamdrives_create(
         self,
@@ -1822,7 +1860,7 @@ class GoogleDriveDataSource:
             request = self.client.teamdrives().create(**kwargs, body=body) # type: ignore
         else:
             request = self.client.teamdrives().create(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def teamdrives_delete(
         self,
@@ -1843,7 +1881,7 @@ class GoogleDriveDataSource:
             kwargs['teamDriveId'] = teamDriveId
 
         request = self.client.teamdrives().delete(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def teamdrives_get(
         self,
@@ -1868,7 +1906,7 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
 
         request = self.client.teamdrives().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def teamdrives_list(
         self,
@@ -1901,7 +1939,7 @@ class GoogleDriveDataSource:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
 
         request = self.client.teamdrives().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def teamdrives_update(
         self,
@@ -1931,7 +1969,7 @@ class GoogleDriveDataSource:
             request = self.client.teamdrives().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.teamdrives().update(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def accessproposals_get(
         self,
@@ -1956,7 +1994,7 @@ class GoogleDriveDataSource:
             kwargs['proposalId'] = proposalId
 
         request = self.client.accessproposals().get(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def accessproposals_resolve(
         self,
@@ -1986,7 +2024,7 @@ class GoogleDriveDataSource:
             request = self.client.accessproposals().resolve(**kwargs, body=body) # type: ignore
         else:
             request = self.client.accessproposals().resolve(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
     async def accessproposals_list(
         self,
@@ -2015,8 +2053,8 @@ class GoogleDriveDataSource:
             kwargs['pageSize'] = pageSize
 
         request = self.client.accessproposals().list(**kwargs) # type: ignore
-        return request.execute()
+        return await self._execute(request)
 
-    async def get_client(self) -> object:
+    def get_client(self) -> object:
         """Get the underlying Google API client."""
         return self.client
