@@ -1608,7 +1608,8 @@ describe('UserController', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
-        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+        expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be
+          .true;
         expect(mockMailService.sendMail.calledOnce).to.be.true;
 
         // Verify the link uses #token= hash fragment, not ?token= query param
@@ -2381,7 +2382,9 @@ describe('UserController', () => {
       expect(mockMailService.sendMail.calledOnce).to.be.true;
       expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith({ message: 'Invite sent successfully' })).to.be.true;
+      expect(
+        res.json.calledWith({ message: 'Invite sent successfully', queued: false }),
+      ).to.be.true;
     });
 
     it('should not resend invite for pending blocked users', async () => {

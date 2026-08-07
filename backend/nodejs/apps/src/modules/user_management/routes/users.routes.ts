@@ -26,6 +26,7 @@ import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
 import { NotificationProducer } from '../../notification/service/notification.producer';
+import { MailProducer } from '../../mail/services/mail.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
@@ -801,7 +802,11 @@ export function createUserRouter(container: Container) {
 
         // Rebind services depending on AppConfig
         container.rebind<MailService>('MailService').toDynamicValue(() => {
-          return new MailService(updatedConfig, logger);
+          return new MailService(
+            updatedConfig,
+            logger,
+            container.get<MailProducer>(MailProducer),
+          );
         });
 
         container.rebind<AuthService>('AuthService').toDynamicValue(() => {

@@ -195,6 +195,40 @@ export function createNotificationMessageConsumer(
   );
 }
 
+const MAIL_CONSUMER_GROUP = 'mail-consumer-group';
+const MAIL_CLIENT_ID = 'mail-consumer';
+
+/** Dedicated consumer group/stream group for the mail topic (Kafka + Redis). */
+export function createMailMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+    };
+    return createMessageConsumerByParts(
+      MessageBrokerType.KAFKA,
+      kafka,
+      undefined,
+      logger,
+    );
+  }
+  const redis = buildRedisBrokerConfig(appConfig.redis, {
+    clientId: MAIL_CLIENT_ID,
+    groupId: MAIL_CONSUMER_GROUP,
+  });
+  return createMessageConsumerByParts(
+    MessageBrokerType.REDIS,
+    undefined,
+    redis,
+    logger,
+  );
+}
+
 export function buildRedisBrokerConfig(
   redisConfig: RedisConfig,
   options?: { clientId?: string; groupId?: string },
