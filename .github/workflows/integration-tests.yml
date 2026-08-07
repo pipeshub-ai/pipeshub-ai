@@ -228,6 +228,14 @@ jobs:
           uv venv
           uv pip install -e .
 
+      # Pure helper unit tests (mocks only) — fail fast before Docker/services come up.
+      - name: Run helper unit tests
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          pytest unit/ -v --tb=short --junitxml=reports/unit-results.xml
+
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
@@ -544,6 +552,29 @@ jobs:
             PR_FIELD_TEXT=""
           fi
 
+          # Parse helper unit-test JUnit XML (runs before Docker; no graph backend).
+          UNIT_TESTS=0
+          UNIT_PASSED=0
+          UNIT_FAILED=0
+          UNIT_ERRORS=0
+          UNIT_SKIPPED=0
+          if [ -f "reports/unit-results.xml" ]; then
+            unit_tests=$(grep -oP 'tests="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_failures=$(grep -oP 'failures="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_errors=$(grep -oP 'errors="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_skipped=$(grep -oP 'skipped="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            UNIT_TESTS=${unit_tests:-0}
+            UNIT_FAILED=${unit_failures:-0}
+            UNIT_ERRORS=${unit_errors:-0}
+            UNIT_SKIPPED=${unit_skipped:-0}
+            UNIT_PASSED=$((UNIT_TESTS - UNIT_FAILED - UNIT_ERRORS - UNIT_SKIPPED))
+          fi
+          if [ "$UNIT_TESTS" -gt 0 ]; then
+            UNIT_PASS_RATE=$(( (UNIT_PASSED * 100) / UNIT_TESTS ))
+          else
+            UNIT_PASS_RATE=0
+          fi
+
           # Parse Playwright JUnit XML
           PW_TESTS=0
           PW_PASSED=0
@@ -570,7 +601,7 @@ jobs:
           # Green only when suites pass AND the job is healthy — a stack that never
           # came up yields zero counts, which would otherwise read as success.
           OVERALL_OK=true
-          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$UNIT_FAILED" -gt 0 ] || [ "$UNIT_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
             OVERALL_OK=false
           fi
           if [ "$JOB_STATUS" != "success" ] || [ "$TOTAL_TESTS" -eq 0 ]; then
@@ -583,6 +614,12 @@ jobs:
           echo "TOTAL_ERRORS=$TOTAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
           echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "UNIT_TESTS=$UNIT_TESTS" >> "$GITHUB_OUTPUT"
+          echo "UNIT_PASSED=$UNIT_PASSED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_FAILED=$UNIT_FAILED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_ERRORS=$UNIT_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "UNIT_SKIPPED=$UNIT_SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_PASS_RATE=$UNIT_PASS_RATE" >> "$GITHUB_OUTPUT"
           echo "PW_TESTS=$PW_TESTS" >> "$GITHUB_OUTPUT"
           echo "PW_PASSED=$PW_PASSED" >> "$GITHUB_OUTPUT"
           echo "PW_FAILED=$PW_FAILED" >> "$GITHUB_OUTPUT"
@@ -661,6 +698,15 @@ jobs:
                       { "type": "raw_text", "text": "Errors"    },
                       { "type": "raw_text", "text": "Skipped"   },
                       { "type": "raw_text", "text": "Pass Rate" }
+                    ],
+                    [
+                      { "type": "raw_text", "text": "Helper unit (pytest)"                                           },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_TESTS }}"                 },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_PASSED }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_FAILED }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_ERRORS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_SKIPPED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_PASS_RATE }}%"            }
                     ],
                     [
                       { "type": "raw_text", "text": "Backend (pytest)"                                              },
@@ -748,7 +794,7 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
+        if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.UNIT_FAILED != '0' || steps.test-results.outputs.UNIT_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -774,7 +820,12 @@ jobs:
               sys.exit(0)
 
           names = []
-          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml']:
+          for xml_path in [
+              'reports/unit-results.xml',
+              'reports/neo4j-results.xml',
+              'reports/arango-results.xml',
+              'reports/playwright/playwright-junit.xml',
+          ]:
               if not os.path.exists(xml_path):
                   continue
               backend = os.path.basename(xml_path).replace('-results.xml', '')

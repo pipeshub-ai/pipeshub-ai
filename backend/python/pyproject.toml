@@ -184,7 +184,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=12.0.0",
-    "aiohttp==3.14.1",
+    "aiohttp==3.14.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
@@ -199,7 +199,7 @@ dependencies = [
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
-    "cryptography==48.0.1",
+    "cryptography==50.0.0",
     "crawl4ai==0.9.0",
     "curl-cffi==0.14.0",
     # "databricks-sdk>=0.85.0",

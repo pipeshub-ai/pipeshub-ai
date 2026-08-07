@@ -15002,10 +15002,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET ntype = rec != null ? "record"
                     : (rg != null ? "recordGroup" : "app")
                 LET nname = rec != null
-                    ? COALESCE(rec.recordName, rec.name, rec.title, rec._key)
+                    ? NOT_NULL(rec.recordName, rec.name, rec.title, rec._key)
                     : (rg != null
-                        ? COALESCE(rg.groupName, rg.name, rg._key)
-                        : COALESCE(app.name, app.appName, app._key))
+                        ? NOT_NULL(rg.groupName, rg.name, rg._key)
+                        : NOT_NULL(app.name, app.appName, app._key))
 
                 LET rr_parents = rec != null ? (
                     FOR e IN recordRelations

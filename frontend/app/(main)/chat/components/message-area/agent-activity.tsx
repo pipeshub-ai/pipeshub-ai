@@ -10,7 +10,7 @@
  * never visually changes when the live stream hands off to the persisted
  * transcript.
  */
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Box, Flex, Text } from '@radix-ui/themes';
@@ -268,13 +268,21 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
     () => (isNested ? parts : getVisibleRootParts(parts, isStreaming)),
     [parts, isNested, isStreaming],
   );
-  // Don't show status alongside live text with content — the typing cursor
-  // already signals progress; showing both is redundant and visually broken.
+  // Don't show status alongside live text with content (the text itself
+  // signals progress), or when the last visible entry already covers the
+  // status visually (a reasoning block = "Thinking", a running tool call
+  // = the same activity the status describes).
   const hasLiveTextWithContent = isStreaming && visible.some(
     (p) => p.type === 'text' && !p.settled && !p.isFinal && !!p.content?.trim(),
   );
-  const showStatus = !isNested && isStreaming && !!currentStatus && !hasLiveTextWithContent;
   const items = groupConsecutiveToolCalls(visible).filter(hasRenderableContent);
+  const lastItem = items.length > 0 ? items[items.length - 1] : null;
+  const lastItemCoversStatus = lastItem !== null && (
+    (lastItem.kind === 'part' && lastItem.part.type === 'reasoning') ||
+    (lastItem.kind === 'part' && lastItem.part.type === 'tool_call' && (lastItem.part.status ?? 'running') === 'running') ||
+    (lastItem.kind === 'toolGroup' && lastItem.parts.some((p) => (p.status ?? 'running') === 'running'))
+  );
+  const showStatus = !isNested && isStreaming && !!currentStatus && !hasLiveTextWithContent && !lastItemCoversStatus;
   if (items.length === 0 && !showStatus) return null;
   const rowCount = items.length + (showStatus ? 1 : 0);
 
@@ -372,11 +380,9 @@ function NarrationText({ content, citationMaps, citationCallbacks }: { content: 
 
 /** The still-unsettled trailing text of a multi-step response, rendered
  * live in the timeline (instead of `AnswerContent`) while its fate —
- * narration vs. the final answer — is still undetermined. A trailing
- * blinking cursor marks it as "in progress" so it doesn't read as a
- * completed narration entry (`NarrationText`) or the finished answer;
- * the rail's waypoint dot (see `TimelineRow`) is what visually threads it
- * into the flow, so no in-text accent bar is needed here anymore. */
+ * narration vs. the final answer — is still undetermined. The Lottie rail
+ * animation (see `TimelineRow`) signals "in progress" instead of an
+ * in-text cursor, so this doesn't need its own accent bar. */
 function LiveNarrationText({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
   const cleanContent = processMarkdownContent(content);
 
@@ -406,7 +412,6 @@ function LiveNarrationText({ content, citationMaps, citationCallbacks }: { conte
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {cleanContent}
       </ReactMarkdown>
-      <span className="typing-cursor" />
     </Box>
   );
 }
@@ -827,15 +832,17 @@ export function buildActivitySummary(parts: MessagePart[]): string {
 }
 
 /**
- * Wraps a completed (non-streaming) activity timeline in a collapsible
- * summary — mirrors Claude's collapsed "Thought for Ns" / tool-use history
- * once a response finishes, so the reader's eye lands on the answer instead
- * of re-reading the whole ReAct trace on every reload. Collapsed by default;
- * the user can expand it to inspect the full trace.
+ * Wraps an activity timeline in a collapsible summary. Expanded while
+ * streaming so the live trace stays visible; collapsed by default for
+ * historical messages. Never auto-collapses — the user toggles it.
  */
-export function CollapsibleActivitySection({ parts, children }: { parts: MessagePart[]; children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(true);
+export function CollapsibleActivitySection({ parts, isStreaming = false, children }: { parts: MessagePart[]; isStreaming?: boolean; children: React.ReactNode }) {
+  const [collapsed, setCollapsed] = useState(!isStreaming);
   const summary = useMemo(() => buildActivitySummary(parts), [parts]);
+
+  const handleToggle = useCallback(() => {
+    setCollapsed((prev) => !prev);
+  }, []);
 
   return (
     <Box style={{ marginBottom: 'var(--space-3)' }}>
@@ -845,12 +852,13 @@ export function CollapsibleActivitySection({ parts, children }: { parts: Message
         role="button"
         tabIndex={0}
         aria-expanded={!collapsed}
-        onClick={() => setCollapsed((prev) => !prev)}
-        onKeyDown={(e) => handleToggleKeyDown(e, () => setCollapsed((prev) => !prev))}
+        onClick={handleToggle}
+        onKeyDown={(e) => handleToggleKeyDown(e, handleToggle)}
         style={{
           cursor: 'pointer',
           userSelect: 'none',
           marginBottom: collapsed ? 0 : 'var(--space-2)',
+          transition: 'margin-bottom 200ms ease-out',
           width: 'fit-content',
         }}
       >
@@ -863,7 +871,24 @@ export function CollapsibleActivitySection({ parts, children }: { parts: Message
           {summary}
         </Text>
       </Flex>
-      {!collapsed && children}
+      {/* 0fr/1fr grid animates to the content's intrinsic height — no fixed
+          maxHeight cap that would clip long transcripts. */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateRows: collapsed ? '0fr' : '1fr',
+          transition: 'grid-template-rows 300ms ease-out, opacity 200ms ease-out',
+          opacity: collapsed ? 0 : 1,
+        }}
+      >
+        <div
+          style={{ overflow: 'hidden', minHeight: 0 }}
+          aria-hidden={collapsed || undefined}
+          inert={collapsed || undefined}
+        >
+          {children}
+        </div>
+      </div>
     </Box>
   );
 }
