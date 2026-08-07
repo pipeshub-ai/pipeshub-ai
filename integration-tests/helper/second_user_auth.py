@@ -10,19 +10,43 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 import uuid
-from typing import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Iterator, Optional
 
 import bcrypt
 import pytest
 import requests
+from bson import ObjectId
 from pymongo import MongoClient
 
 from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
 from pipeshub_client import PipeshubClient
 
 logger = logging.getLogger("second-user-auth")
+
+# Minimal scopes for streaming KB / connector records (require_scopes is OR).
+_STREAM_OAUTH_SCOPES = [
+    "openid",
+    "profile",
+    "email",
+    "org:read",
+    "user:read",
+    "kb:read",
+    "connector:read",
+    "conversation:read",
+    "agent:read",
+]
+
+
+def _mongo_db_candidates() -> list[str]:
+    """DB names to try — Node may use ``es`` or ``enterprise-search``."""
+    out: list[str] = []
+    for name in (MONGO_DB_NAME, "enterprise-search", "es"):
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def _random_email() -> str:
@@ -49,40 +73,185 @@ def _create_test_user(pipeshub_client: PipeshubClient, timeout: int) -> dict:
     return user
 
 
-def _seed_password(org_id: str, user_id: str) -> None:
-    hashed = bcrypt.hashpw(TEST_USER_PASSWORD.encode(), bcrypt.gensalt()).decode()
+def _user_object_id(user_id: str) -> ObjectId | str:
+    if ObjectId.is_valid(user_id):
+        return ObjectId(user_id)
+    return user_id
+
+
+def _resolve_mongo_db_name(user_id: str, org_id: str) -> str:
+    """Pick the Mongo DB that holds this user (or their credentials)."""
+    oid = _user_object_id(user_id)
     client = MongoClient(MONGO_URI)
     try:
-        client[MONGO_DB_NAME].userCredentials.insert_one({
-            "userId": user_id,
-            "orgId": org_id,
-            "hashedPassword": hashed,
-            "ipAddress": "127.0.0.1",
-            "wrongCredentialCount": 0,
-            "isBlocked": False,
-            "forceNewPasswordGeneration": False,
-            "isDeleted": False,
-            "createdAt": datetime.datetime.now(datetime.timezone.utc),
-            "updatedAt": datetime.datetime.now(datetime.timezone.utc),
-        })
+        for db_name in _mongo_db_candidates():
+            db = client[db_name]
+            if db["users"].find_one({"_id": oid}):
+                logger.info("Resolved Mongo DB %s via users._id=%s", db_name, user_id)
+                return db_name
+            if db["userCredentials"].find_one(
+                {"userId": str(user_id), "orgId": str(org_id)}
+            ):
+                logger.info(
+                    "Resolved Mongo DB %s via userCredentials userId=%s",
+                    db_name,
+                    user_id,
+                )
+                return db_name
+    finally:
+        client.close()
+
+    fallback = _mongo_db_candidates()[0]
+    logger.warning(
+        "Could not locate user %s in Mongo candidates %s; using %s",
+        user_id,
+        _mongo_db_candidates(),
+        fallback,
+    )
+    return fallback
+
+
+@dataclass
+class SeededPassword:
+    """Handle to restore credentials after a temporary password seed."""
+
+    db_name: str
+    org_id: str
+    user_id: str
+    previous_doc: Optional[dict[str, Any]]
+    inserted_new: bool
+
+
+def seed_password(org_id: str, user_id: str) -> SeededPassword:
+    """Upsert ``TEST_USER_PASSWORD`` for *user_id*; return restore handle.
+
+    Writes into the Mongo DB that actually holds the user (``es`` or
+    ``enterprise-search``). Existing credential docs are snapshotted so
+    :func:`cleanup_credentials` can restore them instead of deleting a real
+    user's password.
+    """
+    org_id = str(org_id)
+    user_id = str(user_id)
+    db_name = _resolve_mongo_db_name(user_id, org_id)
+    hashed = bcrypt.hashpw(TEST_USER_PASSWORD.encode(), bcrypt.gensalt()).decode()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    oid = _user_object_id(user_id)
+
+    client = MongoClient(MONGO_URI)
+    try:
+        db = client[db_name]
+        user_doc = db["users"].find_one({"_id": oid})
+        if user_doc and user_doc.get("orgId") is not None:
+            # Prefer the orgId stored on the user doc (auth lookup key).
+            org_id = str(user_doc["orgId"])
+
+        coll = db["userCredentials"]
+        # Auth looks up { userId, orgId, isDeleted: false }; match both string forms.
+        previous = coll.find_one(
+            {
+                "userId": user_id,
+                "orgId": org_id,
+            }
+        )
+        if previous is None:
+            # Some older rows may store ObjectId-ish values inconsistently.
+            previous = coll.find_one({"userId": user_id})
+            if previous is not None and previous.get("orgId") is not None:
+                org_id = str(previous["orgId"])
+
+        previous_copy = dict(previous) if previous else None
+        inserted_new = previous is None
+
+        coll.update_one(
+            {"userId": user_id, "orgId": org_id},
+            {
+                "$set": {
+                    "hashedPassword": hashed,
+                    "ipAddress": "127.0.0.1",
+                    "wrongCredentialCount": 0,
+                    "isBlocked": False,
+                    "blockExpiresAt": None,
+                    "forceNewPasswordGeneration": False,
+                    "isDeleted": False,
+                    "updatedAt": now,
+                },
+                "$setOnInsert": {
+                    "userId": user_id,
+                    "orgId": org_id,
+                    "createdAt": now,
+                },
+            },
+            upsert=True,
+        )
+        logger.info(
+            "Seeded test password in %s.userCredentials for userId=%s orgId=%s "
+            "(had_existing=%s)",
+            db_name,
+            user_id,
+            org_id,
+            previous is not None,
+        )
+        return SeededPassword(
+            db_name=db_name,
+            org_id=org_id,
+            user_id=user_id,
+            previous_doc=previous_copy,
+            inserted_new=inserted_new,
+        )
     finally:
         client.close()
 
 
-def _cleanup_credentials(org_id: str, user_id: str) -> None:
+def cleanup_credentials(
+    org_id: str,
+    user_id: str,
+    seeded: SeededPassword | None = None,
+) -> None:
+    """Restore prior credentials, or delete a doc we inserted for an ephemeral user."""
     try:
         client = MongoClient(MONGO_URI)
         try:
-            client[MONGO_DB_NAME].userCredentials.delete_one(
-                {"userId": user_id, "orgId": org_id}
-            )
+            if seeded is not None:
+                coll = client[seeded.db_name]["userCredentials"]
+                if seeded.previous_doc is not None:
+                    prev = dict(seeded.previous_doc)
+                    prev_id = prev.pop("_id", None)
+                    if prev_id is not None:
+                        coll.replace_one({"_id": prev_id}, {**prev, "_id": prev_id})
+                    else:
+                        coll.replace_one(
+                            {"userId": seeded.user_id, "orgId": seeded.org_id},
+                            prev,
+                            upsert=True,
+                        )
+                    logger.info(
+                        "Restored prior userCredentials for userId=%s in %s",
+                        seeded.user_id,
+                        seeded.db_name,
+                    )
+                elif seeded.inserted_new:
+                    coll.delete_one(
+                        {"userId": seeded.user_id, "orgId": seeded.org_id}
+                    )
+                return
+
+            # Legacy path: try all candidate DBs.
+            for db_name in _mongo_db_candidates():
+                client[db_name]["userCredentials"].delete_one(
+                    {"userId": str(user_id), "orgId": str(org_id)}
+                )
         finally:
             client.close()
     except Exception:  # noqa: BLE001
-        logger.warning("Failed to clean up credentials for user %s", user_id)
+        logger.warning(
+            "Failed to clean up credentials for user %s; a temporary password may remain",
+            user_id,
+            exc_info=True,
+        )
 
 
-def _login(base_url: str, email: str, timeout: int) -> str:
+def login_with_test_password(base_url: str, email: str, timeout: int) -> str:
+    """Password-login with ``TEST_USER_PASSWORD``; return access token."""
     init_resp = requests.post(
         f"{base_url}/api/v1/userAccount/initAuth",
         json={"email": email},
@@ -113,7 +282,15 @@ def _login(base_url: str, email: str, timeout: int) -> str:
     return str(auth_resp.json()["accessToken"])
 
 
-def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> tuple[str, str, str]:
+def create_oauth_app_for_user(
+    base_url: str,
+    access_token: str,
+    timeout: int,
+    *,
+    name_prefix: str = "integration-2nd-user",
+    scopes: list[str] | None = None,
+) -> tuple[str, str, str]:
+    """Create a client_credentials OAuth app; return (app_id, client_id, client_secret)."""
     resp = requests.post(
         f"{base_url}/api/v1/oauth-clients",
         headers={
@@ -121,19 +298,15 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> tuple[s
             "Content-Type": "application/json",
         },
         json={
-            "name": f"integration-2nd-user-{uuid.uuid4().hex[:8]}",
+            "name": f"{name_prefix}-{uuid.uuid4().hex[:8]}",
             "allowedGrantTypes": ["client_credentials"],
-            "allowedScopes": [
-                "openid", "profile", "email", "org:read", "user:read",
-                "kb:read", "conversation:read", "agent:read",
-            ],
+            "allowedScopes": list(scopes or _STREAM_OAUTH_SCOPES),
         },
         timeout=timeout,
     )
     if resp.status_code >= 400:
         raise RuntimeError(
-            f"create OAuth app for 2nd user failed: "
-            f"HTTP {resp.status_code}: {resp.text}"
+            f"create OAuth app failed: HTTP {resp.status_code}: {resp.text}"
         )
     data = resp.json()
     app = data.get("app", {})
@@ -151,6 +324,68 @@ def _delete_user(pipeshub_client: PipeshubClient, user_id: str, timeout: int) ->
         logger.warning("Failed to delete test user %s", user_id)
 
 
+@contextmanager
+def pipeshub_client_as_user(
+    admin_client: PipeshubClient,
+    *,
+    email: str,
+    user_id: str,
+    name_prefix: str = "integration-user-client",
+    scopes: list[str] | None = None,
+    cleanup_user: bool = False,
+) -> Iterator[PipeshubClient]:
+    """Yield a ``PipeshubClient`` authenticated as an existing org user.
+
+    Seeds Mongo password for *user_id*, logs in, creates an OAuth app owned by
+    that user, and builds a client with those credentials (without mutating
+    process-wide ``CLIENT_ID``/``CLIENT_SECRET``). Does not delete the user
+    unless ``cleanup_user=True``.
+    """
+    timeout = admin_client.timeout_seconds
+    org_id = admin_client.org_id
+    base_url = admin_client.base_url
+
+    seed = seed_password(org_id, user_id)
+    app_id: str | None = None
+    try:
+        access_token = login_with_test_password(base_url, email, timeout)
+        app_id, client_id, client_secret = create_oauth_app_for_user(
+            base_url,
+            access_token,
+            timeout,
+            name_prefix=name_prefix,
+            scopes=scopes,
+        )
+
+        user_client = PipeshubClient(
+            base_url=base_url,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        user_client._invalidate_access_token()
+        user_client._fetch_access_token()
+        logger.info(
+            "PipeshubClient as user %s (id=%s) ready for streaming",
+            email,
+            user_id,
+        )
+        yield user_client
+    finally:
+        if app_id:
+            try:
+                requests.delete(
+                    f"{base_url}/api/v1/oauth-clients/{app_id}",
+                    headers=admin_client._headers(),
+                    timeout=timeout,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to delete OAuth app %s", app_id)
+
+        cleanup_credentials(org_id, user_id, seeded=seed)
+        if cleanup_user:
+            _delete_user(admin_client, user_id, timeout)
+
+
 @pytest.fixture(scope="module")
 def second_pipeshub_client(
     pipeshub_client: PipeshubClient,
@@ -166,52 +401,17 @@ def second_pipeshub_client(
       6. On teardown: deletes the OAuth app, user, and credentials,
          and restores original env vars
     """
-    timeout = pipeshub_client.timeout_seconds
-    org_id = pipeshub_client.org_id
+    user = _create_test_user(pipeshub_client, pipeshub_client.timeout_seconds)
+    user_id = str(user.get("_id") or user.get("id") or "")
+    email = str(user.get("email") or "")
+    if not user_id or not email:
+        raise RuntimeError(f"createUser response missing id/email: {user}")
 
-    user = _create_test_user(pipeshub_client, timeout)
-    user_id = user.get("_id") or user.get("id")
-    email = user.get("email", "")
-
-    _seed_password(org_id, user_id)
-    try:
-        access_token = _login(pipeshub_client.base_url, email, timeout)
-        app_id, client_id, client_secret = _create_oauth_app(
-            pipeshub_client.base_url, access_token, timeout,
-        )
-
-        # Save and override env vars for the second client
-        saved_client_id = os.environ.get("CLIENT_ID")
-        saved_client_secret = os.environ.get("CLIENT_SECRET")
-        os.environ["CLIENT_ID"] = client_id
-        os.environ["CLIENT_SECRET"] = client_secret
-
-        try:
-            second_client = PipeshubClient()
-            second_client._invalidate_access_token()
-            second_client._fetch_access_token()
-
-            yield second_client
-        finally:
-            # Restore original env vars
-            if saved_client_id is not None:
-                os.environ["CLIENT_ID"] = saved_client_id
-            else:
-                os.environ.pop("CLIENT_ID", None)
-            if saved_client_secret is not None:
-                os.environ["CLIENT_SECRET"] = saved_client_secret
-            else:
-                os.environ.pop("CLIENT_SECRET", None)
-
-            # Clean up the second user's OAuth app
-            try:
-                requests.delete(
-                    f"{pipeshub_client.base_url}/api/v1/oauth-clients/{app_id}",
-                    headers=pipeshub_client._headers(),
-                    timeout=timeout,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-    finally:
-        _cleanup_credentials(org_id, user_id)
-        _delete_user(pipeshub_client, user_id, timeout)
+    with pipeshub_client_as_user(
+        pipeshub_client,
+        email=email,
+        user_id=user_id,
+        name_prefix="integration-2nd-user",
+        cleanup_user=True,
+    ) as second_client:
+        yield second_client

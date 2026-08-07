@@ -450,7 +450,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
-                    RETURN g.name
+                    RETURN g.groupName
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "name": record_name})
         return result[0] if result else None
@@ -667,7 +667,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     LET path_parts = (
                         FOR v, e, p IN 0..5 OUTBOUND g {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                            RETURN NOT_NULL(v.name, '')
+                            RETURN NOT_NULL(v.groupName, '')
                     )
                     LET filtered_parts = (FOR part IN path_parts FILTER part != '' RETURN part)
                     RETURN LENGTH(filtered_parts) > 0 ? CONCAT_SEPARATOR('/', filtered_parts) : null
@@ -792,6 +792,64 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             query, {"cid": connector_id, "eid": external_record_id}
         )
         return bool(result[0]) if result else False
+
+    async def record_belongs_to_external_group(
+        self,
+        connector_id: str,
+        external_record_id: str,
+        external_group_id: str,
+    ) -> bool:
+        """True if Record has BELONGS_TO → RecordGroup with the given externalGroupId."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
+                    FILTER g.externalGroupId == @gid
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "gid": str(external_group_id),
+            },
+        )
+        return bool(result) and len(result) > 0
+
+    async def user_has_direct_record_permission(
+        self,
+        connector_id: str,
+        user_email: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if User -[:PERMISSION]-> Record for this connector external id."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR u, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', u)
+                    FILTER LOWER(u.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "email": user_email,
+            },
+        )
+        return bool(result) and len(result) > 0
 
     async def get_app_metadata_by_connector_id(
         self, connector_id: str
@@ -1052,14 +1110,14 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:
-        """Return the ``parentExternalRecordId`` field of a record (or None)."""
+        """Return the record's ``externalParentId`` (parent external record id), or None."""
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid AND r.externalRecordId == @eid
                 LIMIT 1
-                RETURN r.parentExternalRecordId
+                RETURN r.externalParentId
         """
         result = await self.http_client.execute_aql(
             query, {"cid": connector_id, "eid": external_record_id}

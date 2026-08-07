@@ -137,7 +137,10 @@ from helper.clients.search_client import SearchClient  # noqa: E402
 from helper.clients.teams_client import TeamsClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
 from helper.clients.users_client import UsersClient  # noqa: E402
-from sample_data import ensure_sample_data_files_root  # noqa: E402
+from sample_data import (  # noqa: E402
+    ensure_sample_data_files_root,
+    ensure_sample_data_google_drive_it_files_root,
+)
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
 _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
@@ -216,25 +219,36 @@ def _merge_phase_report(
             stderr_captured=existing.stderr_captured or stderr_captured,
         )
 
-    if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="skipped",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
-        if report.outcome == "passed":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="passed",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
+    # Fixture/setup skips never emit a call phase — treat skip in any phase like JUnit.
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if existing.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if when == "call" and report.outcome == "passed":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="passed",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
 
     # setup/teardown passed (or other): keep call outcome, extend duration, merge streams
     return TestReportEntry(
@@ -267,16 +281,16 @@ def _initial_entry_from_phase(
             stdout_captured=stdout_captured,
             stderr_captured=stderr_captured,
         )
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=report.nodeid,
+            outcome="skipped",
+            duration=duration,
+            err_full=None,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
     if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=report.nodeid,
-                outcome="skipped",
-                duration=duration,
-                err_full=None,
-                stdout_captured=stdout_captured,
-                stderr_captured=stderr_captured,
-            )
         return TestReportEntry(
             nodeid=report.nodeid,
             outcome="passed",
@@ -406,6 +420,12 @@ def kb_client(pipeshub_client: PipeshubClient) -> KBClient:
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
+
+
+@pytest.fixture(scope="session")
+def drive_blocks_sample_root() -> Path:
+    """Session-scoped path to google-drive-it-files sample data from GitHub."""
+    return ensure_sample_data_google_drive_it_files_root()
 
 
 @pytest.fixture(scope="session")

@@ -47,9 +47,15 @@ class PipeshubClient:
         self,
         base_url: Optional[str] = None,
         timeout_seconds: int = 60,
+        *,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
     ) -> None:
         self.base_url = (base_url or os.getenv("PIPESHUB_BASE_URL") or "").rstrip("/")
         self.timeout_seconds = timeout_seconds
+        # Optional explicit OAuth app (avoids mutating process-wide CLIENT_ID/SECRET).
+        self._client_id = (client_id or "").strip() or None
+        self._client_secret = (client_secret or "").strip() or None
         self._access_token: Optional[str] = None
         self._token_claims: Optional[Dict[str, Any]] = None
         # Unix time (seconds): refresh before this moment (from expires_in / JWT exp / default).
@@ -176,15 +182,19 @@ class PipeshubClient:
                 )
         self._token_expires_at = max(now + 60.0, candidate)
 
-    def _fetch_access_token(self) -> None:
-        """Always request a new token (caller clears old state first)."""
-        client_id = os.getenv("CLIENT_ID")
-        client_secret = os.getenv("CLIENT_SECRET")
+    def _oauth_client_credentials(self) -> tuple[str, str]:
+        client_id = self._client_id or os.getenv("CLIENT_ID")
+        client_secret = self._client_secret or os.getenv("CLIENT_SECRET")
         if not client_id or not client_secret:
             raise PipeshubClientError(
                 "CLIENT_ID and CLIENT_SECRET must be set in integration-tests/.env "
-                "to fetch an access token for test.pipeshub.com"
+                "(or passed to PipeshubClient) to fetch an access token"
             )
+        return str(client_id), str(client_secret)
+
+    def _fetch_access_token(self) -> None:
+        """Always request a new token (caller clears old state first)."""
+        client_id, client_secret = self._oauth_client_credentials()
 
         token_url = f"{self.base_url}/api/v1/oauth2/token"
         resp = requests.post(
