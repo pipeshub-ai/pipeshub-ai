@@ -1170,7 +1170,7 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
-        title_node = parser.css_first("title")
+        title_node = parser.css_first("head > title")
         document_title = _node_text(title_node) if title_node is not None else ""
         walker = _DomWalker(
             caption_map=caption_map,

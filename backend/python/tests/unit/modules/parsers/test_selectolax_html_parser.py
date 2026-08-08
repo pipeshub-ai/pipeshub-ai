@@ -248,29 +248,29 @@ class TestDocumentTitle:
         assert container.blocks[0].format == DataFormat.MARKDOWN
         assert container.blocks[0].type == BlockType.TEXT
 
-    def test_title_precedes_body_heading(
+    def test_empty_or_non_document_title_not_emitted(
         self, converter: HtmlToBlocksConverter
     ) -> None:
-        container = converter.convert(
-            "<html><head><title>Page Title</title></head>"
-            "<body><h1>Section</h1><ul><li>item</li></ul></body></html>"
-        )
-        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
-        assert [b.data for b in headings] == ["Page Title", "Section"]
-        assert container.blocks[0].data == "Page Title"
-
-    def test_empty_title_not_emitted(self, converter: HtmlToBlocksConverter) -> None:
-        container = converter.convert(
-            "<html><head><title>   </title></head><body><p>Body.</p></body></html>"
-        )
-        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
-        assert headings == []
-        assert any(b.data == "Body." for b in container.blocks)
-
-    def test_missing_title_unchanged(self, converter: HtmlToBlocksConverter) -> None:
-        container = converter.convert("<html><body><p>Only body.</p></body></html>")
-        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
-        assert headings == []
+        for html, body_text in (
+            (
+                "<html><head><title>   </title></head><body><p>Body.</p></body></html>",
+                "Body.",
+            ),
+            ("<html><body><p>Only body.</p></body></html>", "Only body."),
+            (
+                "<html><body>"
+                "<svg><title>Icon Label</title></svg>"
+                "<p>Body text.</p>"
+                "</body></html>",
+                "Body text.",
+            ),
+        ):
+            container = converter.convert(html)
+            headings = [
+                b for b in container.blocks if b.sub_type == BlockSubType.HEADING
+            ]
+            assert headings == []
+            assert any(b.data == body_text for b in container.blocks)
 
 
 class TestHeadings:
