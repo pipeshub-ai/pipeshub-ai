@@ -53,6 +53,7 @@ import {
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
+  getConnectorSyncProgress,
   getRecordContent,
   reindexConnector,
   resyncConnectorRecords,
@@ -335,6 +336,9 @@ const resyncConnectorSchema = z.object({
   body: z.object({
     connectorName: z.string().min(1),
     fullSync: z.boolean().optional(),
+    // Cancel any in-flight sync and restart (client's explicit override of the
+    // "sync already in progress" guard).
+    force: z.boolean().optional(),
   }),
 });
 
@@ -539,6 +543,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/sync-progress
+   * Get run-scoped sync/indexing progress for a connector instance
+   */
+  router.get(
+    '/:connectorId/sync-progress',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    ValidationMiddleware.validate(getConnectorStatsSchema),
+    getConnectorSyncProgress(config),
   );
 
   /**

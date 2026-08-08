@@ -8,6 +8,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import { IndexingProgressIndicator } from '@/app/(main)/knowledge-base/components/indexing-progress-indicator';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -139,6 +140,14 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
     default:
       return { bg: 'var(--olive-3)', text: 'var(--olive-11)', border: 'var(--olive-5)' };
   }
+}
+
+function IndexingProgressRow({ record }: { record: RecordDetailsResponse['record'] }) {
+  return (
+    <Box style={{ padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--olive-3)' }}>
+      <IndexingProgressIndicator record={record} />
+    </Box>
+  );
 }
 
 function IndexingStatusChip({ status }: { status: string | undefined }) {
@@ -491,6 +500,9 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   ) : null}
                 </Flex>
               </Flex>
+              {record.indexingStatus === 'QUEUED' || record.indexingStatus === 'IN_PROGRESS' ? (
+                <IndexingProgressRow record={record} />
+              ) : null}
               {fileSizeDisplay ? (
                 <DetailRow label={t('recordView.labels.fileSize')} value={fileSizeDisplay} />
               ) : null}

@@ -1,6 +1,7 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -286,6 +287,7 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
+        org_id: str | None = None,
         **kwargs,
     ) -> BaseConnector | None:
         """Create, initialize, and start sync for a connector"""
@@ -312,7 +314,10 @@ class ConnectorFactory:
                     )
                 else:
                     await sync_task_manager.start_sync(
-                        connector_id, connector.run_sync()
+                        connector_id,
+                        cls._run_startup_sync(
+                            connector, connector_id, org_id, logger, config_service
+                        ),
                     )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
@@ -323,3 +328,74 @@ class ConnectorFactory:
                 return None
 
         return None
+
+    @classmethod
+    async def _run_startup_sync(
+        cls,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str | None,
+        logger: logging.Logger,
+        config_service: ConfigurationService,
+    ) -> None:
+        """Wrap run_sync() for the startup-resume path.
+
+        Kafka-driven syncs set apps.status via EventService; startup-resumed
+        syncs bypass that, so mirror the same SYNCING -> IDLE transition and the
+        run-scoped progress lifecycle here to avoid the UI showing IDLE mid-sync.
+        """
+        from app.config.constants.arangodb import AppStatus, CollectionNames
+        from app.connectors.services.sync_progress_store import (
+            get_connector_sync_progress_store,
+        )
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        data_store_provider = getattr(connector, "data_store_provider", None)
+        graph_provider = getattr(data_store_provider, "graph_provider", None)
+
+        async def _set_status(status: str) -> None:
+            if not graph_provider:
+                return
+            try:
+                await graph_provider.batch_upsert_nodes(
+                    [{
+                        "id": connector_id,
+                        "status": status,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }],
+                    CollectionNames.APPS.value,
+                )
+            except Exception as e:
+                logger.debug(f"Failed to set status {status} for {connector_id}: {e}")
+
+        store = None
+        try:
+            store = await get_connector_sync_progress_store(logger, config_service)
+        except Exception:
+            store = None
+
+        await _set_status(AppStatus.SYNCING.value)
+        run_id: Optional[str] = None
+        if store and org_id:
+            run_id = await store.start_run(org_id, connector_id, full_sync=False)
+
+        async def _get_store():
+            try:
+                return await get_connector_sync_progress_store(logger, config_service)
+            except Exception:
+                return None
+
+        async def _set_idle_status() -> None:
+            await _set_status(AppStatus.IDLE.value)
+
+        from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
+
+        await run_sync_with_lifecycle(
+            connector=connector,
+            connector_id=connector_id,
+            org_id=org_id,
+            run_id=run_id,
+            logger=logger,
+            get_store=_get_store,
+            set_idle_status=_set_idle_status,
+        )

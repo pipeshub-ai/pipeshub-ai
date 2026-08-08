@@ -1206,6 +1206,51 @@ class TestProcessEventErrors:
             assert doc.get("indexingStatus") != ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_cancellation_marks_failed_on_final_attempt(self):
+        """A processing-timeout cancellation on the final delivery attempt must
+        mark the record FAILED instead of stranding it in IN_PROGRESS."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "is_final_failure": True,
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                # asyncio.timeout in the consumer cancels the handler mid-await
+                mock_api.side_effect = asyncio.CancelledError()
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with pytest.raises(asyncio.CancelledError):
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        failed_updates = [
+            call.args[2]
+            for call in gp.update_node.call_args_list
+            if len(call.args) >= 3
+            and call.args[2].get("indexingStatus") == ProgressStatus.FAILED.value
+        ]
+        assert failed_updates, "record should be marked FAILED after final-attempt cancellation"
+        handler._trigger_next_queued_duplicate.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_transient_failure_reverts_in_progress_to_queued(self):
         """Transient failure while the record is still IN_PROGRESS reverts it to
         QUEUED so it stops counting against concurrency limits while it waits
@@ -2473,6 +2518,9 @@ class TestKbUploadedCodeFileHandling:
 
         assert len(events) == 2
         mock_dl.assert_awaited_once()
+        # The stage stays EXTRACTING until the vector store flips it to INDEXING at
+        # embedding time; the record handler no longer writes a stage on
+        # parsing_complete, so with a mocked pipeline there is no stage write here.
         gp.batch_update_nodes.assert_not_called()
 
     @pytest.mark.asyncio

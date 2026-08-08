@@ -36,6 +36,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.base_client import ServiceUnavailableError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -334,20 +335,40 @@ class EventProcessor:
         return True
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
-        """Persist the legacy pipeline's indexing and extraction status."""
-        record_id = _record_key(doc) or "unknown"
-        fields = {
-            "indexingStatus": status.value,
-            "processingStartedAt": (
-                get_epoch_timestamp_in_ms()
-                if status == ProgressStatus.IN_PROGRESS
-                else None
-            ),
-        }
-        await self.update_record_fields(doc, fields)
-        self.logger.debug(
-            f"🔍 Record {record_id}: Successfully updated status to {status.value}"
-        )
+        """Persist indexing/extraction status with progress-stage fields."""
+        try:
+            record_id = _record_key(doc) or "unknown"
+            fields: dict[str, Any] = {
+                "indexingStatus": status.value,
+                "extractionStatus": status.value,
+                "processingStartedAt": (
+                    get_epoch_timestamp_in_ms()
+                    if status == ProgressStatus.IN_PROGRESS
+                    else None
+                ),
+            }
+            stage = stage_for_status(status)
+            if stage is not None:
+                fields.update(build_indexing_progress(stage))
+
+            success = await self.update_record_fields(doc, fields)
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update record %s status to %s - record may not exist",
+                    record_id, status.value
+                )
+                return
+
+            self.logger.debug(
+                f"🔍 Record {record_id}: Successfully updated status to {status.value}"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Record {_record_key(doc) or 'unknown'}: Failed to mark record status "
+                f"to {status.value}: {repr(e)}"
+            )
+            if status == ProgressStatus.EMPTY:
+                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}") from e
 
 
 

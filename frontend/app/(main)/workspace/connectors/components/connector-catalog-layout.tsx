@@ -73,7 +73,7 @@ export function ConnectorCatalogLayout({
 }: ConnectorCatalogLayoutProps) {
   const { t } = useTranslation();
   const resolvedSearchPlaceholder = searchPlaceholder ?? t('form.searchPlaceholder');
-  // Count active (isActive=true) and inactive (isActive=false) instances per connector type
+  // Count active (isActive=true) and inactive (isActive=false) instances per connector type.
   const { activeCountByType, inactiveCountByType } = useMemo(() => {
     const active: Record<string, number> = {};
     const inactive: Record<string, number> = {};

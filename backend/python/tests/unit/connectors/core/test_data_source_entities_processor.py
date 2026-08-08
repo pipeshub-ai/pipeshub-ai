@@ -3562,12 +3562,14 @@ class TestOnRecordContentUpdate:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         record = _make_record()
+        proc._track_record_queued = AsyncMock()
 
         await proc.on_record_content_update(record)
 
         proc.messaging_producer.send_message.assert_awaited()
         call_args = proc.messaging_producer.send_message.call_args
         assert call_args[0][1]["eventType"] == "updateRecord"
+        proc._track_record_queued.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_auto_index_off(self):
@@ -4909,3 +4911,93 @@ class TestPlaceholderFlag:
         assert kwargs["record_group_id"] == "rg-1"
         assert kwargs["is_placeholder"] is True
         assert kwargs["status_filters"] is None
+
+
+# ===========================================================================
+# Same-revision skip + placeholder terminal status (progress-bar QA)
+# ===========================================================================
+
+
+class TestPlaceholderAutoIndexOff:
+    def test_placeholder_created_as_auto_index_off(self):
+        """Stubs must not sit in QUEUED forever for rollup progress."""
+        proc = _make_processor()
+        record = _make_record()
+
+        result = proc._create_placeholder_parent_record(
+            "parent-ext-1", RecordType.TICKET, record
+        )
+
+        assert result.is_placeholder is True
+        assert result.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestSameRevisionSkipsReindex:
+    @pytest.mark.asyncio
+    async def test_same_revision_completed_skips_kafka_and_tracks_unchanged(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._track_unchanged = AsyncMock()
+        proc._track_discovered = AsyncMock()
+
+        existing = _make_record(
+            external_record_id="att-1",
+            external_revision_id="rev-1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        existing.id = "rec-att-1"
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        incoming = _make_record(
+            external_record_id="att-1",
+            external_revision_id="rev-1",
+            indexing_status=ProgressStatus.QUEUED.value,
+        )
+
+        with patch(
+            "app.connectors.services.sync_run_context.get_sync_run_id",
+            return_value="run-1",
+        ):
+            await proc.on_new_records([(incoming, [])])
+
+        proc.messaging_producer.send_message.assert_not_awaited()
+        proc._track_unchanged.assert_awaited()
+        proc._track_discovered.assert_awaited_once_with({})
+        assert getattr(incoming, "_skip_auto_index_publish", False) is True
+        assert incoming.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_revision_change_still_publishes(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._track_unchanged = AsyncMock()
+        proc._handle_updated_record = AsyncMock()
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+        proc._handle_record_group = AsyncMock(return_value=None)
+
+        existing = _make_record(
+            external_record_id="att-1",
+            external_revision_id="rev-1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        existing.id = "rec-att-1"
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        incoming = _make_record(
+            external_record_id="att-1",
+            external_revision_id="rev-2",
+            indexing_status=ProgressStatus.QUEUED.value,
+        )
+
+        with patch(
+            "app.connectors.services.sync_run_context.get_sync_run_id",
+            return_value="run-1",
+        ):
+            await proc.on_new_records([(incoming, [])])
+
+        proc.messaging_producer.send_message.assert_awaited()
+        proc._track_unchanged.assert_not_awaited()
+        assert incoming.indexing_status == ProgressStatus.NOT_STARTED.value
