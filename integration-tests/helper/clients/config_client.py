@@ -27,6 +27,19 @@ class ConfigClient(APIClient):
         """
         return self.put("/web-search/settings", json=kwargs)
 
+    def create_smtp_config(self, **kwargs: Any) -> requests.Response:
+        """Create/update SMTP config (POST /smtpConfig).
+
+        Body fields: host, port, username, password, fromEmail. This is the
+        store the bulk-invite smtpConfigCheck middleware reads, so it must be
+        set before the /users/bulk/invite* routes will accept a request.
+        """
+        return self.post("/smtpConfig", json=kwargs)
+
+    def get_smtp_config(self) -> requests.Response:
+        """Get SMTP config (GET /smtpConfig)."""
+        return self.get("/smtpConfig")
+
     def get_email_settings(self) -> requests.Response:
         """Get email/SMTP settings."""
         return self.get("/email")

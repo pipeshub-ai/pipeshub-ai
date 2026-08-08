@@ -9,7 +9,7 @@ from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
 from app.utils.logger import create_logger
 
-logger = create_logger("KV Store:" + os.getenv("KV_STORE_TYPE", "etcd"))
+logger = create_logger("KV Store:" + os.getenv("KV_STORE_TYPE", "redis"))
 
 T = TypeVar("T")
 

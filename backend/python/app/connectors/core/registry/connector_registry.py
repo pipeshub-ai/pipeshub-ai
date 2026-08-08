@@ -285,6 +285,43 @@ class ConnectorRegistry:
             self.logger.error(f"Error checking connector access: {e}")
             return False
 
+    async def can_user_view_connector(
+        self,
+        connector_id: str,
+        connector_instance: dict[str, Any],
+        user_id: str,
+        *,
+        is_admin: bool,
+    ) -> bool:
+        """Read-only visibility for a connector, mirroring the connector listing.
+
+        Whereas :meth:`_can_access_connector` gates *mutations* to the creator or
+        an admin, a team-scoped connector is *viewable* by anyone who can reach it
+        via a direct or team app edge — the same rule
+        :meth:`get_all_connector_instances` uses. This keeps stats visibility in
+        sync with list visibility: if a user can see a connector, they can see its
+        stats.
+        """
+        try:
+            scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
+            created_by = connector_instance.get("createdBy")
+
+            if scope == ConnectorScope.PERSONAL.value:
+                return created_by == user_id
+
+            if scope == ConnectorScope.TEAM.value:
+                if is_admin or created_by == user_id:
+                    return True
+                graph_provider = await self._get_graph_provider()
+                accessible = await graph_provider.get_user_accessible_team_app_ids(user_id)
+                return connector_id in accessible
+
+            return False
+
+        except Exception as e:
+            self.logger.error(f"Error checking connector view access: {e}")
+            return False
+
     async def _check_name_uniqueness(
         self,
         instance_name: str,

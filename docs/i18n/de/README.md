@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Hochperformantes Python-Web-Framework |
 | LangChain | Framework für LLM-Pipelines |
-| LangGraph | Zustandsgraph für LLM-Workflows |
 | Qdrant | Engine für Vektor-Ähnlichkeitssuche |
 | Neo4j / ArangoDB | Graphdatenbank |
 | Kafka / Redis Streams | Verteilte Event-Streaming-Plattform |
@@ -265,7 +264,7 @@ Hinweis: Verwende HTTPS für Cloud-Bereitstellungen. HTTP kann zu Sicherheitsblo
 
 ### Welche LLM-Anbieter unterstützt PipesHub?
 
-PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit. Der Technologie-Stack umfasst LangChain und LangGraph für LLM-Pipelines und -Workflows.
+PipesHub folgt dem Prinzip „Bring dein eigenes Modell mit“ – du kannst jeden LLM-Anbieter verwenden. Stelle in deiner VPC die Modelle deiner Wahl bereit. Der Technologie-Stack umfasst LangChain für LLM-Pipelines und -Workflows.
 
 ### Was ist die Funktion zum Wissensgraph-Abruf?
 

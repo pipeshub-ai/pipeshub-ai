@@ -7,15 +7,13 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
-import type { ModelOverride } from '@/chat/types';
+import type { ModelOverride, QueryMode } from '@/chat/types';
 import { CollectionsTab } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/collections-tab';
 import { AgentScopedResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/agent-scoped-resources-panel';
 import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expansion-panels/universal-agent-resources-panel';
 import { ModelSelectorPanel } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
-import { AgentStrategyModePanel } from '@/chat/components/chat-panel/expansion-panels/agent-strategy-mode-panel';
-import type { AgentStrategy, QueryMode } from '@/chat/types';
 
-type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-strategy' | 'agent-resources' | 'universal-agent-resources';
+type ActivePanel = 'root' | 'models' | 'connectors' | 'agent-resources' | 'universal-agent-resources';
 
 interface MobileQueryOptionsSheetProps {
   open: boolean;
@@ -44,7 +42,6 @@ export function MobileQueryOptionsSheet({
   const { t } = useTranslation();
 
   const settings = useChatStore((s) => s.settings);
-  const setAgentStrategy = useChatStore((s) => s.setAgentStrategy);
   const setFilters = useChatStore((s) => s.setFilters);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
 
@@ -67,7 +64,6 @@ export function MobileQueryOptionsSheet({
     root: t('chat.queryOptions', { defaultValue: 'Query options' }),
     models: t('chat.models', { defaultValue: 'Models' }),
     connectors: t('chat.connectorsCollectionsTitle', { defaultValue: 'Connectors and Collections' }),
-    'agent-strategy': t('chat.agentStrategy.triggerTitle', { defaultValue: 'Agent mode' }),
     'agent-resources': t('chat.agentResources.sheetTitle', {
       defaultValue: 'Connectors, collections & actions',
     }),
@@ -86,7 +82,6 @@ export function MobileQueryOptionsSheet({
       {activePanel === 'root' && (
         <RootPanel
           queryMode={settings.queryMode}
-          agentStrategy={settings.agentStrategy}
           onNavigate={setActivePanel}
           isAgentChat={isAgentChat}
         />
@@ -128,16 +123,6 @@ export function MobileQueryOptionsSheet({
           <UniversalAgentResourcesPanel />
         </Flex>
       )}
-      {activePanel === 'agent-strategy' && (
-        <AgentStrategyModePanel
-          activeStrategy={settings.agentStrategy}
-          onSelect={(strategy) => {
-            setAgentStrategy(strategy);
-            handleBack();
-          }}
-          hideHeader
-        />
-      )}
     </MobileBottomSheet>
   );
 }
@@ -148,15 +133,12 @@ export function MobileQueryOptionsSheet({
 
 interface RootPanelProps {
   queryMode: QueryMode;
-  agentStrategy: AgentStrategy;
   onNavigate: (panel: ActivePanel) => void;
   isAgentChat?: boolean;
 }
 
-function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPanelProps) {
+function RootPanel({ queryMode, onNavigate, isAgentChat }: RootPanelProps) {
   const { t } = useTranslation();
-
-  const currentStrategyLabel = t(`chat.agentStrategy.modes.${agentStrategy}.label`);
 
   return (
     <Flex direction="column" gap="5">
@@ -194,14 +176,6 @@ function RootPanel({ queryMode, agentStrategy, onNavigate, isAgentChat }: RootPa
               onClick={() => onNavigate('agent-resources')}
             />
           ) : null}
-          {!isAgentChat && queryMode === 'agent' && (
-            <ManageRow
-              icon="smart_toy"
-              label={t('chat.agentStrategy.triggerTitle', { defaultValue: 'Agent mode' })}
-              subtitle={currentStrategyLabel}
-              onClick={() => onNavigate('agent-strategy')}
-            />
-          )}
         </Flex>
       </Flex>
     </Flex>

@@ -1,0 +1,20 @@
+# Copy this into another Omnigent agent's tools/mcp/ directory to attach
+# PipesHub. Replace the URL with your PipesHub origin + /mcp.
+#
+# Note: Omnigent 0.7.0 directory MCP files do not apply the tools: allowlist.
+# Prefer the inline tools.pipeshub block in config.yaml.example when you need
+# a hard allowlist.
+
+name: pipeshub
+transport: http
+url: https://your-pipeshub.example.com/mcp
+headers:
+  Authorization: "Bearer ${PIPESHUB_MCP_TOKEN}"
+tools:
+  - pipeshub_chat
+  - pipeshub_search
+  - pipeshub_sources
+  - pipeshub_directory
+  - pipeshub_download_record
+  - pipeshub_agents
+timeout: 120

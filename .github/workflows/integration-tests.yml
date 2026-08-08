@@ -21,6 +21,8 @@ on:
             - confluence
             - jira
             - linear
+            - google_drive_workspace
+            - google_drive_individual
             - gcs
             - azure_blob
             - azure_files
@@ -64,13 +66,36 @@ on:
         options:
           - kafka
           - redis
+      pytest_workers:
+        description: 'pytest-xdist worker count. Connector suites are grouped onto a single worker to keep their ordering; enterprise-search tests spread across all workers. 1 disables parallelism. Each worker is a separate interpreter costing ~1 GB, and the runner has ~15.7 GB shared with the whole Docker stack — raising this risks OOM-killing the runner.'
+        required: true
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+          - '6'
+          - '7'
+          - '8'
 
 permissions:
   contents: read
 
+# The matrix reads labels from each event's frozen payload, so an opened/synchronize
+# event firing before a label lands resolves to the default "both" and would otherwise
+# burn a runner alongside the labeled run. Non-PR events get a unique group per run so
+# a manual dispatch never cancels the nightly cron.
+concurrency:
+  group: integration-tests-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
+  PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
 
 jobs:
   integration-tests:
@@ -82,19 +107,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each matrix value is one job. "arango"/"neo4j" run that backend only;
-        # "both" runs the two backends sequentially inside a single job.
-        # Sequential is the default; high-priority runs opt into parallel via
-        # the run_mode dispatch input or an `it-parallel` label on the PR. env
-        # context is not available in `strategy`, so this derives from
-        # inputs/labels directly.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        # One job per value; "both" runs both backends sequentially in one job.
+        # Select backends via the graph_db dispatch input or the
+        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # `strategy` can't read the job env block, so derive from inputs/labels here.
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
 
-    # Schedule uses a separate environment so daily runs are not blocked by
-    # deployment protection on `integration-test-dev`. Create
-    # `integration-test-daily` in repo Settings → Environments with the same
-    # environment secrets as `integration-test-dev`, but leave required
-    # reviewers / wait timer disabled.
+    # One shared env; its required reviewers are the approval gate. Per-backend
+    # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
+    # Schedule uses integration-test-daily to bypass deployment protection.
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
@@ -135,10 +156,24 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
-      # Playwright runs once per workflow: on the job that has the neo4j stack
-      # (the neo4j leg, or the sequential "both" job), or on the arango job when
-      # arango is the only backend selected.
-      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || github.event.inputs.graph_db == 'arango') && 'true' || 'false' }}
+      # Google Drive Workspace (service account + domain-wide delegation)
+      GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL }}
+      GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL }}
+      GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL }}
+      # Google Drive personal (OAuth). Refresh token is normally in
+      # .env.refresh_tokens locally; CI injects it as an env secret.
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      GOOGLE_DRIVE_TEST_USER_EMAIL: ${{ secrets.GOOGLE_DRIVE_TEST_USER_EMAIL }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+
+      SMTP_HOST: mailpit
+      SMTP_PORT: '1025'
+      SMTP_FROM_EMAIL: no-reply@example.com
+      # Playwright runs once: on the neo4j/both leg, or the arango leg only when
+      # arango is the sole backend (arango dispatch input, or it-arango alone).
+      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -192,6 +227,14 @@ jobs:
         run: |
           uv venv
           uv pip install -e .
+
+      # Pure helper unit tests (mocks only) — fail fast before Docker/services come up.
+      - name: Run helper unit tests
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          pytest unit/ -v --tb=short --junitxml=reports/unit-results.xml
 
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -278,7 +321,13 @@ jobs:
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
-          pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
+          # -n 1 still forks a worker, so shared_session_resource treats the run as
+          # distributed and skips teardown. -n 0 runs in-process and restores it.
+          WORKERS="$PYTEST_WORKERS"
+          if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          pytest -m "$MARKERS" -v --tb=short \
+            -n "$WORKERS" --dist loadgroup \
+            --junitxml=reports/neo4j-results.xml 2>&1
 
       - name: 'Neo4j: Run Playwright e2e tests'
         if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
@@ -398,7 +447,13 @@ jobs:
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
-          pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
+          # -n 1 still forks a worker, so shared_session_resource treats the run as
+          # distributed and skips teardown. -n 0 runs in-process and restores it.
+          WORKERS="$PYTEST_WORKERS"
+          if [ "$WORKERS" = "1" ]; then WORKERS=0; fi
+          pytest -m "$MARKERS" -v --tb=short \
+            -n "$WORKERS" --dist loadgroup \
+            --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
         if: ${{ !cancelled() && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
@@ -436,35 +491,9 @@ jobs:
           cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
           cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/ 2>/dev/null || true
 
-      - name: Upload reports artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports-${{ matrix.graph_db }}
-          path: integration-tests/reports/
-          if-no-files-found: ignore
-
-  report:
-    name: Integration Tests Report
-    needs: integration-tests
-    # Report failed runs, but stay silent when the run was cancelled or skipped.
-    if: ${{ !cancelled() && needs.integration-tests.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Download reports from all jobs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: reports-*
-          path: integration-tests/reports
-          merge-multiple: true
-
-      - name: Ensure reports directory exists
-        run: mkdir -p integration-tests/reports
-
-      - name: Collect test results and prepare email
+      - name: Collect test results and prepare Slack report
         id: test-results
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
         env:
           # Route untrusted PR metadata through env vars so the shell script
@@ -475,6 +504,7 @@ jobs:
           PR_URL_IN: ${{ github.event.pull_request.html_url }}
           PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
           ACTOR_IN: ${{ github.actor }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           TOTAL_PASSED=0
           TOTAL_FAILED=0
@@ -522,6 +552,29 @@ jobs:
             PR_FIELD_TEXT=""
           fi
 
+          # Parse helper unit-test JUnit XML (runs before Docker; no graph backend).
+          UNIT_TESTS=0
+          UNIT_PASSED=0
+          UNIT_FAILED=0
+          UNIT_ERRORS=0
+          UNIT_SKIPPED=0
+          if [ -f "reports/unit-results.xml" ]; then
+            unit_tests=$(grep -oP 'tests="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_failures=$(grep -oP 'failures="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_errors=$(grep -oP 'errors="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            unit_skipped=$(grep -oP 'skipped="\K[0-9]+' "reports/unit-results.xml" | head -1)
+            UNIT_TESTS=${unit_tests:-0}
+            UNIT_FAILED=${unit_failures:-0}
+            UNIT_ERRORS=${unit_errors:-0}
+            UNIT_SKIPPED=${unit_skipped:-0}
+            UNIT_PASSED=$((UNIT_TESTS - UNIT_FAILED - UNIT_ERRORS - UNIT_SKIPPED))
+          fi
+          if [ "$UNIT_TESTS" -gt 0 ]; then
+            UNIT_PASS_RATE=$(( (UNIT_PASSED * 100) / UNIT_TESTS ))
+          else
+            UNIT_PASS_RATE=0
+          fi
+
           # Parse Playwright JUnit XML
           PW_TESTS=0
           PW_PASSED=0
@@ -545,9 +598,13 @@ jobs:
             PW_PASS_RATE=0
           fi
 
-          # Overall health: green only when both suites are fully passing
+          # Green only when suites pass AND the job is healthy — a stack that never
+          # came up yields zero counts, which would otherwise read as success.
           OVERALL_OK=true
-          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+          if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$UNIT_FAILED" -gt 0 ] || [ "$UNIT_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+            OVERALL_OK=false
+          fi
+          if [ "$JOB_STATUS" != "success" ] || [ "$TOTAL_TESTS" -eq 0 ]; then
             OVERALL_OK=false
           fi
 
@@ -557,6 +614,12 @@ jobs:
           echo "TOTAL_ERRORS=$TOTAL_ERRORS" >> "$GITHUB_OUTPUT"
           echo "TOTAL_SKIPPED=$TOTAL_SKIPPED" >> "$GITHUB_OUTPUT"
           echo "PASS_RATE=$PASS_RATE" >> "$GITHUB_OUTPUT"
+          echo "UNIT_TESTS=$UNIT_TESTS" >> "$GITHUB_OUTPUT"
+          echo "UNIT_PASSED=$UNIT_PASSED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_FAILED=$UNIT_FAILED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_ERRORS=$UNIT_ERRORS" >> "$GITHUB_OUTPUT"
+          echo "UNIT_SKIPPED=$UNIT_SKIPPED" >> "$GITHUB_OUTPUT"
+          echo "UNIT_PASS_RATE=$UNIT_PASS_RATE" >> "$GITHUB_OUTPUT"
           echo "PW_TESTS=$PW_TESTS" >> "$GITHUB_OUTPUT"
           echo "PW_PASSED=$PW_PASSED" >> "$GITHUB_OUTPUT"
           echo "PW_FAILED=$PW_FAILED" >> "$GITHUB_OUTPUT"
@@ -577,8 +640,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Zip reports folder
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
-        run: zip -r reports.zip reports/
+        run: |
+          mkdir -p reports
+          zip -r reports.zip reports/
 
       - name: Send Slack report
         if: ${{ !cancelled() }}
@@ -595,7 +661,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -634,6 +700,15 @@ jobs:
                       { "type": "raw_text", "text": "Pass Rate" }
                     ],
                     [
+                      { "type": "raw_text", "text": "Helper unit (pytest)"                                           },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_TESTS }}"                 },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_PASSED }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_FAILED }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_ERRORS }}"                },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_SKIPPED }}"               },
+                      { "type": "raw_text", "text": "${{ steps.test-results.outputs.UNIT_PASS_RATE }}%"            }
+                    ],
+                    [
                       { "type": "raw_text", "text": "Backend (pytest)"                                              },
                       { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_TESTS }}"                },
                       { "type": "raw_text", "text": "${{ steps.test-results.outputs.TOTAL_PASSED }}"               },
@@ -663,7 +738,7 @@ jobs:
                 {
                   "type": "context",
                   "elements": [
-                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}`" }
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}` • Job: `${{ job.status }}`" }
                   ]
                 },
                 {
@@ -696,7 +771,7 @@ jobs:
 
           RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports.zip" \
+            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
             -d "length=$FILE_SIZE")
           OK=$(echo "$RESPONSE" | jq -r '.ok')
           if [ "$OK" != "true" ]; then
@@ -708,7 +783,7 @@ jobs:
 
           curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports\"}],\"channel_id\":\"$CHANNEL_ID\""
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
@@ -719,11 +794,12 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
+        if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.UNIT_FAILED != '0' || steps.test-results.outputs.UNIT_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
           MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+          GRAPH_DB: ${{ matrix.graph_db }}
         working-directory: integration-tests
         run: |
           python3 - << 'PYEOF'
@@ -732,6 +808,7 @@ jobs:
           msg_response = os.environ.get('MESSAGE_RESPONSE', '{}')
           channel_id   = os.environ.get('CHANNEL_ID', '')
           bot_token    = os.environ.get('SLACK_BOT_TOKEN', '')
+          graph_db     = os.environ.get('GRAPH_DB', '')
 
           try:
               thread_ts = json.loads(msg_response).get('ts', '')
@@ -743,7 +820,12 @@ jobs:
               sys.exit(0)
 
           names = []
-          for xml_path in ['reports/neo4j-results.xml', 'reports/arango-results.xml', 'reports/playwright/playwright-junit.xml']:
+          for xml_path in [
+              'reports/unit-results.xml',
+              'reports/neo4j-results.xml',
+              'reports/arango-results.xml',
+              'reports/playwright/playwright-junit.xml',
+          ]:
               if not os.path.exists(xml_path):
                   continue
               backend = os.path.basename(xml_path).replace('-results.xml', '')
@@ -767,7 +849,7 @@ jobs:
               truncated = body[:BODY_LIMIT].rsplit("\n", 1)[0]
               omitted   = len(names) - truncated.count("\n") - 1
               body      = truncated + f"\n… ({omitted} more — see reports zip for full list)"
-          text    = "*Failed Tests:*\n```\n" + body + "\n```"
+          text    = f"*Failed Tests ({graph_db}):*\n```\n" + body + "\n```"
           payload = json.dumps({"channel": channel_id, "thread_ts": thread_ts, "text": text}).encode()
           req     = urllib.request.Request(
               "https://slack.com/api/chat.postMessage",
@@ -782,3 +864,11 @@ jobs:
               print(f"::warning::Slack postMessage failed: {e}", file=sys.stderr)
               sys.exit(1)
           PYEOF
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.graph_db }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore

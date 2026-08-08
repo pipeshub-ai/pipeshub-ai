@@ -15,11 +15,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
-import {
-  PromptsApi,
-  DEFAULT_SYSTEM_PROMPT,
-  DEFAULT_WEB_SEARCH_PROMPT,
-} from './api';
+import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 
 // ============================================================
@@ -32,6 +28,7 @@ interface PromptSectionCardProps {
   description: string;
   children: React.ReactNode;
   action?: React.ReactNode;
+  testId?: string;
 }
 
 function PromptSectionCard({
@@ -40,10 +37,12 @@ function PromptSectionCard({
   description,
   children,
   action,
+  testId,
 }: PromptSectionCardProps) {
   return (
     <Flex
       direction="column"
+      data-testid={testId}
       style={{
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
@@ -101,7 +100,7 @@ interface PromptEditorProps {
   placeholder: string;
   helperText: string;
   onChange: (value: string) => void;
-  onUseDefault: () => void;
+  onClear: () => void;
 }
 
 function PromptEditor({
@@ -110,7 +109,7 @@ function PromptEditor({
   placeholder,
   helperText,
   onChange,
-  onUseDefault,
+  onClear,
 }: PromptEditorProps) {
   return (
     <>
@@ -122,9 +121,10 @@ function PromptEditor({
           variant="outline"
           color="gray"
           size="2"
-          onClick={onUseDefault}
+          disabled={!value}
+          onClick={onClear}
         >
-          Use Default Prompt
+          Reset to Default
         </Button>
       </Flex>
 
@@ -183,13 +183,17 @@ export default function PromptsPage() {
   // Current editor state
   const [customPrompt, setCustomPrompt] = useState('');
   const [customPromptWebSearch, setCustomPromptWebSearch] = useState('');
+  const [customPromptAgent, setCustomPromptAgent] = useState('');
 
   // Saved snapshot for dirty-state detection
   const [savedPrompt, setSavedPrompt] = useState('');
   const [savedPromptWebSearch, setSavedPromptWebSearch] = useState('');
+  const [savedPromptAgent, setSavedPromptAgent] = useState('');
 
   const isDirty =
-    customPrompt !== savedPrompt || customPromptWebSearch !== savedPromptWebSearch;
+    customPrompt !== savedPrompt ||
+    customPromptWebSearch !== savedPromptWebSearch ||
+    customPromptAgent !== savedPromptAgent;
 
   // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -198,8 +202,10 @@ export default function PromptsPage() {
         const prompts = await PromptsApi.getSystemPrompts();
         setCustomPrompt(prompts.customSystemPrompt);
         setCustomPromptWebSearch(prompts.customSystemPromptWebSearch);
+        setCustomPromptAgent(prompts.customSystemPromptAgent);
         setSavedPrompt(prompts.customSystemPrompt);
         setSavedPromptWebSearch(prompts.customSystemPromptWebSearch);
+        setSavedPromptAgent(prompts.customSystemPromptAgent);
       } finally {
         setIsLoading(false);
       }
@@ -208,12 +214,20 @@ export default function PromptsPage() {
   }, []);
 
   // ── Handlers ───────────────────────────────────────────────
+  // "Reset to Default" means removing the org override entirely — an empty
+  // custom instructions field, not a hardcoded placeholder string. The
+  // backend already treats a blank/missing value as "no custom instructions
+  // section" (see `PipesHubPromptBuilder`), so clearing here IS the default.
   const handleUseDefaultInternal = useCallback(() => {
-    setCustomPrompt(DEFAULT_SYSTEM_PROMPT);
+    setCustomPrompt('');
   }, []);
 
   const handleUseDefaultWebSearch = useCallback(() => {
-    setCustomPromptWebSearch(DEFAULT_WEB_SEARCH_PROMPT);
+    setCustomPromptWebSearch('');
+  }, []);
+
+  const handleUseDefaultAgent = useCallback(() => {
+    setCustomPromptAgent('');
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -222,9 +236,11 @@ export default function PromptsPage() {
       await PromptsApi.saveSystemPrompts({
         customSystemPrompt: customPrompt,
         customSystemPromptWebSearch: customPromptWebSearch,
+        customSystemPromptAgent: customPromptAgent,
       });
       setSavedPrompt(customPrompt);
       setSavedPromptWebSearch(customPromptWebSearch);
+      setSavedPromptAgent(customPromptAgent);
       addToast({
         variant: 'success',
         title: t('workspace.prompts.toasts.saved'),
@@ -240,17 +256,18 @@ export default function PromptsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [customPrompt, customPromptWebSearch, addToast]);
+  }, [customPrompt, customPromptWebSearch, customPromptAgent, addToast]);
 
   const handleDiscard = useCallback(() => {
     setCustomPrompt(savedPrompt);
     setCustomPromptWebSearch(savedPromptWebSearch);
+    setCustomPromptAgent(savedPromptAgent);
     addToast({
       variant: 'success',
       title: t('workspace.prompts.toasts.discarded'),
       description: t('workspace.prompts.toasts.discardedDescription'),
     });
-  }, [savedPrompt, savedPromptWebSearch, addToast]);
+  }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast]);
 
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {
@@ -270,10 +287,12 @@ export default function PromptsPage() {
         <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
           <Box>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Custom System Prompts
+              Custom Instructions
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Configure separate system prompts for internal search and web search modes
+              Add custom instructions for the Chat Assistant — e.g. respond in a specific
+              language, follow a formatting style, or apply any behaviour you want. Each mode
+              below has its own instructions since they answer questions differently.
             </Text>
           </Box>
           <Button
@@ -289,20 +308,43 @@ export default function PromptsPage() {
           </Button>
         </Flex>
 
+        {/* ── Scope Callout: Chat Assistant only, not Agent Builder ── */}
+        <Flex
+          align="center"
+          gap="3"
+          style={{
+            background: 'var(--slate-a2)',
+            padding: 'var(--space-3) var(--space-4)',
+            marginBottom: 20,
+            borderRadius: 'var(--radius-1)',
+          }}
+        >
+          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a3)' }} tabIndex={-1}>
+            <MaterialIcon name="info" size={16} color="var(--slate-11)" />
+          </IconButton>
+          <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
+            These instructions apply only to the <strong>Chat Assistant</strong> (Internal Search,
+            Web Search, and Agent modes below). Custom agents created in <strong>Agent Builder</strong>{' '}
+            are unaffected — each agent uses its own system prompt and instructions configured on
+            the agent itself.
+          </Text>
+        </Flex>
+
         {/* ── Internal Search Prompt Section ── */}
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard
             iconName="edit_note"
+            testId="prompt-section-internal-search"
             title="Internal Search"
-            description="System prompt used when answering from your internal knowledge base"
+            description="Applied when a user chats in Internal Search mode — the assistant answers only from your organization's connected knowledge base."
           >
             <PromptEditor
               label=""
               value={customPrompt}
-              placeholder="Enter your custom system prompt for internal search here"
+              placeholder="e.g. Always respond in French. Use bullet points for lists. Keep answers under 3 sentences unless asked for detail."
               helperText="This prompt guides the AI when answering from internal documents. Changes take effect immediately for new conversations."
               onChange={setCustomPrompt}
-              onUseDefault={handleUseDefaultInternal}
+              onClear={handleUseDefaultInternal}
             />
           </PromptSectionCard>
         </Box>
@@ -311,16 +353,36 @@ export default function PromptsPage() {
         <Box style={{ marginBottom: 20 }}>
           <PromptSectionCard
             iconName="travel_explore"
+            testId="prompt-section-web-search"
             title="Web Search"
-            description="System prompt used when answering with live web search results"
+            description="Applied when a user chats in Web Search mode — the assistant answers using live web search results from public sources."
           >
             <PromptEditor
               label=""
               value={customPromptWebSearch}
-              placeholder="Enter your custom system prompt for web search here"
+              placeholder="e.g. Always cite sources with links. Prefer recent articles. Respond in a formal tone."
               helperText="This prompt guides the AI when answering using web search results. Changes take effect immediately for new conversations."
               onChange={setCustomPromptWebSearch}
-              onUseDefault={handleUseDefaultWebSearch}
+              onClear={handleUseDefaultWebSearch}
+            />
+          </PromptSectionCard>
+        </Box>
+
+        {/* ── Agent Mode Prompt Section ── */}
+        <Box style={{ marginBottom: 20 }}>
+          <PromptSectionCard
+            iconName="smart_toy"
+            testId="prompt-section-agent"
+            title="Agent"
+            description="Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both."
+          >
+            <PromptEditor
+              label=""
+              value={customPromptAgent}
+              placeholder="e.g. Prefer internal knowledge for company-specific questions. Always summarize before providing details."
+              helperText="This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations."
+              onChange={setCustomPromptAgent}
+              onClear={handleUseDefaultAgent}
             />
           </PromptSectionCard>
         </Box>

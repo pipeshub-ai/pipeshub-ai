@@ -192,6 +192,9 @@ redis:
 # ----- Kafka + Zookeeper: 2 brokers / 3-node ZK ensemble -----
 # Zookeeper stays at 3 — quorum requires an odd number; 2 nodes cannot elect a leader.
 # Kafka RF=2/minISR=1: one broker can fail without data loss.
+messageBroker:
+  type: kafka
+
 kafka:
   replicaCount: 2
   config:

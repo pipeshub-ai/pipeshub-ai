@@ -1,17 +1,19 @@
 """Comprehensive unit tests for app.indexing_main module."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi.responses import JSONResponse
 
-from app.services.messaging.config import (
-    IndexingEvent,
-    MessageBrokerType,
-    PipelineEvent,
-    PipelineEventData,
-)
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.services.messaging.config import MessageBrokerType
+
+
+@pytest.fixture(autouse=True)
+def disable_distributed_concurrency_by_default(monkeypatch):
+    monkeypatch.setenv("DISTRIBUTED_INDEXING_CONCURRENCY", "false")
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +21,14 @@ from app.services.messaging.config import (
 # ---------------------------------------------------------------------------
 
 def _make_container():
-    """Build a mock IndexingAppContainer with common providers."""
+    """Build a mock IndexingAppContainer with common providers.
+
+    Includes a default kafka_consumers entry with a mock retry producer so
+    recover_in_progress_records() tests have something to publish to
+    without each test having to wire it up individually. Tests that need to
+    assert against send_event should read it back via
+    ``mock_container.kafka_consumers[0][2]``.
+    """
     container = MagicMock()
     container.logger.return_value = MagicMock()
     mock_config_service = MagicMock()
@@ -27,17 +36,93 @@ def _make_container():
     mock_config_service.close = AsyncMock()
     container.config_service.return_value = mock_config_service
     container.graph_provider = AsyncMock()
+    mock_producer = AsyncMock()
+    mock_producer.send_event = AsyncMock(return_value=True)
+    mock_consumer = MagicMock()
+    mock_consumer.concurrency_manager = None
+    mock_consumer._run_on_main_loop = None
+    container.kafka_consumers = [("record", mock_consumer, mock_producer)]
     return container
 
 
+def _lookup_record_by_key(gp, doc_id):
+    """Echo back whatever get_nodes_by_filters was configured to return for
+    this _key (forcing indexingStatus to IN_PROGRESS), so the recovery
+    status recheck (see fix-recovery-staleness) sees the same fields
+    (version, virtualRecordId, connectorId, origin, ...) the initial scan
+    did, instead of a bare stub that would silently drop them."""
+    records = gp.get_nodes_by_filters.return_value
+    if isinstance(records, list):
+        for candidate in records:
+            if candidate.get("_key") == doc_id:
+                return {**candidate, "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+    return {"_key": doc_id, "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+
+
+def _document_lookup(gp, connector=None):
+    """Build a get_document side_effect that answers the RECORDS status
+    recheck the same way the default does, but overrides the APPS
+    (connector-active check) lookup — for tests exercising the connector
+    path without having to duplicate the record echo logic."""
+    async def _lookup(doc_id, collection):
+        if collection == CollectionNames.RECORDS.value:
+            return _lookup_record_by_key(gp, doc_id)
+        return connector
+    return _lookup
+
+
 def _make_graph_provider():
-    """Build a mock graph_provider."""
+    """Build a mock graph_provider.
+
+    get_document defaults to answering the RECORDS status recheck by
+    echoing back the matching get_nodes_by_filters record (recovery always
+    re-fetches before resetting a record — see fix-recovery-staleness), and
+    the connector (APPS) lookup with None. Tests exercising the
+    connector-check path override get_document via _document_lookup().
+    """
     gp = MagicMock()
     gp.get_nodes_by_filters = AsyncMock(return_value=[])
     gp.batch_update_nodes = AsyncMock(return_value=True)
-    gp.get_document = AsyncMock(return_value=None)
-    gp.update_node = AsyncMock()
+
+    async def default_get_document(doc_id, collection):
+        if collection == CollectionNames.RECORDS.value:
+            return _lookup_record_by_key(gp, doc_id)
+        return None
+
+    gp.get_document = AsyncMock(side_effect=default_get_document)
+    gp.update_node = AsyncMock(return_value=True)
+
+    async def get_documents_paginated(*_args, **_kwargs):
+        records = await gp.get_nodes_by_filters()
+        filters = _kwargs.get("filters") or {}
+        if "parsingStatus" in filters:
+            return [
+                record
+                for record in records
+                if record.get("parsingStatus") == filters["parsingStatus"]
+            ]
+        return records
+
+    gp.get_documents_paginated = AsyncMock(side_effect=get_documents_paginated)
     return gp
+
+
+class _FakeConcurrencyManager:
+    def __init__(self, owners=None):
+        self.owners = dict(owners or {})
+
+    async def try_acquire(self, pool, owner, _limit, _lease_seconds):
+        if pool in self.owners and self.owners[pool] != owner:
+            return False
+        self.owners[pool] = owner
+        return True
+
+    async def renew(self, pool, owner, _lease_seconds):
+        return self.owners.get(pool) == owner
+
+    async def release(self, pool, owner):
+        if self.owners.get(pool) == owner:
+            self.owners.pop(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +210,14 @@ class TestGetInitializedContainer:
 # recover_in_progress_records
 # ---------------------------------------------------------------------------
 class TestRecoverInProgressRecords:
-    """Tests for recover_in_progress_records()."""
+    """Tests for recover_in_progress_records().
+
+    Recovery is lightweight: it resets a stuck record to QUEUED and
+    republishes an event to Kafka via the retry producer, rather than
+    running the indexing pipeline inline. These tests assert against
+    graph_provider.update_node (the reset) and the mock producer's
+    send_event (the republish), not against a pipeline handler.
+    """
 
     async def test_no_records_to_recover(self):
         """No records returns immediately."""
@@ -137,54 +229,269 @@ class TestRecoverInProgressRecords:
 
         await recover_in_progress_records(mock_container, gp)
 
-    async def test_in_progress_record_recovery_success(self):
-        """In-progress record is recovered successfully with indexing_complete event."""
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_not_awaited()
+
+    async def test_fresh_in_progress_record_is_not_recovered(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": int(time.time() * 1000),
+                }
+            ]
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_active_record_lease_is_not_recovered(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers[0][1].concurrency_manager = (
+            _FakeConcurrencyManager({"record:r1": "active-worker"})
+        )
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": 0,
+                }
+            ]
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_unowned_fresh_record_is_not_recovered_within_lease_window(self):
+        """A Redis flush can wipe every lease while a worker is still
+        genuinely mid-processing — an unowned lease alone must not be enough
+        to recover a record whose processingStartedAt is still within one
+        lease interval (see fix-recovery-staleness)."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers[0][1].concurrency_manager = (
+            _FakeConcurrencyManager()
+        )
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "active.pdf",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": int(time.time() * 1000),
+                }
+            ]
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_recovery_skips_record_that_completed_mid_scan(self):
+        """The status recheck before reset is unconditional (not just in
+        distributed mode) — a record that finishes between the initial
+        stale scan and the recheck a few records later must not be reset
+        back to QUEUED and reindexed (see fix-recovery-staleness)."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        old_started_at = int((time.time() - 200) * 1000)
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "finished.pdf",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": old_started_at,
+                }
+            ]
+        )
+
+        async def get_document_race(doc_id, collection):
+            if collection == CollectionNames.RECORDS.value:
+                # By the time recovery re-fetches it, the record has already
+                # completed on its own — the stale scan above is now stale.
+                return {
+                    "_key": doc_id,
+                    "recordName": "finished.pdf",
+                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                }
+            return None
+
+        gp.get_document = AsyncMock(side_effect=get_document_race)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_unowned_old_record_is_recovered_with_distributed_lock(self):
+        """Once processingStartedAt is older than one lease interval, an
+        unowned record is recovered even in distributed mode."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers[0][1].concurrency_manager = (
+            _FakeConcurrencyManager()
+        )
+        gp = _make_graph_provider()
+        old_started_at = int((time.time() - 200) * 1000)
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "orphaned.pdf",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": old_started_at,
+                }
+            ]
+        )
+        # get_document defaults to echoing back the matching
+        # get_nodes_by_filters record (see _lookup_record_by_key).
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_awaited_once()
+        mock_container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_large_stale_backlog_leaves_only_active_leases_in_progress(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        records = {
+            f"r{index:03d}": {
+                "_key": f"r{index:03d}",
+                "recordName": f"record-{index}.pdf",
+                "origin": "UPLOAD",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+            for index in range(170)
+        }
+        active_ids = set(list(records)[:10])
+        manager = _FakeConcurrencyManager(
+            {f"record:{record_id}": "active-worker" for record_id in active_ids}
+        )
+        mock_container.kafka_consumers[0][1].concurrency_manager = manager
+
+        gp = _make_graph_provider()
+
+        async def get_page(
+            _collection,
+            *,
+            skip,
+            limit,
+            filters,
+            **_kwargs,
+        ):
+            field, value = next(iter(filters.items()))
+            matching = sorted(
+                (
+                    record
+                    for record in records.values()
+                    if record.get(field) == value
+                ),
+                key=lambda record: record["_key"],
+            )
+            return matching[skip : skip + limit]
+
+        async def update_record(record_id, _collection, fields):
+            records[record_id].update(fields)
+            return True
+
+        gp.get_documents_paginated = AsyncMock(side_effect=get_page)
+        gp.get_document = AsyncMock(
+            side_effect=lambda record_id, _collection: records.get(record_id)
+        )
+        gp.update_node = AsyncMock(side_effect=update_record)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        remaining = {
+            record_id
+            for record_id, record in records.items()
+            if record["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
+        }
+        assert remaining == active_ids
+        assert mock_container.kafka_consumers[0][2].send_event.await_count == 160
+
+    async def test_expired_processing_lease_is_recovered(self, monkeypatch):
+        from app.indexing_main import recover_in_progress_records
+
+        monkeypatch.setenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", "10")
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "expired.pdf",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                    "processingStartedAt": int((time.time() - 11) * 1000),
+                }
+            ]
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_awaited_once()
+        mock_container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_no_producer_available_leaves_records_in_progress(self):
+        """Without a retry producer, recovery skips re-queueing entirely."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers = []
+        gp = _make_graph_provider()
+
+        in_progress = [{"_key": "r1", "recordName": "test.pdf", "version": 0, "orgId": "org1"}]
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+
+    async def test_in_progress_record_requeued_successfully(self):
+        """A stuck record is reset to QUEUED and republished."""
         from app.indexing_main import recover_in_progress_records
 
         mock_container = _make_container()
         gp = _make_graph_provider()
 
         in_progress = [{"_key": "r1", "recordName": "test.pdf", "version": 0, "orgId": "org1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        await recover_in_progress_records(mock_container, gp)
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
+        gp.update_node.assert_awaited_once()
+        reset_args = gp.update_node.await_args
+        assert reset_args.args[0] == "r1"
+        assert reset_args.args[2]["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert reset_args.args[2]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
 
-    async def test_in_progress_record_partial_recovery(self):
-        """Record where parsing completes but indexing does not."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        in_progress = [{"_key": "r1", "recordName": "test.pdf", "version": 0, "orgId": "org1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
-
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-    async def test_in_progress_record_incomplete_recovery(self):
-        """Record where no completion events are received."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        in_progress = [{"_key": "r1", "recordName": "test.pdf", "version": 0, "orgId": "org1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
-
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="r1"))
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+        send_kwargs = producer.send_event.await_args.kwargs
+        assert send_kwargs["topic"] == "record-events"
+        assert send_kwargs["payload"]["recordId"] == "r1"
+        assert send_kwargs["key"] == "r1"
 
     async def test_in_progress_record_reindex_when_version_gt_zero_and_virtual_record_id(self):
         """Record with version > 0 and virtualRecordId is treated as REINDEX_RECORD."""
@@ -200,18 +507,12 @@ class TestRecoverInProgressRecords:
             "orgId": "org1",
             "virtualRecordId": "vr1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        handler_calls = []
+        await recover_in_progress_records(mock_container, gp)
 
-        async def mock_handler(payload):
-            handler_calls.append(payload)
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-        assert handler_calls[0].eventType == "reindexRecord"
+        producer = mock_container.kafka_consumers[0][2]
+        assert producer.send_event.await_args.kwargs["event_type"] == "reindexRecord"
 
     async def test_in_progress_record_new_record_when_version_zero(self):
         """Record with version 0 is treated as NEW_RECORD."""
@@ -227,18 +528,12 @@ class TestRecoverInProgressRecords:
             "orgId": "org1",
             "virtualRecordId": "vr1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        handler_calls = []
+        await recover_in_progress_records(mock_container, gp)
 
-        async def mock_handler(payload):
-            handler_calls.append(payload)
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-        assert handler_calls[0].eventType == "newRecord"
+        producer = mock_container.kafka_consumers[0][2]
+        assert producer.send_event.await_args.kwargs["event_type"] == "newRecord"
 
     async def test_in_progress_record_new_record_when_no_virtual_record_id(self):
         """Record with version > 0 but no virtualRecordId is treated as NEW_RECORD."""
@@ -253,21 +548,15 @@ class TestRecoverInProgressRecords:
             "version": 3,
             "orgId": "org1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        handler_calls = []
+        await recover_in_progress_records(mock_container, gp)
 
-        async def mock_handler(payload):
-            handler_calls.append(payload)
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-        assert handler_calls[0].eventType == "newRecord"
+        producer = mock_container.kafka_consumers[0][2]
+        assert producer.send_event.await_args.kwargs["event_type"] == "newRecord"
 
     async def test_connector_not_found_skips_record(self):
-        """Record with missing connector is skipped."""
+        """A deleted connector leaves no stale IN_PROGRESS marker."""
         from app.indexing_main import recover_in_progress_records
 
         mock_container = _make_container()
@@ -279,35 +568,187 @@ class TestRecoverInProgressRecords:
             "connectorId": "c1",
             "origin": "CONNECTOR",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
-        gp.get_document = AsyncMock(return_value=None)
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+        # RECORDS lookup (status recheck) still finds it IN_PROGRESS by
+        # default; only the APPS (connector) lookup returns None here.
+        gp.get_document = AsyncMock(side_effect=_document_lookup(gp, connector=None))
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=AsyncMock()):
-            await recover_in_progress_records(mock_container, gp)
-
-    async def test_inactive_connector_skips_and_updates_record(self):
-        """Record with inactive connector is skipped and status updated."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        in_progress = [{
-            "_key": "r1",
-            "recordName": "test.pdf",
-            "connectorId": "c1",
-            "origin": "CONNECTOR",
-        }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
-        gp.get_document = AsyncMock(return_value={"isActive": False})
-
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=AsyncMock()):
-            await recover_in_progress_records(mock_container, gp)
+        await recover_in_progress_records(mock_container, gp)
 
         gp.update_node.assert_awaited_once()
+        updates = gp.update_node.await_args.args[2]
+        assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_not_awaited()
+
+    async def test_inactive_connector_skips_and_updates_record(self):
+        """Record with inactive connector is skipped and status set to AUTO_INDEX_OFF."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+
+        in_progress = [{
+            "_key": "r1",
+            "recordName": "test.pdf",
+            "connectorId": "c1",
+            "origin": "CONNECTOR",
+        }]
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+        gp.get_document = AsyncMock(
+            side_effect=_document_lookup(gp, connector={"isActive": False})
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_awaited_once()
+        updates = gp.update_node.await_args.args[2]
+        assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_not_awaited()
+
+    async def test_failed_status_reset_does_not_republish(self):
+        """Single-instance fallback resets before publishing."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            side_effect=[
+                [{"_key": "r1", "recordName": "test.pdf", "origin": "UPLOAD"}],
+                [],
+            ]
+        )
+        gp.update_node = AsyncMock(return_value=False)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_not_awaited()
+
+    async def test_distributed_recovery_publishes_before_status_reset(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers[0][1].concurrency_manager = (
+            _FakeConcurrencyManager()
+        )
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "test.pdf",
+                    "origin": "UPLOAD",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                }
+            ]
+        )
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "recordName": "test.pdf",
+                "origin": "UPLOAD",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+        )
+        gp.update_node = AsyncMock(return_value=False)
+
+        await recover_in_progress_records(mock_container, gp)
+
+        mock_container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_recovery_rechecks_status_after_acquiring_record_lease(
+        self,
+    ) -> None:
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        mock_container.kafka_consumers[0][1].concurrency_manager = (
+            _FakeConcurrencyManager()
+        )
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                }
+            ]
+        )
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "indexingStatus": ProgressStatus.COMPLETED.value,
+            }
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.update_node.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_recovery_publishes_on_coordination_loop(self) -> None:
+        from contextvars import ContextVar
+
+        from app.indexing_main import recover_in_progress_records
+
+        on_coordination_loop = ContextVar(
+            "on_coordination_loop",
+            default=False,
+        )
+
+        async def run_coordinated(coro) -> object:
+            token = on_coordination_loop.set(True)
+            try:
+                return await coro
+            finally:
+                on_coordination_loop.reset(token)
+
+        class LoopBoundProducer:
+            def __init__(self) -> None:
+                self.send_count = 0
+
+            async def send_event(self, **_kwargs) -> None:
+                assert on_coordination_loop.get()
+                self.send_count += 1
+
+        mock_container = _make_container()
+        consumer = mock_container.kafka_consumers[0][1]
+        consumer.concurrency_manager = _FakeConcurrencyManager()
+        consumer._run_on_main_loop = run_coordinated
+        producer = LoopBoundProducer()
+        mock_container.kafka_consumers = [("record", consumer, producer)]
+        gp = _make_graph_provider()
+        gp.get_nodes_by_filters = AsyncMock(
+            return_value=[
+                {
+                    "_key": "r1",
+                    "recordName": "test.pdf",
+                    "origin": "UPLOAD",
+                    "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                }
+            ]
+        )
+        gp.get_document = AsyncMock(
+            return_value={
+                "_key": "r1",
+                "recordName": "test.pdf",
+                "origin": "UPLOAD",
+                "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            }
+        )
+
+        await recover_in_progress_records(mock_container, gp)
+
+        assert producer.send_count == 1
 
     async def test_active_connector_processes_record(self):
-        """Record with active connector is processed normally."""
+        """Record with active connector is reset and republished normally."""
         from app.indexing_main import recover_in_progress_records
 
         mock_container = _make_container()
@@ -321,31 +762,36 @@ class TestRecoverInProgressRecords:
             "version": 0,
             "orgId": "org1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
-        gp.get_document = AsyncMock(return_value={"isActive": True})
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
+        gp.get_document = AsyncMock(
+            side_effect=_document_lookup(gp, connector={"isActive": True})
+        )
 
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        await recover_in_progress_records(mock_container, gp)
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
+        gp.update_node.assert_awaited_once()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
 
     async def test_record_processing_exception(self):
-        """Exception processing a single record is caught."""
+        """Exception processing a single record (e.g. republish failure) is caught."""
         from app.indexing_main import recover_in_progress_records
 
         mock_container = _make_container()
         gp = _make_graph_provider()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event = AsyncMock(side_effect=RuntimeError("kafka publish error"))
 
         in_progress = [{"_key": "r1", "recordName": "test.pdf", "version": 0, "orgId": "org1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        async def mock_handler(payload):
-            raise RuntimeError("processing error")
-            yield  # Make it a generator
+        # Should not raise
+        await recover_in_progress_records(mock_container, gp)
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
+        assert gp.update_node.await_count == 2
+        restored = gp.update_node.await_args_list[-1].args[2]
+        assert restored["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
+        assert restored["processingStartedAt"] == 0
 
     async def test_top_level_exception_caught(self):
         """Top-level exception during recovery is caught and logged."""
@@ -373,16 +819,16 @@ class TestRecoverInProgressRecords:
             "version": 0,
             "orgId": "org1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        await recover_in_progress_records(mock_container, gp)
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-        # get_document should NOT be called since origin is UPLOAD, not CONNECTOR
-        gp.get_document.assert_not_awaited()
+        # get_document is called once for the unconditional status recheck,
+        # but the connector-existence check is skipped since origin is
+        # UPLOAD, not CONNECTOR.
+        gp.get_document.assert_awaited_once()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
 
     async def test_record_without_connector_id_processes_directly(self):
         """Record without connectorId skips connector check."""
@@ -398,16 +844,16 @@ class TestRecoverInProgressRecords:
             "version": 0,
             "orgId": "org1",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
 
-        async def mock_handler(payload):
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        await recover_in_progress_records(mock_container, gp)
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=mock_handler):
-            await recover_in_progress_records(mock_container, gp)
-
-        # get_document should NOT be called since connectorId is missing
-        gp.get_document.assert_not_awaited()
+        # get_document is called once for the unconditional status recheck,
+        # but the connector-existence check is skipped since connectorId is
+        # missing.
+        gp.get_document.assert_awaited_once()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +916,10 @@ class TestStartKafkaConsumers:
         mock_producer = MagicMock()
         mock_producer.initialize = AsyncMock()
 
-        # We need to mock run_coroutine_threadsafe to actually run the coroutine
-        async def fake_reconnect_handler(coro, loop):
+        def discard_reconnect(coro, _loop):
+            coro.close()
             future = asyncio.get_event_loop().create_future()
-            future.set_result(await coro)
+            future.set_result(None)
             return future
 
         with (
@@ -486,8 +932,11 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch("app.indexing_main.asyncio.run_coroutine_threadsafe") as mock_rcts,
-            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock) as mock_wrap,
+            patch(
+                "app.indexing_main.asyncio.run_coroutine_threadsafe",
+                side_effect=discard_reconnect,
+            ),
+            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             consumers = await start_kafka_consumers(mock_container)
 
@@ -668,43 +1117,6 @@ class TestStartKafkaConsumers:
             with pytest.raises(RuntimeError, match="start fail"):
                 await start_kafka_consumers(mock_container)
 
-    async def test_cleanup_consumers_on_error_with_already_started(self):
-        """When error occurs after a consumer is appended, cleanup runs and stops it."""
-        from app.indexing_main import start_kafka_consumers
-
-        mock_container = _make_container()
-
-        mock_consumer = MagicMock()
-        mock_consumer.initialize = AsyncMock()
-        mock_consumer.start = AsyncMock()
-        mock_consumer.stop = AsyncMock()
-
-        # The consumer.start succeeds, appending it to consumers list.
-        # Then the next step (after consumers.append) would fail.
-        # In the indexing_main flow, after start() we do consumers.append then return.
-        # The error must happen after the consumer is appended to the list.
-        # We achieve this by making start succeed but then create_record_message_handler
-        # fail on a second invocation (not possible here since there's only one consumer).
-        # Alternative: make the consumer start succeed, but then force an error
-        # before 'return consumers' by patching start to both work AND raise later.
-        # Actually, the simplest: make start succeed, append happens, but then
-        # logger.info raises - but that's artificial.
-
-        # Better approach: test the cleanup path directly by making record_kafka_consumer.start
-        # raise after we've manually pre-populated the consumers list.
-        # Let's just verify the cleanup path works with a real error scenario.
-
-        # Simulate: consumer config succeeds, consumer created, message handler created,
-        # but start raises. At that point consumers is still empty (append is after start).
-        # So cleanup loop doesn't execute. That's the code's actual behavior.
-        # The cleanup loop (288-293) only runs if consumers have been appended.
-        # Since indexing only has ONE consumer and append happens AFTER start,
-        # the cleanup loop only runs if start succeeds for one but something after fails.
-        # In current code, nothing happens after append except return.
-        # The cleanup loop is effectively only reachable in multi-consumer scenarios.
-        # But we still test the code path for completeness.
-        pass
-
     async def test_neo4j_reconnect_with_existing_driver(self):
         """Neo4j reconnect closes existing driver before reconnecting."""
         from app.indexing_main import start_kafka_consumers
@@ -734,7 +1146,7 @@ class TestStartKafkaConsumers:
         # actually execute the coroutine. We'll capture the coroutine and run it.
         captured_coro = None
 
-        def capture_coro(coro, loop):
+        def capture_coro(coro, _loop):
             nonlocal captured_coro
             captured_coro = coro
             future = asyncio.get_event_loop().create_future()
@@ -751,7 +1163,10 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=capture_coro),
+            patch(
+                "app.indexing_main.asyncio.run_coroutine_threadsafe",
+                side_effect=capture_coro,
+            ),
             patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             await start_kafka_consumers(mock_container)
@@ -790,7 +1205,7 @@ class TestStartKafkaConsumers:
 
         captured_coro = None
 
-        def capture_coro(coro, loop):
+        def capture_coro(coro, _loop):
             nonlocal captured_coro
             captured_coro = coro
             future = asyncio.get_event_loop().create_future()
@@ -807,7 +1222,10 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=capture_coro),
+            patch(
+                "app.indexing_main.asyncio.run_coroutine_threadsafe",
+                side_effect=capture_coro,
+            ),
             patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             await start_kafka_consumers(mock_container)
@@ -842,7 +1260,7 @@ class TestStartKafkaConsumers:
 
         captured_coro = None
 
-        def capture_coro(coro, loop):
+        def capture_coro(coro, _loop):
             nonlocal captured_coro
             captured_coro = coro
             future = asyncio.get_event_loop().create_future()
@@ -859,7 +1277,10 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=capture_coro),
+            patch(
+                "app.indexing_main.asyncio.run_coroutine_threadsafe",
+                side_effect=capture_coro,
+            ),
             patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             await start_kafka_consumers(mock_container)
@@ -1220,11 +1641,8 @@ class TestStartKafkaConsumersCleanupPath:
 
         mock_container.logger().info = MagicMock(side_effect=info_side_effect)
 
-        captured_coro = None
-
-        def capture_coro(coro, loop):
-            nonlocal captured_coro
-            captured_coro = coro
+        def discard_reconnect(coro, _loop):
+            coro.close()
             future = asyncio.get_event_loop().create_future()
             future.set_result(None)
             return future
@@ -1239,7 +1657,10 @@ class TestStartKafkaConsumersCleanupPath:
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
-            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=capture_coro),
+            patch(
+                "app.indexing_main.asyncio.run_coroutine_threadsafe",
+                side_effect=discard_reconnect,
+            ),
             patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
         ):
             with pytest.raises(RuntimeError, match="post-append error"):
@@ -1335,11 +1756,12 @@ class TestRecoverInProgressRecordsAdditional:
             "connectorId": "c1",
             "origin": "CONNECTOR",
         }]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[in_progress, []])
+        gp.get_nodes_by_filters = AsyncMock(return_value=in_progress)
         gp.get_document = AsyncMock(return_value={"isActive": False})
 
-        with patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=AsyncMock()):
-            await recover_in_progress_records(mock_container, gp)
+        await recover_in_progress_records(mock_container, gp)
 
         # update_node should NOT be called because record_id is None
         gp.update_node.assert_not_awaited()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_not_awaited()

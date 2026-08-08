@@ -26,6 +26,8 @@ export interface AppServices {
   indexing: ServiceStatus;
   docling: ServiceStatus;
   embedding: ServiceStatus;
+  parsing?: ServiceStatus;
+  extraction?: ServiceStatus;
 }
 
 interface ServicesHealthState {
@@ -248,6 +250,8 @@ export const APP_SERVICE_LABELS: Record<string, string> = {
   indexing: 'Indexing Service',
   docling: 'Docling Service',
   embedding: 'Embedding Service',
+  parsing: 'Parsing Service',
+  extraction: 'Extraction Service',
 };
 
 export function formatServiceList(items: string[]): string {

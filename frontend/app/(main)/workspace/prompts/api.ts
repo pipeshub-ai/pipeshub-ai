@@ -7,22 +7,13 @@ import { apiClient } from '@/lib/api';
 const PROMPTS_URL = '/api/v1/configurationManager/prompts/system';
 
 // ============================================================
-// Default fallback prompts
-// ============================================================
-
-export const DEFAULT_SYSTEM_PROMPT =
-  'You are an assistant. Answer queries in a professional, enterprise-appropriate format.';
-
-export const DEFAULT_WEB_SEARCH_PROMPT =
-  'You are a helpful web research assistant.';
-
-// ============================================================
 // Types
 // ============================================================
 
 export interface SystemPrompts {
   customSystemPrompt: string;
   customSystemPromptWebSearch: string;
+  customSystemPromptAgent: string;
 }
 
 // ============================================================
@@ -40,15 +31,16 @@ export const PromptsApi = {
       return {
         customSystemPrompt: data?.customSystemPrompt ?? '',
         customSystemPromptWebSearch: data?.customSystemPromptWebSearch ?? '',
+        customSystemPromptAgent: data?.customSystemPromptAgent ?? '',
       };
     } catch {
-      return { customSystemPrompt: '', customSystemPromptWebSearch: '' };
+      return { customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' };
     }
   },
 
   /**
    * PUT /api/v1/configurationManager/prompts/system
-   * Saves both the internal and web search custom system prompts.
+   * Saves the internal search, web search, and agent mode custom system prompts.
    */
   async saveSystemPrompts(prompts: SystemPrompts): Promise<void> {
     await apiClient.put(PROMPTS_URL, prompts);

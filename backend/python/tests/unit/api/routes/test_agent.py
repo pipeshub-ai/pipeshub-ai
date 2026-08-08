@@ -186,234 +186,6 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
-class TestSelectAgentGraph:
-    @pytest.mark.asyncio
-    async def test_deep_mode(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query, deep_agent_graph
-        log = logging.getLogger("test")
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "deep"}, log, MagicMock()
-        )
-        assert result is deep_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_verification_mode(self) -> None:
-        from app.api.routes.agent import (
-            _select_agent_graph_for_query,
-            modern_agent_graph,
-        )
-        log = logging.getLogger("test")
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "verification"}, log, MagicMock()
-        )
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_unknown_mode_returns_legacy(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-        log = logging.getLogger("test")
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "custom"}, log, MagicMock()
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_auto_mode_delegates(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
-            mock_auto.return_value = MagicMock()
-            await _select_agent_graph_for_query(
-                {"chatMode": "auto"}, log, llm
-            )
-            mock_auto.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_auto_mode_forwards_router_context(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        cfg, gp = MagicMock(), MagicMock()
-        info = {"chatMode": "auto", "query": "x"}
-        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
-            mock_auto.return_value = MagicMock()
-            await _select_agent_graph_for_query(
-                info,
-                log,
-                llm,
-                config_service=cfg,
-                graph_provider=gp,
-                is_multimodal_llm=True,
-                org_id="org-9",
-            )
-            mock_auto.assert_called_once_with(
-                info,
-                log,
-                llm,
-                config_service=cfg,
-                graph_provider=gp,
-                is_multimodal_llm=True,
-                org_id="org-9",
-            )
-
-
-class TestAutoSelectGraph:
-    @pytest.mark.asyncio
-    async def test_empty_query_returns_modern(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        log = logging.getLogger("test")
-        result = await _auto_select_graph({"query": ""}, log, MagicMock())
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_returns_quick(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "quick"
-        mock_decision.reasoning = "simple"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        result = await _auto_select_graph(
-            {"query": "what time is it"}, log, llm
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_returns_deep(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, deep_agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "deep"
-        mock_decision.reasoning = "complex"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        result = await _auto_select_graph(
-            {"query": "analyze all jira tickets and create summary"}, log, llm
-        )
-        assert result is deep_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_error_falls_back(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(side_effect=Exception("fail"))
-        llm.with_structured_output.return_value = structured
-        result = await _auto_select_graph(
-            {"query": "test"}, log, llm
-        )
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_blob_storage_init_failure_still_routes(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "quick"
-        mock_decision.reasoning = "ok"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        with patch("app.api.routes.agent.BlobStorage", side_effect=RuntimeError("no store")):
-            result = await _auto_select_graph(
-                {"query": "hello"},
-                log,
-                llm,
-                config_service=MagicMock(),
-                graph_provider=MagicMock(),
-            )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_resolves_attachments_for_multimodal_routing(self) -> None:
-        from langchain_core.messages import HumanMessage
-
-        from app.api.routes.agent import _auto_select_graph, agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "quick"
-        mock_decision.reasoning = "vision"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        img_block = {
-            "type": "image_url",
-            "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="},
-        }
-        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
-            "app.api.routes.agent.resolve_attachments",
-            new_callable=AsyncMock,
-        ) as ra:
-            bs_cls.return_value = MagicMock()
-            ra.return_value = [img_block]
-            result = await _auto_select_graph(
-                {
-                    "query": "what is this",
-                    "attachments": [
-                        {"virtualRecordId": "vr-img", "mimeType": "image/png"},
-                    ],
-                },
-                log,
-                llm,
-                config_service=MagicMock(),
-                graph_provider=MagicMock(),
-                is_multimodal_llm=True,
-                org_id="org-1",
-            )
-        assert result is agent_graph
-        ra.assert_awaited()
-        human_msg = structured.ainvoke.call_args[0][0][-1]
-        assert isinstance(human_msg, HumanMessage)
-        assert isinstance(human_msg.content, list)
-        assert img_block in human_msg.content
-
-    @pytest.mark.asyncio
-    async def test_resolve_attachments_error_keeps_string_query_content(self) -> None:
-        from langchain_core.messages import HumanMessage
-
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "react"
-        mock_decision.reasoning = "ok"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
-            "app.api.routes.agent.resolve_attachments",
-            new_callable=AsyncMock,
-        ) as ra:
-            bs_cls.return_value = MagicMock()
-            ra.side_effect = RuntimeError("attachment failed")
-            result = await _auto_select_graph(
-                {
-                    "query": "with file",
-                    "attachments": [{"virtualRecordId": "v1", "mimeType": "image/png"}],
-                },
-                log,
-                llm,
-                config_service=MagicMock(),
-                graph_provider=MagicMock(),
-                is_multimodal_llm=True,
-                org_id="org-1",
-            )
-        assert result is modern_agent_graph
-        human_msg = structured.ainvoke.call_args[0][0][-1]
-        assert isinstance(human_msg, HumanMessage)
-        assert isinstance(human_msg.content, str)
-        assert "with file" in human_msg.content
-
-
 class TestBuildPriorRoutingMessages:
     """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
 
@@ -1106,11 +878,11 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert result == knowledge
 
-    def test_empty_apps_and_kbs_returns_all(self) -> None:
+    def test_empty_apps_and_kbs_returns_nothing(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "google"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
-        assert result == knowledge
+        assert result == []
 
     def test_app_filter(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -1123,40 +895,38 @@ class TestFilterKnowledgeByEnabledSources:
         assert result[0]["connectorId"] == "google"
 
     def test_kb_filter_with_record_groups(self) -> None:
-        """KB apps are now treated as regular apps - filter by UUID connector IDs in apps list"""
+        """KB entries are UUID connector-ids now, but matched via filters["kb"] — never filters["apps"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        # KB apps now have UUID connector IDs and type="KB"
         kb_uuid_1 = "550e8400-e29b-41d4-a716-446655440001"
         kb_uuid_2 = "550e8400-e29b-41d4-a716-446655440002"
         knowledge = [
             {"connectorId": kb_uuid_1, "type": "KB"},
             {"connectorId": kb_uuid_2, "type": "KB"},
         ]
-        # Filter by including only one KB app UUID in apps list
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid_1]})
+        # Filter by including only one KB UUID in the kb list
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid_1]})
         assert len(result) == 1
         assert result[0]["connectorId"] == kb_uuid_1
 
     def test_kb_filter_with_string_filters(self) -> None:
-        """KB apps no longer use string filters - they're regular apps"""
+        """KB entries no longer use string filters - they're regular connectors."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440003"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Filter using apps list with KB UUID
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_with_invalid_json_filters(self) -> None:
-        """KB apps are now regular apps - no special invalid filter handling"""
+        """KB entries are regular connectors - no special invalid filter handling."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440004"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # KB not in apps list, so filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["some-other-app"]})
+        # KB not in the kb list, so filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["some-other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_entries_skipped(self) -> None:
@@ -1166,14 +936,38 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
 
     def test_filtersParsed_fallback(self) -> None:
-        """KB apps are now regular apps with UUID connector IDs"""
+        """KB entries are regular connectors with UUID connector ids, matched via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440005"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """Regression: a KB entry's id in filters["apps"] must NOT match it —
+        KB entries are only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440006"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self) -> None:
+        """Configuring an app connector must not drop KB entries — each
+        entry is checked against the enabled-set matching its own type."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440007"
+        knowledge = [
+            {"connectorId": "confluence-app", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["confluence-app"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"confluence-app", kb_uuid}
 
 
 
@@ -1493,78 +1287,6 @@ class TestEnrichUserInfoExtended:
 
 
 # ---------------------------------------------------------------------------
-# _select_agent_graph_for_query (extended)
-# ---------------------------------------------------------------------------
-
-
-class TestSelectAgentGraphExtended:
-    @pytest.mark.asyncio
-    async def test_explicit_react_falls_to_legacy(self) -> None:
-        """'react' is not an explicit mode, so it falls to the default (legacy agent_graph)."""
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-        log = logging.getLogger("test")
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "react"}, log, MagicMock()
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_quick_mode(self) -> None:
-        """'quick' is not an explicit mode, so it falls to the default (legacy agent_graph)."""
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-        log = logging.getLogger("test")
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "quick"}, log, MagicMock()
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_none_chatmode_defaults_to_auto(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
-            mock_auto.return_value = MagicMock()
-            await _select_agent_graph_for_query(
-                {"chatMode": None}, log, llm
-            )
-            mock_auto.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# _auto_select_graph (extended)
-# ---------------------------------------------------------------------------
-
-
-class TestAutoSelectGraphExtended:
-    @pytest.mark.asyncio
-    async def test_react_route(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        log = logging.getLogger("test")
-        llm = MagicMock()
-        mock_decision = MagicMock()
-        mock_decision.route = "react"
-        mock_decision.reasoning = "needs tools"
-        structured = MagicMock()
-        structured.ainvoke = AsyncMock(return_value=mock_decision)
-        llm.with_structured_output.return_value = structured
-        result = await _auto_select_graph(
-            {"query": "update the jira ticket"}, log, llm
-        )
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_missing_query_key(self) -> None:
-        """When query key is missing entirely, defaults to empty string and returns modern_agent_graph."""
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        log = logging.getLogger("test")
-        result = await _auto_select_graph(
-            {}, log, MagicMock()
-        )
-        assert result is modern_agent_graph
-
-
-# ---------------------------------------------------------------------------
 # _get_user_context (extended)
 # ---------------------------------------------------------------------------
 
@@ -1609,7 +1331,8 @@ class TestFilterKnowledgeExtended:
         assert len(result) == 1
 
     def test_combined_app_and_kb_filter(self) -> None:
-        """Both regular apps and KB apps are filtered through apps list"""
+        """App connectors are matched via filters["apps"], KB entries via
+        filters["kb"] — each entry checked against the bucket for its own type."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440011"
         knowledge = [
@@ -1618,7 +1341,7 @@ class TestFilterKnowledgeExtended:
             {"connectorId": kb_uuid, "type": "KB"},
         ]
         result = _filter_knowledge_by_enabled_sources(
-            knowledge, {"apps": ["google", kb_uuid]}
+            knowledge, {"apps": ["google"], "kb": [kb_uuid]}
         )
         assert len(result) == 2
         connectors = [r["connectorId"] for r in result]
@@ -1997,11 +1720,11 @@ class TestFilterKnowledgeFull:
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert len(result) == 2
 
-    def test_empty_apps_and_kb_returns_all(self) -> None:
+    def test_empty_apps_and_kb_returns_nothing(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "c1"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_app_filter_only(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -2014,24 +1737,24 @@ class TestFilterKnowledgeFull:
         assert result[0]["connectorId"] == "google"
 
     def test_kb_with_string_filters(self) -> None:
-        """KB apps are regular apps now"""
+        """KB entries are regular connectors now, matched via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440020"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_with_invalid_json_filters(self) -> None:
-        """KB apps filtered by apps list, not by invalid filters"""
+        """KB entries filtered by the kb list, not by invalid filters."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440021"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Not in apps list - filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        # Not in kb list - filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_entry_skipped(self) -> None:
@@ -2041,25 +1764,33 @@ class TestFilterKnowledgeFull:
         assert len(result) == 1
 
     def test_kb_no_matching_record_groups(self) -> None:
-        """KB apps are filtered by UUID in apps list"""
+        """KB entries are filtered by UUID in the kb list, not the apps list."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440022"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Not in apps list - filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        # Not in kb list - filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_with_filtersParsed(self) -> None:
-        """KB apps are regular apps - filtered by UUID"""
+        """KB entries are regular connectors - filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440023"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """A KB entry's id living in filters["apps"] must NOT match it."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440024"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
 
 
 
@@ -2208,399 +1939,145 @@ class TestCreateKnowledgeEdges:
         assert result[0]["connectorId"] == "c1"
 
 
-# ===========================================================================
-# Route handler tests — askAI
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# _parse_skills
+# ---------------------------------------------------------------------------
+
+class TestParseSkills:
+    def test_none_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(None) == []
+
+    def test_empty_list_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills([]) == []
+
+    def test_not_a_list_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills("pdf-extractor") == []
+
+    def test_list_of_dicts_with_name(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": "pdf-extractor"}, {"name": "csv-summarizer"}]
+        assert _parse_skills(raw) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_list_of_plain_strings(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(["pdf-extractor", "csv-summarizer"]) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_deduplicates_preserving_order(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": "pdf-extractor"}, "csv-summarizer", {"name": "pdf-extractor"}]
+        assert _parse_skills(raw) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_strips_whitespace(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(["  pdf-extractor  "]) == ["pdf-extractor"]
+
+    def test_skips_blank_and_malformed_entries(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": ""}, {"name": "   "}, {"notname": "x"}, 42, None, {"name": "valid"}]
+        assert _parse_skills(raw) == ["valid"]
 
 
-class TestAskAI:
-    """Tests for the /agent-chat endpoint handler."""
+# ---------------------------------------------------------------------------
+# _create_skill_edges
+# ---------------------------------------------------------------------------
 
-    def _make_services(self, final_state=None):
-        """Create a mock services dict suitable for get_services return."""
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        return {
-            "retrieval_service": mock_retrieval,
-            "graph_provider": AsyncMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-
-    def _make_request(self, services, user=None):
-        request = MagicMock()
-        request.state.user = user or {"userId": "u1", "orgId": "o1"}
-        request.query_params = {}
-        request.app.container = MagicMock()
-        return request
-
+class TestCreateSkillEdges:
     @pytest.mark.asyncio
-    async def test_askAI_success_dict_response(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        services["graph_provider"].get_user_by_user_id = AsyncMock(
-            return_value={"email": "a@b.com", "_key": "k1"}
+    async def test_empty_names_returns_empty_without_db_calls(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        result = await _create_skill_edges(
+            "agent1", [], "org1", "uk1", graph_provider, logging.getLogger("test")
         )
-        services["graph_provider"].get_document = AsyncMock(
-            return_value={"accountType": "enterprise"}
+        assert result == []
+        graph_provider.get_document.assert_not_called()
+        graph_provider.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_links_owned_skill(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "uk1", "source": "custom"}
         )
-
-        query = ChatQuery(query="hello")
-        request = self._make_request(services)
-
-        final_state = {
-            "completion_data": {"status": "success", "message": "hi"},
-        }
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1", "userEmail": "a@b.com"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
-             patch("app.api.routes.agent.build_initial_state", return_value={"some": "state"}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=final_state), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-
-            cache = MagicMock()
-            cache.get_llm_response.return_value = None
-            cache.set_llm_response = MagicMock()
-            mock_cache_mgr.return_value = cache
-
-            result = await askAI(request, query)
-            assert result == {"status": "success", "message": "hi"}
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["pdf-extractor"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["pdf-extractor"]
+        graph_provider.batch_create_edges.assert_awaited_once()
+        edges = graph_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["skillName"] == "pdf-extractor"
+        assert edges[0]["_from"] == "agentInstances/agent1"
 
     @pytest.mark.asyncio
-    async def test_askAI_cache_hit(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        query = ChatQuery(query="cached query")
-        request = self._make_request(services)
-
-        cached = {"status": "success", "message": "cached"}
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr:
-
-            cache = MagicMock()
-            cache.get_llm_response.return_value = cached
-            mock_cache_mgr.return_value = cache
-
-            result = await askAI(request, query)
-            assert result.status_code == 200
+    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
+        )
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["web-search"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["web-search"]
 
     @pytest.mark.asyncio
-    async def test_askAI_error_in_final_state(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        query = ChatQuery(query="bad query")
-        request = self._make_request(services)
-
-        final_state = {
-            "error": {"status_code": 422, "status": "error", "message": "bad input"},
-        }
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=final_state), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-            cache = MagicMock()
-            cache.get_llm_response.return_value = None
-            mock_cache_mgr.return_value = cache
-
-            result = await askAI(request, query)
-            assert result.status_code == 422
+    async def test_skips_skill_not_found(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=None)
+        result = await _create_skill_edges(
+            "agent1", ["missing-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+        graph_provider.batch_create_edges.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_askAI_exception_raises_400(self) -> None:
-        from fastapi import HTTPException
-
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        query = ChatQuery(query="fail")
-        request = self._make_request(services)
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", side_effect=RuntimeError("boom")):
-
-            with pytest.raises(HTTPException) as exc:
-                await askAI(request, query)
-            assert exc.value.status_code == 400
+    async def test_skips_skill_from_other_org(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"orgId": "org-other", "createdBy": "uk1"})
+        result = await _create_skill_edges(
+            "agent1", ["cross-org-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
 
     @pytest.mark.asyncio
-    async def test_askAI_http_exception_reraises(self) -> None:
-        from fastapi import HTTPException
-
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        query = ChatQuery(query="fail")
-        request = self._make_request(services)
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", side_effect=HTTPException(status_code=401, detail="Unauthorized")):
-
-            with pytest.raises(HTTPException) as exc:
-                await askAI(request, query)
-            assert exc.value.status_code == 401
+    async def test_skips_skill_not_owned_by_user(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "custom"}
+        )
+        result = await _create_skill_edges(
+            "agent1", ["colleagues-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+        graph_provider.batch_create_edges.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_askAI_deep_graph_selection(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI, deep_agent_graph
+    async def test_mixed_valid_and_invalid_only_links_valid(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
 
-        services = self._make_services()
-        query = ChatQuery(query="analyze", chatMode="deep")
-        request = self._make_request(services)
+        async def fake_get_document(key: str, *_args: object, **_kwargs: object) -> dict | None:
+            if key == "org1_good-skill":
+                return {"orgId": "org1", "createdBy": "uk1", "source": "custom"}
+            return None
 
-        final_state = {"completion_data": {"status": "success", "message": "deep"}}
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, return_value=deep_agent_graph), \
-             patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
-             patch("app.api.routes.agent.build_deep_agent_state", return_value={}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=final_state), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
-
-            mock_ainvoke = AsyncMock(return_value=final_state)
-            cache = MagicMock()
-            cache.get_llm_response.return_value = None
-            mock_cache_mgr.return_value = cache
-
-            with patch.object(deep_agent_graph, "ainvoke", mock_ainvoke):
-                result = await askAI(request, query)
-            assert result == {"status": "success", "message": "deep"}
-
-    @pytest.mark.asyncio
-    async def test_askAI_memory_unhealthy(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI
-
-        services = self._make_services()
-        query = ChatQuery(query="hello")
-        request = self._make_request(services)
-
-        final_state = {"completion_data": {"status": "success", "message": "ok"}}
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.get_cache_manager") as mock_cache_mgr, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=final_state), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "warning", "memory_info": {"total_mb": 150.0}}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-            cache = MagicMock()
-            cache.get_llm_response.return_value = None
-            mock_cache_mgr.return_value = cache
-
-            result = await askAI(request, query)
-            assert result == {"status": "success", "message": "ok"}
-
-
-# ===========================================================================
-# Route handler tests — askAIStream
-# ===========================================================================
-
-
-class TestAskAIStream:
-    @pytest.mark.asyncio
-    async def test_returns_streaming_response(self) -> None:
-        from fastapi.responses import StreamingResponse
-
-        from app.api.routes.agent import ChatQuery, askAIStream
-
-        services = {
-            "retrieval_service": MagicMock(),
-            "graph_provider": AsyncMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-
-        query = ChatQuery(query="stream me")
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "o1"}
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}):
-
-            result = await askAIStream(request, query)
-            assert isinstance(result, StreamingResponse)
-
-    @pytest.mark.asyncio
-    async def test_http_exception_reraises(self) -> None:
-        from fastapi import HTTPException
-
-        from app.api.routes.agent import ChatQuery, askAIStream
-
-        services = {
-            "retrieval_service": MagicMock(),
-            "graph_provider": AsyncMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-
-        query = ChatQuery(query="fail")
-        request = MagicMock()
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", side_effect=HTTPException(status_code=401)):
-
-            with pytest.raises(HTTPException) as exc:
-                await askAIStream(request, query)
-            assert exc.value.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_generic_exception_raises_400(self) -> None:
-        from fastapi import HTTPException
-
-        from app.api.routes.agent import ChatQuery, askAIStream
-
-        services = {
-            "retrieval_service": MagicMock(),
-            "graph_provider": AsyncMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-
-        query = ChatQuery(query="fail")
-        request = MagicMock()
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", side_effect=RuntimeError("unexpected")):
-
-            with pytest.raises(HTTPException) as exc:
-                await askAIStream(request, query)
-            assert exc.value.status_code == 400
-
-
-# ===========================================================================
-# Route handler tests — stream_response
-# ===========================================================================
-
-
-class TestStreamResponse:
-    @pytest.mark.asyncio
-    async def test_yields_events(self) -> None:
-        from app.api.routes.agent import stream_response
-
-        mock_graph = AsyncMock()
-
-        async def mock_astream(state, config, stream_mode):
-            yield {"event": "token", "data": {"text": "hello"}}
-            yield {"event": "done", "data": {}}
-
-        mock_graph.astream = mock_astream
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, return_value=mock_graph), \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            chunks = []
-            async for chunk in stream_response(
-                {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1", "orgId": "o1"},
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-            ):
-                chunks.append(chunk)
-
-            assert len(chunks) == 2
-            assert "event: token" in chunks[0]
-            assert "event: done" in chunks[1]
-
-    @pytest.mark.asyncio
-    async def test_yields_error_on_exception(self) -> None:
-        from app.api.routes.agent import stream_response
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=RuntimeError("graph error")):
-
-            chunks = []
-            async for chunk in stream_response(
-                {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1", "orgId": "o1"},
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-            ):
-                chunks.append(chunk)
-
-            assert len(chunks) == 1
-            assert "event: error" in chunks[0]
-
-    @pytest.mark.asyncio
-    async def test_unexpected_chunk_format(self) -> None:
-        from app.api.routes.agent import stream_response
-
-        mock_graph = AsyncMock()
-
-        async def mock_astream(state, config, stream_mode):
-            yield "not a dict"
-
-        mock_graph.astream = mock_astream
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, return_value=mock_graph), \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            chunks = []
-            async for chunk in stream_response(
-                {"chatMode": "quick", "query": "hi"},
-                {"userId": "u1", "orgId": "o1"},
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-            ):
-                chunks.append(chunk)
-
-            assert len(chunks) == 0
+        graph_provider.get_document = AsyncMock(side_effect=fake_get_document)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["good-skill", "bad-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["good-skill"]
+        edges = graph_provider.batch_create_edges.await_args.args[0]
+        assert len(edges) == 1
 
 
 # ===========================================================================
@@ -2885,32 +2362,15 @@ class TestShareAgentTemplate:
 
 
 class TestMarkDeprecatedTools:
-    """Unit tests for `_mark_deprecated_tools`: stamps deprecated=True on
-    agent.toolsets[].tools[] whose fullName is no longer in the tool registry."""
+    """Unit tests for `_mark_deprecated_tools`.
 
-    def _patch_registry(self, names: list[str]):
-        registry = MagicMock()
-        registry.list_tools = MagicMock(return_value=names)
-        return patch("app.agents.tools.registry._global_tools_registry", registry)
+    The old global tools registry was removed; the function is currently a
+    no-op pending a replacement registry. Tests confirm it does not mutate
+    the agent and does not raise.
+    """
 
-    def test_known_tool_marked_not_deprecated(self) -> None:
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "Search", "fullName": "google.search"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search", "google.gmail"]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-        logger.info.assert_not_called()
-
-    def test_unknown_tool_marked_deprecated(self) -> None:
+    def test_is_noop_does_not_mutate_agent(self) -> None:
+        """Function must not add or modify any keys on the agent dict."""
         from app.api.routes.agent import _mark_deprecated_tools
 
         agent = {
@@ -2918,82 +2378,22 @@ class TestMarkDeprecatedTools:
             "toolsets": [
                 {"name": "ts", "tools": [
                     {"name": "Search", "fullName": "google.search"},
-                    {"name": "GoneTool", "fullName": "google.removed_tool"},
-                ]}
+                    {"name": "Gone", "fullName": "google.removed_tool"},
+                ]},
             ],
         }
+        import copy
+        original = copy.deepcopy(agent)
         logger = MagicMock()
 
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
+        _mark_deprecated_tools(agent, logger)
 
-        tools = agent["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is True
-        # Info log fires only when ≥1 tool is flagged.
-        logger.info.assert_called_once()
-
-    def test_case_insensitive_match(self) -> None:
-        """Registry returns mixed-case names; agent stores mixed-case fullNames."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "S", "fullName": "Google.Search"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-
-    def test_empty_registry_is_skipped(self) -> None:
-        """Empty registry (e.g. startup discovery failed) must NOT mark every tool
-        as deprecated and mislead the UI."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "X", "fullName": "anything.x"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry([]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert "deprecated" not in agent["toolsets"][0]["tools"][0]
-        logger.warning.assert_called_once()
+        assert agent == original, "no-op must not mutate the agent"
         logger.info.assert_not_called()
-
-    def test_blank_or_missing_fullname_not_flagged(self) -> None:
-        """A tool with no fullName cannot be looked up — leave it un-flagged
-        (deprecated=False) rather than mass-marking it deprecated."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [
-                    {"name": "Blank", "fullName": ""},
-                    {"name": "Missing"},
-                ]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
-
-        tools = agent["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is False
+        logger.warning.assert_not_called()
 
     def test_no_toolsets_or_tools_is_noop(self) -> None:
+        """Edge-case agent shapes must not cause AttributeError."""
         from app.api.routes.agent import _mark_deprecated_tools
 
         for agent in (
@@ -3004,8 +2404,7 @@ class TestMarkDeprecatedTools:
             {"_key": "a5", "toolsets": [{"name": "ts", "tools": None}]},
         ):
             logger = MagicMock()
-            with self._patch_registry(["google.search"]):
-                _mark_deprecated_tools(agent, logger)
+            _mark_deprecated_tools(agent, logger)
             logger.info.assert_not_called()
 
 
@@ -3031,9 +2430,9 @@ class TestGetAgent:
             mark_dep.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_found_stamps_deprecated_on_response(self) -> None:
-        """End-to-end: GET /agents/{id} must surface `deprecated=True` for tools
-        whose fullName is no longer in the registry, so the UI can warn the user."""
+    async def test_found_returns_agent_toolsets_unchanged(self) -> None:
+        """GET /agents/{id} must return the agent doc without mutating its tools.
+        _mark_deprecated_tools is currently a no-op (registry removed)."""
         from app.api.routes.agent import get_agent
 
         agent_doc = {
@@ -3054,24 +2453,21 @@ class TestGetAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value=agent_doc)
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_read": True})
 
-        registry = MagicMock()
-        registry.list_tools = MagicMock(return_value=["google.search"])
-
         request = MagicMock()
 
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
-             patch("app.agents.tools.registry._global_tools_registry", registry):
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock):
 
             result = await get_agent(request, "a1")
 
         assert result.status_code == 200
         body = json.loads(result.body)
         tools = body["agent"]["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is True
+        # No deprecated key should be injected while _mark_deprecated_tools is a no-op.
+        assert "deprecated" not in tools[0]
+        assert "deprecated" not in tools[1]
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
@@ -3626,188 +3022,92 @@ class TestUpdateAgent:
 
 
 class TestAgentChat:
-    @pytest.mark.asyncio
-    async def test_chat_success(self) -> None:
-        from app.api.routes.agent import ChatQuery, chat
+    """`chat()` drains `chat_stream()`'s SSE body_iterator and returns the
+    final `complete`/`error` event as JSON -- see `chat()`'s docstring in
+    `app.api.routes.agent`. These tests mock `chat_stream()` itself rather
+    than the (now-removed) LangGraph plumbing it used to have its own copy
+    of."""
 
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
-        services["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"email": "a@b.com", "_key": "k1"})
-        services["graph_provider"].get_document = AsyncMock(return_value={"accountType": "enterprise"})
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1", "knowledge": [], "toolsets": [], "systemPrompt": "SP", "instructions": "I",
-        })
+    @staticmethod
+    def _sse_streaming_response(frames: list[str]):
+        from fastapi.responses import StreamingResponse
 
-        final_state = {"completion_data": {"status": "success", "message": "reply"}, "response": {}}
+        async def _gen():
+            for frame in frames:
+                yield frame
 
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "o1"}
-        query = ChatQuery(query="hello")
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-
-            result = await chat(request, "a1", query)
-            assert result == {"status": "success", "message": "reply"}
+        return StreamingResponse(_gen(), media_type="text/event-stream")
 
     @pytest.mark.asyncio
-    async def test_chat_agent_not_found(self) -> None:
-        from app.api.routes.agent import AgentNotFoundError, ChatQuery, chat
+    async def test_chat_success_returns_complete_payload(self) -> None:
+        from fastapi.responses import JSONResponse
 
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
-        services["graph_provider"].get_agent = AsyncMock(return_value=None)
+        from app.api.routes.agent import chat
+
+        completion_data = {"status": "success", "message": "reply", "searchResults": [], "records": []}
+        streaming_response = self._sse_streaming_response([
+            f"event: complete\ndata: {json.dumps(completion_data)}\n\n",
+        ])
 
         request = MagicMock()
-        query = ChatQuery(query="hello")
+        with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response) as mock_chat_stream:
+            result = await chat(request, "a1")
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}):
-
-            with pytest.raises(AgentNotFoundError):
-                await chat(request, "missing", query)
+        mock_chat_stream.assert_awaited_once_with(request, "a1")
+        assert isinstance(result, JSONResponse)
+        assert json.loads(result.body) == completion_data
 
     @pytest.mark.asyncio
-    async def test_chat_with_filters(self) -> None:
-        from app.api.routes.agent import ChatQuery, chat
+    async def test_chat_error_event_returns_error_response(self) -> None:
+        from fastapi.responses import JSONResponse
 
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1", "knowledge": [], "toolsets": [], "connectors": ["c1"],
-        })
+        from app.api.routes.agent import chat
 
-        final_state = {"completion_data": {"status": "success"}, "response": {}}
+        error_payload = {"status_code": 422, "status": "error", "message": "bad input"}
+        streaming_response = self._sse_streaming_response([
+            f"event: error\ndata: {json.dumps(error_payload)}\n\n",
+        ])
 
         request = MagicMock()
-        query = ChatQuery(query="hello", filters={"apps": ["google"], "kb": ["kb1"]})
+        with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
+            result = await chat(request, "a1")
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-
-            result = await chat(request, "a1", query)
-            assert result == {"status": "success"}
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 422
+        body = json.loads(result.body)
+        assert body["status"] == "error"
+        assert body["message"] == "bad input"
 
     @pytest.mark.asyncio
-    async def test_chat_with_knowledge_sources(self) -> None:
-        from app.api.routes.agent import ChatQuery, chat
+    async def test_chat_no_events_returns_500(self) -> None:
+        from fastapi.responses import JSONResponse
 
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1",
-            "knowledge": [
-                {"connectorId": "google_drive", "filters": {}},
-                {"connectorId": "knowledgeBase_1", "filters": '{"recordGroups":["rg1"]}'},
-            ],
-            "toolsets": [],
-        })
+        from app.api.routes.agent import chat
 
-        final_state = {"completion_data": {"status": "success"}, "response": {}}
+        streaming_response = self._sse_streaming_response([])
 
         request = MagicMock()
-        query = ChatQuery(query="search docs")
+        with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
+            result = await chat(request, "a1")
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-
-            result = await chat(request, "a1", query)
-            assert result == {"status": "success"}
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 500
+        body = json.loads(result.body)
+        assert body["status"] == "error"
 
     @pytest.mark.asyncio
-    async def test_chat_error_in_final_state(self) -> None:
-        from app.api.routes.agent import ChatQuery, chat
+    async def test_chat_non_streaming_response_passthrough(self) -> None:
+        from fastapi.responses import JSONResponse
 
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-        }
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1", "knowledge": [], "toolsets": [],
-        })
+        from app.api.routes.agent import chat
 
-        final_state = {"error": {"status_code": 500, "status": "error", "message": "internal error"}}
+        passthrough = JSONResponse(status_code=400, content={"status": "error", "message": "bad"})
 
         request = MagicMock()
-        query = ChatQuery(query="bad")
+        with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=passthrough):
+            result = await chat(request, "a1")
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}):
-
-            mock_graph = AsyncMock()
-            mock_graph.ainvoke = AsyncMock(return_value=final_state)
-            mock_select.return_value = mock_graph
-
-            result = await chat(request, "a1", query)
-            assert result.status_code == 500
+        assert result is passthrough
 
 
 # ===========================================================================
@@ -4319,52 +3619,6 @@ class TestKnowledgeEdgeFailures2:
 
 class TestAllErrorPaths:
     @pytest.mark.asyncio
-    async def test_json_response_cache(self) -> None:
-        from fastapi.responses import JSONResponse as JR
-
-        from app.api.routes.agent import ChatQuery, askAI
-        services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
-        jr = JR(content={"m": "c"})
-        fs = {"completion_data": jr}
-        req = MagicMock(); req.state.user = {"userId": "u1", "orgId": "o1"}; req.query_params = {}
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
-             patch("app.api.routes.agent.get_cache_manager") as mc, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=fs), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
-            mg = AsyncMock(); mg.ainvoke = AsyncMock(return_value=fs); ms.return_value = mg
-            c = MagicMock(); c.get_llm_response.return_value = None; mc.return_value = c
-            r = await askAI(req, ChatQuery(query="t"))
-            assert isinstance(r, JR)
-            c.set_llm_response.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_perf_tracker(self) -> None:
-        from app.api.routes.agent import ChatQuery, askAI
-        services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
-        fs = {"completion_data": {"s": "ok"}, "_performance_tracker": True, "performance_summary": {"ms": 1}}
-        req = MagicMock(); req.state.user = {"userId": "u1", "orgId": "o1"}; req.query_params = {}
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
-             patch("app.api.routes.agent.get_cache_manager") as mc, \
-             patch("app.api.routes.agent.build_initial_state", return_value={}), \
-             patch("app.api.routes.agent.auto_optimize_state", return_value=fs), \
-             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
-            mg = AsyncMock(); mg.ainvoke = AsyncMock(return_value=fs); ms.return_value = mg
-            c = MagicMock(); c.get_llm_response.return_value = None; mc.return_value = c
-            r = await askAI(req, ChatQuery(query="t"))
-            assert r["_performance"] == {"ms": 1}
-
-    @pytest.mark.asyncio
     async def test_template_edge_fail(self) -> None:
         from fastapi import HTTPException
 
@@ -4428,43 +3682,43 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         assert result[0]["connectorId"] == "app1"
 
     def test_kb_filter_with_matching_record_groups(self) -> None:
-        """KB apps are regular apps - filter by UUID"""
+        """KB entries are regular connectors - filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440030"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_no_matching_record_groups(self) -> None:
-        """KB apps filtered out when not in apps list"""
+        """KB entries filtered out when not in the kb list"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440031"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_filter_with_json_string_filters(self) -> None:
-        """KB apps filtered by UUID"""
+        """KB entries filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440032"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_invalid_json_filters(self) -> None:
-        """KB apps filtered by UUID, not by invalid filters"""
+        """KB entries filtered by UUID, not by invalid filters"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440033"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_skipped(self) -> None:
@@ -4472,6 +3726,29 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         knowledge = ["not a dict", None, 42]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["a1"]})
         assert len(result) == 0
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """A KB entry's id living in filters["apps"] must NOT match it —
+        it is only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440034"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self) -> None:
+        """Regression: configuring an app connector must not drop KB entries."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440035"
+        knowledge = [
+            {"connectorId": "app1", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["app1"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"app1", kb_uuid}
 
 
 class TestParseToolsetsEdgeCases:
@@ -4678,52 +3955,6 @@ class TestCreateKnowledgeEdgesFullCoverage:
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
         result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
         assert result == []
-
-
-
-class TestStreamResponseFullCoverage:
-    @pytest.mark.asyncio
-    async def test_stream_yields_events(self) -> None:
-        from app.api.routes.agent import stream_response
-
-        mock_llm = MagicMock()
-        log = logging.getLogger("test")
-        gp = AsyncMock()
-        rr = MagicMock()
-        rs = MagicMock()
-        cs = MagicMock()
-
-        async def mock_astream(*args, **kwargs):
-            yield {"event": "token", "data": {"text": "hello"}}
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as mock_select:
-            mock_graph = MagicMock()
-            mock_graph.astream = mock_astream
-            mock_select.return_value = mock_graph
-            with patch("app.api.routes.agent.build_initial_state", return_value={}):
-                chunks = []
-                async for chunk in stream_response(
-                    {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log, rs, gp, rr, cs
-                ):
-                    chunks.append(chunk)
-                assert len(chunks) >= 1
-                assert "event: token" in chunks[0]
-
-    @pytest.mark.asyncio
-    async def test_stream_error(self) -> None:
-        from app.api.routes.agent import stream_response
-
-        mock_llm = MagicMock()
-        log = logging.getLogger("test")
-
-        with patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock, side_effect=Exception("fail")):
-            chunks = []
-            async for chunk in stream_response(
-                {"chatMode": "quick"}, {"userId": "u1", "orgId": "o1"}, mock_llm, log,
-                MagicMock(), AsyncMock(), MagicMock(), MagicMock()
-            ):
-                chunks.append(chunk)
-            assert any("error" in c for c in chunks)
 
 
 class TestServiceAccountAgentRoutes:

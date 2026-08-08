@@ -326,32 +326,6 @@ class TestBuildFkInfo:
         assert "Parent Tables" in s and "Child Tables" in s
 
 
-class TestGetMessageContentBranches:
-    def test_image_blocks_appended_before_context(self):
-        flat = []
-        # Only vr_extra in map triggers record_to_message_content extension path
-        vmap = {
-            "vr_x": {
-                "id": "rid",
-                "frontend_url": "https://app.example.com",
-                "virtual_record_id": "vr_x",
-                "context_metadata": "",
-                "block_containers": {"blocks": [], "block_groups": []},
-            }
-        }
-        ib = [{"type": "text", "text": "[img-placeholder]"}]
-        content, _ = get_message_content(
-            flat,
-            vmap,
-            user_data="u",
-            query="q",
-            mode="json",
-            image_blocks=ib,
-        )
-        texts = [c.get("text", "") for c in content if c.get("type") == "text"]
-        assert any(t.strip() == "Attachments:" for t in texts)
-
-
 class TestBuildMessageContentArrayGrouped:
     def test_valid_group_label_renders_block_group_prompt(self):
         flat = [

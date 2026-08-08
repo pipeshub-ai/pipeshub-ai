@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import sys
-from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,12 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_finished_result,
+)
 from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import (
     assert_response_matches_openapi_operation,
@@ -40,8 +45,6 @@ from openapi_schema_validator import (
 
 logger = logging.getLogger(__name__)
 
-_SSE_MAX_EVENTS = 10_000
-_SSEEnvelope = dict[str, str]
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -53,51 +56,6 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
         ) from exc
     assert isinstance(data, dict), f"Expected dict JSON body, got: {data!r}"
     return data
-
-
-def _iter_sse_envelopes(
-    resp: requests.Response,
-    *,
-    max_events: int = _SSE_MAX_EVENTS,
-) -> Iterator[_SSEEnvelope]:
-    event_name: str | None = None
-    data_lines: list[str] = []
-
-    def flush() -> _SSEEnvelope | None:
-        nonlocal event_name, data_lines
-        if event_name is None:
-            return None
-        env = {"event": event_name, "data": "\n".join(data_lines)}
-        event_name = None
-        data_lines = []
-        return env
-
-    emitted = 0
-    for raw in resp.iter_lines(decode_unicode=True):
-        if raw is None:
-            continue
-        line = raw.rstrip("\r")
-        if line == "":
-            env = flush()
-            if env is not None:
-                yield env
-                emitted += 1
-                if emitted >= max_events:
-                    raise AssertionError(f"SSE exceeded max_events={max_events}")
-            continue
-
-        if line.startswith(":"):
-            continue
-        if line.startswith("event:"):
-            event_name = line[len("event:") :].strip()
-            continue
-        if line.startswith("data:"):
-            data_lines.append(line[len("data:") :].lstrip())
-            continue
-
-    env = flush()
-    if env is not None:
-        yield env
 
 
 @pytest.mark.integration
@@ -168,23 +126,23 @@ class TestAgentConversationListing:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
-                    raise AssertionError(f"stream emitted error event: {payload!r}")
-                if envelope["event"] != "complete":
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+                if not is_root_finished(envelope["event"], payload):
                     continue
 
-                payload = json.loads(envelope["data"])
-                conv = payload.get("conversation") or {}
+                result = run_finished_result(payload)
+                conv = result.get("conversation") or {}
                 conversation_id = conv.get("_id")
                 assert isinstance(conversation_id, str) and conversation_id, (
-                    f"complete payload missing conversation._id: {payload!r}"
+                    f"RUN_FINISHED result missing conversation._id: {result!r}"
                 )
                 created_conversations.append((agent_key, conversation_id))
                 return conversation_id
 
-        raise AssertionError("agent conversation stream ended without a complete event")
+        raise AssertionError("agent conversation stream ended without a RUN_FINISHED event")
 
     def _stream_add_message(
         self,
@@ -201,16 +159,16 @@ class TestAgentConversationListing:
         ) as resp:
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
 
-            for envelope in _iter_sse_envelopes(resp):
-                if envelope["event"] == "error":
-                    payload = json.loads(envelope["data"])
+            for envelope in iter_sse_envelopes(resp):
+                payload = json.loads(envelope["data"])
+                if is_root_error(envelope["event"], payload):
                     raise AssertionError(
-                        f"message stream emitted error event: {payload!r}"
+                        f"message stream emitted RUN_ERROR: {payload!r}"
                     )
-                if envelope["event"] == "complete":
+                if is_root_finished(envelope["event"], payload):
                     return
 
-        raise AssertionError("agent add-message stream ended without a complete event")
+        raise AssertionError("agent add-message stream ended without a RUN_FINISHED event")
 
     def _list_agent_conversations(
         self,

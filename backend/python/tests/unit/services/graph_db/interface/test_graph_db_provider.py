@@ -185,6 +185,8 @@ class TestAbstractMethodInventory:
         # Document operations
         "get_document",
         "get_record_by_id",
+        "get_typed_records_batch",
+        "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
         "batch_upsert_nodes",
@@ -226,7 +228,9 @@ class TestAbstractMethodInventory:
         "get_records",
         "reindex_single_record",
         "reindex_record_group_records",
-        "reset_indexing_status_to_queued_for_record_ids",
+        "update_indexing_status_for_record_ids",
+        "compare_and_set_indexing_status",
+        "get_existing_record_keys",
         "get_documents_by_status",
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
@@ -349,6 +353,7 @@ class TestAbstractMethodInventory:
         "batch_update_connector_status",
         "get_user_connector_instances",
         "get_filtered_connector_instances",
+        "get_user_accessible_team_app_ids",
         "store_page_token",
         "get_page_token_db",
         # Utility operations
@@ -366,6 +371,8 @@ class TestAbstractMethodInventory:
         "get_knowledge_hub_context_permissions",
         "get_knowledge_hub_filter_options",
         "get_knowledge_hub_node_info",
+        "get_knowledge_hub_node_access",
+        "get_linked_records",
         "get_knowledge_hub_parent_node",
         "validate_folder_exists_in_kb",
         "get_key_by_external_message_id",
@@ -397,6 +404,9 @@ class TestAbstractMethodInventory:
         "get_agents_by_model_key",
         # Upload validation
         "validate_folder_for_upload",
+        # Record location / permission-aware trails
+        "filter_nodes_with_permission_role",
+        "get_record_parent_adjacency",
     ]
 
     def test_all_expected_methods_are_abstract(self):

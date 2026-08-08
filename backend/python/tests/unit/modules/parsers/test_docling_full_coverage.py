@@ -36,7 +36,7 @@ def _make_processor():
          patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
          patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions"), \
+         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
          patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
@@ -280,7 +280,7 @@ class TestGetConverter:
     def test_get_converter_creates_document_converter(self):
         """_get_converter returns a DocumentConverter instance."""
         with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-             patch("app.modules.parsers.pdf.docling_processor.PdfPipelineOptions") as MockPipelineOpts, \
+             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions") as MockPipelineOpts, \
              patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend") as MockBackend, \
              patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption") as MockPdfFmt, \
              patch("app.modules.parsers.pdf.docling_processor.WordFormatOption") as MockWordFmt, \

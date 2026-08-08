@@ -21,6 +21,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.indexing_progress import build_indexing_progress
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.exceptions.indexing_exceptions import IndexingError
 
 
 class SinkOrchestrator(Transformer):
@@ -154,6 +155,7 @@ class SinkOrchestrator(Transformer):
                         "id": record_id,
                         "virtualRecordId": record.virtual_record_id,
                         "indexingStatus": ProgressStatus.COMPLETED.value,
+                        "processingStartedAt": None,
                         "isDirty": False,
                         **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                     }
@@ -178,7 +180,10 @@ class SinkOrchestrator(Transformer):
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
-                return
+                raise IndexingError(
+                    message=f"Vector store did not index record {record_id}",
+                    record_id=record_id,
+                )
 
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
@@ -198,6 +203,7 @@ class SinkOrchestrator(Transformer):
                     "id": record.id,
                     "virtualRecordId": record.virtual_record_id,
                     "indexingStatus": ProgressStatus.COMPLETED.value,
+                    "processingStartedAt": None,
                     "lastIndexTimestamp": timestamp,
                     "isDirty": False,
                     **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),

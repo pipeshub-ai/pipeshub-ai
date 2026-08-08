@@ -3548,6 +3548,25 @@ components:
           type: integer
           format: int64
           description: Source last modified timestamp (from connector)
+        processingStartedAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when parse/index processing began for the current attempt; null when idle
+        parsingStatus:
+          type: string
+          enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
+          description: |
+            Parse-phase status (ahead of indexing/extraction):
+            - NOT_STARTED: Awaiting parsing
+            - QUEUED: In parsing queue
+            - IN_PROGRESS: Currently being parsed
+            - COMPLETED: Successfully parsed
+            - FAILED: Parsing failed
+            - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
+            - AUTO_INDEX_OFF: Auto-indexing disabled for this record
+            - EMPTY: File has no extractable content
+          example: "COMPLETED"
         indexingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
@@ -3753,6 +3772,13 @@ components:
             lastExtractionTimestamp:
               type: integer
               format: int64
+            processingStartedAt:
+              type: integer
+              format: int64
+              nullable: true
+            parsingStatus:
+              type: string
+              nullable: true
             indexingStatus:
               type: string
             extractionStatus:
@@ -5052,6 +5078,25 @@ components:
         - teamIds
 
     # ==================== ENTERPRISE SEARCH SCHEMAS ====================
+    AgentCapabilities:
+      type: object
+      additionalProperties: false
+      description: |
+        Per-request agent capability toggles. Only meaningful when `chatMode`
+        selects an agent mode; ignored otherwise. Omitting the object, or
+        omitting any individual field, keeps that capability enabled — the
+        backend treats a missing flag as `true`.
+      properties:
+        internalSearch:
+          type: boolean
+          description: Whether the agent may search internal knowledge bases for this turn.
+        webSearch:
+          type: boolean
+          description: Whether the agent may perform web search for this turn.
+        deepSearch:
+          type: boolean
+          description: Whether the agent may use deeper, higher-latency retrieval for this turn.
+
     Filters:
       type: object
       additionalProperties: false
@@ -5180,10 +5225,15 @@ components:
           type: string
           minLength: 1
           description: Synthetic record id used by the graph layer.
+        parseMode:
+          type: string
+          minLength: 1
+          description: Backend-reported parsing mode used for the attachment (e.g. `pdfplumber`, `docling`, `csv_lightweight`).
         ocrMode:
           type: string
           minLength: 1
-          description: Optional backend-reported processing mode for the attachment.
+          deprecated: true
+          description: Deprecated alias for `parseMode`, kept for backward compatibility. Use `parseMode` instead.
 
     ChatAttachmentUploadResponse:
       type: object
@@ -5269,10 +5319,14 @@ components:
         chatMode:
           type: string
           enum:
-            - web_search
+            - agent
             - internal_search
+            - web_search
           description: |
-            Chat mode affecting response behavior.
+            Optional execution mode for non-stream consumers of this shared
+            request schema.
+            `agent` uses the universal agent loop, while `internal_search`
+            and `web_search` use their corresponding assistant search paths.
           example: "internal_search"
         timezone:
           type: string
@@ -5296,8 +5350,30 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when chatMode is an agent mode (e.g. "agent:auto").
+            only when `chatMode` is `agent`.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (`RUN_STARTED`, `TEXT_MESSAGE_CONTENT`,
+            etc.). Kept in the schema for backward compatibility with callers
+            that already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    ConversationStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateConversationRequest'
+        - type: object
+          description: |
+            Request body for `POST /conversations/stream`. The public stream
+            requires an explicit universal execution mode.
+          required:
+            - chatMode
 
     CreateConversationResponse:
       type: object
@@ -5337,11 +5413,12 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Request body for `POST /agents/{agentKey}/conversations/stream`. Only
-        `query` is required; all other fields are optional overrides or routing
-        hints. Unknown fields are stripped during validation.
+        Request body for `POST /agents/{agentKey}/conversations/stream`.
+        `query` and `chatMode: quick` are required; all other fields are
+        optional overrides. Unknown fields are stripped during validation.
       required:
         - query
+        - chatMode
       properties:
         query:
           type: string
@@ -5381,16 +5458,10 @@ components:
         chatMode:
           type: string
           enum:
-            - auto
             - quick
-            - verification
-            - deep
           description: |
-            Chat mode hint forwarded to the agent backend.
-            - `auto` lets the agent pick its default strategy.
-            - `quick` favors low-latency answers over depth.
-            - `verification` runs additional grounding/verification passes.
-            - `deep` performs deeper retrieval and reasoning.
+            Required execution mode. Scoped agent conversations currently
+            support only `quick`.
         modelKey:
           type: string
           minLength: 1
@@ -5426,12 +5497,24 @@ components:
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentStreamSSEEvent`). Kept in
+            the schema for backward compatibility with callers that already
+            send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
       example:
         query: what are some latest tech news?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
-        chatMode: auto
+        chatMode: quick
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
@@ -5479,6 +5562,9 @@ components:
         - `currentTime` — optional ISO 8601 / RFC 3339 datetime string with
           UTC `Z` or a numeric offset
         - `tools` — optional array of non-empty tool identifiers
+        - `protocol` — optional inert compatibility field; when present it must
+          be `agui`, which is also the protocol used when the field is omitted
+        - `agentCapabilities` — optional per-request agent capability toggles
       properties:
         filters:
           $ref: '#/components/schemas/Filters'
@@ -5505,7 +5591,7 @@ components:
           minLength: 1
           description: |
             Chat mode used for regeneration (for example `internal_search`,
-            `web_search`, or an agent mode such as `agent:auto`).
+            `web_search`, or the universal `agent` mode).
           example: "internal_search"
         timezone:
           type: string
@@ -5531,6 +5617,33 @@ components:
             such as `jira.create_issue`) the agent may invoke when
             regenerating. Applicable only in agent chat modes.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary. Kept in the schema for backward
+            compatibility with callers that already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    AgentRegenerateRequest:
+      allOf:
+        - $ref: '#/components/schemas/RegenerateRequest'
+        - type: object
+          description: |
+            Regeneration payload for a scoped agent conversation. The public
+            gateway requires `chatMode: quick`; all other fields retain the
+            semantics defined by `RegenerateRequest`.
+          required:
+            - chatMode
+          properties:
+            chatMode:
+              type: string
+              enum:
+                - quick
 
     AddMessageRequest:
       type: object
@@ -5566,9 +5679,12 @@ components:
         chatMode:
           type: string
           enum:
-            - web_search
+            - agent
             - internal_search
-          description: Chat mode for this message
+            - web_search
+          description: |
+            Optional execution mode for non-stream consumers of this shared
+            request schema.
         timezone:
           type: string
           minLength: 1
@@ -5592,6 +5708,29 @@ components:
             follow-up message. Semantics are identical to the create-conversation
             tools field.
           example: ["jira.create_issue", "confluence.search_content"]
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `ConversationMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
+
+    ConversationMessageStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/AddMessageRequest'
+        - type: object
+          description: |
+            Request body for
+            `POST /conversations/{conversationId}/messages/stream`. The public
+            stream requires an explicit universal execution mode.
+          required:
+            - chatMode
 
     AddMessageResponse:
       type: object
@@ -5645,10 +5784,11 @@ components:
       additionalProperties: false
       description: |
         Request body for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        Only `query` is required; all other fields are optional overrides or
-        routing hints. Unknown fields are stripped during validation.
+        `query` and `chatMode: quick` are required; all other fields are
+        optional overrides. Unknown fields are stripped during validation.
       required:
         - query
+        - chatMode
       properties:
         query:
           type: string
@@ -5680,17 +5820,10 @@ components:
         chatMode:
           type: string
           enum:
-            - auto
             - quick
-            - verification
-            - deep
           description: |
-            Chat mode hint forwarded to the agent backend. Defaults to `auto`
-            in the upstream AI payload when omitted.
-            - `auto` lets the agent pick its default strategy.
-            - `quick` favors low-latency answers over depth.
-            - `verification` runs additional grounding/verification passes.
-            - `deep` performs deeper retrieval and reasoning.
+            Required execution mode. Scoped agent conversations currently
+            support only `quick`.
         modelKey:
           type: string
           minLength: 1
@@ -5726,12 +5859,24 @@ components:
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
             tools for this turn.
+        protocol:
+          type: string
+          enum:
+            - agui
+          description: |
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
+        agentCapabilities:
+          $ref: '#/components/schemas/AgentCapabilities'
       example:
         query: can you elaborate on the latest headlines?
         modelKey: 5c1832f4-fa19-4167-b913-307fad3a6551
         modelName: gpt-5.4-mini
         modelFriendlyName: GPT 5.4 mini
-        chatMode: verification
+        chatMode: quick
         timezone: Asia/Kolkata
         currentTime: "2026-05-19T12:58:01+05:30"
         tools: []
@@ -5757,6 +5902,87 @@ components:
               nodeType: recordGroup
               connector: KB
 
+    MessageToolCall:
+      type: object
+      additionalProperties: false
+      description: One tool invocation recorded on a message turn.
+      properties:
+        toolName:
+          type: string
+        toolResult: {}
+
+    MessageReasoningTurn:
+      type: object
+      additionalProperties: false
+      description: |
+        One model turn's chain-of-thought. Persisted only when reasoning
+        persistence is enabled; the array is empty otherwise.
+      required:
+        - content
+      properties:
+        messageId:
+          type: string
+        turnIndex:
+          type: number
+        content:
+          type: string
+
+    MessagePart:
+      type: object
+      additionalProperties: false
+      description: |
+        One entry in the ordered agent-activity transcript for a message turn.
+        Every field beyond `type` is optional and depends on the part kind, and
+        `sub_agent` nests this same shape recursively under `parts`.
+
+        Tool results here are always a bounded preview, never the full payload —
+        `artifactId` points at the complete result.
+      properties:
+        type:
+          type: string
+          enum: [text, reasoning, tool_call, sub_agent]
+        content:
+          type: string
+        toolCallId:
+          type: string
+        toolName:
+          type: string
+        displayName:
+          type: string
+        args:
+          type: string
+        argsSummary:
+          type: string
+          description: Human-readable summary of `args`, computed server-side.
+        status:
+          type: string
+          enum: [running, completed, failed, blocked]
+        resultPreview:
+          type: string
+        resultSummary:
+          type: string
+          description: |
+            Human-readable summary of the tool result, computed server-side from
+            the full untruncated output.
+        artifactId:
+          type: string
+          description: Blob-backed artifact id for the full tool result.
+        runId:
+          type: string
+        roleName:
+          type: string
+        isFinal:
+          type: boolean
+          description: |
+            Set on the single root-level `text` part carrying the answer. Every
+            other root `text` part is an abandoned preamble turn. Never set on
+            child parts nested under a `sub_agent`.
+        parts:
+          type: array
+          description: Nested transcript of a `sub_agent` part.
+          items:
+            $ref: '#/components/schemas/MessagePart'
+
     Message:
       type: object
       additionalProperties: false
@@ -5770,7 +5996,7 @@ components:
           description: Unique message identifier
         messageType:
           type: string
-          enum: [user_query, bot_response, error, feedback, system]
+          enum: [user_query, bot_response, error, feedback, system, tool_call]
           description: |
             Type of message:
             - `user_query` - User's question or input
@@ -5778,6 +6004,7 @@ components:
             - `error` - Error message from the system
             - `feedback` - User feedback on a response
             - `system` - System notification or status
+            - `tool_call` - Tool invocation turn; details are on `tools`
         content:
           type: string
           description: The message text content
@@ -5873,12 +6100,17 @@ components:
           type: array
           description: Tool call results invoked during this message turn.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              toolName:
-                type: string
-              toolResult: {}
+            $ref: '#/components/schemas/MessageToolCall'
+        reasoning:
+          type: array
+          description: Persisted chain-of-thought for this turn.
+          items:
+            $ref: '#/components/schemas/MessageReasoningTurn'
+        parts:
+          type: array
+          description: Ordered agent-activity transcript for this turn.
+          items:
+            $ref: '#/components/schemas/MessagePart'
         createdAt:
           type: string
           format: date-time
@@ -6918,6 +7150,12 @@ components:
           type: boolean
           nullable: true
         deletedByUserId:
+          type: string
+          nullable: true
+        processingStartedAt:
+          type: number
+          nullable: true
+        parsingStatus:
           type: string
           nullable: true
         indexingStatus:
@@ -8073,6 +8311,37 @@ components:
           allOf:
             - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
 
+    AgentSkill:
+      type: object
+      additionalProperties: false
+      description: |
+        A skill linked to the agent, as returned by the agent detail graph
+        projection. Flat by design — a skill carries no sub-entities analogous
+        to a toolset's tools. Fields other than `name` are read straight off
+        the skill document and are null when unset.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Unique skill name, used to reference the skill on agent create/update.
+        description:
+          type: string
+          nullable: true
+        category:
+          type: string
+          nullable: true
+        subcategory:
+          type: string
+          nullable: true
+        version:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+          description: Lifecycle state of the skill — `active` or `deprecated`.
+
     Agent:
       type: object
       additionalProperties: false
@@ -8165,6 +8434,11 @@ components:
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
             $ref: '#/components/schemas/Knowledge'
+        skills:
+          type: array
+          description: Skills linked to the agent via `agentHasSkill` edges
+          items:
+            $ref: '#/components/schemas/AgentSkill'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -8185,6 +8459,11 @@ components:
             - provider
           example:
             provider: "serper"
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         tags:
           type: array
           items:
@@ -8246,6 +8525,7 @@ components:
         - shareWithOrg
         - knowledge
         - toolsets
+        - skills
         - can_view
         - can_share
         - can_edit
@@ -8350,6 +8630,11 @@ components:
               type: string
             providerLabel:
               type: string
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the organization.
@@ -8625,6 +8910,20 @@ components:
             - provider
         - type: 'null'
 
+    AgentSkillAssignment:
+      type: object
+      additionalProperties: false
+      description: Reference to an existing skill assigned to an agent.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+          description: Lowercase skill name using single hyphens between segments.
+
     AgentCreateRequest:
       type: object
       additionalProperties: false
@@ -8689,8 +8988,19 @@ components:
           description: Knowledge sources connected to the agent
           items:
             $ref: '#/components/schemas/AgentCreateKnowledge'
+        skills:
+          type: array
+          maxItems: 100
+          description: Existing skills to assign to the agent
+          items:
+            $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentCreateWarning:
       type: object
@@ -8757,6 +9067,19 @@ components:
             - type: array
               items: {}
 
+    AgentCreateResponseSkill:
+      type: object
+      additionalProperties: false
+      description: |
+        A skill linked to the agent at creation time. Creating or updating an
+        agent only links edges to skills that already exist and never writes a
+        skill document, so only the name is echoed back here.
+      required:
+        - name
+      properties:
+        name:
+          type: string
+
     AgentCreateResponseAgent:
       type: object
       additionalProperties: false
@@ -8779,6 +9102,7 @@ components:
         - isDeleted
         - toolsets
         - knowledge
+        - skills
       properties:
         _key:
           type: string
@@ -8813,6 +9137,11 @@ components:
                 providerLabel:
                   type: string
             - type: 'null'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
         isActive:
           type: boolean
         isServiceAccount:
@@ -8836,6 +9165,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentCreateResponseKnowledge'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseSkill'
 
     AgentCreateResponse:
       type: object
@@ -8929,8 +9262,21 @@ components:
           description: Knowledge sources connected to the agent
           items:
             $ref: '#/components/schemas/AgentCreateKnowledge'
+        skills:
+          type: array
+          maxItems: 100
+          description: |
+            Complete replacement set of skills assigned to the agent. Send
+            an empty array to clear all skill assignments.
+          items:
+            $ref: '#/components/schemas/AgentSkillAssignment'
         webSearch:
           $ref: '#/components/schemas/AgentCreateWebSearch'
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: [none, low, medium, high, max]
+          description: Agent-level reasoning effort used when a chat request omits its own.
 
     AgentUpdateResponse:
       type: object
@@ -9525,7 +9871,7 @@ components:
           format: objectId
         messageType:
           type: string
-          enum: [user_query, bot_response, error, feedback, system]
+          enum: [user_query, bot_response, error, feedback, system, tool_call]
         content:
           type: string
         contentFormat:
@@ -9596,12 +9942,17 @@ components:
           type: array
           description: Tool call results invoked during this message turn.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              toolName:
-                type: string
-              toolResult: {}
+            $ref: '#/components/schemas/MessageToolCall'
+        reasoning:
+          type: array
+          description: Persisted chain-of-thought for this turn.
+          items:
+            $ref: '#/components/schemas/MessageReasoningTurn'
+        parts:
+          type: array
+          description: Ordered agent-activity transcript for this turn.
+          items:
+            $ref: '#/components/schemas/MessagePart'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -9872,295 +10223,335 @@ components:
       additionalProperties: false
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
+        AG-UI is the sole wire protocol.
 
-        Stable events:
+        `event` carries the AG-UI type name and `data` is a JSON object that
+        includes a `"type"` field matching `event`, plus type-specific
+        fields. Stable gateway-generated top-level outcomes:
 
-        - `connected` confirms the stream is open.
-        - `complete` returns the updated conversation plus request metadata
-          after the regenerated bot response is persisted.
-        - `error` returns a failure message. Conversation lookup failures,
-          unauthorized conversation access, and regenerate rule failures such
-          as "not the last message" are reported here after the stream starts.
+        - `RUN_FINISHED` returns `{ type, result }` where
+          `result` is `{ conversation, recordsUsed, meta }` — the updated
+          conversation plus request metadata after the regenerated response
+          is persisted.
+        - `RUN_ERROR` returns `{ type, message, code? }`. Conversation
+          lookup failures, unauthorized conversation access, and regenerate
+          rule failures such as "not the last message" are reported here.
 
         Other events are forwarded from the agent backend and should be
-        treated as informational updates.
+        treated as informational updates. Those forwarded lifecycle and
+        child-run events may contain `runId`, `threadId`, and `parentRunId`;
+        the gateway-generated root terminal event does not.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     SSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for streaming chat responses.
+        Server-Sent Event envelope for streaming chat responses. AG-UI is
+        the sole wire protocol.
 
-        `data` is a JSON-encoded string whose shape depends on `event`.
-        Three events are emitted by the API layer and have stable shapes
-        documented on the streaming routes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Stable gateway-generated top-level outcomes:
 
-        - `connected` — fired once on connection. Carries the newly created
-          `conversationId` and `title` so the client can link the stream to
-          a row before any tokens arrive.
-        - `complete` — fired once after the AI backend finishes. Carries the
-          full persisted `conversation` and a `meta` block with `requestId`,
+        - `RUN_FINISHED` — `{ type, result }`; `result` carries the full
+          persisted `conversation` and a `meta` block with `requestId`,
           `timestamp` and `duration`.
-        - `error` — fired when the stream fails. Carries an `error` message
-          and optional `details`. The conversation row is marked FAILED
-          before the stream closes.
+        - `RUN_ERROR` — `{ type, message, code? }`. The conversation row is
+          marked FAILED before the stream closes.
 
-        All other events are forwarded verbatim from the AI backend; their
-        payloads are AI-backend defined and may evolve. Currently observed
-        names include `status`, `answer_chunk`, `tool_call`, `tool_calls`,
-        `tool_result`, `tool_success`, `tool_error`,
-        `tool_execution_complete`, `restreaming`, and `metadata`.
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not. Clients should ignore unknown event names.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_call
-            - tool_calls
-            - tool_result
-            - tool_success
-            - tool_error
-            - tool_execution_complete
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
-    AssistantStreamSSEEvent:
+    ConversationStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for non-agent assistant chat streams
-        (`internal_search` / `web_search` chat modes). `data` is a
-        JSON-encoded string whose shape depends on `event`.
+        Server-Sent Event envelope for public conversation streams using
+        `agent`, `internal_search`, or `web_search`. AG-UI is the sole wire
+        protocol.
 
-        Three events are emitted by the API layer with stable, server-defined
-        shapes:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Universal `agent` mode may emit `STEP_STARTED`,
+        `STEP_FINISHED`, and nested child-run events carrying `parentRunId`.
+        Stable gateway-generated top-level outcomes:
 
-        - `connected` — `{ "message": string, "conversationId": string,
-          "title": string }`. Fired once on connection so the client can link
-          the stream to the new row before any tokens arrive.
-        - `complete` — `{ "conversation": Conversation,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number } }`. Fired once after the AI backend finishes.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
+        - `CUSTOM` (`name: "conversation_created"`) — fired once on
+          connection. Carries the newly created `conversationId` and
+          `title` so the client can link the stream to the new row before
+          any tokens arrive.
+        - `RUN_FINISHED` — fired once after the AI backend finishes.
+          The gateway emits `{ type, result }`; `result` carries the full
+          persisted `conversation` and a `meta` block.
+        - `RUN_ERROR` — fired when the stream fails. Carries a `message`
+          and optional `code`; the conversation row is marked FAILED
+          before close.
 
-        The remaining events are forwarded from the Python query service.
-        Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `searching`, `processing`, `checking_tools`,
-          `generating_answer`, `transforming`).
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`. Forwarded lifecycle events may carry `runId`,
+            `threadId`, and `parentRunId`.
 
-    AssistantMessageStreamSSEEvent:
+    ConversationMessageStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for non-agent assistant follow-up message
-        streams (`internal_search` / `web_search` chat modes) on an existing
-        conversation. `data` is a JSON-encoded string whose shape depends on
-        `event`.
+        Server-Sent Event envelope for public follow-up streams using `agent`,
+        `internal_search`, or `web_search` on an existing conversation. AG-UI
+        is the sole wire protocol.
 
-        Same event vocabulary as the conversation-creation stream — only the
-        `connected` and `complete` payloads differ because the conversation
-        already exists when this route is called.
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. Universal `agent` mode may emit step and nested
+        child-run events. Stable gateway-generated top-level outcomes:
 
-        Three events are emitted by the API layer with stable, server-defined
-        shapes:
+        - `CUSTOM` (`name: "conversation_created"`) — fired once on
+          connection.
+        - `RUN_FINISHED` — fired once after the AI backend finishes.
+          The gateway emits `{ type, result }`; `result` carries
+          `{ conversation, recordsUsed, meta }`.
+          `recordsUsed` is the count of citations attached to the new
+          assistant message.
+        - `RUN_ERROR` — fired when the stream fails. Carries a `message`
+          and optional `code`; the conversation row is marked FAILED
+          before close.
 
-        - `connected` — `{ "message": string }`. Fired once on connection.
-          No `conversationId` or `title` is included because the caller
-          already passed the conversation ID in the URL.
-        - `complete` — `{ "conversation": Conversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number, "recordsUsed": number } }`. Fired once after
-          the AI backend finishes. `recordsUsed` is the count of citations
-          attached to the new assistant message.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
-
-        The remaining events are forwarded from the Python query service.
-        Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `transforming`, `searching`, `processing`,
-          `checking_tools`, `generating_answer`). `transforming` is common on
-          this route because follow-up turns always have prior history to
-          rewrite the query against.
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
+        Forwarded upstream lifecycle or child-run events may contain `runId`,
+        `threadId`, and `parentRunId`. Gateway-generated root terminal events
+        do not.
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`. Forwarded lifecycle events may carry `runId`,
+            `threadId`, and `parentRunId`.
 
     AgentStreamSSEEvent:
       type: object
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
-        Event names are listed in `event`; payload JSON is carried in `data`.
+        AG-UI is the sole wire protocol.
+
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. The public route requires `chatMode: quick`.
+        Forwarded lifecycle events may carry `runId`, `threadId`, and
+        `parentRunId`; gateway-generated root terminal events do not.
+
+        Stable gateway-generated top-level outcomes are `RUN_FINISHED` as
+        `{ type, result }` and `RUN_ERROR` as `{ type, message, code? }`.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
-          description: |
-            SSE event name.
-            See the enum for possible values.
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
           description: |
-            JSON-encoded event payload.
-            Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     AgentMessageStreamSSEEvent:
       type: object
       description: |
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        `data` is a JSON-encoded string whose shape depends on `event`.
+        AG-UI is the sole wire protocol.
 
-        Three events have stable API-defined payloads:
+        `event` carries the AG-UI type name and `data` is a JSON-encoded
+        object that includes a `"type"` field matching `event`, plus
+        type-specific fields. The public route requires `chatMode: quick`.
+        Forwarded lifecycle events may carry `runId`, `threadId`, and
+        `parentRunId`. Stable gateway-generated top-level outcomes:
 
-        - `connected` — `{ "message": "SSE connection established" }`. Fired once
-          after the SSE stream opens. No `conversationId` is included because it is already
-          present in the request path.
-        - `complete` — `{ "conversation": AgentConversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string, "duration": number,
-          "recordsUsed": number } }`. Fired once after the upstream AI `complete` payload
-          is parsed, citations are saved, and the updated conversation is persisted.
-        - `error` — `{ "error": string, "details"?: string }`. Fired for runtime failures
-          after the stream has already started, including conversation lookup failures,
-          upstream AI startup failures, save failures, and stream transport errors.
+        - `CUSTOM` (`name: "conversation_created"`) — fired once after the
+          SSE stream opens.
+        - `RUN_FINISHED` — fired once after the upstream AI's result is
+          parsed, citations are saved, and the updated conversation is
+          persisted. The gateway emits `{ type, result }`; `result` carries
+          `{ conversation, recordsUsed, meta }`.
+        - `RUN_ERROR` — fired for runtime failures after the stream has
+          already started, including conversation lookup failures, upstream
+          AI startup failures, save failures, and stream transport errors.
 
-        All other events are forwarded from the upstream agent backend. Common event names:
-
-        - `status` — progress update for the current agent phase.
-        - `answer_chunk` — incremental token batch with running accumulated text.
-        - `tool_calls` / `tool_call` / `tool_success` / `tool_error` / `tool_result` /
-          `tool_execution_complete` — tool lifecycle events emitted by the upstream agent.
-        - `restreaming` — the upstream agent restarted generation with refreshed context.
-        - `metadata` — auxiliary metadata or keep-alive payload from the upstream agent.
-
-        Important wire behavior:
-
-        - The upstream agent's `complete` event is consumed server-side and replaced with the
-          API-defined `complete` event above.
-        - If the upstream `complete` payload cannot be parsed as JSON, the raw upstream
-          `complete` frame is forwarded unchanged instead.
-        - Unknown future event names may appear and should be ignored by clients.
+        Gateway-generated root terminal events do not contain `runId`,
+        `threadId`, or `parentRunId`.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
           enum:
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
+            - RUN_STARTED
+            - RUN_FINISHED
+            - RUN_ERROR
+            - STEP_STARTED
+            - STEP_FINISHED
+            - TEXT_MESSAGE_START
+            - TEXT_MESSAGE_CONTENT
+            - TEXT_MESSAGE_END
+            - REASONING_START
+            - REASONING_MESSAGE_START
+            - REASONING_MESSAGE_CONTENT
+            - REASONING_MESSAGE_END
+            - REASONING_END
+            - TOOL_CALL_START
+            - TOOL_CALL_ARGS
+            - TOOL_CALL_END
+            - TOOL_CALL_RESULT
+            - STATE_DELTA
+            - STATE_SNAPSHOT
+            - CUSTOM
+            - HEARTBEAT
         data:
           type: string
-          description: JSON-encoded event payload. Shape depends on `event`.
+          description: |
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
     SpeakRequest:
@@ -11732,7 +12123,13 @@ components:
       properties:
         customSystemPrompt:
           type: string
-          description: Custom system prompt text for AI models
+          description: Custom system prompt text used for Internal Search chat mode
+        customSystemPromptWebSearch:
+          type: string
+          description: Custom system prompt text used for Web Search chat mode
+        customSystemPromptAgent:
+          type: string
+          description: Custom system prompt text used for Agent chat mode
 
     # AI Model Provider Management Schemas
     AIModelProviderConfiguration:
@@ -16727,6 +17124,94 @@ paths:
             - SMTP config fetch failed (`smtpConfigCheck`)
             - Auth methods fetch failed
             - User ID missing during invite processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/bulk/invite/upload:
+    post:
+      tags:
+        - Users
+      summary: Bulk invite users from a CSV/Excel file
+      description: |
+        Upload a CSV or Excel (`.csv`, `.xlsx`, `.xls`) file of email addresses and invite them in
+        bulk. The file is parsed server-side; every cell containing `@` is treated as a candidate
+        email, then normalized (trimmed, lower-cased, BOM-stripped) and de-duplicated.
+
+        The file is validated on the request thread — an empty/unreadable file, a file with no
+        emails, or more than 1000 addresses is rejected with `400` before any processing. Otherwise
+        the endpoint responds `202 Accepted` immediately and performs the invites in a background
+        task, so the request never blocks.
+
+        Invalid email addresses are skipped (not rejected); valid ones follow the same
+        new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
+        notification is sent to the uploading admin summarizing the result
+        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+
+        Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
+        users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
+        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+      operationId: bulkInviteUsersFromFile
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        description: "Multipart form with the file and optional group IDs"
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV or Excel file (max 5 MB, up to 1000 emails)
+                groupIds:
+                  type: string
+                  description: JSON-encoded array of group ObjectIds to add invited users to
+                  example: '["507f1f77bcf86cd799439011"]'
+      responses:
+        '202':
+          description: File accepted; invites are processed in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  message:
+                    type: string
+                    example: "Import started. You will be notified when it finishes."
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - No file uploaded, or an unsupported/unreadable file
+            - No email addresses found in the file
+            - More than 1000 addresses
+            - `groupIds` contains an invalid ObjectId
+            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization not found (`accountTypeCheck`)
           content:
             application/json:
               schema:
@@ -23162,40 +23647,28 @@ paths:
 
         1. The server validates `query`, persists an in-progress
            conversation, then opens the SSE stream with HTTP `200`.
-        2. A `connected` event is emitted immediately with the new
-           `conversationId` so the client can link the stream (sidebar,
-           parallel tabs, deep links) without an extra request.
+        2. A `CUSTOM` event named `conversation_created` is emitted
+           immediately with the new `conversationId` so the client can link
+           the stream (sidebar, parallel tabs, deep links) without an extra
+           request.
         3. AI-backend events stream through (token chunks, tool calls,
            status, etc.).
-        4. On success a single `complete` event is emitted carrying the
-           full persisted conversation.
-        5. On failure an `error` event is emitted and the conversation is
-           marked FAILED before the stream closes.
+        4. On success a single root `RUN_FINISHED` event is emitted carrying
+           the full persisted conversation in `result`.
+        5. On failure a root `RUN_ERROR` event is emitted and the
+           conversation is marked FAILED before the stream closes.
 
         **Event vocabulary**
 
-        Three events have stable, server-defined `data` shapes:
+        AG-UI is the sole wire protocol. See `ConversationStreamSSEEvent`
+        for the full event enum and payload guidance.
 
-        - `connected` — `{ "message": string, "conversationId": string,
-          "title": string }`
-        - `complete` — `{ "conversation": Conversation,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number } }`
-        - `error` — `{ "error": string, "details"?: string }`
-
-        The forwarded events are `status`, `answer_chunk`, `tool_calls`,
-        `restreaming`, `metadata`, and `tool_execution_complete`. Their
-        payloads come from the Python query service and may evolve. Note
-        that raw `tool_call` / `tool_success` / `tool_error` / `tool_result`
-        events emitted by the LLM tool runtime are rewrapped as `status` by
-        the upstream wrapper before they reach this route, so clients on
-        `/conversations/stream` never see those names directly. Clients
-        should ignore unknown event names rather than treating them as
-        errors.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
 
         **Agent mode**
 
-        When `chatMode` selects an agent mode (for example `agent:auto`),
+        When `chatMode` is `agent`,
         the optional `tools` list restricts which tools the agent may
         invoke for this turn. Outside agent modes the `tools` field is
         ignored.
@@ -23210,7 +23683,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateConversationRequest'
+              $ref: '#/components/schemas/ConversationStreamRequest'
       responses:
         '200':
           description: |
@@ -23220,7 +23693,7 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/AssistantStreamSSEEvent'
+                $ref: '#/components/schemas/ConversationStreamSSEEvent'
         '400':
           description: |
             Invalid request — `query` is missing, empty, or exceeds the
@@ -23236,8 +23709,8 @@ paths:
           description: |
             Internal error before the SSE stream is established (for
             example, the initial conversation row could not be persisted).
-            Once the stream is open, terminal failures are surfaced as an
-            `error` SSE event instead of an HTTP status change.
+            Once the stream is open, terminal failures are surfaced as a
+            `RUN_ERROR` SSE event instead of an HTTP status change.
 
   /conversations/attachments/upload:
     post:
@@ -23280,7 +23753,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; part name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -23295,7 +23772,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
@@ -24524,7 +25001,7 @@ paths:
                               format: objectId
                             messageType:
                               type: string
-                              enum: [user_query, bot_response, error, feedback, system]
+                              enum: [user_query, bot_response, error, feedback, system, tool_call]
                             content:
                               type: string
                             contentFormat:
@@ -24610,6 +25087,21 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
+                            tools:
+                              type: array
+                              description: Tool call results invoked during this message turn.
+                              items:
+                                $ref: '#/components/schemas/MessageToolCall'
+                            reasoning:
+                              type: array
+                              description: Persisted chain-of-thought for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessageReasoningTurn'
+                            parts:
+                              type: array
+                              description: Ordered agent-activity transcript for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessagePart'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -25023,10 +25515,10 @@ paths:
         but the response is delivered as an SSE stream so clients can render
         the answer incrementally.
 
-        The wire vocabulary is described by `AssistantMessageStreamSSEEvent`.
-        It is the same event set as `/conversations/stream`; only the
-        `connected` and `complete` payloads differ because the conversation
-        already exists when this route is called.
+        AG-UI is the sole wire protocol. The vocabulary is described by
+        `ConversationMessageStreamSSEEvent`; it is the same event set as
+        `/conversations/stream`, while the terminal result reflects an
+        existing conversation.
       operationId: addMessageStream
       x-pipeshub-sdk: true
       security:
@@ -25048,7 +25540,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddMessageRequest'
+              $ref: '#/components/schemas/ConversationMessageStreamRequest'
       responses:
         '200':
           description: |
@@ -25058,7 +25550,7 @@ paths:
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/AssistantMessageStreamSSEEvent'
+                $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
             Invalid request — `query` is missing or empty, or another field
@@ -25078,7 +25570,7 @@ paths:
             Internal error before the SSE stream is established (for
             example, the user message could not be persisted to the
             conversation). Once the stream is open, terminal failures are
-            surfaced as an `error` SSE event instead of an HTTP status
+            surfaced as a `RUN_ERROR` SSE event instead of an HTTP status
             change.
 
   /conversations/{conversationId}/share:
@@ -25324,7 +25816,7 @@ paths:
                               format: objectId
                             messageType:
                               type: string
-                              enum: [user_query, bot_response, error, feedback, system]
+                              enum: [user_query, bot_response, error, feedback, system, tool_call]
                             content:
                               type: string
                             contentFormat:
@@ -25410,6 +25902,21 @@ paths:
                                 `POST /conversations/attachments/upload`).
                               items:
                                 $ref: '#/components/schemas/ChatAttachmentRef'
+                            tools:
+                              type: array
+                              description: Tool call results invoked during this message turn.
+                              items:
+                                $ref: '#/components/schemas/MessageToolCall'
+                            reasoning:
+                              type: array
+                              description: Persisted chain-of-thought for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessageReasoningTurn'
+                            parts:
+                              type: array
+                              description: Ordered agent-activity transcript for this turn.
+                              items:
+                                $ref: '#/components/schemas/MessagePart'
                             metadata:
                               type: object
                               additionalProperties: false
@@ -25768,18 +26275,10 @@ paths:
 
         **Streaming:**
 
-        The response is delivered as an SSE (`text/event-stream`) stream. The
-        exact event vocabulary depends on `chatMode`:
-
-        - For non-agent modes (e.g. `internal_search`, `web_search`) the
-          request is dispatched to the assistant chat backend.
-        - For agent modes (e.g. `agent:auto`) the request is dispatched to
-          the agent backend with a placeholder agent built from the caller's
-          workspace, which can additionally emit `tool_result` and
-          `tool_execution_complete` events.
-
-        See `SSEEvent` for the full union of event names this endpoint can
-        emit across both backends.
+        The response is delivered as an AG-UI `text/event-stream` stream.
+        Routing still depends on `chatMode`: `internal_search` and
+        `web_search` use the assistant backend, while `agent` uses the
+        universal agent loop. See `SSEEvent` for the event vocabulary.
       operationId: regenerateAnswer
       x-pipeshub-sdk: true
       security:
@@ -25813,45 +26312,11 @@ paths:
             on `SSEEvent`. The exact subset of events emitted depends on
             `chatMode` (see the route description for routing rules).
 
-            Lifecycle (all event names are sent verbatim on the wire):
-            - `connected` — `{ "message": "SSE connection established" }`.
-              Fired once on connection by the API layer.
-            - `status` — progress messages from the AI backend. Possible
-              `status` sub-values include `started`, `transforming`,
-              `searching`, `processing`, `checking_tools`,
-              `generating_answer`, `generating`, `analyzing`, `evaluating`,
-              `planning`, `executing`, `retrying`, `continuing`, `success`,
-              `skipped`, `pending`, `keepalive`, `cascade_error`, and
-              backend-defined values that may be added over time.
-            - `answer_chunk` — incremental token batches with running
-              `accumulated` text, accumulated `citations`, and the
-              backend-supplied `confidence` (typically null until the final
-              chunk).
-            - `tool_calls` / `tool_call` / `tool_success` / `tool_error` —
-              emitted when the model invokes tools (agent chat modes, or the
-              non-agent path when SQL / record-fetch tools are configured).
-            - `tool_result` / `tool_execution_complete` — additional tool
-              lifecycle events emitted only on the agent-mode path.
-            - `restreaming` — emitted when the LLM is restarted with new
-              context (e.g. before a citation-verification pass or
-              reflection-driven retry).
-            - `metadata` — `{}` keep-alive emitted by the JSON-streaming
-              branch while waiting for the next safe-to-flush chunk.
-            - `complete` — `{ "conversation": Conversation, "recordsUsed":
-              number, "meta": { "requestId": string, "timestamp": string,
-              "duration": number, "recordsUsed": number } }`. Fired once
-              after the regeneration is persisted; the new bot response
-              replaces the previous one in `conversation.messages` at the
-              same index. The AI backend's own `complete` frame is consumed
-              server-side and is **not** forwarded — clients see only this
-              server-defined frame.
-            - `error` — `{ "error": string, "details"?: string }`. Fired if
-              the stream fails; the previous bot response is replaced with an
-              error message and the conversation row is marked FAILED before
-              close.
-
-            Clients should ignore unknown event names rather than treating
-            them as errors.
+            The gateway emits a root `RUN_FINISHED` as `{ type, result }`
+            after persistence and a root `RUN_ERROR` as
+            `{ type, message, code? }` on failure. Forwarded lifecycle and
+            child-run events may contain `runId`, `threadId`, and
+            `parentRunId`. Clients should ignore unknown event names.
           content:
             text/event-stream:
               schema:
@@ -27725,7 +28190,11 @@ paths:
                   maxItems: 10
                   description: >
                     One or more files; field name must be `files`. Accepted MIME types:
-                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`. Max 5 MiB each.
+                    `application/pdf`, `image/jpeg`, `image/jpg`, `image/png`,
+                    `text/plain`, `text/markdown`, `text/mdx`,
+                    `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+                    `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`,
+                    `text/csv`, `text/tab-separated-values`. Max 5 MiB each.
                   items:
                     type: string
                     format: binary
@@ -27741,7 +28210,7 @@ paths:
                 $ref: '#/components/schemas/ChatAttachmentUploadResponse'
         '400':
           description: >
-            Invalid `conversationId`, no files, unsupported MIME type (not PDF/JPEG/PNG), or
+            Invalid `conversationId`, no files, unsupported MIME type, or
             Multer rejection (e.g. file too large).
         '401':
           description: Unauthorized
@@ -27821,6 +28290,9 @@ paths:
         response as Server-Sent Events (SSE). The first user message is saved
         and forwarded to the upstream agent backend; subsequent tokens, tool
         calls, and lifecycle events are emitted on the open SSE connection.
+
+        AG-UI is the sole wire protocol. The request must include
+        `chatMode: quick`; see `AgentStreamSSEEvent` for the event vocabulary.
       operationId: streamAgentConversation
       x-pipeshub-sdk: true
       security:
@@ -27861,6 +28333,10 @@ paths:
       description: |
         Append a user message to an existing agent conversation and stream the
         assistant reply over SSE.
+
+        AG-UI is the sole wire protocol. The request must include
+        `chatMode: quick`; see `AgentMessageStreamSSEEvent` for the event
+        vocabulary.
       operationId: streamAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -27915,8 +28391,8 @@ paths:
 
         **Request body:**
 
-        All request-body fields are optional. When omitted, the server reuses
-        the original model/context. The body supports:
+        `chatMode: quick` is required. Other fields are optional and reuse
+        the original model/context when omitted. The body supports:
         - `filters`
         - `chatMode`
         - `modelKey`
@@ -27925,18 +28401,22 @@ paths:
         - `timezone`
         - `currentTime`
         - `tools`
+        - `protocol`
+        - `agentCapabilities`
 
         **Streaming behavior:**
 
-        The response is delivered as `text/event-stream`. Stable events are
-        `connected`, `complete`, and `error`. Additional agent/tool lifecycle
-        events may be forwarded by the backend and should be treated as
-        informational updates.
+        The response is delivered as an AG-UI `text/event-stream`. Stable
+        outcomes are `RUN_FINISHED` and `RUN_ERROR`; see
+        `AgentRegenerateSSEEvent`.
+
+        Additional agent/tool lifecycle events may be forwarded by the
+        backend and should be treated as informational updates.
 
         Validation failures on params/body are returned as normal HTTP `400`
         responses before the stream starts. Valid-shape requests that fail
-        conversation lookup or regenerate rules are reported as SSE `error`
-        events after stream initialization.
+        conversation lookup or regenerate rules are reported as
+        `RUN_ERROR` events after stream initialization.
       operationId: regenerateAgentConversationMessage
       x-pipeshub-sdk: true
       security:
@@ -27965,27 +28445,27 @@ paths:
             type: string
             format: objectId
       requestBody:
-        required: false
+        required: true
         description: |
-          Optional regeneration payload. All fields are optional and are
-          validated against `RegenerateRequest`.
+          Regeneration payload requiring `chatMode: quick`.
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegenerateRequest'
+              $ref: '#/components/schemas/AgentRegenerateRequest'
       responses:
         '200':
           description: |
             SSE stream established.
 
             Stable event names:
-            - `connected` — confirms the stream is open
-            - `complete` — returns the updated conversation plus metadata
-            - `error` — reports lookup failures, authorization failures on
-              the conversation, or regenerate-rule failures after the stream
-              has started
+            - `RUN_FINISHED` — `{ type, result }`, where `result` contains the
+              updated conversation and metadata
+            - `RUN_ERROR` — `{ type, message, code? }`, reporting lookup,
+              authorization, or regenerate-rule failures
 
-            Additional backend-defined agent/tool events may be emitted.
+            Forwarded lifecycle and child-run events may include `runId`,
+            `threadId`, and `parentRunId`. Additional backend-defined
+            agent/tool events may be emitted.
             Clients should ignore unknown event names.
           content:
             text/event-stream:

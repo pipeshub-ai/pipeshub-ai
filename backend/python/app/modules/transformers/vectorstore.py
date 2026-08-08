@@ -48,6 +48,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.utils.aimodels import (
     EmbeddingProvider,
+    coerce_message_content_to_text,
     get_default_embedding_model,
     get_embedding_model,
 )
@@ -61,7 +62,7 @@ RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
-_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 50
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
@@ -75,7 +76,11 @@ _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 # timeout, but the caller unblocks, releases semaphores, and the consumer can retry
 # or skip the record.
 _TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
-_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch
+
+# Local CPU-served models (default/sentence-transformers/HF) are much slower per
+# batch than hosted API embedding providers, so they get a much longer allowance.
+_LOCAL_EMBEDDING_BATCH_TIMEOUT_S = 600  # 10 min per embedding batch on local CPU
+_REMOTE_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch via hosted API
 
 
 def _detect_record_language(text_blocks: List) -> str:
@@ -405,7 +410,7 @@ class VectorStore(Transformer):
             ]
         )
         response = await vlm.ainvoke([message])
-        return response.content
+        return coerce_message_content_to_text(response.content)
 
     async def describe_images(
         self, base64_images: List[str], vlm: BaseChatModel
@@ -478,6 +483,24 @@ class VectorStore(Transformer):
                     field_schema=schema,
                 )
         except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg:
+                self.logger.info(
+                    f"Collection '{self.collection_name}' was created concurrently; verifying dimension."
+                )
+                existing_dim = await self._get_existing_vector_dimension(self.collection_name)
+                if existing_dim is not None and existing_dim != embedding_size:
+                    raise VectorStoreError(
+                        f"Embedding model dimension mismatch: collection "
+                        f"'{self.collection_name}' was created with dimension {existing_dim} "
+                        f"but the current model produces dimension {embedding_size}.",
+                        details={
+                            "collection": self.collection_name,
+                            "existing_dim": existing_dim,
+                            "required_dim": embedding_size,
+                        },
+                    )
+                return
             self.logger.error(f"❌ Error creating collection '{self.collection_name}': {e}")
             raise VectorStoreError(
                 "Failed to create collection",
@@ -906,6 +929,7 @@ class VectorStore(Transformer):
             self.embedding_provider is None
             or self.embedding_provider == EmbeddingProvider.DEFAULT.value
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
+            or self.embedding_provider == EmbeddingProvider.HUGGING_FACE.value
         )
 
     async def _compute_sparse_embeddings(
@@ -937,14 +961,19 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
+        embedding_timeout = (
+            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
+            if self._is_local_cpu_embedding()
+            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
+        )
         try:
             dense_embeddings = await asyncio.wait_for(
                 self.dense_embeddings.aembed_documents(texts),
-                timeout=_EMBEDDING_BATCH_TIMEOUT_S,
+                timeout=embedding_timeout,
             )
         except asyncio.TimeoutError:
             raise EmbeddingError(
-                f"Dense embedding timed out after {_EMBEDDING_BATCH_TIMEOUT_S}s "
+                f"Dense embedding timed out after {embedding_timeout}s "
                 f"for batch of {len(texts)} texts (record {record_id})"
             )
 
@@ -1172,7 +1201,7 @@ class VectorStore(Transformer):
             )
 
         try:
-            llm, config = await get_llm(self.config_service)
+            llm, config = await get_llm(self.config_service, reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
         except Exception as e:
             raise IndexingError("Failed to get LLM: " + str(e), details={"error": str(e)})

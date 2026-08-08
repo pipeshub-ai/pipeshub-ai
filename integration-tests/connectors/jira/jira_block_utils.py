@@ -121,8 +121,6 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
             document_extractor=MagicMock(),
             sink_orchestrator=MagicMock(),
         )
-    # Table enhancement calls an LLM (non-deterministic) — no-op it for a stable snapshot.
-    processor._enhance_tables_with_llm = AsyncMock()
     processor.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict())
 
     captured: dict[str, Any] = {}
@@ -130,7 +128,11 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     async def _capture(ctx: Any) -> None:
         captured["bc"] = ctx.record.block_containers
 
-    with patch("app.events.processor.IndexingPipeline") as mock_pipeline_cls:
+    # Table enhancement calls an LLM (non-deterministic) — no-op it for a stable snapshot.
+    with (
+        patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock),
+        patch("app.events.processor.IndexingPipeline") as mock_pipeline_cls,
+    ):
         mock_pipeline_cls.return_value.apply = AsyncMock(side_effect=_capture)
         async for _ in processor.process_blocks(
             recordName="jira-blocks", recordId="test-record-1", version=1,

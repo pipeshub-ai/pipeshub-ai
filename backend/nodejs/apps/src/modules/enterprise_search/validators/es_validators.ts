@@ -3,7 +3,9 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE } from '../constants/constants';
+import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+
+export { REASONING_EFFORT_VALUES };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -94,9 +96,10 @@ const modelFieldsSchema = {
     .string()
     .min(1, { message: 'Model friendly name is required' })
     .optional(),
+  reasoningEffort: z.enum(REASONING_EFFORT_VALUES).optional(),
 };
 
-/** Execution-context fields: timezone, currentTime, tools. */
+/** Execution-context fields shared by every stream/regenerate body schema. */
 const contextFieldsSchema = {
   timezone: z
     .string()
@@ -110,6 +113,25 @@ const contextFieldsSchema = {
     })
     .optional(),
   tools: z.array(z.string().min(1)).optional(),
+  // AG-UI is the only supported wire protocol (see
+  // utils/agui.ts::resolveProtocol, which always resolves to `agui`
+  // regardless of this field). Kept accepted-but-inert for callers still
+  // sending it; any value other than `agui` is rejected rather than
+  // silently downgrading a caller to a protocol that no longer exists.
+  // Must be declared here or Zod's default unknown-key stripping removes it
+  // from req.body before the controller can read it — the validation
+  // middleware replaces req.body with the parsed result.
+  protocol: z.enum(['agui']).optional(),
+  // Per-request agent capability toggles. Subject to the same declare-or-be-
+  // stripped constraint as `protocol` above. Python treats a missing flag as
+  // enabled, so partial objects are valid.
+  agentCapabilities: z
+    .object({
+      internalSearch: z.boolean().optional(),
+      webSearch: z.boolean().optional(),
+      deepSearch: z.boolean().optional(),
+    })
+    .optional(),
 };
 
 /** Title body shared by conversation/agent rename endpoints. */
@@ -177,6 +199,23 @@ const enterpriseSearchCreateBodySchema = z.object({
 
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
+});
+
+/** Public `/conversations/stream` modes. The route always requires an explicit mode. */
+export const UNIVERSAL_STREAM_CHAT_MODES = [
+  'agent',
+  'internal_search',
+  'web_search',
+] as const;
+
+const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
+
+export const enterpriseSearchStreamCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -275,21 +314,26 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
-/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
-export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+export const addMessageStreamParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema.extend({
+    chatMode: universalStreamChatModeSchema,
+  }),
+});
 
-const agentChatModeSchema = z
-  .enum(AGENT_CHAT_MODES, {
-    errorMap: () => ({ message: 'Invalid chat mode' }),
-  })
-  .optional();
+/** Public `/agents/{agentKey}/conversations/...` streams support quick mode only. */
+export const AGENT_CHAT_MODES = ['quick'] as const;
+
+const agentChatModeSchema = z.literal('quick', {
+  errorMap: () => ({ message: 'Invalid chat mode' }),
+});
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
-  chatMode: agentChatModeSchema 
+  chatMode: agentChatModeSchema,
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
-  chatMode: agentChatModeSchema, // TODO: remove this
+  chatMode: agentChatModeSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -369,6 +413,18 @@ const agentKnowledgeSchema = z
     filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
   });
 
+const agentSkillSchema = z
+  .object({
+    name: z
+      .string()
+      .min(1, { message: 'Skill name is required' })
+      .max(64, { message: 'Skill name must be 64 characters or fewer' })
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+        message: 'Skill name must be lowercase alphanumeric with single hyphens',
+      }),
+  })
+  .strict();
+
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
   z
@@ -438,7 +494,12 @@ const createAgentBodySchema = z
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    /** Agent-level fallback applied when a chat request omits its own reasoningEffort. */
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -467,7 +528,11 @@ const updateAgentBodySchema = z
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
+    skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    defaultReasoningEffort: z
+      .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
+      .optional(),
   });
 
 export const updateAgentSchema = z.object({
@@ -568,7 +633,9 @@ export const regenerateAgentAnswersParamsSchema = z.object({
     ...conversationIdParam,
     ...messageIdParam,
   }),
-  body: regenerateBodySchema,
+  body: regenerateBodySchema.extend({
+    chatMode: agentChatModeSchema,
+  }),
 });
 
 // ---------------------------------------------------------------------------

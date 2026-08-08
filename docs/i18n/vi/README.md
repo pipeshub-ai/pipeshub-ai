@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Khung web Python hiệu năng cao |
 | LangChain | Khung cho các pipeline LLM |
-| LangGraph | Đồ thị trạng thái cho các quy trình LLM |
 | Qdrant | Công cụ tìm kiếm theo độ tương đồng vectơ |
 | Neo4j / ArangoDB | Cơ sở dữ liệu đồ thị |
 | Kafka / Redis Streams | Nền tảng truyền sự kiện phân tán |
@@ -265,7 +264,7 @@ Lưu ý: Hãy dùng HTTPS cho việc triển khai trên đám mây. HTTP có th�
 
 ### PipesHub hỗ trợ những nhà cung cấp LLM nào?
 
-PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích. Ngăn xếp công nghệ bao gồm LangChain và LangGraph cho các pipeline và quy trình LLM.
+PipesHub theo nguyên tắc "Mang mô hình của riêng bạn" — bạn có thể dùng bất kỳ nhà cung cấp LLM nào. Triển khai trong VPC của bạn với các mô hình bạn ưa thích. Ngăn xếp công nghệ bao gồm LangChain cho các pipeline và quy trình LLM.
 
 ### Tính năng truy xuất bằng đồ thị tri thức là gì?
 

@@ -891,33 +891,41 @@ class TestGetConnectorStatsGaps:
     @pytest.mark.asyncio
     async def test_success_returns_data(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        result = await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
     async def test_not_found_raises_404(self):
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_generic_exception_propagates(self):
-        """When get_connector_stats raises before logger is set, UnboundLocalError propagates."""
+        """When get_connector_stats raises, returns 500."""
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(side_effect=RuntimeError("boom"))
-        req = _mock_request(graph_provider=gp)
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+        req = _mock_request(graph_provider=gp, connector_registry=registry)
 
-        # The router has a latent bug: logger is set AFTER graph_provider.get_connector_stats,
-        # so if that call raises, the except block hits UnboundLocalError.
-        with pytest.raises((HTTPException, UnboundLocalError)):
-            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
+        with pytest.raises(HTTPException) as exc_info:
+            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================
@@ -1961,13 +1969,14 @@ class TestGetRecordsGaps:
         assert result["code"] == 404
 
     @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self):
+    async def test_exception_raises_500(self):
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(graph_provider=gp)
 
-        result = await get_records(req, graph_provider=gp)
-        assert "error" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await get_records(req, graph_provider=gp)
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
 
 # ============================================================================

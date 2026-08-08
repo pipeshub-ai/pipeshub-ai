@@ -5055,7 +5055,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record(
@@ -5143,7 +5143,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=100)
@@ -5164,7 +5164,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
 
 
 # ---------------------------------------------------------------------------
@@ -7812,7 +7812,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 20
 
 
 # ---------------------------------------------------------------------------
@@ -11871,7 +11871,7 @@ class TestReindexSingleRecordSuccess:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -11899,7 +11899,7 @@ class TestReindexSingleRecordSuccess:
             connected_provider, "get_user_kb_permission",
             new_callable=AsyncMock, return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -17715,6 +17715,219 @@ class TestGetKbVirtualIdsMetadataDetailed:
 
 
 # ---------------------------------------------------------------------------
+# sourceCreatedAtTimestamp time_range filters
+# ---------------------------------------------------------------------------
+
+
+class TestSourceCreatedTimeRangeFilters:
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_forwards_time_range(
+        self, connected_provider
+    ):
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"],
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_kb:
+            time_range = {
+                "source_created_after_ms": 1000,
+                "source_created_before_ms": 2000,
+            }
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", time_range=time_range
+            )
+            for call in mock_connector.await_args_list:
+                assert call.kwargs.get("time_range") == time_range
+            mock_kb.assert_awaited_once()
+            assert mock_kb.await_args.kwargs.get("time_range") == time_range
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_omits_when_none(
+        self, connected_provider
+    ):
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"],
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={},
+        ):
+            await connected_provider.get_accessible_virtual_record_ids("user1", "org1")
+            assert mock_connector.await_args.kwargs.get("time_range") is None
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_injects_time_filter_and_binds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+        }
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceCreatedBeforeMs"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_only_after_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range={"source_created_after_ms": 1000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" not in query
+        assert "sourceCreatedBeforeMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_only_before_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range={"source_created_before_ms": 2000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" not in query
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_no_time_range_unchanged(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector("u1", "org1", "c1")
+        query_without = connected_provider.execute_query.call_args[0][0]
+        connected_provider.execute_query.reset_mock()
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=None
+        )
+        query_with_none = connected_provider.execute_query.call_args[0][0]
+        assert query_without == query_with_none
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_injects_time_filter_and_binds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+        }
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceCreatedBeforeMs"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_only_after_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_kb_virtual_ids(
+            "u1", "org1", time_range={"source_created_after_ms": 1000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "sourceCreatedBeforeMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_only_before_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_kb_virtual_ids(
+            "u1", "org1", time_range={"source_created_before_ms": 2000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    # --- updated_after / updated_before (sourceLastModifiedTimestamp) ---
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_updated_after_injects_modified_filter(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 5000}
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_updated_both_bounds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 5000, "source_updated_before_ms": 9000}
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "FILTER record.sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+        assert bind_vars["sourceUpdatedBeforeMs"] == 9000
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_created_and_updated_combined(self, connected_provider):
+        """Both created_* and updated_* keys in the same time_range produce four FILTER clauses."""
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+            "source_updated_after_ms": 5000,
+            "source_updated_before_ms": 9000,
+        }
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "sourceCreatedAtTimestamp != null AND record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_updated_after_injects_modified_filter(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 7777}
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 7777
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_updated_both_bounds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 7777, "source_updated_before_ms": 9999}
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "sourceLastModifiedTimestamp != null AND record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 7777
+        assert bind_vars["sourceUpdatedBeforeMs"] == 9999
+
+
+# ---------------------------------------------------------------------------
 # check_toolset_instance_in_use (line 17984 - empty return)
 # ---------------------------------------------------------------------------
 
@@ -18487,7 +18700,7 @@ class TestReindexSingleRecordFullCoverage:
         ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
-        connected_provider_fullcov.reset_indexing_status_to_queued_for_record_ids = AsyncMock()
+        connected_provider_fullcov.update_indexing_status_for_record_ids = AsyncMock()
         result = await connected_provider_fullcov.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
 
@@ -18671,19 +18884,19 @@ class TestFindFileByNameInParent:
 
 
 # ---------------------------------------------------------------------------
-# reset_indexing_status_to_queued_for_record_ids
+# update_indexing_status_for_record_ids
 # ---------------------------------------------------------------------------
 
 
-class TestResetIndexingStatusToQueued:
-    """Tests for reset_indexing_status_to_queued_for_record_ids method."""
+class TestUpdateIndexingStatusForRecordIds:
+    """Tests for update_indexing_status_for_record_ids method."""
 
     @pytest.mark.asyncio
     async def test_empty_list_returns_early(self, connected_provider):
         """Should return early without calling execute_query for empty list."""
         connected_provider.execute_query = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids([])
+        await connected_provider.update_indexing_status_for_record_ids([], "QUEUED")
         
         connected_provider.execute_query.assert_not_called()
 
@@ -18692,8 +18905,9 @@ class TestResetIndexingStatusToQueued:
         """Should filter out None, empty strings, and non-string values."""
         connected_provider.execute_query = AsyncMock(return_value=[])
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            [None, "", "valid1", 123, "valid2", "", None]
+        await connected_provider.update_indexing_status_for_record_ids(
+            [None, "", "valid1", 123, "valid2", "", None],
+            "QUEUED",
         )
         
         connected_provider.execute_query.assert_called_once()
@@ -18707,7 +18921,7 @@ class TestResetIndexingStatusToQueued:
         connected_provider.execute_query = AsyncMock(return_value=None)
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_not_called()
 
@@ -18717,7 +18931,7 @@ class TestResetIndexingStatusToQueued:
         connected_provider.execute_query = AsyncMock(return_value=[])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_not_called()
 
@@ -18730,7 +18944,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
@@ -18739,25 +18953,25 @@ class TestResetIndexingStatusToQueued:
         assert upserted[0]["_key"] == "rec2"
 
     @pytest.mark.asyncio
-    async def test_skips_already_queued_records(self, connected_provider):
-        """Should skip records that already have QUEUED status."""
+    async def test_updates_already_queued_records(self, connected_provider):
+        """Should update records even when they already have QUEUED status."""
         connected_provider.execute_query = AsyncMock(return_value=[
             {"_key": "rec1", "indexingStatus": "QUEUED"},
             {"_key": "rec2", "indexingStatus": "COMPLETED"},
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
         upserted = call_args[0]
-        assert len(upserted) == 1
-        assert upserted[0]["_key"] == "rec2"
+        assert len(upserted) == 2
+        assert {u["_key"] for u in upserted} == {"rec1", "rec2"}
 
     @pytest.mark.asyncio
     async def test_mixed_states_filters_correctly(self, connected_provider):
-        """Should handle records with mixed states: internal, queued, and valid."""
+        """Should handle records with mixed states: internal and valid."""
         connected_provider.execute_query = AsyncMock(return_value=[
             {"_key": "rec1", "isInternal": True, "indexingStatus": "COMPLETED"},
             {"_key": "rec2", "indexingStatus": "QUEUED"},
@@ -18767,15 +18981,17 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            ["rec1", "rec2", "rec3", "rec4", "rec5"]
+        await connected_provider.update_indexing_status_for_record_ids(
+            ["rec1", "rec2", "rec3", "rec4", "rec5"],
+            "QUEUED",
         )
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
         upserted = call_args[0]
-        assert len(upserted) == 3
+        assert len(upserted) == 4
         upserted_keys = [u["_key"] for u in upserted]
+        assert "rec2" in upserted_keys
         assert "rec3" in upserted_keys
         assert "rec4" in upserted_keys
         assert "rec5" in upserted_keys
@@ -18788,7 +19004,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args
@@ -18804,11 +19020,11 @@ class TestResetIndexingStatusToQueued:
         """Should log error when exception occurs during query."""
         connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.logger.error.assert_called_once()
         error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed bulk reset records to QUEUED" in error_msg
+        assert "Failed to update records to" in error_msg
 
     @pytest.mark.asyncio
     async def test_skips_records_without_id(self, connected_provider):
@@ -18819,7 +19035,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
@@ -18832,8 +19048,9 @@ class TestResetIndexingStatusToQueued:
         """Should deduplicate record IDs before querying."""
         connected_provider.execute_query = AsyncMock(return_value=[])
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            ["rec1", "rec2", "rec1", "rec3", "rec2"]
+        await connected_provider.update_indexing_status_for_record_ids(
+            ["rec1", "rec2", "rec1", "rec3", "rec2"],
+            "QUEUED",
         )
         
         connected_provider.execute_query.assert_called_once()
@@ -21966,5 +22183,108 @@ class TestGetRecordsByParentRecord:
         assert bind_vars["user_key"] == "user_456"
 
 
+# ---------------------------------------------------------------------------
+# get_connector_stats KB branch
+# ---------------------------------------------------------------------------
 
 
+class TestGetConnectorStatsKB:
+    @pytest.mark.asyncio
+    async def test_kb_collection_stats_with_upload_records(self, connected_provider):
+        """KB collection should return non-zero stats for UPLOAD records."""
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        
+        # Mock KB app doc
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "name": "My Collection"
+        })
+        
+        # Mock query results with KB upload records
+        connected_provider.http_client.execute_aql.return_value = [
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "cnt": 10},
+            {"recordType": "FILE", "indexingStatus": "FAILED", "cnt": 2},
+        ]
+        
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.build_connector_stats_response",
+            return_value={"total": 12, "origin": "COLLECTION"}
+        ) as mock_build:
+            result = await connected_provider.get_connector_stats("org1", "kb1")
+            
+            assert result["success"] is True
+            mock_build.assert_called_once()
+            # Verify origin param was passed
+            call_args = mock_build.call_args
+            assert call_args[1].get("origin") == "COLLECTION"
+
+    @pytest.mark.asyncio
+    async def test_kb_collection_excludes_folder_records(self, connected_provider):
+        """KB stats should exclude folder records (isFile: false)."""
+        from app.config.constants.arangodb import Connectors
+        
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value
+        })
+        
+        # Query should filter folders via targetInfo.isFile check
+        connected_provider.http_client.execute_aql.return_value = []
+        
+        result = await connected_provider.get_connector_stats("org1", "kb1")
+
+        # Verify the KB query was used (KB app link set, connector prefix absent)
+        call_args = connected_provider.http_client.execute_aql.call_args
+        bind_vars = call_args[1]["bind_vars"]
+        assert bind_vars["kb_app_id"] is not None
+        assert bind_vars["record_group_prefix"] is None
+
+    @pytest.mark.asyncio
+    async def test_external_connector_unchanged(self, connected_provider):
+        """External connectors should use the record-group link and no origin filter."""
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": "SLACK",
+            "name": "Slack Connector"
+        })
+
+        connected_provider.http_client.execute_aql.return_value = [
+            {"recordType": "MESSAGE", "indexingStatus": "COMPLETED", "cnt": 50}
+        ]
+
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.build_connector_stats_response",
+            return_value={"total": 50, "origin": "CONNECTOR"}
+        ) as mock_build:
+            result = await connected_provider.get_connector_stats("org1", "conn1")
+
+            assert result["success"] is True
+            assert mock_build.call_args[1].get("origin") == "CONNECTOR"
+
+        # Connector path: record-group prefix set, KB app link and origin filter absent
+        bind_vars = connected_provider.http_client.execute_aql.call_args[1]["bind_vars"]
+        assert bind_vars["kb_app_id"] is None
+        assert bind_vars["origin_filter"] is None
+        assert bind_vars["record_group_prefix"] is not None
+
+    @pytest.mark.asyncio
+    async def test_kb_stats_query_filters(self, connected_provider):
+        """KB stats query should filter by origin=UPLOAD, orgId, and exclude internal/placeholder/deleted."""
+        from app.config.constants.arangodb import Connectors, CollectionNames, OriginTypes
+        
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value
+        })
+        
+        connected_provider.http_client.execute_aql.return_value = []
+        
+        await connected_provider.get_connector_stats("org1", "kb1")
+        
+        call_args = connected_provider.http_client.execute_aql.call_args
+        query = call_args[0][0]
+        bind_vars = call_args[1]["bind_vars"]
+        
+        # Verify KB-specific filters in query
+        assert "origin == @origin_filter" in query
+        assert "isDeleted != true" in query
+        assert bind_vars["origin_filter"] == OriginTypes.UPLOAD.value
+        assert bind_vars["kb_app_id"] == f"{CollectionNames.APPS.value}/kb1"
+        assert bind_vars["record_group_prefix"] is None

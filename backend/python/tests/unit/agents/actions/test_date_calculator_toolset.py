@@ -71,12 +71,12 @@ class TestParseHolidayDatesInput:
 # ============================================================================
 
 class TestGetExclusionDates:
-    def test_weekends_and_weekday_holidays_deduplicated(self):
+    async def test_weekends_and_weekday_holidays_deduplicated(self):
         """Weekends and weekday holidays are combined and deduplicated."""
         calc = DateCalculator()
         # January 2026: 3rd is Sat, 4th is Sun, 10th is Sat
         # Add a holiday on Jan 6 (Tue - weekday)
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             holiday_dates=["2026-01-06"],
@@ -92,11 +92,11 @@ class TestGetExclusionDates:
         assert "2026-01-10" in data["exclusion_dates"]
         assert data["breakdown"]["holidays_on_weekdays"] == 1
 
-    def test_holiday_on_weekend_does_not_double_count(self):
+    async def test_holiday_on_weekend_does_not_double_count(self):
         """Holiday falling on a weekend does not inflate count."""
         calc = DateCalculator()
         # Jan 3, 2026 is Saturday
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             holiday_dates=["2026-01-03"],  # Saturday
@@ -109,10 +109,10 @@ class TestGetExclusionDates:
         assert data["breakdown"]["holidays_on_weekends_deduplicated"] == 1
         assert data["breakdown"]["holidays_on_weekdays"] == 0
 
-    def test_include_saturdays_flag_respected(self):
+    async def test_include_saturdays_flag_respected(self):
         """When include_saturdays=False, Saturdays are excluded."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             include_saturdays=False,
@@ -127,10 +127,10 @@ class TestGetExclusionDates:
         assert data["breakdown"]["saturdays"] == 0
         assert data["breakdown"]["sundays"] > 0
 
-    def test_include_sundays_flag_respected(self):
+    async def test_include_sundays_flag_respected(self):
         """When include_sundays=False, Sundays are excluded."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             include_saturdays=True,
@@ -145,10 +145,10 @@ class TestGetExclusionDates:
         assert data["breakdown"]["saturdays"] > 0
         assert data["breakdown"]["sundays"] == 0
 
-    def test_start_date_after_end_date_returns_error(self):
+    async def test_start_date_after_end_date_returns_error(self):
         """Inverted date range returns error."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-12-31",
             end_date="2026-01-01",
         )
@@ -156,10 +156,10 @@ class TestGetExclusionDates:
         assert "error" in data
         assert "after end_date" in data["error"]
 
-    def test_invalid_holiday_string_skipped(self):
+    async def test_invalid_holiday_string_skipped(self):
         """Invalid holiday dates are logged and skipped."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             holiday_dates=["2026-01-06", "invalid-date", "2026-99-99"],
@@ -169,10 +169,10 @@ class TestGetExclusionDates:
         assert "2026-01-06" in data["exclusion_dates"]
         assert data["breakdown"]["holidays_in_range"] == 1
 
-    def test_holiday_outside_range_excluded(self):
+    async def test_holiday_outside_range_excluded(self):
         """Holidays outside the date range are not included."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
             holiday_dates=["2026-12-25"],  # Outside range
@@ -181,10 +181,10 @@ class TestGetExclusionDates:
         assert "2026-12-25" not in data["exclusion_dates"]
         assert data["breakdown"]["holidays_in_range"] == 0
 
-    def test_invalid_start_date_format_returns_error(self):
+    async def test_invalid_start_date_format_returns_error(self):
         """Malformed start date returns error."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="not-a-date",
             end_date="2026-01-10",
         )
@@ -192,10 +192,10 @@ class TestGetExclusionDates:
         assert "error" in data
         assert "Invalid date format" in data["error"]
 
-    def test_exclusion_dates_sorted(self):
+    async def test_exclusion_dates_sorted(self):
         """Exclusion dates are returned in sorted order."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-31",
             holiday_dates=["2026-01-26", "2026-01-01"],
@@ -204,10 +204,10 @@ class TestGetExclusionDates:
         dates = data["exclusion_dates"]
         assert dates == sorted(dates)
 
-    def test_no_holidays_only_weekends(self):
+    async def test_no_holidays_only_weekends(self):
         """When no holidays provided, only weekends are returned."""
         calc = DateCalculator()
-        result = calc.get_exclusion_dates(
+        result = await calc.get_exclusion_dates(
             start_date="2026-01-01",
             end_date="2026-01-10",
         )
@@ -222,11 +222,11 @@ class TestGetExclusionDates:
 # ============================================================================
 
 class TestListWeekendDates:
-    def test_returns_saturdays_and_sundays(self):
+    async def test_returns_saturdays_and_sundays(self):
         """Returns all Saturday and Sunday dates in range."""
         calc = DateCalculator()
         # Jan 2026: 3rd-4th is Sat-Sun, 10th-11th is Sat-Sun
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="2026-01-01",
             end_date="2026-01-15",
         )
@@ -236,10 +236,10 @@ class TestListWeekendDates:
         assert "2026-01-10" in data["weekend_dates"]  # Saturday
         assert "2026-01-11" in data["weekend_dates"]  # Sunday
 
-    def test_weekend_dates_sorted(self):
+    async def test_weekend_dates_sorted(self):
         """Weekend dates are returned in sorted order."""
         calc = DateCalculator()
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="2026-01-01",
             end_date="2026-01-31",
         )
@@ -247,10 +247,10 @@ class TestListWeekendDates:
         dates = data["weekend_dates"]
         assert dates == sorted(dates)
 
-    def test_saturday_and_sunday_counts_correct(self):
+    async def test_saturday_and_sunday_counts_correct(self):
         """Breakdown counts for Saturday and Sunday are accurate."""
         calc = DateCalculator()
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="2026-01-01",
             end_date="2026-01-31",
         )
@@ -259,20 +259,20 @@ class TestListWeekendDates:
         assert data["saturdays"] == data["sundays"] or abs(data["saturdays"] - data["sundays"]) == 1
         assert data["total_count"] == data["saturdays"] + data["sundays"]
 
-    def test_start_after_end_returns_error(self):
+    async def test_start_after_end_returns_error(self):
         """Inverted range returns error."""
         calc = DateCalculator()
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="2026-12-31",
             end_date="2026-01-01",
         )
         data = json.loads(result)
         assert "error" in data
 
-    def test_invalid_date_format_returns_error(self):
+    async def test_invalid_date_format_returns_error(self):
         """Malformed date returns error."""
         calc = DateCalculator()
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="bad-format",
             end_date="2026-01-31",
         )
@@ -280,11 +280,11 @@ class TestListWeekendDates:
         assert "error" in data
         assert "Invalid date format" in data["error"]
 
-    def test_single_day_range(self):
+    async def test_single_day_range(self):
         """Single day range (start == end) works correctly."""
         calc = DateCalculator()
         # Jan 4, 2026 is Saturday
-        result = calc.list_weekend_dates(
+        result = await calc.list_weekend_dates(
             start_date="2026-01-04",
             end_date="2026-01-04",
         )
@@ -298,24 +298,24 @@ class TestListWeekendDates:
 # ============================================================================
 
 class TestParseHolidayDates:
-    def test_extracts_iso_format(self):
+    async def test_extracts_iso_format(self):
         """Parses ISO format YYYY-MM-DD."""
         calc = DateCalculator()
         text = "Holidays are 2026-01-26 and 2026-03-15"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert "2026-03-15" in data["holidays"]
 
-    def test_extracts_dmy_slash_format(self):
+    async def test_extracts_dmy_slash_format(self):
         """Parses DD/MM/YYYY format."""
         calc = DateCalculator()
         text = "Holiday on 26/01/2026"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
 
-    def test_extracts_named_month_formats(self):
+    async def test_extracts_named_month_formats(self):
         """Parses various named month formats."""
         calc = DateCalculator()
         text = """
@@ -323,80 +323,80 @@ class TestParseHolidayDates:
         15 March 2026
         26-Jan-2026
         """
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert "2026-03-15" in data["holidays"]
 
-    def test_deduplicates_same_date(self):
+    async def test_deduplicates_same_date(self):
         """Same date found multiple times appears only once."""
         calc = DateCalculator()
         text = "2026-01-26 and January 26, 2026 and 26/01/2026"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert data["holidays"].count("2026-01-26") == 1
         assert data["total_count"] == 1
 
-    def test_year_filter_applied(self):
+    async def test_year_filter_applied(self):
         """When year filter provided, only matching year returned."""
         calc = DateCalculator()
         text = "2026-01-26 and 2027-01-26"
-        result = calc.parse_holiday_dates(text, year=2026)
+        result = await calc.parse_holiday_dates(text, year=2026)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert "2027-01-26" not in data["holidays"]
         assert data["year_filter"] == 2026
 
-    def test_no_dates_found_returns_empty(self):
+    async def test_no_dates_found_returns_empty(self):
         """Text with no dates returns empty list."""
         calc = DateCalculator()
         text = "No dates in this text at all"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert data["holidays"] == []
         assert data["total_count"] == 0
 
-    def test_dates_sorted_chronologically(self):
+    async def test_dates_sorted_chronologically(self):
         """Dates are returned in chronological order."""
         calc = DateCalculator()
         text = "2026-12-25, 2026-01-01, 2026-07-04"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert data["holidays"] == ["2026-01-01", "2026-07-04", "2026-12-25"]
 
-    def test_invalid_dates_skipped(self):
+    async def test_invalid_dates_skipped(self):
         """Invalid dates in text are silently skipped."""
         calc = DateCalculator()
         text = "2026-13-99 is invalid but 2026-01-26 is valid"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert data["total_count"] == 1
 
-    def test_abbreviated_month_names(self):
+    async def test_abbreviated_month_names(self):
         """Abbreviated month names are recognized."""
         calc = DateCalculator()
         text = "26-Jan-2026, 15-Feb-2026, 20-Mar-2026"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert "2026-02-15" in data["holidays"]
         assert "2026-03-20" in data["holidays"]
 
-    def test_case_insensitive_month_names(self):
+    async def test_case_insensitive_month_names(self):
         """Month names are case insensitive."""
         calc = DateCalculator()
         text = "JANUARY 26, 2026 and february 15, 2026"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert "2026-01-26" in data["holidays"]
         assert "2026-02-15" in data["holidays"]
 
-    def test_details_include_raw_match(self):
+    async def test_details_include_raw_match(self):
         """Details include the raw matched text."""
         calc = DateCalculator()
         text = "Holiday on January 26, 2026"
-        result = calc.parse_holiday_dates(text)
+        result = await calc.parse_holiday_dates(text)
         data = json.loads(result)
         assert len(data["details"]) == 1
         assert data["details"][0]["date"] == "2026-01-26"

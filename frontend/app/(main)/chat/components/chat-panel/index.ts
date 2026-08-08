@@ -1,10 +1,9 @@
 export { ChatComposer } from './chat-composer';
 export { ChatInputWrapper } from './chat-input-wrapper';
-export { ModeSwitcher } from './mode-switcher';
 export { AgentStrategyModeSwitcher } from './agent-strategy-mode-switcher';
+export { PlusMenuButton, PlusMenuSheet } from './plus-menu-button';
 export {
   ChatInputExpansionPanel,
-  QueryModePanel,
   AgentStrategyModePanel,
   ConnectorsCollectionsPanel,
   CollectionsTab,

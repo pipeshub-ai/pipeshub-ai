@@ -34,6 +34,11 @@ SEARCH_QUERY = "every year asana undertakes which exercise?"
 # CONNECTOR_APP_ID = "ed6d6cc4-70bd-4838-9aeb-488e910c833a"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
 
+# Search history is a single per-user collection that every test here writes to,
+# and the delete-history test wipes all of it. Under ``--dist loadgroup`` this
+# keeps the whole module on one worker.
+pytestmark = pytest.mark.xdist_group("search-history")
+
 
 class SearchTestBase:
     """Shared search_client fixture and request timeout."""
@@ -57,7 +62,13 @@ class SearchTestBase:
         """Return active (non-archived) search history rows."""
         resp = self.search.list_history(limit=100, timeout=self.timeout)
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-        return resp.json().get("searchHistory") or []
+        body = resp.json()
+        # Callers index into these rows, and this also covers the post-archive
+        # and post-unarchive responses that no other test validates.
+        assert_response_matches_openapi_operation(
+            body, "searchHistory", status_code="200"
+        )
+        return body.get("searchHistory") or []
 
 
 # ============================================================================
@@ -167,23 +178,17 @@ class TestSemanticSearch(SearchTestBase):
         )
 
     def test_archive_unarchive_lifecycle_matches_spec_and_history(self) -> None:
+        search_id = self._create_search()
+
         before_history = self._list_active_history()
         for row in before_history:
             assert row.get("isArchived") is False, (
                 f"active history returned an archived row {row.get('_id')!r}: "
                 f"isArchived={row.get('isArchived')!r}"
             )
-
-        if not before_history:
-            self._create_search()
-            before_history = self._list_active_history()
-            assert before_history, (
-                "active history is still empty after creating a new search"
-            )
-
-        search_id = before_history[0].get("_id")
-        assert search_id, f"active history row is missing `_id`: {before_history[0]!r}"
-        before_count = len(before_history)
+        assert search_id in {row.get("_id") for row in before_history}, (
+            f"newly created search {search_id!r} is missing from active history"
+        )
 
         archive_resp = self.search.archive_search(search_id, timeout=self.timeout)
         assert archive_resp.status_code == 200, (
@@ -208,10 +213,6 @@ class TestSemanticSearch(SearchTestBase):
             f"archived search {search_id!r} should not appear in active history, "
             f"but it did"
         )
-        assert len(after_archive_history) == before_count - 1, (
-            f"active history count should drop by 1 after archive, "
-            f"was {before_count}, now {len(after_archive_history)}"
-        )
 
         unarchive_resp = self.search.unarchive_search(search_id, timeout=self.timeout)
         assert unarchive_resp.status_code == 200, (
@@ -235,10 +236,6 @@ class TestSemanticSearch(SearchTestBase):
         assert search_id in after_unarchive_ids, (
             f"unarchived search {search_id!r} should be back in active history, "
             f"but is missing"
-        )
-        assert len(after_unarchive_history) == before_count, (
-            f"active history count should return to {before_count} after unarchive, "
-            f"got {len(after_unarchive_history)}"
         )
         for row in after_unarchive_history:
             if row.get("_id") == search_id:

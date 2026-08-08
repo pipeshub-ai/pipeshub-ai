@@ -3,7 +3,10 @@
 import React, { useState, useLayoutEffect, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
-import { ELECTRON_SERVER_URL_NAVIGATION_EVENT } from '@/lib/store/auth-store';
+import {
+  ELECTRON_SERVER_URL_NAVIGATION_EVENT,
+  requestElectronServerUrlChange,
+} from '@/lib/store/auth-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   isElectron,
@@ -18,9 +21,22 @@ import { LoadingScreen } from '@/app/components/ui/auth-guard';
  * only after successful sign-in. Without ack, quit + reopen shows this screen
  * again with the last URL pre-filled.
  *
+ * `allowChangeServer` renders a small "Change server" affordance over the
+ * guarded pre-auth screens (login/sign-up) so a typo'd or unreachable URL can
+ * be corrected on the spot — without it, a bad URL leads straight to a login
+ * screen that can only fail, with no way back short of quitting the app.
+ * Only pass this on layouts reachable while signed out; once authenticated,
+ * server changes go through the explicit workspace-menu logout instead.
+ *
  * On web this component is transparent (renders children immediately).
  */
-export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
+export function ServerUrlGuard({
+  children,
+  allowChangeServer = false,
+}: {
+  children: React.ReactNode;
+  allowChangeServer?: boolean;
+}) {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
 
   // useLayoutEffect (not useEffect) so we commit the real route before the
@@ -59,7 +75,35 @@ export function ServerUrlGuard({ children }: { children: React.ReactNode }) {
     return <ServerUrlSetupScreen onComplete={() => setNeedsSetup(false)} />;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      {allowChangeServer && isElectron() && <ChangeServerLink />}
+    </>
+  );
+}
+
+/** Persistent escape hatch for pre-auth Electron screens — see ServerUrlGuard. */
+function ChangeServerLink() {
+  const { t } = useTranslation();
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="1"
+      onClick={() => requestElectronServerUrlChange()}
+      style={{
+        position: 'fixed',
+        top: 'var(--space-4)',
+        right: 'var(--space-4)',
+        zIndex: 10,
+        cursor: 'pointer',
+      }}
+    >
+      {t('electron.serverUrlSetup.changeServer')}
+    </Button>
+  );
 }
 
 function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {

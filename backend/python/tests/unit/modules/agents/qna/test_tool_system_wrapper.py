@@ -147,9 +147,9 @@ class TestFlattenedShapeIsConsumerCompatible:
     without further work — that's the point of flattening."""
 
     def test_extract_success_status_reads_flattened_success_true(self):
-        """``ToolResultExtractor.extract_success_status`` (QnA path) reads
-        the ``success`` key from the parsed JSON."""
-        from app.modules.agents.qna.nodes import ToolResultExtractor
+        """``ToolResultExtractor.extract_success_status`` reads the
+        ``success`` key from the parsed JSON."""
+        from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 
         out = _flatten_success_into_payload(True, {"message": "ok"})
         # Mimics the consumer path: arrives as a string, gets parsed, is read
@@ -157,21 +157,28 @@ class TestFlattenedShapeIsConsumerCompatible:
         assert ToolResultExtractor.extract_success_status(out) is True
 
     def test_extract_success_status_reads_flattened_success_false(self):
-        from app.modules.agents.qna.nodes import ToolResultExtractor
+        from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 
         out = _flatten_success_into_payload(False, {"error": "boom"})
         assert ToolResultExtractor.extract_success_status(out) is False
 
-    def test_detect_tool_result_status_reads_flattened_success(self):
-        """``_detect_tool_result_status`` (ReAct path) also reads the
-        flattened ``success`` key after JSON-parsing."""
-        from app.modules.agents.qna.nodes import _detect_tool_result_status
 
-        # Note: `_detect_tool_result_status` accepts either string-content or
-        # already-parsed dict. The ReAct path calls it post-JSON-parse; we
-        # test both surfaces here.
-        out_str = _flatten_success_into_payload(False, {"error": "boom"})
-        assert _detect_tool_result_status(out_str) == "error"
+# ---------------------------------------------------------------------------
+# get_tool_results_summary
+# ---------------------------------------------------------------------------
 
-        out_dict = json.loads(_flatten_success_into_payload(True, {"x": 1}))
-        assert _detect_tool_result_status(out_dict) == "success"
+class TestGetToolResultsSummary:
+    def test_no_tool_results(self):
+        from app.modules.agents.qna.tool_system import get_tool_results_summary
+
+        assert "No tools executed yet." in get_tool_results_summary({"all_tool_results": []})
+
+    def test_unknown_status_not_counted(self):
+        """Results with a status other than success/error are ignored in counts."""
+        from app.modules.agents.qna.tool_system import get_tool_results_summary
+
+        state = {"all_tool_results": [{"tool_name": "slack.send", "status": "pending"}]}
+        summary = get_tool_results_summary(state)
+        assert "Tool Execution Summary" in summary
+        assert "Success: 0" in summary
+        assert "Failed: 0" in summary

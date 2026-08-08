@@ -331,6 +331,62 @@ class Linear:
 
 ---
 
+### 1a) Give Your Tool a Human-Readable Summary (`args_summary` / `result_summary`)
+
+Every tool call and its result get surfaced to the end user in the chat UI as a short activity line (e.g. "Searching Jira issues: ...", "Found 3 issues"). By default this falls back to a generic formatter that inspects the raw JSON payload, which is serviceable but generic. You can make your tool self-describing by declaring two optional callables directly on the `@tool` decorator — no other file needs to know your tool exists:
+
+- `args_summary(args: dict) -> str | None` — describes the call before it runs, from the arguments alone.
+- `result_summary(args: dict, result: ToolResult) -> str | None` — describes the outcome, from the arguments and the tool's own `ToolResult` (`result.content` is your tool's returned JSON string; `result.is_error` is set when your tool returned `False`).
+
+Both are optional and fail-safe: return `None` (or raise) and the platform falls back to the generic formatter — you never need to handle every shape.
+
+Most connector tools follow one of two JSON envelopes on success — `{"message": ..., "data": {...}}` (single entity) or `{"message": ..., "data": {"<key>": [...]}}` (list) — so `app/agents/actions/util/tool_summaries.py` provides ready-made factories instead of hand-rolling JSON parsing per tool:
+
+- `args_template(template, *arg_keys)` — fills a template from the call's own arguments; returns `None` if any listed key is missing/blank.
+- `list_summary(path, item_label, noun)` — unwraps a list at `path` (a bare key like `"issues"` shorthand for `("data", "issues")`, or an explicit tuple for envelopes that don't nest under `data`) and renders `"Found N {noun}s"` plus a bullet list from `item_label`.
+- `entity_summary(label, *, path=("data",))` — unwraps a single entity and renders one line from `label`.
+- `confirmation(template, *arg_keys)` — for write tools whose confirmation reads better from the call's own arguments than the response body (e.g. `"Comment added to {issue_key}"`).
+
+Worked example (mirrors `app/agents/actions/jira/jira.py`):
+
+```python
+# File: backend/python/app/agents/actions/linear/linear.py
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import args_template, entity_summary, list_summary
+
+
+def _linear_issue_label(issue: dict) -> str:
+    return f"{issue.get('identifier', '?')}: {issue.get('title', '?')}"
+
+
+class Linear:
+    @tool(
+        app_name="linear",
+        tool_name="get_teams",
+        description="Get teams",
+        parameters=[...],
+        args_summary=lambda _args: "Fetching Linear teams",
+        result_summary=list_summary("teams", lambda t: t.get("name", "?"), "team"),
+    )
+    def get_teams(self, first: Optional[int] = None, after: Optional[str] = None) -> Tuple[bool, str]:
+        ...
+
+    @tool(
+        app_name="linear",
+        tool_name="create_issue",
+        description="Create an issue",
+        parameters=[...],
+        args_summary=args_template('Creating Linear issue "{title}"', "title"),
+        result_summary=entity_summary(lambda e: f"Created issue: {_linear_issue_label(e)}"),
+    )
+    def create_issue(self, title: str, ...) -> Tuple[bool, str]:
+        ...
+```
+
+If none of the factories fit your tool's response shape (e.g. a custom envelope, or fields spread across the top level instead of nested under `data`), write a small dedicated function with the same `(args) -> str | None` / `(args, result) -> str | None` signatures and pass it directly — see `_search_all_result_summary` in `app/agents/actions/slack/slack.py` or `_get_file_content_result_summary` in `app/agents/actions/google/drive/drive.py` for examples that parse a bespoke shape.
+
+---
+
 ### 2) Add a Client Factory (Recommended)
 
 Factories standardize how action classes receive clients (tokens, configs). The runtime uses `ClientFactoryRegistry` to instantiate your action classes.
@@ -683,6 +739,60 @@ backend/python/app/
         ├── config.py     # Discovery config
         └── factories/
             └── registry.py # Factory registry
+```
+
+---
+
+## Sending File Attachments from Tools
+
+PipesHub uses a unified record-ID system for file attachments. Any file the user uploads to a chat, any artifact created by the agent, or any file found in the knowledge base has a **PipesHub record ID**. Tools that send files to external services (Slack, Outlook, Gmail, Salesforce) accept these record IDs via the `attachment_record_ids` parameter and handle the full resolution + upload lifecycle.
+
+### How it works
+
+1. **Record ID sources available to the model**
+   - **Chat uploads** — The agent system prompt lists the record IDs for every file the user attached to the current or previous turns (e.g., `"resume.pdf": \`rec_abc123\``).
+   - **Artifacts** — The `list_artifacts` tool returns the `record_id` for each artifact the agent created.
+   - **KB / connector search** — Retrieval results carry a `record_id` field.
+
+2. **The `attachment_record_ids` parameter**
+   - Defined once in `app/agents/actions/util/attachments.py` via `attachment_record_ids_parameter()`.
+   - Add it to any `@tool` decorator that can send files and pass `attachment_record_ids` as an optional `List[str]` to the method signature.
+   - Call `resolve_attachments(self.chat_state, attachment_record_ids)` to get an `AttachmentBundle` with resolved `ResolvedRecordContent` objects (bytes, filename, mime type).
+
+3. **Toolset `__init__` must accept `state`**
+   - The `ToolInstanceCreator._instantiate` method passes `state=self._tool_state` when the action class `__init__` has a `state` parameter. Store it as `self.chat_state = state`.
+
+4. **Per-platform upload adapter**
+   - Create `app/agents/actions/<app>/attachments.py` implementing a class with `async def upload(target, attachments)`.
+   - See `SlackAttachmentUploader`, `OutlookAttachmentUploader`, `SalesforceAttachmentUploader` as examples.
+   - Enforce `max_single_bytes` and `max_total_bytes` class attributes (resolvers already enforce the shared 25 MiB cap before calling `upload`).
+
+5. **Size cap enforcement**
+   - `resolve_attachments` already enforces 25 MiB total and 10 records per call.
+   - Individual platform uploaders may apply stricter limits (Outlook: 150 MiB; Gmail: 25 MiB conservative; Salesforce: ~37.5 MiB after base64).
+
+### Minimal checklist for a new tool that sends attachments
+
+```python
+# 1. In the toolset __init__:
+def __init__(self, client, *, state=None):
+    self.client = ...
+    self.chat_state = state
+
+# 2. In the @tool decorator:
+parameters=[
+    ...,
+    attachment_record_ids_parameter(required=False),
+]
+
+# 3. In the tool method:
+async def send_something(self, ..., attachment_record_ids=None):
+    bundle = await resolve_attachments(self.chat_state, attachment_record_ids)
+    if bundle.failures and not bundle.resolved:
+        return False, json.dumps({"error": bundle.to_error_payload()})
+    uploader = MyAppAttachmentUploader(self.client)
+    target = AttachmentTarget(destination_id=..., display_name=...)
+    await uploader.upload(target, bundle.resolved)
 ```
 
 

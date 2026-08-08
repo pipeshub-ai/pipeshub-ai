@@ -2,11 +2,10 @@ import asyncio
 import json
 import logging
 import threading
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple, List
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -193,24 +192,24 @@ class Discord:
         })
 
     @tool(
-        app_name="discord",
-        tool_name="send_message",
-        description="Send a message to a Discord text channel",
+        path="/tools/discord/send_message",
+        short_description="Send a message to a Discord text channel",
+        description="Send a message to a Discord text channel by channel ID.",
         parameters=[
             ToolParameter(
                 name="channel_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the channel to send the message to (required)"
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="The content of the message to send (required)"
-            )
+            ),
         ],
-        returns="JSON with sent message details"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
     )
-    def send_message(self, channel_id: int, content: str) -> Tuple[bool, str]:
+    async def send_message(self, channel_id: int, content: str) -> Tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.send_message(channel_id=channel_id, content=content)
@@ -221,19 +220,19 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="get_channel",
-        description="Get information about a Discord channel",
+        path="/tools/discord/get_channel",
+        short_description="Get information about a Discord channel",
+        description="Get details about a Discord channel by its ID.",
         parameters=[
             ToolParameter(
                 name="channel_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the channel to retrieve (required)"
-            )
+            ),
         ],
-        returns="JSON with channel information"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
-    def get_channel(self, channel_id: int) -> Tuple[bool, str]:
+    async def get_channel(self, channel_id: int) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_channel(channel_id=channel_id))
             return self._handle_response(response, "Channel information retrieved successfully")
@@ -242,13 +241,13 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="create_channel",
-        description="Create a new channel in a Discord guild",
+        path="/tools/discord/create_channel",
+        short_description="Create a new channel in a Discord guild",
+        description="Create a new channel in a Discord guild with an optional channel type.",
         parameters=[
             ToolParameter(
                 name="guild_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the guild to create the channel in (required)"
             ),
             ToolParameter(
@@ -260,12 +259,12 @@ class Discord:
                 name="channel_type",
                 type=ParameterType.STRING,
                 description="The type of channel (text, voice, category)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with created channel details"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
     )
-    def create_channel(
+    async def create_channel(
         self,
         guild_id: int,
         name: str,
@@ -285,19 +284,19 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="delete_channel",
-        description="Delete a Discord channel",
+        path="/tools/discord/delete_channel",
+        short_description="Delete a Discord channel",
+        description="Delete a Discord channel by its ID.",
         parameters=[
             ToolParameter(
                 name="channel_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the channel to delete (required)"
-            )
+            ),
         ],
-        returns="JSON with deletion confirmation"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="delete")],
     )
-    def delete_channel(self, channel_id: int) -> Tuple[bool, str]:
+    async def delete_channel(self, channel_id: int) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.delete_channel(channel_id=channel_id))
             return self._handle_response(response, "Channel deleted successfully")
@@ -306,37 +305,37 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="get_messages",
-        description="Get messages from a Discord text channel",
+        path="/tools/discord/get_messages",
+        short_description="Get messages from a Discord text channel",
+        description="Get messages from a Discord text channel with optional pagination by message ID.",
         parameters=[
             ToolParameter(
                 name="channel_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the channel to get messages from (required)"
             ),
             ToolParameter(
                 name="limit",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Maximum number of messages to retrieve (default: 100, max: 100)",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="before",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Message ID to fetch messages before this ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Message ID to fetch messages after this ID",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of messages"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
-    def get_messages(
+    async def get_messages(
         self,
         channel_id: int,
         limit: Optional[int] = None,
@@ -358,13 +357,13 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="get_guilds",
-        description="Get all guilds (servers) the bot has access to",
+        path="/tools/discord/get_guilds",
+        short_description="Get all guilds (servers) the bot has access to",
+        description="Get all guilds (servers) that the bot currently has access to.",
         parameters=[],
-        returns="JSON with list of guilds"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
-    def get_guilds(self) -> Tuple[bool, str]:
+    async def get_guilds(self) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_guilds())
             return self._handle_response(response, "Guilds retrieved successfully")
@@ -373,25 +372,25 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="get_guild_channels",
-        description="Get all channels in a Discord guild",
+        path="/tools/discord/get_guild_channels",
+        short_description="Get all channels in a Discord guild",
+        description="Get all channels in a Discord guild, optionally filtered by channel type.",
         parameters=[
             ToolParameter(
                 name="guild_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the guild to get channels from (required)"
             ),
             ToolParameter(
                 name="channel_type",
                 type=ParameterType.STRING,
                 description="Filter by channel type (text, voice, category)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of channels"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
-    def get_guild_channels(
+    async def get_guild_channels(
         self,
         guild_id: int,
         channel_type: Optional[str] = None
@@ -409,24 +408,24 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="send_direct_message",
-        description="Send a direct message to a Discord user",
+        path="/tools/discord/send_direct_message",
+        short_description="Send a direct message to a Discord user",
+        description="Send a direct message to a Discord user by their user ID.",
         parameters=[
             ToolParameter(
                 name="user_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the user to send a DM to (required)"
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="The content of the direct message (required)"
-            )
+            ),
         ],
-        returns="JSON with sent message details"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
     )
-    def send_direct_message(self, user_id: int, content: str) -> Tuple[bool, str]:
+    async def send_direct_message(self, user_id: int, content: str) -> Tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.send_dm(user_id=user_id, content=content)
@@ -437,25 +436,25 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="get_guild_members",
-        description="Get members of a Discord guild (requires privileged intents)",
+        path="/tools/discord/get_guild_members",
+        short_description="Get members of a Discord guild",
+        description="Get members of a Discord guild (requires privileged intents).",
         parameters=[
             ToolParameter(
                 name="guild_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the guild to get members from (required)"
             ),
             ToolParameter(
                 name="limit",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Maximum number of members to retrieve (default: 100, max: 1000)",
-                required=False
-            )
+                required=False,
+            ),
         ],
-        returns="JSON with list of guild members"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
-    def get_guild_members(
+    async def get_guild_members(
         self,
         guild_id: int,
         limit: Optional[int] = None
@@ -470,24 +469,24 @@ class Discord:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="discord",
-        tool_name="create_role",
-        description="Create a new role in a Discord guild",
+        path="/tools/discord/create_role",
+        short_description="Create a new role in a Discord guild",
+        description="Create a new role in a Discord guild by name.",
         parameters=[
             ToolParameter(
                 name="guild_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the guild to create the role in (required)"
             ),
             ToolParameter(
                 name="name",
                 type=ParameterType.STRING,
                 description="The name of the role to create (required)"
-            )
+            ),
         ],
-        returns="JSON with created role details"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="create")],
     )
-    def create_role(self, guild_id: int, name: str) -> Tuple[bool, str]:
+    async def create_role(self, guild_id: int, name: str) -> Tuple[bool, str]:
         try:
             response = self._run_async(
                 self.client.create_role(guild_id=guild_id, name=name)

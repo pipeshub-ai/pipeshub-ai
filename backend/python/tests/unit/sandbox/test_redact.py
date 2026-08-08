@@ -51,6 +51,26 @@ class TestRedactSandboxPaths:
                 "Created /tmp/pipeshub_sandbox/a/output/x.pdf and /output/y.csv",
                 "Created <output>/x.pdf and <output>/y.csv",
             ),
+            # agent_loop_lib local coding-sandbox working dir + output subdir.
+            (
+                "Saved at: /tmp/alcs-3f9a1b2c4d/output/chart.png",
+                "Saved at: <output>/chart.png",
+            ),
+            # agent_loop_lib local coding-sandbox workdir (no /output segment).
+            (
+                "Workspace: /tmp/alcs-3f9a1b2c4d/main.py",
+                "Workspace: <workdir>/main.py",
+            ),
+            # agent_loop_lib Docker coding-sandbox working dir variant.
+            (
+                "Host path: /tmp/alcs-docker-9e8d7c6b5a/output/report.xlsx",
+                "Host path: <output>/report.xlsx",
+            ),
+            # macOS realpath form of the agent_loop_lib workdir.
+            (
+                "Saved at: /private/tmp/alcs-docker-abc123/output/x.pdf",
+                "Saved at: <output>/x.pdf",
+            ),
         ],
     )
     def test_redacts_known_paths(self, raw: str, expected: str) -> None:
@@ -60,11 +80,24 @@ class TestRedactSandboxPaths:
         """Running the redactor twice yields the same result as once."""
         raw = (
             "Saved at: /tmp/pipeshub_sandbox/abc/output/foo.pdf; "
-            "also /output/bar.csv; also /tmp/pipeshub_sandbox_docker/x/y.txt"
+            "also /output/bar.csv; also /tmp/pipeshub_sandbox_docker/x/y.txt; "
+            "also /tmp/alcs-abc/output/z.pdf; also /tmp/alcs-docker-xyz/w.txt"
         )
         once = redact_sandbox_paths(raw)
         twice = redact_sandbox_paths(once)
         assert once == twice
+
+    def test_alcs_and_legacy_paths_in_one_blob(self) -> None:
+        """The agent-loop and legacy sandbox paths can both appear in the
+        same tool output (e.g. during the migration window) and must both
+        be redacted independently."""
+        raw = (
+            "Legacy: /tmp/pipeshub_sandbox/a/output/legacy.pdf; "
+            "agent-loop: /tmp/alcs-b/output/new.pdf"
+        )
+        assert redact_sandbox_paths(raw) == (
+            "Legacy: <output>/legacy.pdf; agent-loop: <output>/new.pdf"
+        )
 
     @pytest.mark.parametrize("value", [None, ""])
     def test_empty_and_none(self, value: str | None) -> None:

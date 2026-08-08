@@ -25,6 +25,16 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
+# Presentation previews are converted to PDF at request time. The published
+# runtime base historically included Writer and Calc only, leaving the soffice
+# wrapper present but unable to load PPT/PPTX files.
+# Install CJK fallback fonts until they are available in the published runtime
+# base image. LibreOffice uses these when documents reference unavailable fonts.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-impress-nogui fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
@@ -90,6 +100,12 @@ ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 # Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py propagates
 # this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
 ENV OMP_NUM_THREADS=2
+
+# Several third-party deps (talon, pysbd, ...) ship regex string literals with
+# unescaped backslashes and hit Python 3.12+'s SyntaxWarning at import time.
+# We don't control their source, and new deps can hit this same issue, so
+# suppress the class globally rather than patching each import site.
+ENV PYTHONWARNINGS="ignore::SyntaxWarning"
 
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
@@ -349,12 +365,14 @@ start_nodejs
 start_slackbot
 start_embedding
 start_connector
-start_indexing
 start_query
 start_docling
-
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
+# Must start (and pass health checks) *before* Indexing: on startup Indexing
+# recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
+# routes them through the Parsing service — if that service isn't up yet those
+# recovery calls fail with connection errors / 503s.
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
     start_parsing
@@ -362,6 +380,9 @@ if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
 fi
+
+start_indexing
+
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 

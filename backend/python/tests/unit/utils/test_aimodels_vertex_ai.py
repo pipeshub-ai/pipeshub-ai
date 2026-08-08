@@ -162,18 +162,37 @@ class TestGetGeneratorModelVertexAI:
     @patch("langchain_google_genai.ChatGoogleGenerativeAI")
     def test_gpt5_model_id_forces_reasoning_temperature(self, mock_chat_cls, _mock_from_info):
         mock_chat_cls.return_value = MagicMock()
-        cfg = self._config(model="gpt-5-chat", temperature=0.2)
+        cfg = self._config(model="gpt-5-mini", temperature=0.2)
         get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
         assert mock_chat_cls.call_args.kwargs["temperature"] == 1
 
     @patch("google.oauth2.service_account.Credentials.from_service_account_info")
     @patch("langchain_google_genai.ChatGoogleGenerativeAI")
-    def test_reasoning_flag_temperature(self, mock_chat_cls, _mock_from_info):
+    def test_gpt5_chat_model_id_does_not_force_reasoning_temperature(self, mock_chat_cls, _mock_from_info):
+        """`gpt-5-chat` (and dated variants) are non-reasoning chat models —
+        they must NOT be forced to temperature=1 just because their name
+        contains "gpt-5" (see `_is_openai_gpt5_model`'s chat exclusion)."""
+        mock_chat_cls.return_value = MagicMock()
+        cfg = self._config(model="gpt-5-chat", temperature=0.2)
+        get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
+        assert mock_chat_cls.call_args.kwargs["temperature"] == 0.2
+
+    @patch("google.oauth2.service_account.Credentials.from_service_account_info")
+    @patch("langchain_google_genai.ChatGoogleGenerativeAI")
+    def test_reasoning_flag_alone_does_not_force_temperature_for_non_openai_model(
+        self, mock_chat_cls, _mock_from_info,
+    ):
+        """`isReasoning=True` on its own must NOT force temperature=1 for a
+        Vertex AI model — Vertex hosts Google's own Gemini reasoning models,
+        which have no such restriction (unlike OpenAI's actual API). Only an
+        `_is_openai_gpt5_model`-matching name (see the test above) or a
+        direct OpenAI/Azure OpenAI provider should trigger it — see
+        `_default_temperature` in `app/utils/aimodels.py`."""
         mock_chat_cls.return_value = MagicMock()
         cfg = self._config(model="some-model", temperature=0.2)
         cfg["isReasoning"] = True
         get_generator_model(LLMProvider.VERTEX_AI.value, cfg)
-        assert mock_chat_cls.call_args.kwargs["temperature"] == 1
+        assert mock_chat_cls.call_args.kwargs["temperature"] == 0.2
 
     def test_missing_service_account_raises(self):
         cfg = self._config()

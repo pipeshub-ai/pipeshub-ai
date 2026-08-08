@@ -7,9 +7,9 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
-import { ASK_MORE_QUESTION_SETS } from '../../constants';
+import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact } from '../../types';
+import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -17,13 +17,14 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { loadOlderMessagesForSlot } from '../../streaming';
+import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
 const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
-const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
+const STABLE_EMPTY_PARTS: MessagePart[] = [];
 /** Streaming: distance from bottom (px) to count as flush for resuming tail-follow */
 const STREAMING_RESUME_DIST_FLUSH_PX = 4;
 /** Streaming: wheel deltaY must be more negative than this to opt out (avoids trackpad jitter) */
@@ -80,6 +81,8 @@ interface MessagePair {
   attachments?: AttachmentRef[];
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
+  persistedParts?: MessagePart[];
 }
 
 export function MessageList() {
@@ -117,6 +120,9 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
+  const streamingParts = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingParts ?? STABLE_EMPTY_PARTS : STABLE_EMPTY_PARTS
+  );
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
   );
@@ -128,7 +134,7 @@ export function MessageList() {
   const currentMsgListVals: Record<string, unknown> = {
     isStreaming, streamingQuestion, streamingCitationMaps,
     pendingCollections, regenerateMessageId, isInitialized, isLoadingConversation,
-    streamingContent, currentStatusMessage,
+    streamingContent, currentStatusMessage, streamingParts,
   };
   const msgListReasons: string[] = [];
   for (const [k, v] of Object.entries(currentMsgListVals)) {
@@ -256,6 +262,7 @@ export function MessageList() {
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
+          persistedParts?: MessagePart[];
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
@@ -263,6 +270,7 @@ export function MessageList() {
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
+          persistedParts?: MessagePart[];
         } | undefined;
 
         // Find preceding user message
@@ -313,12 +321,41 @@ export function MessageList() {
           createdAt: userCreatedAt,
           attachments: userMessageAttachments,
           persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
+          persistedParts: metadata?.persistedParts,
         });
       }
     }
 
     return pairs;
   }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+
+  // The highest version any message in this conversation has shown for a
+  // given artifact `recordId`. Every version bump re-registers the SAME
+  // recordId, so an older message's card can compare its own `version`
+  // against this map to know a later turn has since produced a newer copy —
+  // derived entirely from markers already persisted on each message
+  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
+  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
+  // folded in too.
+  const latestArtifactVersions = useMemo(() => {
+    const versions = new Map<string, number>();
+    const record = (recordId: string | undefined, version: number | undefined) => {
+      if (!recordId || version === undefined) return;
+      const current = versions.get(recordId);
+      if (current === undefined || version > current) versions.set(recordId, version);
+    };
+    for (const msg of thread.messages) {
+      if (msg.role !== 'assistant') continue;
+      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
+      if (!content.includes('::artifact[')) continue;
+      const { artifacts } = parseArtifactMarkers(content);
+      for (const artifact of artifacts) record(artifact.recordId, artifact.version);
+    }
+    if (isStreaming) {
+      for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
+    }
+    return versions;
+  }, [thread.messages, isStreaming, streamingArtifacts]);
 
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
@@ -503,8 +540,9 @@ export function MessageList() {
     recalcSpacerHeight();
 
     const msgHeight = lastEl.getBoundingClientRect().height;
-    const chatInputReserved = isMobileRef.current ? 120 : CHAT_INPUT_RESERVED;
-    const visibleHeight = container.clientHeight - chatInputReserved;
+    // Composer sits outside this scroll container (flex sibling), so clientHeight
+    // is already the visible message viewport — do not subtract input height again.
+    const visibleHeight = container.clientHeight;
 
     isAutoScrollingRef.current = true;
     let nextTop: number;
@@ -637,6 +675,7 @@ export function MessageList() {
     currentStatusMessage?.id,
     currentStatusMessage?.message,
     streamingCitationMaps,
+    streamingParts,
     syncStreamingMessageTail,
   ]);
 
@@ -1044,28 +1083,24 @@ export function MessageList() {
       onScroll={handleScroll}
       className="chat-message-scroll"
       style={{
+        // Full chat-panel width so the scrollbar sits on the pane edge, not
+        // against the message column. Content is centered in the shared column.
         flex: 1,
-        overflowY: 'auto',
-        overscrollBehavior: 'contain',
-        // Instant programmatic follow while tokens arrive; smooth when idle / completed.
-        scrollBehavior: isStreaming ? 'auto' : 'smooth',
-        // Native scroll anchoring keeps the viewport stable when older messages
-        // are prepended at the top — no manual scrollTop adjustment needed.
-        overflowAnchor: 'auto',
+        minHeight: 0,
         width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        overscrollBehavior: 'contain',
+        scrollBehavior: isStreaming ? 'auto' : 'smooth',
+        overflowAnchor: 'auto',
       }}
     >
       <Box
         style={{
-          maxWidth: '50rem',
-          width: '100%',
+          ...chatContentColumnStyle(isMobile),
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
-          paddingBottom: isMobile ? 'var(--space-7)' : '100px',
-          paddingLeft: isMobile ? 'var(--space-4)' : 'var(--space-5)',
-          paddingRight: isMobile ? 'var(--space-4)' : 'var(--space-5)',
+          paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-5)',
         }}
       >
         <Flex direction="column" gap="6">
@@ -1108,6 +1143,9 @@ export function MessageList() {
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  streamingParts={pair.isStreaming ? streamingParts : undefined}
+                  latestArtifactVersions={latestArtifactVersions}
+                  persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
                 />

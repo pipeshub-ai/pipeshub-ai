@@ -366,13 +366,15 @@ export function getStorageVendor(storageType: string): StorageVendor {
   }
 }
 
-export function serveFileFromLocalStorage(document: Document, res: Response) {
+export function serveFileFromLocalStorage(document: Document, res: Response, version?: number) {
   try {
-    // Get the local file path directly from the document
-    const localFilePath = document.local?.localPath;
+    const localFilePath = version !== undefined
+      ? (document.versionHistory?.[version]?.local?.localPath ||
+         document.versionHistory?.[version]?.local?.url)
+      : (document.local?.localPath);
 
     if (!localFilePath) {
-      throw new NotFoundError('Local file path not found');
+      throw new NotFoundError('Local file path not found for requested version');
     }
 
     // DON'T use new URL() - it treats # as a fragment identifier!

@@ -358,6 +358,7 @@
       "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
       "label": "Server-URL",
       "submit": "Verbinden",
+      "changeServer": "Server ändern",
       "errors": {
         "empty": "Bitte geben Sie eine Server-URL ein.",
         "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
@@ -647,7 +648,7 @@
       "agent": {
         "label": "Agent",
         "toolbarLabel": "Agent",
-        "description": "Mehrschrittiger Agent mit Werkzeugen—Strategie in der Leiste wählen"
+        "description": "Agent, der planen und Werkzeuge nutzen kann, um komplexe Aufgaben zu erledigen"
       }
     },
     "agentStrategy": {
@@ -663,10 +664,10 @@
           "short": "Schnell",
           "hint": "Bevorzugt schnelle Antworten und weniger Verfeinerung. Gut für einfache Aufgaben."
         },
-        "verify": {
-          "label": "Prüfen",
-          "short": "Prüfen",
-          "hint": "Zusätzliche Prüfung von Fakten und Schritten vor der finalen Antwort."
+        "plan-execute": {
+          "label": "Planen & Ausführen",
+          "short": "Planen & Ausführen",
+          "hint": "Plant zuerst alle Schritte und führt sie dann in der Reihenfolge aus."
         },
         "deep": {
           "label": "Tief",
@@ -877,13 +878,26 @@
         "groupLabel": "Gruppen (Optional)",
         "groupPlaceholder": "Gruppen auswählen",
         "groupSearchPlaceholder": "Gruppen suchen...",
-        "importCsv": "CSV importieren",
+        "import": "Importieren",
+        "importFormatTitle": "CSV oder Excel — jedes Layout funktioniert",
+        "importHintHeader": "Kopfzeile optional — zusätzliche Spalten werden ignoriert",
+        "importHintLimit": "Bis zu 1000 Benutzer pro Datei (.csv, .xlsx, .xls)",
         "cancel": "Abbrechen",
         "send": "Einladung senden",
         "successTitle": "Einladungen gesendet",
         "successDescription": "{{email}} wurde eingeladen",
         "invalidEmail": "Ungültige E-Mail-Adresse",
-        "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut."
+        "errorGeneric": "Einladungen konnten nicht gesendet werden. Bitte versuchen Sie es erneut.",
+        "importNoEmails": "Keine E-Mail-Adressen in der Datei gefunden",
+        "importTooMany": "Die Datei überschreitet das Limit von {{max}} Benutzern",
+        "importAllDuplicates": "Alle Adressen der Datei sind bereits aufgeführt",
+        "importLoaded": "{{count}} Adresse(n) hinzugefügt",
+        "importLoadedDescription": "Liste prüfen und dann auf Einladung senden klicken.",
+        "importSkipped": "{{invalid}} ungültige, {{duplicate}} doppelte Adresse(n)",
+        "importSkippedDescription": "Ungültige Einträge sind markiert — vor dem Senden entfernen.",
+        "importFailed": "Import fehlgeschlagen",
+        "importFailedDescription": "Datei konnte nicht gelesen werden. Bitte eine gültige CSV- oder Excel-Datei hochladen.",
+        "adminGroupWarning": "Alle hier eingeladenen Personen werden vollwertige Organisations-Admins — auch jede aus einer Datei importierte Adresse. Admins können Benutzer, Gruppen und Organisationseinstellungen verwalten."
       }
     },
     "groups": {
@@ -1219,7 +1233,7 @@
       "configInfoPlaceholderProvider": "Anbieter",
       "downloadDialogTitle": "Embedding-Modell wird heruntergeladen",
       "downloadDialogDescription": "\"{{modelName}}\" wird herunterladen. Dies kann je nach Modellgröße und Verbindung einige Minuten dauern.",
-      "downloadDialogHint": "Sie können dieses Fenster geöffnet lassen — der Download läuft im Hintergrund weiter.",
+      "downloadDialogHint": "Sie können diesen Dialog schließen — der Download läuft im Hintergrund weiter. Speichern Sie erneut, sobald das Modell bereit ist.",
       "downloadStatusChecking": "Lokaler Cache wird überprüft...",
       "downloadStatusDownloading": "Modell wird heruntergeladen...",
       "downloadStatusLoading": "Modell wird in den Speicher geladen...",
@@ -2321,7 +2335,7 @@
       "lastChecked": "Zuletzt geprüft: {{time}}",
       "loading": "Dienststatus wird geladen…",
       "policyTitle": "Dienstintegritätsrichtlinie",
-      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs- und Docling-Dienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
+      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs-, Docling-, Parsing- und Extraktionsdienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
       "allHealthy": "Alle Dienste sind funktionsfähig",
       "someUnhealthy": "Einige Dienste sind nicht funktionsfähig",
       "fetchFailed": "Fehler beim Prüfen des Dienststatus",
@@ -2371,6 +2385,14 @@
         "docling": {
           "label": "Docling-Dienst",
           "description": "Erweiterte Dokumentenverarbeitung und OCR"
+        },
+        "parsing": {
+          "label": "Parsing-Dienst",
+          "description": "Zerlegt Dokumente in strukturierte Blöcke für die Indexierung"
+        },
+        "extraction": {
+          "label": "Extraktionsdienst",
+          "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
       }
     }

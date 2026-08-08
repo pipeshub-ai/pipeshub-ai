@@ -149,12 +149,15 @@ test.describe('Chat — page structure', () => {
     await expect(modelIcon).toBeVisible({ timeout: 5_000 });
   });
 
-  test('attach-file button is visible in the toolbar', async ({ page }) => {
-    const attachIcon = page
-      .locator('span.material-icons-outlined')
-      .filter({ hasText: 'attach_file' })
-      .first();
-    await expect(attachIcon).toBeVisible({ timeout: 5_000 });
+  test('plus button (attach files & capabilities) is visible in the toolbar', async ({ page }) => {
+    // Attach files now lives inside the "+" menu instead of a standalone paperclip icon.
+    // Queried by accessible name (not the icon ligature text) so icons like
+    // "add_circle" elsewhere on the page can't be matched by accident.
+    const plusButton = page.getByRole('button', { name: 'Attach files and capabilities' });
+    await expect(plusButton).toBeVisible({ timeout: 5_000 });
+
+    await plusButton.click();
+    await expect(page.getByText('Attach files', { exact: true })).toBeVisible({ timeout: 5_000 });
   });
 
   test('connectors/apps button is visible in the toolbar', async ({ page }) => {
@@ -166,26 +169,20 @@ test.describe('Chat — page structure', () => {
   });
 });
 
-test.describe('Chat — mode switcher', () => {
+test.describe('Chat — toolbar', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
   });
 
-  test('chat / search toggle buttons are present', async ({ page }) => {
-    // ModeSwitcher renders Flex (div) elements, not <button> elements.
-    // The left pill shows the active query mode toolbar label; in en-US the
-    // default "chat" mode translates to "Internal Search". Other possible
-    // visible labels are "Agent" and "Web". The right pill shows "Search"
-    // text only when search mode is active (icon-only in chat mode).
-    const knownLabels = ['Internal Search', 'Agent', 'Web', 'Search'];
-    let anyVisible = false;
-    for (const label of knownLabels) {
-      anyVisible = await page.getByText(label, { exact: true }).first().isVisible().catch(() => false);
-      if (anyVisible) break;
-    }
-    expect(anyVisible).toBeTruthy();
+  test('search-view toggle icon is present', async ({ page }) => {
+    // Agent is now the only chat mode (no more Agent/Internal Search/Web Search
+    // picker); the toolbar just shows a small icon that switches to the separate
+    // keyword-search-results view. Queried by accessible name so icons like
+    // "manage_search" elsewhere on the page can't be matched by accident.
+    const searchToggle = page.getByRole('button', { name: 'Switch to search view' });
+    await expect(searchToggle).toBeVisible({ timeout: 5_000 });
   });
 });
 

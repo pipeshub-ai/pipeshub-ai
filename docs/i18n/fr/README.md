@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Framework web Python hautes performances |
 | LangChain | Framework pour les pipelines de LLM |
-| LangGraph | Graphe d'états pour les workflows de LLM |
 | Qdrant | Moteur de recherche par similarité vectorielle |
 | Neo4j / ArangoDB | Base de données orientée graphe |
 | Kafka / Redis Streams | Plateforme distribuée de streaming d'événements |
@@ -265,7 +264,7 @@ Remarque : Utilisez HTTPS pour les déploiements dans le cloud. Le HTTP peut ent
 
 ### Quels fournisseurs de LLM PipesHub prend-il en charge ?
 
-PipesHub fonctionne selon le principe « Apportez votre propre modèle » — vous pouvez utiliser n'importe quel fournisseur de LLM. Déployez dans votre VPC avec les modèles de votre choix. La stack technique inclut LangChain et LangGraph pour les pipelines et les workflows de LLM.
+PipesHub fonctionne selon le principe « Apportez votre propre modèle » — vous pouvez utiliser n'importe quel fournisseur de LLM. Déployez dans votre VPC avec les modèles de votre choix. La stack technique inclut LangChain pour les pipelines et les workflows de LLM.
 
 ### Qu'est-ce que la fonctionnalité de récupération par graphe de connaissances ?
 

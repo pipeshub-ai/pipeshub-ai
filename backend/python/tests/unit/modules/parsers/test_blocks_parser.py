@@ -19,6 +19,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.services.parsing.interface import ParseError, ParseErrorCode
+from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
 
 
 def _make_parser() -> BlocksParser:
@@ -629,57 +630,83 @@ class TestEnhanceTablesWithLlm:
         parser = _make_parser()
         bg = BlockGroup(index=0, type=GroupType.TEXT_SECTION)
         container = BlocksContainer(blocks=[], block_groups=[bg])
-        await parser._enhance_tables_with_llm(container)
+        await enhance_tables_with_llm(container, parser.config_service, parser.logger)
 
     @pytest.mark.asyncio
     async def test_table_without_markdown_skipped(self):
         parser = _make_parser()
         bg = BlockGroup(index=0, type=GroupType.TABLE, data={"other": True})
         container = BlocksContainer(blocks=[], block_groups=[bg])
-        await parser._enhance_tables_with_llm(container)
+        await enhance_tables_with_llm(
+            container, parser.config_service, parser.logger, llm=MagicMock()
+        )
 
     @pytest.mark.asyncio
     async def test_table_with_null_data_skipped(self):
         parser = _make_parser()
         bg = BlockGroup(index=0, type=GroupType.TABLE, data=None)
         container = BlocksContainer(blocks=[], block_groups=[bg])
-        await parser._enhance_tables_with_llm(container)
+        await enhance_tables_with_llm(
+            container, parser.config_service, parser.logger, llm=MagicMock()
+        )
 
     @pytest.mark.asyncio
     async def test_llm_returns_none(self):
+        """When enrich_table_grid fails on the only table, no summary is written -
+
+        the row degrades to simple text instead (fail_on_all_errors=False since a
+        single-table failure would otherwise raise)."""
         parser = _make_parser()
+        row = Block(
+            index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"cells": ["v"]}
+        )
         bg = BlockGroup(
             index=0, type=GroupType.TABLE, data={"table_markdown": "| A |"}
         )
-        container = BlocksContainer(blocks=[], block_groups=[bg])
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        container = BlocksContainer(blocks=[row], block_groups=[bg])
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=None,
+            side_effect=RuntimeError("no response"),
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger,
+                llm=MagicMock(), fail_on_all_errors=False,
+            )
 
         assert "table_summary" not in bg.data
+        assert row.data["row_natural_language_text"]
 
     @pytest.mark.asyncio
     async def test_recreates_data_dict_when_cleared_during_llm_call(self):
         parser = _make_parser()
+        row = Block(
+            index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"cells": ["v"]}
+        )
         bg = BlockGroup(
             index=0, type=GroupType.TABLE, data={"table_markdown": "| A |"}
         )
-        container = BlocksContainer(blocks=[], block_groups=[bg])
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        async def _summary(*_a, **_k):
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["d"]
+        )
+
+        async def _enrich(*_a, **_k):
             bg.data = None
-            return MagicMock(summary="s", headers=["A"])
+            return result
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            side_effect=_summary,
+            side_effect=_enrich,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
         assert bg.data == {"table_summary": "s", "column_headers": ["A"]}
 
@@ -701,19 +728,19 @@ class TestEnhanceTablesWithLlm:
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
         # headers empty list -> cols = [], grid has no header row
-        mock_response = MagicMock(summary="s", headers=[])
+        result = TableEnrichmentResult(
+            summary="s", headers=[], header_row_count=0, descriptions=["desc"]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+            return_value=result,
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        mock_rows.assert_awaited_once()
+        mock_enrich.assert_awaited_once()
         assert row.data["row_natural_language_text"] == "desc"
 
     @pytest.mark.asyncio
@@ -745,22 +772,21 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0, 1, 2])
         container = BlocksContainer(blocks=[header, row, text], block_groups=[bg])
 
-        mock_response = MagicMock(summary="summary", headers=["Col_A", "Col_B"])
+        result = TableEnrichmentResult(
+            summary="summary", headers=["Col_A", "Col_B"], header_row_count=0,
+            descriptions=["row desc"],
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["row desc"], []),
+            return_value=result,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        assert bg.description == "summary"
         assert bg.data["table_summary"] == "summary"
         assert bg.data["column_headers"] == ["Col_A", "Col_B"]
-        assert bg.table_metadata.column_names == ["Col_A", "Col_B"]
         assert row.data["row_natural_language_text"] == "row desc"
         assert "row_natural_language_text" not in header.data
 
@@ -790,17 +816,17 @@ class TestEnhanceTablesWithLlm:
         )
         container = BlocksContainer(blocks=[row, text], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["desc"]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["desc"], []),
+            return_value=result,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
         assert row.data["row_natural_language_text"] == "desc"
 
@@ -822,20 +848,25 @@ class TestEnhanceTablesWithLlm:
         )
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=[""]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([""], []),
+            return_value=result,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
     @pytest.mark.asyncio
     async def test_row_data_without_cells_key(self):
+        """A TABLE_ROW without a "cells" key is now still counted as a data row
+
+        (empty grid row) and still triggers the enrichment call - only the header
+        exclusion filters rows out of the grid now.
+        """
         parser = _make_parser()
         row = Block(
             index=0,
@@ -851,22 +882,27 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["d"]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+            return_value=result,
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        # No row_dicts collected => get_rows_text not called
-        mock_rows.assert_not_awaited()
+        mock_enrich.assert_awaited_once()
+        assert row.data["row_natural_language_text"] == "d"
 
     @pytest.mark.asyncio
     async def test_empty_headers_and_falsy_row_data(self):
+        """children=None means no row blocks are collected, so the table is skipped
+
+        entirely - the summary is no longer written independent of row presence.
+        """
         parser = _make_parser()
         row = Block(
             index=0,
@@ -880,23 +916,18 @@ class TestEnhanceTablesWithLlm:
             data={"table_markdown": "| A |"},
             children=None,
         )
-        # children None skips row collection; still updates summary
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=None)
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        assert bg.data["table_summary"] == "s"
-        assert bg.data["column_headers"] == []
-        mock_rows.assert_not_awaited()
+        mock_enrich.assert_not_awaited()
+        assert "table_summary" not in bg.data
 
     @pytest.mark.asyncio
     async def test_row_description_skipped_when_row_data_none(self):
@@ -915,28 +946,32 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["desc"]
+        )
 
-        async def _rows(*_a, **_k):
+        async def _enrich(*_a, **_k):
             # Clear data before descriptions are applied
             row.data = None
-            return (["desc"], [])
+            return result
 
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            side_effect=_rows,
+            side_effect=_enrich,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
         assert row.data is None
 
     @pytest.mark.asyncio
     async def test_fewer_descriptions_than_rows(self):
+        """A short description list no longer leaves later rows unset - they fall
+
+        back to simple generated text so row_blocks and descriptions never desync.
+        """
         parser = _make_parser()
         rows = [
             Block(
@@ -955,20 +990,20 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0, 1])
         container = BlocksContainer(blocks=rows, block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="s", headers=["A"], header_row_count=0, descriptions=["only one"]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=(["only one"], []),
+            return_value=result,
         ):
-            await parser._enhance_tables_with_llm(container)
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
         assert rows[0].data["row_natural_language_text"] == "only one"
-        assert "row_natural_language_text" not in rows[1].data
+        assert rows[1].data.get("row_natural_language_text") is not None
 
     @pytest.mark.asyncio
     async def test_row_without_cells_list_appends_empty_dict(self):
@@ -987,20 +1022,20 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[row], block_groups=[bg])
 
-        mock_response = MagicMock(summary="", headers=["A"])
+        result = TableEnrichmentResult(
+            summary="", headers=["A"], header_row_count=0, descriptions=[""]
+        )
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-            return_value=([""], []),
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+            return_value=result,
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
         # grid built from empty row dict
-        assert mock_rows.await_count == 1
+        assert mock_enrich.await_count == 1
 
     @pytest.mark.asyncio
     async def test_no_non_header_rows_skips_get_rows_text(self):
@@ -1020,21 +1055,23 @@ class TestEnhanceTablesWithLlm:
         bg.children = BlockGroupChildren.from_indices(block_indices=[0])
         container = BlocksContainer(blocks=[header], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        mock_rows.assert_not_awaited()
+        mock_enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_out_of_range_block_index_ignored(self):
+        """An out-of-range row index yields no row blocks, so the table is skipped
+
+        entirely (no LLM call, no summary written) rather than the summary still
+        being fetched independent of rows.
+        """
         parser = _make_parser()
         bg = BlockGroup(
             index=0,
@@ -1046,19 +1083,16 @@ class TestEnhanceTablesWithLlm:
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        mock_response = MagicMock(summary="s", headers=["A"])
         with patch(
-            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            "app.utils.table_enrichment.enrich_table_grid",
             new_callable=AsyncMock,
-            return_value=mock_response,
-        ), patch(
-            "app.utils.indexing_helpers.get_rows_text",
-            new_callable=AsyncMock,
-        ) as mock_rows:
-            await parser._enhance_tables_with_llm(container)
+        ) as mock_enrich:
+            await enhance_tables_with_llm(
+                container, parser.config_service, parser.logger, llm=MagicMock()
+            )
 
-        mock_rows.assert_not_awaited()
-        assert bg.data["table_summary"] == "s"
+        mock_enrich.assert_not_awaited()
+        assert "table_summary" not in bg.data
 
 
 # ---------------------------------------------------------------------------
@@ -1072,30 +1106,36 @@ class TestParse:
         parser = _make_parser()
         container = BlocksContainer(blocks=[], block_groups=[])
         parser._process_blockgroups = AsyncMock(return_value=container)
-        parser._enhance_tables_with_llm = AsyncMock()
 
-        result = await parser.parse(
-            container.model_dump_json().encode("utf-8"), "rec"
-        )
+        with patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ) as mock_enhance:
+            result = await parser.parse(
+                container.model_dump_json().encode("utf-8"), "rec"
+            )
 
         assert result.block_container is container
         assert result.metadata == {"record_name": "rec"}
         parser._process_blockgroups.assert_awaited_once()
-        parser._enhance_tables_with_llm.assert_awaited_once()
+        mock_enhance.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_str_payload(self):
         parser = _make_parser()
         container = BlocksContainer(blocks=[], block_groups=[])
         parser._process_blockgroups = AsyncMock(return_value=container)
-        parser._enhance_tables_with_llm = AsyncMock()
 
         # After bytes decode path; pass str by skipping bytes branch via already-decoded
         # parse type-hints bytes but accepts str after the first isinstance check fails
         # when we pass str directly.
-        result = await parser.parse(
-            container.model_dump_json(), "rec"
-        )  # type: ignore[arg-type]
+        with patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ):
+            result = await parser.parse(
+                container.model_dump_json(), "rec"
+            )  # type: ignore[arg-type]
         assert result.block_container is container
 
     @pytest.mark.asyncio
@@ -1104,9 +1144,12 @@ class TestParse:
         payload = {"blocks": [], "block_groups": []}
         out = BlocksContainer(**payload)
         parser._process_blockgroups = AsyncMock(return_value=out)
-        parser._enhance_tables_with_llm = AsyncMock()
 
-        result = await parser.parse(payload, "rec")  # type: ignore[arg-type]
+        with patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ):
+            result = await parser.parse(payload, "rec")  # type: ignore[arg-type]
         assert result.block_container is out
 
     @pytest.mark.asyncio
@@ -1131,11 +1174,13 @@ class TestParse:
         parser._process_single_blockgroup_html = AsyncMock(
             return_value=([], [new_block])
         )
-        parser._enhance_tables_with_llm = AsyncMock()
 
         with patch(
             "app.modules.parsers.blocks.blocks_parser.MarkdownParser"
-        ), patch("app.modules.parsers.blocks.blocks_parser.HTMLParser"):
+        ), patch("app.modules.parsers.blocks.blocks_parser.HTMLParser"), patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ):
             result = await parser.parse(payload.encode("utf-8"), "record")
 
         parser._process_single_blockgroup_html.assert_awaited_once()

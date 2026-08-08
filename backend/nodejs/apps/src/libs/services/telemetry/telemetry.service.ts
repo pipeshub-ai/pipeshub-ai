@@ -466,12 +466,12 @@ export class TelemetryService implements ITelemetryService {
         message_broker: firstNonEmpty(
           deployment.messageBrokerType,
           process.env.MESSAGE_BROKER,
-          'kafka',
+          'redis',
         ),
         kv_store: firstNonEmpty(
           deployment.kvStoreType,
           process.env.KV_STORE_TYPE,
-          'etcd',
+          'redis',
         ),
       });
     } catch (error) {

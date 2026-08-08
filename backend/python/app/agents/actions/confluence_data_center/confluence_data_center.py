@@ -22,9 +22,13 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
@@ -36,8 +40,6 @@ from app.sources.external.confluence.confluence import ConfluenceDataSource
 
 logger = logging.getLogger(__name__)
 
-_APP = "confluencedatacenter"
-
 # Whitelist for the ``order_by`` CQL clause on `search_content`: a field name
 # with an optional asc/desc, comma-separated for multi-key sorts. Confluence
 # rejects unknown fields with a 400, so field names themselves aren't validated.
@@ -46,6 +48,33 @@ _ORDER_BY_PATTERN = re.compile(
     r"(\s*,\s*[A-Za-z_][A-Za-z0-9_]*(\s+(asc|desc))?)*\s*$",
     re.IGNORECASE,
 )
+
+# DC stable ids from ``ri:userkey`` / REST are hex userKeys (not Cloud accountIds).
+_USER_KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{16,}$")
+# Single-token username for ``GET /rest/api/user?username=...`` (fall back to fuzzy on miss).
+_USERNAME_PATTERN = re.compile(r"^[\w][\w.-]{0,254}$")
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see the Cloud `confluence.py`'s equivalent
+# block. Unlike Cloud, every DC envelope here (including `search_content`/
+# `search_users`) nests its list under `data`, so every `list_summary(...)`
+# call below uses the plain string form.
+# ---------------------------------------------------------------------------
+
+
+def _confluence_dc_page_label(page: dict[str, Any]) -> str:
+    return page.get("title") or str(page.get("id") or "?")
+
+
+def _confluence_dc_space_label(space: dict[str, Any]) -> str:
+    key = space.get("key") or "?"
+    name = space.get("name")
+    return f"{key}: {name}" if name else key
+
+
+def _confluence_dc_user_label(user: dict[str, Any]) -> str:
+    return user.get("displayName") or user.get("username") or "?"
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +153,14 @@ class GetSpaceInput(BaseModel):
 
 
 class SearchUsersInput(BaseModel):
-    """Schema for searching Data Center users by name / username / email"""
-    query: str = Field(description="Display name or name fragment to match (matches the user's full name)")
+    """Schema for searching Data Center users by name / username / userKey"""
+    query: str = Field(
+        description=(
+            "Display name fragment, username (e.g. 'jdoe'), OR a DC userKey hex id "
+            "from an ``ri:userkey`` mention. userKey/username use exact lookup; "
+            "names use fuzzy full-name search."
+        ),
+    )
     max_results: Optional[int] = Field(default=10, description="Max users to return (1-50). Default 10.")
 
 
@@ -365,17 +400,55 @@ class ConfluenceDataCenter:
             out["email"] = email
         return out
 
+    def _exact_user_payload(self, user: Any) -> Optional[tuple[bool, str]]:
+        """Format a successful exact user lookup, or None if the body is unusable."""
+        entry = self._clean_user(user if isinstance(user, dict) else {})
+        if not entry:
+            return None
+        return True, json.dumps({
+            "message": "User found",
+            "data": {"results": [entry], "total": 1},
+        })
+
+    async def _resolve_user_exact(self, query: str) -> Optional[tuple[bool, str]]:
+        """Exact DC lookup by userKey (``?key=``) or username (``?username=``).
+
+        Returns a tool response tuple when an exact path was taken (hit or definitive
+        miss for userKey). Returns None to fall through to fuzzy name search
+        (e.g. username miss — ``John`` may be a display-name fragment).
+        """
+        if _USER_KEY_PATTERN.match(query):
+            response = await self.client.get_user_by_key(user_key=query, lookup_as="key")
+            if response.status == HttpStatusCode.SUCCESS.value:
+                packed = self._exact_user_payload(response.json())
+                if packed:
+                    return packed
+            return False, json.dumps({
+                "error": f"No Confluence user found for userKey {query!r}",
+                "guidance": (
+                    "Confirm the userKey from the page mention. For name search, "
+                    "pass a display-name fragment; for login id, pass the username."
+                ),
+            })
+
+        if _USERNAME_PATTERN.match(query) and " " not in query:
+            response = await self.client.get_user_v1(username=query)
+            if response.status == HttpStatusCode.SUCCESS.value:
+                packed = self._exact_user_payload(response.json())
+                if packed:
+                    return packed
+            # Miss: fall through — token may be a display-name fragment, not a username.
+        return None
+
     # ------------------------------------------------------------------
     # Tools — connection / identity
     # ------------------------------------------------------------------
     @tool(
-        app_name=_APP,
-        tool_name="validate_connection",
-        description="Validate the Confluence Data Center connection and provide diagnostics",
+        path="/tools/confluence_data_center/validate_connection",
+        short_description="Validate Confluence Data Center connection",
+        description="Validate the Confluence Data Center connection and provide diagnostics.",
         parameters=[],
-        returns="Connection validation status with the current user",
-        primary_intent=ToolIntent.UTILITY,
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="utility")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         try:
@@ -392,13 +465,11 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_current_user",
-        description="Get the current authenticated Confluence Data Center user (username, userKey, displayName)",
+        path="/tools/confluence_data_center/get_current_user",
+        short_description="Get the current authenticated Confluence Data Center user",
+        description="Get the current authenticated Confluence Data Center user (username, userKey, displayName).",
         parameters=[],
-        returns="Current user's account details",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         try:
@@ -418,13 +489,13 @@ class ConfluenceDataCenter:
     # Tools — spaces
     # ------------------------------------------------------------------
     @tool(
-        app_name=_APP,
-        tool_name="get_spaces",
-        description="List Confluence Data Center spaces",
+        path="/tools/confluence_data_center/get_spaces",
+        short_description="List Confluence Data Center spaces",
+        description="List Confluence Data Center spaces.",
         parameters=[],
-        returns="List of spaces (key, name, type, url)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Confluence Data Center spaces",
+        result_summary=list_summary("results", _confluence_dc_space_label, "space"),
     )
     async def get_spaces(self) -> tuple[bool, str]:
         try:
@@ -501,13 +572,13 @@ class ConfluenceDataCenter:
         return None
 
     @tool(
-        app_name=_APP,
-        tool_name="get_space",
-        description="Get a single Confluence Data Center space by key",
-        args_schema=GetSpaceInput,
-        returns="Space details",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_space",
+        short_description="Get a single Confluence Data Center space by key",
+        description="Get a single Confluence Data Center space by key.",
+        parameters=[
+            ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY (e.g. 'DS')", required=True),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_space(self, space_key: str) -> tuple[bool, str]:
         try:
@@ -581,13 +652,16 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_pages_in_space",
-        description="List pages in a Confluence Data Center space, most recently modified first",
-        args_schema=GetPagesInSpaceInput,
-        returns="List of pages (id, title, type, status, updated, url), newest first",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_pages_in_space",
+        short_description="List pages in a Confluence Data Center space",
+        description="List pages in a Confluence Data Center space, most recently modified first.",
+        parameters=[
+            ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY (e.g. 'DS')", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max pages to return", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing pages in Confluence space {space_key}", "space_key"),
+        result_summary=list_summary("results", _confluence_dc_page_label, "page"),
     )
     async def get_pages_in_space(self, space_key: str, limit: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -642,18 +716,21 @@ class ConfluenceDataCenter:
     # Tools — pages
     # ------------------------------------------------------------------
     @tool(
-        app_name=_APP,
-        tool_name="get_page_content",
-        description="Get a Confluence Data Center page's content (storage format) by id",
-        args_schema=GetPageContentInput,
-        returns="Page details with body in storage format",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_page_content",
+        short_description="Get a Confluence Data Center page's content by id",
+        description="Get a Confluence Data Center page's content (export_view) by id.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Fetched page: {_confluence_dc_page_label(e)}"),
     )
     async def get_page_content(self, page_id: str) -> tuple[bool, str]:
         try:
             response = await self.client.get_page_content_v1(
-                page_id=page_id, expand="body.storage,version,space,history.lastUpdated",
+                page_id=page_id,
+                expand="body.export_view,version,space,history.lastUpdated",
             )
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -670,7 +747,9 @@ class ConfluenceDataCenter:
             return {}
         space = data.get("space") or {}
         version = data.get("version") or {}
-        body = (data.get("body") or {}).get("storage") or {}
+        body_block = data.get("body") or {}
+        # Prefer export_view (mentions/macros rendered); fall back to storage for edit responses.
+        body = body_block.get("export_view") or body_block.get("storage") or {}
         entry = {
             "id": data.get("id"),
             "title": data.get("title"),
@@ -686,13 +765,18 @@ class ConfluenceDataCenter:
         return entry
 
     @tool(
-        app_name=_APP,
-        tool_name="create_page",
-        description="Create a new Confluence Data Center page",
-        args_schema=CreatePageInput,
-        returns="Created page id, title and url",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/create_page",
+        short_description="Create a new Confluence Data Center page",
+        description="Create a new Confluence Data Center page.",
+        parameters=[
+            ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY (e.g. 'DS', 'ENG', '~jdoe'). Data Center uses the key, not a numeric id.", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="Page title", required=True),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="Page content in storage format (XHTML)", required=True),
+            ToolParameter(name="parent_page_id", type=ParameterType.STRING, description="Parent page id to nest this page under (optional)", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
+        result_summary=entity_summary(lambda e: f"Created page: {_confluence_dc_page_label(e)}"),
     )
     async def create_page(
         self,
@@ -730,13 +814,18 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="update_page",
-        description="Update a Confluence Data Center page's title/content, or move it under a new parent",
-        args_schema=UpdatePageInput,
-        returns="Updated page details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/update_page",
+        short_description="Update a Confluence Data Center page",
+        description="Update a Confluence Data Center page's title/content, or move it under a new parent.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="New page title (optional)", required=False),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="New page content in storage format (optional)", required=False),
+            ToolParameter(name="parent_page_id", type=ParameterType.STRING, description="Move the page under this parent page id (optional; re-parents the page)", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Updated page: {_confluence_dc_page_label(e)}"),
     )
     async def update_page(
         self,
@@ -789,13 +878,14 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_child_pages",
-        description="Get the direct child pages of a Confluence Data Center page",
-        args_schema=GetChildPagesInput,
-        returns="List of child pages (id, title, url)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_child_pages",
+        short_description="Get the direct child pages of a page",
+        description="Get the direct child pages of a Confluence Data Center page.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The parent page id", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max child pages to return", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_child_pages(self, page_id: str, limit: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -825,13 +915,13 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_page_versions",
-        description="Get the version history of a Confluence Data Center page",
-        args_schema=GetPageVersionsInput,
-        returns="List of versions (number, when, author, message)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_page_versions",
+        short_description="Get a page's version history",
+        description="Get the version history of a Confluence Data Center page.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         try:
@@ -872,13 +962,15 @@ class ConfluenceDataCenter:
     # Tools — comments
     # ------------------------------------------------------------------
     @tool(
-        app_name=_APP,
-        tool_name="add_comment",
-        description="Add a comment to a Confluence Data Center page",
-        args_schema=AddCommentInput,
-        returns="Created comment details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/add_comment",
+        short_description="Add a comment to a Confluence Data Center page",
+        description="Add a comment to a Confluence Data Center page.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
+            ToolParameter(name="comment_text", type=ParameterType.STRING, description="Comment text (plain text is HTML-escaped and wrapped; storage XHTML is passed through)", required=True),
+            ToolParameter(name="parent_comment_id", type=ParameterType.STRING, description="Parent comment id when replying (optional)", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def add_comment(
         self,
@@ -907,13 +999,13 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="get_comments",
-        description="Get comments on a Confluence Data Center page",
-        args_schema=GetCommentsInput,
-        returns="List of comments",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/get_comments",
+        short_description="Get comments on a Confluence Data Center page",
+        description="Get comments on a Confluence Data Center page.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page id", required=True),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_comments(self, page_id: str) -> tuple[bool, str]:
         try:
@@ -1024,13 +1116,17 @@ class ConfluenceDataCenter:
         return results
 
     @tool(
-        app_name=_APP,
-        tool_name="search_pages",
-        description="Fuzzy-search Confluence Data Center pages by title",
-        args_schema=SearchPagesInput,
-        returns="Matching pages",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/search_pages",
+        short_description="Fuzzy-search Confluence Data Center pages by title",
+        description="Fuzzy-search Confluence Data Center pages by title.",
+        parameters=[
+            ToolParameter(name="title", type=ParameterType.STRING, description="Page title fragment to search (fuzzy)", required=True),
+            ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY to limit the search (optional)", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max results", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence pages: "{title}"', "title"),
+        result_summary=list_summary("results", _confluence_dc_page_label, "page"),
     )
     async def search_pages(self, title: str, space_key: Optional[str] = None, limit: Optional[int] = None) -> tuple[bool, str]:
         try:
@@ -1048,13 +1144,22 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="search_content",
-        description="Full-text search Confluence Data Center content (pages, blog posts)",
-        args_schema=SearchContentInput,
-        returns="Matching content",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/search_content",
+        short_description="Full-text search Confluence Data Center content",
+        description="Full-text search Confluence Data Center content (pages, blog posts).",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Free-text search across title/body/comments", required=False),
+            ToolParameter(name="space_key", type=ParameterType.STRING, description="Space KEY to restrict the search (optional)", required=False),
+            ToolParameter(name="content_types", type=ParameterType.LIST, description="Content types: 'page', 'blogpost', or both. Defaults to both.", required=False),
+            ToolParameter(name="labels", type=ParameterType.LIST, description="Label names to filter by (optional)", required=False),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause, e.g. 'lastmodified desc' (optional)", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max results (1-50). Default 25.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searching Confluence: "{args["query"]}"' if args.get("query") else "Searching Confluence content"
+        ),
+        result_summary=list_summary("results", _confluence_dc_page_label, "page"),
     )
     async def search_content(
         self,
@@ -1097,27 +1202,34 @@ class ConfluenceDataCenter:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name=_APP,
-        tool_name="search_users",
-        description="Search Confluence Data Center users by display name (name fragment)",
-        args_schema=SearchUsersInput,
-        returns="List of users (username, userKey, displayName, profile url)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.DOCUMENTATION,
+        path="/tools/confluence_data_center/search_users",
+        short_description="Search Confluence Data Center users by name, username, or userKey",
+        description="Search Confluence Data Center users by display name, username, or userKey.",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Display name, username, or userKey.", required=True),
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence users: "{query}"', "query"),
+        result_summary=list_summary("results", _confluence_dc_user_label, "user"),
     )
     async def search_users(self, query: str, max_results: Optional[int] = None) -> tuple[bool, str]:
         try:
             if not query or not query.strip():
                 return False, json.dumps({
                     "error": "Query parameter is required and cannot be empty.",
-                    "guidance": "Provide a display name or name fragment.",
+                    "guidance": "Provide a display name, username, or userKey.",
                 })
+            query = query.strip()
+            exact = await self._resolve_user_exact(query)
+            if exact is not None:
+                return exact
             # DC has no /search/user endpoint (Cloud-only, 404 on Server/DC); it does
             # support server-side user search via the general CQL search endpoint with
             # a `type=user AND user.fullname ~ "<query>*"` clause. Matches on the full
             # name only — the datasource escapes the term.
             cap = min(max_results or 10, 50)
-            response = await self.client.search_users_v1(query=query.strip(), limit=cap)
+            response = await self.client.search_users_v1(query=query, limit=cap)
             if response.status != HttpStatusCode.SUCCESS.value:
                 return self._handle_response(response, "Users fetched successfully", include_guidance=True)
             data = response.json()

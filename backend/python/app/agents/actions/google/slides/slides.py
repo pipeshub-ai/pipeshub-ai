@@ -3,9 +3,8 @@ import json
 import logging
 from typing import List, Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -136,8 +135,9 @@ class GoogleSlides:
             return asyncio.run(coro)
 
     @tool(
-        app_name="slides",
-        tool_name="get_presentation",
+        path="/tools/slides/get_presentation",
+        short_description="Get a Google Slides presentation",
+        description="Get a Google Slides presentation's metadata, slides, and layout information.",
         parameters=[
             ToolParameter(
                 name="presentation_id",
@@ -145,9 +145,10 @@ class GoogleSlides:
                 description="The ID of the presentation to retrieve",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="presentations"), Tag(key="type", value="read")],
     )
-    def get_presentation(self, presentation_id: str) -> tuple[bool, str]:
+    async def get_presentation(self, presentation_id: str) -> tuple[bool, str]:
         """Get a Google Slides presentation"""
         """
         Args:
@@ -167,8 +168,9 @@ class GoogleSlides:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="slides",
-        tool_name="create_presentation",
+        path="/tools/slides/create_presentation",
+        short_description="Create a new presentation",
+        description="Create a new Google Slides presentation with an optional title.",
         parameters=[
             ToolParameter(
                 name="title",
@@ -176,9 +178,10 @@ class GoogleSlides:
                 description="Title of the presentation",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="presentations"), Tag(key="type", value="create")],
     )
-    def create_presentation(self, title: Optional[str] = None) -> tuple[bool, str]:
+    async def create_presentation(self, title: Optional[str] = None) -> tuple[bool, str]:
         """Create a new Google Slides presentation"""
         """
         Args:
@@ -210,8 +213,9 @@ class GoogleSlides:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="slides",
-        tool_name="batch_update_presentation",
+        path="/tools/slides/batch_update_presentation",
+        short_description="Batch update a presentation",
+        description="Apply batch updates to a Google Slides presentation such as adding slides or modifying content.",
         parameters=[
             ToolParameter(
                 name="presentation_id",
@@ -226,7 +230,8 @@ class GoogleSlides:
                 required=False,
                 items={"type": "object"}
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="presentations"), Tag(key="type", value="update")],
     )
     def batch_update_presentation(
         self,
@@ -264,8 +269,9 @@ class GoogleSlides:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="slides",
-        tool_name="get_slide_page",
+        path="/tools/slides/get_slide_page",
+        short_description="Get a specific slide page",
+        description="Get a specific slide page from a Google Slides presentation by its object ID.",
         parameters=[
             ToolParameter(
                 name="presentation_id",
@@ -279,9 +285,10 @@ class GoogleSlides:
                 description="The object ID of the slide page",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="presentations"), Tag(key="type", value="read")],
     )
-    def get_slide_page(self, presentation_id: str, page_object_id: str) -> tuple[bool, str]:
+    async def get_slide_page(self, presentation_id: str, page_object_id: str) -> tuple[bool, str]:
         """Get a specific slide page from a presentation"""
         """
         Args:
@@ -303,8 +310,9 @@ class GoogleSlides:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="slides",
-        tool_name="get_slide_thumbnail",
+        path="/tools/slides/get_slide_thumbnail",
+        short_description="Get a thumbnail of a slide",
+        description="Get a thumbnail image of a slide page in the specified format and size.",
         parameters=[
             ToolParameter(
                 name="presentation_id",
@@ -330,7 +338,8 @@ class GoogleSlides:
                 description="Size of the thumbnail (e.g., 'LARGE', 'MEDIUM', 'SMALL')",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="presentations"), Tag(key="type", value="read")],
     )
     def get_slide_thumbnail(
         self,

@@ -180,16 +180,16 @@ class TestHealthCheckKvStore:
             etcd.assert_awaited_once_with(container)
 
     @pytest.mark.asyncio
-    async def test_defaults_to_etcd_when_env_missing(self):
+    async def test_defaults_to_redis_when_env_missing(self):
         container = _make_container()
         env = os.environ.copy()
         env.pop("KV_STORE_TYPE", None)
         with (
             patch.dict(os.environ, env, clear=True),
-            patch.object(Health, "health_check_etcd", new_callable=AsyncMock) as etcd,
+            patch.object(Health, "_health_check_redis_kv_store", new_callable=AsyncMock) as redis_kv,
         ):
             await Health.health_check_kv_store(container)
-            etcd.assert_awaited_once()
+            redis_kv.assert_awaited_once_with(container)
 
     @pytest.mark.asyncio
     async def test_case_insensitive_redis(self):

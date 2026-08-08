@@ -10,7 +10,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -274,25 +274,6 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self.__get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            # Only proceed with app connections if syncAction is 'immediate'
-            if payload["syncAction"] == "immediate":
-                # Get all apps associated with the org
-                org_apps = await self.graph_provider.get_org_apps(payload["orgId"])
-
-                for app in org_apps:
-                    if app["name"].lower() in ["calendar"]:
-                        self.logger.info("Skipping init")
-                        continue
-
-                    # Start sync for the specific user
-                    await self.__handle_sync_event(
-                        event_type=f'{app["name"].lower()}.user',
-                        value={
-                            "email": payload["email"],
-                            "connector":app["name"]
-                        },
-                    )
-
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )
@@ -469,10 +450,11 @@ class EntityEventService(BaseEventService):
                 app_updates, CollectionNames.APPS.value
             )
 
-            # Cancel any running sync task so it stops promptly
+            # Cancel any running sync/reindex task so they stop promptly
             try:
                 await sync_task_manager.cancel_sync(connector_id)
-                self.logger.info(f"✅ Cancelled running sync for connector {connector_id}")
+                await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
+                self.logger.info(f"✅ Cancelled running sync/reindex for connector {connector_id}")
             except Exception as cancel_err:
                 self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 

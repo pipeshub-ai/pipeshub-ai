@@ -270,7 +270,8 @@ export function createHealthRouter(
     }
   });
 
-  // Combined services health check (Python query + connector + indexing + docling + embedding services)
+  // Combined services health check (Python query + connector + indexing + docling + embedding,
+  // plus parsing + extraction when USE_PARSING_SERVICE=true)
   router.get('/services', async (_req, res, _next) => {
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
@@ -280,6 +281,9 @@ export function createHealthRouter(
       const doclingHealthUrl = `${doclingBackend}/health`;
       const embeddingBackend = (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(/\/v1\/?$/, '');
       const embeddingHealthUrl = `${embeddingBackend}/health`;
+      const parsingServicesEnabled = (process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true';
+      const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
+      const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
       const checkHttpService = async (endpoint: string, label: string): Promise<{ ok: boolean; detail: ServiceHealthDetail }> => {
         const startedAt = Date.now();
@@ -325,36 +329,55 @@ export function createHealthRouter(
       // Critical services: query + connector (required for core functionality)
       const overallHealthy = aiOk && connectorOk;
 
+      const services: Record<string, string> = {
+        query: aiOk ? 'healthy' : 'unhealthy',
+        connector: connectorOk ? 'healthy' : 'unhealthy',
+        indexing: indexingOk ? 'healthy' : 'unhealthy',
+        docling: doclingOk ? 'healthy' : 'unhealthy',
+        embedding: embeddingOk ? 'healthy' : 'unhealthy',
+      };
+      const details: Record<string, ServiceHealthDetail> = {
+        query: aiResp.detail,
+        connector: connectorResp.detail,
+        indexing: indexingResp.detail,
+        docling: doclingResp.detail,
+        embedding: embeddingResp.detail,
+      };
+
+      if (parsingServicesEnabled) {
+        const [parsingResp, extractionResp] = await Promise.all([
+          checkHttpService(`${parsingBackend}/health`, 'Parsing Service'),
+          checkHttpService(`${extractionBackend}/health`, 'Extraction Service'),
+        ]);
+        services.parsing = parsingResp.ok ? 'healthy' : 'unhealthy';
+        services.extraction = extractionResp.ok ? 'healthy' : 'unhealthy';
+        details.parsing = parsingResp.detail;
+        details.extraction = extractionResp.detail;
+      }
+
       res.status(200).json({
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: aiOk ? 'healthy' : 'unhealthy',
-          connector: connectorOk ? 'healthy' : 'unhealthy',
-          indexing: indexingOk ? 'healthy' : 'unhealthy',
-          docling: doclingOk ? 'healthy' : 'unhealthy',
-          embedding: embeddingOk ? 'healthy' : 'unhealthy',
-        },
-        details: {
-          query: aiResp.detail,
-          connector: connectorResp.detail,
-          indexing: indexingResp.detail,
-          docling: doclingResp.detail,
-          embedding: embeddingResp.detail,
-        },
+        services,
+        details,
       });
     } catch (error: any) {
       logger.error('Combined services health check failed', error?.message ?? error);
+      const services: Record<string, string> = {
+        query: 'unknown',
+        connector: 'unknown',
+        indexing: 'unknown',
+        docling: 'unknown',
+        embedding: 'unknown',
+      };
+      if ((process.env.USE_PARSING_SERVICE || '').toLowerCase() === 'true') {
+        services.parsing = 'unknown';
+        services.extraction = 'unknown';
+      }
       res.status(200).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
-        services: {
-          query: 'unknown',
-          connector: 'unknown',
-          indexing: 'unknown',
-          docling: 'unknown',
-          embedding: 'unknown',
-        },
+        services,
       });
     }
   });

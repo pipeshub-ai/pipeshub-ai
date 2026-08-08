@@ -52,7 +52,7 @@ class ConfigurationService:
         self.store = key_value_store
 
         # Determine store type from environment
-        self._kv_store_type = os.getenv(RedisEnv.KV_STORE_TYPE, KVStoreType.ETCD).lower()
+        self._kv_store_type = os.getenv(RedisEnv.KV_STORE_TYPE, KVStoreType.REDIS).lower()
         self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Redis Pub/Sub subscription task (for Redis store)

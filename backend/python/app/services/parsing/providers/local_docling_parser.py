@@ -46,7 +46,6 @@ class LocalDoclingParser:
     ) -> ParseResult:
         ext = Path(record_name).suffix.lower().lstrip(".")
         target_ext = _FORMAT_EXTS.get(ext, Path(record_name).suffix)
-        # Ensure filename has correct extension for Docling
         stem = Path(record_name).stem
         doc_name = f"{stem}{target_ext}"
 

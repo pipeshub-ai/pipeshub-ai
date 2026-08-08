@@ -66,10 +66,12 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import {
   conversationIdParamsSchema,
   enterpriseSearchCreateSchema,
+  enterpriseSearchStreamCreateSchema,
   enterpriseSearchSearchSchema,
   enterpriseSearchSearchHistorySchema,
   searchIdParamsSchema,
   addMessageParamsSchema,
+  addMessageStreamParamsSchema,
   conversationShareParamsSchema,
   conversationTitleParamsSchema,
   regenerateAnswersParamsSchema,
@@ -202,7 +204,7 @@ export function createConversationalRouter(container: Container): Router {
     '/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    ValidationMiddleware.validate(enterpriseSearchStreamCreateSchema),
     streamChat(appConfig),
   );
 
@@ -260,7 +262,7 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/messages/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    ValidationMiddleware.validate(addMessageParamsSchema),
+    ValidationMiddleware.validate(addMessageStreamParamsSchema),
     addMessageStream(appConfig),
   );
 

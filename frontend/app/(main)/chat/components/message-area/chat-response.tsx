@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Button, Heading, IconButton } from '@radix-ui/themes';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
@@ -14,15 +13,15 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard } from './ask-user-question-card';
+import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
+import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -100,6 +99,12 @@ interface ChatResponseProps {
   streamingCitationMaps?: CitationMaps | null;
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
+  /** recordId -> highest version seen anywhere in this conversation (see `MessageList`) — powers the "newer version available" hint on older cards. */
+  latestArtifactVersions?: Map<string, number>;
+  /** Live agent-activity transcript — only passed for the currently-streaming message. */
+  streamingParts?: MessagePart[];
+  /** Persisted agent-activity transcript from `ConversationMessage.parts` (absent for older messages). */
+  persistedParts?: MessagePart[];
   /**
    * Thread row key (`messagePairs[].key`) for list-scoped inline-citation
    * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
@@ -132,6 +137,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
+  latestArtifactVersions,
+  streamingParts,
+  persistedParts,
   citationMessageRowKey,
   createdAt,
   persistedAskUserQuestion,
@@ -158,7 +166,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, createdAt, persistedAskUserQuestion,
+    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -240,6 +248,110 @@ export const ChatResponse = React.memo(function ChatResponse({
     },
     [setPreviewFile, setPreviewMode],
   );
+
+  /**
+   * Streams `artifact.recordId` at `overrideVersion` (defaulting to
+   * `artifact.version`) and replaces the preview panel's content in place.
+   * Used both for the initial "Preview" click (`ArtifactsPanel.onPreview`)
+   * and for every later version switch (bound back to this same function as
+   * `ChatPreviewFile.onVersionChange`) — one code path, so streaming options
+   * (PDF conversion for PPT/DOCX, mime resolution, DOCX blob handling) never
+   * drift between the two entry points.
+   */
+  const loadArtifactPreview = useCallback(
+    async (artifact: ChatArtifact, overrideVersion?: number) => {
+      const version = overrideVersion ?? artifact.version;
+      const recordId = artifact.recordId;
+      const isSwitch = overrideVersion !== undefined;
+      const latestVersion = recordId ? latestArtifactVersions?.get(recordId) : undefined;
+      const effectiveLatest =
+        latestVersion !== undefined && version !== undefined
+          ? Math.max(latestVersion, version)
+          : latestVersion ?? version;
+      const onVersionChange = recordId
+        ? (v: number) => loadArtifactPreview(artifact, v)
+        : undefined;
+
+      if (recordId) {
+        // A version switch (not the initial open) — keep the current
+        // content on screen and only flip the small spinner in the version
+        // pill, so the panel doesn't flash back to the loading skeleton.
+        if (isSwitch) {
+          const current = useChatStore.getState().previewFile;
+          if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: true });
+        }
+        try {
+          const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+          const streamAsPdf =
+            isPresentationFile(artifact.mimeType, artifact.fileName) ||
+            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
+          const streamOptions = {
+            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
+            ...(version !== undefined ? { version } : {}),
+          };
+          const blob = await KnowledgeBaseApi.streamRecord(
+            recordId,
+            Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
+          );
+          const resolvedType = resolvePreviewMimeAfterStream(
+            artifact.mimeType,
+            artifact.fileName,
+            blob,
+            streamAsPdf,
+          );
+          const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
+          const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
+
+          // Release the previous blob URL now that nothing references it —
+          // otherwise every version switch leaks one object URL.
+          const previous = useChatStore.getState().previewFile;
+          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
+
+          setPreviewFile({
+            id: recordId,
+            url: objectUrl,
+            blob: isDocx ? blob : undefined,
+            name: artifact.fileName,
+            type: resolvedType,
+            size: artifact.sizeBytes,
+            hideFileDetails: true,
+            showDownload: true,
+            version,
+            latestVersion: effectiveLatest,
+            onVersionChange,
+            isSwitchingVersion: false,
+          });
+          return;
+        } catch {
+          if (isSwitch) {
+            // Keep showing the last successfully loaded version rather than
+            // falling back to a stale/foreign URL below.
+            const current = useChatStore.getState().previewFile;
+            if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
+            return;
+          }
+          // Initial-open failure — fall through to the URL-classification
+          // fallback below (never trusts an arbitrary marker URL, see
+          // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
+        }
+      }
+
+      setPreviewFile({
+        id: artifact.id,
+        url: artifact.downloadUrl,
+        name: artifact.fileName,
+        type: artifact.mimeType,
+        size: artifact.sizeBytes,
+        hideFileDetails: true,
+        showDownload: true,
+        version,
+        latestVersion: effectiveLatest,
+        onVersionChange,
+      });
+    },
+    [latestArtifactVersions, setPreviewFile],
+  );
+
   const pendingAskUserQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
@@ -296,15 +408,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? streamingCitationMaps
     : citationMaps;
 
-  // Known citation webUrls — lets processMarkdownContent strip web citation links
-  const citationWebUrls = useMemo(() => {
-    const urls = new Set<string>();
-    for (const citation of Object.values(effectiveCitationMaps.citations)) {
-      if (citation.webUrl) urls.add(citation.webUrl);
-    }
-    return urls.size > 0 ? urls : undefined;
-  }, [effectiveCitationMaps]);
-
   // Use streaming content when streaming, otherwise use the final answer.
   // Apply structural repair to in-progress content only — the final message
   // from the server is always complete and must not be patched.
@@ -313,7 +416,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     isStreaming && streamingContent
       ? repairStreamingMarkdown(streamingContent)
       : answer,
-    citationWebUrls,
   );
   // Extract persisted artifact + legacy download-task markers so the markdown
   // pipeline doesn't try to render them as raw text. The backend appends these
@@ -339,8 +441,40 @@ export const ChatResponse = React.memo(function ChatResponse({
       : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
-    currentStatusMessage ??
-    (isStreaming && !displayContent.trim() ? streamingFallbackStatus : null);
+    currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
+
+  // Live transcript while streaming, persisted transcript after reload —
+  // same components render either (see AgentActivityTimeline's docstring).
+  // Falls back to nothing for messages saved before this feature shipped.
+  const effectiveParts = isStreaming ? streamingParts : persistedParts;
+
+  // A multi-step (ReAct) response has at least one tool call, reasoning
+  // block, or sub-agent delegation. The trailing (unsettled) text streams
+  // straight into `AnswerContent` for both simple and multi-step responses
+  // — see `filterRootParts` in `agent-activity.tsx`. This keeps the common
+  // case (trailing text IS the final answer) seamless: it grows in the
+  // answer area as it streams and there's no jump when `RUN_FINISHED`
+  // lands. If it later turns out to be narration (a tool call/reasoning
+  // block follows), it's settled into the timeline and cleared from the
+  // answer buffer in the same update, so it never renders in both places.
+  const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
+  // Drives both the "Answer" separator and the collapsible-summary wrapper
+  // around a completed activity timeline — computed with the exact same
+  // filtering the timeline itself applies, so it never disagrees with what
+  // actually renders (e.g. a transcript containing only the isFinal part
+  // and nothing else shows no separator).
+  const visibleActivityParts = useMemo(
+    () => (effectiveParts ? getVisibleRootParts(effectiveParts, isStreaming) : []),
+    [effectiveParts, isStreaming],
+  );
+  const hasVisibleActivity = visibleActivityParts.length > 0;
+  // Collapse control is offered once narration/answer has started (or for
+  // completed messages). While only thinking/tools are streaming, keep the
+  // timeline always-visible with no collapse chrome.
+  const canCollapseActivity =
+    !isStreaming ||
+    !!displayContent ||
+    visibleActivityParts.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -363,24 +497,83 @@ export const ChatResponse = React.memo(function ChatResponse({
       case 'answer':
         return (
           <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Status indicator — always above content, same slot as ConfidenceIndicator */}
-            {isStreaming && streamingStatusToShow && (
-              <StatusMessageComponent status={streamingStatusToShow} />
-            )}
-
             {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
 
-            {/* Show content - either streaming or final.
-                Suppressed when an ask_user_question card (streaming or persisted)
-                owns this row so partial/final answer chunks are not shown
-                above the question card. */}
+            {/* Agent activity timeline — thinking / tool calls / sub-agents,
+                streamed live or rendered from the persisted transcript.
+                While streaming, the live status ("Thinking...", "Using
+                Jira Search...") renders as the LAST timeline entry instead
+                of a disconnected element below the answer — see
+                AgentActivityTimeline's `currentStatus` prop. Once narration
+                or the answer starts (or the response is complete), wrap in
+                CollapsibleActivitySection so the user can collapse the
+                trace if they want — never auto-collapsed while live.
+                Gated on `hasVisibleActivity` (not raw part count) — a
+                completed simple response's `effectiveParts` is just the one
+                `isFinal` text part, which the timeline itself filters out.
+                `isStreaming && multiStep` is OR'd in so the timeline stays
+                reachable while a multi-step run is active but hasn't
+                produced a visible part yet. */}
+            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              canCollapseActivity ? (
+                <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
+                  <AgentActivityTimeline
+                    parts={effectiveParts}
+                    isStreaming={isStreaming}
+                    // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+                    currentStatus={multiStep ? streamingStatusToShow : null}
+                    citationMaps={effectiveCitationMaps}
+                    citationCallbacks={wrappedCallbacks}
+                  />
+                </CollapsibleActivitySection>
+              ) : (
+                <AgentActivityTimeline
+                  parts={effectiveParts}
+                  isStreaming={isStreaming}
+                  currentStatus={multiStep ? streamingStatusToShow : null}
+                  citationMaps={effectiveCitationMaps}
+                  citationCallbacks={wrappedCallbacks}
+                />
+              )
+            )}
+
+            {/* Separator marking the handoff from "here's the work" to
+                "here's the answer" — only when there's activity actually
+                visible above (not just a lone isFinal part that the
+                timeline itself filtered out) and content to show below. */}
+            {hasVisibleActivity && displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <Box
+                className="agent-activity-enter"
+                style={{
+                  borderTop: '1px solid var(--slate-4)',
+                  marginTop: 'var(--space-1)',
+                  marginBottom: 'var(--space-3)',
+                }}
+              />
+            )}
+
+            {/* Show content - either streaming or final. Suppressed only
+                when an ask_user_question card (streaming or persisted) owns
+                this row so partial/final answer chunks aren't shown above
+                the question card. The trailing text streams straight in
+                here even for multi-step responses — see the `multiStep`
+                comment above. */}
             {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <AnswerContent
                 content={displayContent}
                 citationMaps={effectiveCitationMaps}
                 citationCallbacks={wrappedCallbacks}
               />
+            )}
+
+            {/* "Currently doing X…" status for SIMPLE (non-multi-step)
+                responses only — multi-step responses show the same status
+                as the last timeline entry instead (see above), rendered
+                LAST there for the same "tracks the bottom of the growing
+                message" reason this one is placed last here. */}
+            {isStreaming && streamingStatusToShow && !multiStep && (
+              <StatusMessageComponent status={streamingStatusToShow} />
             )}
 
             {/* Legacy download buttons */}
@@ -392,52 +585,32 @@ export const ChatResponse = React.memo(function ChatResponse({
             {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
-                onPreview={async (artifact) => {
-                  if (artifact.recordId) {
-                    try {
-                      const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                      const streamAsPdf =
-                        isPresentationFile(artifact.mimeType, artifact.fileName) ||
-                        isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-                      const streamOptions = streamAsPdf
-                        ? { convertTo: 'application/pdf' }
-                        : undefined;
-                      const blob = await KnowledgeBaseApi.streamRecord(
-                        artifact.recordId,
-                        streamOptions,
-                      );
-                      const resolvedType = resolvePreviewMimeAfterStream(
-                        artifact.mimeType,
-                        artifact.fileName,
-                        blob,
-                        !!streamOptions,
-                      );
-                      const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
-                      const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
-                      useChatStore.getState().setPreviewFile({
-                        id: artifact.recordId,
-                        url: objectUrl,
-                        blob: isDocx ? blob : undefined,
-                        name: artifact.fileName,
-                        type: resolvedType,
-                        size: artifact.sizeBytes,
-                        hideFileDetails: true,
-                        showDownload: true,
-                      });
-                      return;
-                    } catch {
-                      // Fall back to raw URL
-                    }
+                latestArtifactVersions={latestArtifactVersions}
+                onPreview={loadArtifactPreview}
+                onViewSource={async (codeArtifactId) => {
+                  // The code artifact is registered through the same pipeline as any
+                  // other record, so it streams/previews via the standard KB record
+                  // APIs exactly like the `recordId` path above — no separate endpoint.
+                  try {
+                    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+                    const [details, blob] = await Promise.all([
+                      KnowledgeBaseApi.getRecordDetails(codeArtifactId),
+                      KnowledgeBaseApi.streamRecord(codeArtifactId),
+                    ]);
+                    const objectUrl = URL.createObjectURL(blob);
+                    useChatStore.getState().setPreviewFile({
+                      id: codeArtifactId,
+                      url: objectUrl,
+                      name: details.record.recordName,
+                      type: details.record.mimeType || 'text/plain',
+                      size: details.record.fileRecord?.sizeInBytes ?? blob.size,
+                      hideFileDetails: true,
+                      showDownload: true,
+                    });
+                  } catch {
+                    // Source artifact may have been deleted/permission-revoked since —
+                    // fail silently, there is nothing actionable for the user here.
                   }
-                  useChatStore.getState().setPreviewFile({
-                    id: artifact.id,
-                    url: artifact.downloadUrl,
-                    name: artifact.fileName,
-                    type: artifact.mimeType,
-                    size: artifact.sizeBytes,
-                    hideFileDetails: true,
-                    showDownload: true,
-                  });
                 }}
               />
             )}
@@ -498,15 +671,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     }
   };
 
-  const [isQuestionHovered, setIsQuestionHovered] = useState(false);
-  const [isQuestionExpanded, setIsQuestionExpanded] = useState(false);
-
-  const QUESTION_CHAR_LIMIT = 250;
-  const isQuestionLong = question.length > QUESTION_CHAR_LIMIT;
-  const displayedQuestion = isQuestionExpanded || !isQuestionLong
-    ? question
-    : question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…';
-
   const handleEditQuery = useCallback(() => {
     if (!messageId || isStreaming) return;
     useCommandStore.getState().dispatch('showEditQuery', {
@@ -523,78 +687,23 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const shell = (
     <Box style={{ width: '100%' }}>
-      {/* Question Header with hover edit icon */}
       <Box
-        onMouseEnter={() => setIsQuestionHovered(true)}
-        onMouseLeave={() => setIsQuestionHovered(false)}
         style={{
-          marginBottom: (collections && collections.length > 0) || (appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0)) ? 'var(--space-3)' : 'var(--space-4)',
+          marginBottom:
+            (collections && collections.length > 0) ||
+            (appliedFilters &&
+              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
+              ? 'var(--space-3)'
+              : 'var(--space-4)',
         }}
       >
-        <Flex align="start" gap="2">
-          <Heading
-            size={isMobile ? '5' : isQuestionExpanded ? '3' : '5'}
-            weight="medium"
-            style={{
-              color: 'var(--slate-12)',
-              lineHeight: 1.3,
-              paddingTop: 'var(--space-3)',
-              flex: 1,
-            }}
-          >
-            {displayedQuestion}
-            {/* Edit pencil icon — appears on hover, only when not streaming */}
-            {!isStreaming && messageId && (
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size="1"
-                onClick={handleEditQuery}
-                style={{
-                  margin: '0 0 0 var(--space-2)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  opacity: isQuestionHovered ? 1 : 0,
-                  transition: 'opacity 0.15s ease',
-                  pointerEvents: isQuestionHovered ? 'auto' : 'none',
-                  verticalAlign: 'middle',
-                }}
-              >
-                <MaterialIcon
-                  name="edit"
-                  size={ICON_SIZES.PRIMARY}
-                  color="var(--slate-11)"
-                />
-              </IconButton>
-            )}
-          </Heading>
-        </Flex>
-
-        {isQuestionLong && (
-          <Button
-            color="gray"
-            size="2"
-            onClick={() => setIsQuestionExpanded((prev) => !prev)}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '2px',
-              marginTop: 'var(--space-2)',
-              cursor: 'pointer',
-              color: 'var(--slate-11)',
-              background: 'none',
-              padding: 0,
-              fontFamily: 'inherit',
-              height: 'auto',
-            }}
-          >
-            {isQuestionExpanded ? 'Show less' : 'Show more'}
-            <MaterialIcon
-              name={isQuestionExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down'}
-              size={ICON_SIZES.PRIMARY}
-            />
-          </Button>
-        )}
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        />
         {createdAt && (
           <Text
             size="1"

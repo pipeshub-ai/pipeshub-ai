@@ -668,8 +668,8 @@ if ! ${SKIP_WIZARD:-false}; then
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
-    arango*) DATA_STORE="arangodb"; GRAPH_DB_TYPE="arangodb" ;;
-    neo4j*)  DATA_STORE="neo4j";    GRAPH_DB_TYPE="neo4j" ;;
+    arango*) DATA_STORE="arangodb" ;;
+    neo4j*)  DATA_STORE="neo4j" ;;
   esac
 
   # ── 10. PORT SELECTION ──────────────────────────────────────────────────────
@@ -787,9 +787,8 @@ FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL}
 APP_PORT=${APP_PORT}
 
 # ── Graph database ──────────────────────────────────────────────────────────
-# DATA_STORE / GRAPH_DB_TYPE: "arangodb" or "neo4j"
+# DATA_STORE: "arangodb" or "neo4j"
 DATA_STORE=${DATA_STORE}
-GRAPH_DB_TYPE=${GRAPH_DB_TYPE}
 
 # ArangoDB (active when DATA_STORE=arangodb)
 ARANGO_DB_NAME=es

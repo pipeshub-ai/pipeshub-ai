@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   ConversationPagination,
   ModelInfo,
+  ReasoningEffort,
   SharedWithEntry,
   ConversationsListResponse,
 } from '@/chat/types';
@@ -151,6 +152,8 @@ export interface AgentDetail {
   _id: string;
   toolsets: AgentToolset[];
   knowledge: unknown[];
+  /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
+  skills?: AgentSkillReference[];
   /** Optional web-search provider attached to this agent. */
   webSearch?: {
     provider: string;
@@ -165,6 +168,8 @@ export interface AgentDetail {
   can_delete: boolean;
   can_share: boolean;
   can_view: boolean;
+  /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
+  defaultReasoningEffort?: ReasoningEffort | null;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
@@ -184,6 +189,23 @@ export interface KnowledgeBaseForBuilder {
   id: string;
   name: string;
   connectorId: string;
+}
+
+/** Skill row for agent builder palette — subset of `SkillMetadata` (see `workspace/skills/personal/types.ts`). */
+export interface SkillForBuilder {
+  name: string;
+  description: string;
+  category: string | null;
+}
+
+/** Skill entry as embedded on `AgentDetail.skills` (GET /agents/:id enrichment). */
+export interface AgentSkillReference {
+  name: string;
+  description?: string;
+  category?: string | null;
+  subcategory?: string | null;
+  version?: string;
+  status?: string;
 }
 
 // ── Knowledge Hub App Nodes (for agent builder apps palette) ─────

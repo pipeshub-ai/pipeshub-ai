@@ -393,9 +393,8 @@ class TestProcessImage:
                 events = await _collect(proc.process_image("rec-1", b"img", "vr-1"))
 
         assert len(events) == 2
-        # Record should have been updated with ENABLE_MULTIMODAL_MODELS status
-        upserted_doc = gp.batch_update_nodes.call_args[0][0][0]
-        assert upserted_doc["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
+        fields = gp.update_node.await_args.args[2]
+        assert fields["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
 
 
 # ===========================================================================
@@ -445,7 +444,7 @@ class TestProcessPdfWithDocling:
         """When Docling returns None, yields docling_failed event."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf.return_value = None
+        proc.docling_client.process_pdf.return_value = None
 
         events = await _collect(
             proc.process_pdf_with_docling(
@@ -464,27 +463,22 @@ class TestProcessPdfWithDocling:
         """When Docling succeeds, yields parsing_complete first."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf.return_value = {"pages": []}
+        proc.docling_client.process_pdf.return_value = MagicMock()
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
-        with patch("app.events.processor.DoclingProcessor") as mock_dp:
-            mock_dp_instance = MagicMock()
-            mock_dp_instance.process_pdf.return_value = []
-            mock_dp.return_value = mock_dp_instance
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
+            mock_pipeline_instance = AsyncMock()
+            mock_pipeline.return_value = mock_pipeline_instance
 
-            with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
-                 patch.object(proc, "_create_transform_context", return_value=MagicMock()):
-                mock_pipeline_instance = AsyncMock()
-                mock_pipeline.return_value = mock_pipeline_instance
-
-                events = await _collect(
-                    proc.process_pdf_with_docling(
-                        recordName="test.pdf",
-                        recordId="rec-1",
-                        pdf_binary=b"pdf-content",
-                        virtual_record_id="vr-1",
-                    )
+            events = await _collect(
+                proc.process_pdf_with_docling(
+                    recordName="test.pdf",
+                    recordId="rec-1",
+                    pdf_binary=b"pdf-content",
+                    virtual_record_id="vr-1",
                 )
+            )
 
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
@@ -702,7 +696,7 @@ class TestProcessBlocks:
             with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
                 from app.models.blocks import BlocksContainer
                 mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
-                with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+                with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                     events = await _collect(
                         proc.process_blocks(
                             recordName="test",
@@ -731,7 +725,7 @@ class TestProcessBlocks:
             with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
                 from app.models.blocks import BlocksContainer
                 mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
-                with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+                with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                     events = await _collect(
                         proc.process_blocks(
                             recordName="test",
@@ -775,7 +769,7 @@ class TestProcessBlocks:
         with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_bg:
             from app.models.blocks import BlocksContainer
             mock_bg.return_value = BlocksContainer(blocks=[], block_groups=[])
-            with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+            with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                 events = await _collect(
                     proc.process_blocks(
                         recordName="test",
@@ -811,26 +805,28 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_upsert_failure_logs_warning(self):
-        """Logs warning when batch_update_nodes returns False."""
+    async def test_update_failure_logs_and_returns(self):
+        # Failed status writes are non-fatal: log a warning and return so the
+        # caller can still complete the pipeline attempt.
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
         await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
         proc.logger.warning.assert_called()
+        assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_update_nodes.assert_awaited_once()
+        gp.update_node.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1467,7 +1463,7 @@ class TestProcessImageAdditional:
         """When neither embedding nor LLM is multimodal, should set ENABLE_MULTIMODAL_MODELS."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -1479,11 +1475,12 @@ class TestProcessImageAdditional:
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_no_multimodal_batch_update_failure_yields_events(self):
-        """When batch_update_nodes fails, log warning and still complete the phase."""
+    async def test_no_multimodal_update_failure_still_completes(self):
+        # Failed status writes are non-fatal: warn and still yield completion
+        # events so semaphores are released.
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -1491,7 +1488,8 @@ class TestProcessImageAdditional:
                 mock_emb.return_value = {"isMultimodal": False}
                 events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
-        assert len(events) == 2
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "indexing_complete"
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
@@ -1621,9 +1619,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_docling_parse_fails(self):
-        """Should yield docling_failed when parse returns None."""
+        """Should yield docling_failed when process_pdf returns None."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
@@ -1632,23 +1630,20 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
-        """Should yield docling_failed when create_blocks returns None."""
+        """Should yield docling_failed when process_pdf returns None."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
         ))
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "docling_failed"
+        assert events[0].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         gp.get_document.return_value = None
 
         events = await _collect(proc.process_pdf_with_docling(
@@ -1661,8 +1656,7 @@ class TestProcessPdfWithDocling:
     async def test_success_path(self):
         """Should yield both events on success."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         gp.get_document.return_value = _base_record_dict()
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
@@ -1759,27 +1753,33 @@ class TestProcessDocxDocument:
 
 
 class TestEnhanceTablesWithLlm:
-    """Tests for _enhance_tables_with_llm."""
+    """Tests for enhance_tables_with_llm."""
 
     @pytest.mark.asyncio
     async def test_no_table_groups(self):
         """Should return early when no TABLE block groups."""
         from app.models.blocks import BlocksContainer
+        from app.utils.table_enrichment import enhance_tables_with_llm
         proc, _, gp, config = _make_processor()
         container = BlocksContainer(blocks=[], block_groups=[])
-        await proc._enhance_tables_with_llm(container)
+        await enhance_tables_with_llm(container, proc.config_service, proc.logger)
         # No error, just returns
 
     @pytest.mark.asyncio
     async def test_table_group_no_markdown(self):
         """Should skip table groups without table_markdown."""
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        from app.utils.table_enrichment import enhance_tables_with_llm
         proc, _, gp, config = _make_processor()
         bg = BlockGroup(index=0, type=GroupType.TABLE, data=None)
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_ts:
-            await proc._enhance_tables_with_llm(container)
+        with patch(
+            "app.utils.table_enrichment.enrich_table_grid", new_callable=AsyncMock
+        ) as mock_ts:
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
         mock_ts.assert_not_awaited()
 
 
@@ -1802,28 +1802,29 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_batch_update_failure_logs_warning(self):
-        """Should log warning when batch_update_nodes returns False."""
+    async def test_update_failure_logs_and_returns(self):
+        # Failed status writes are non-fatal: log a warning and return.
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
         proc.logger.warning.assert_called()
+        assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_success(self):
         """Should update record status successfully."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_update_nodes.assert_awaited_once()
+        gp.update_node.assert_awaited_once()
 
 
 # ===========================================================================
@@ -2182,7 +2183,6 @@ class TestProcessBlocks:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
         proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
-        proc._enhance_tables_with_llm = AsyncMock()
 
         blocks_dict = '{"blocks": [], "block_groups": []}'
 
@@ -2202,7 +2202,6 @@ class TestProcessBlocks:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
         proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
-        proc._enhance_tables_with_llm = AsyncMock()
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline:
             mock_pipeline.return_value = AsyncMock()
@@ -2231,7 +2230,6 @@ class TestProcessBlocks:
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = None
         proc._process_blockgroups = AsyncMock(return_value=MagicMock(block_groups=[], blocks=[]))
-        proc._enhance_tables_with_llm = AsyncMock()
 
         events = await _collect(proc.process_blocks(
             "test", "rec-1", 1, "upload", "org-1",
@@ -2298,8 +2296,8 @@ class TestSeparateBlockGroupsByIndex:
 # ===========================================================================
 
 
-class TestEnhanceTablesWithLlm:
-    """Tests for Processor._enhance_tables_with_llm."""
+class TestEnhanceTablesWithLlmDetailed:
+    """Tests for enhance_tables_with_llm."""
 
     @pytest.mark.asyncio
     async def test_no_table_groups_skips(self):
@@ -2307,37 +2305,59 @@ class TestEnhanceTablesWithLlm:
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
         proc, _, _, _ = _make_processor()
 
+        from app.utils.table_enrichment import enhance_tables_with_llm
+
         # Only non-TABLE groups
         bg = BlockGroup(index=0, type=GroupType.SHEET)
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        await proc._enhance_tables_with_llm(container)
+        await enhance_tables_with_llm(container, proc.config_service, proc.logger)
         # Should not error
 
     @pytest.mark.asyncio
     async def test_table_group_no_markdown_skips(self):
-        """TABLE group with no table_markdown is skipped."""
+        """TABLE group with no data rows is skipped (not counted as an attempt)."""
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        from app.utils.table_enrichment import enhance_tables_with_llm
         proc, _, _, _ = _make_processor()
 
         bg = BlockGroup(index=0, type=GroupType.TABLE, data={"no_markdown": True})
         container = BlocksContainer(blocks=[], block_groups=[bg])
 
-        await proc._enhance_tables_with_llm(container)
-        proc.logger.warning.assert_called()
+        stats = await enhance_tables_with_llm(
+            container, proc.config_service, proc.logger, llm=MagicMock()
+        )
+        assert stats.attempted == 0
+        proc.logger.warning.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_table_group_llm_returns_none(self):
-        """When LLM returns None for table summary."""
-        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        """When the LLM call fails/returns nothing, the row degrades to simple text."""
+        from app.models.blocks import (
+            Block, BlockGroup, BlockGroupChildren, BlocksContainer,
+            BlockType, DataFormat, GroupType,
+        )
+        from app.utils.table_enrichment import enhance_tables_with_llm
         proc, _, _, config = _make_processor()
 
+        row_block = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"cells": ["a", "b"]},
+        )
         bg = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| A | B |"})
-        container = BlocksContainer(blocks=[], block_groups=[bg])
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        container = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = None
-            await proc._enhance_tables_with_llm(container)
+        with patch(
+            "app.utils.table_enrichment.enrich_table_grid", new_callable=AsyncMock
+        ) as mock_grid:
+            mock_grid.side_effect = RuntimeError("llm unavailable")
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger,
+                llm=MagicMock(), fail_on_all_errors=False,
+            )
 
         proc.logger.warning.assert_called()
 
@@ -2348,6 +2368,7 @@ class TestEnhanceTablesWithLlm:
             Block, BlockGroup, BlockGroupChildren, BlocksContainer,
             BlockType, GroupType, DataFormat,
         )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
         proc, _, _, config = _make_processor()
 
         # Create a table row block
@@ -2369,39 +2390,68 @@ class TestEnhanceTablesWithLlm:
 
         container = BlocksContainer(blocks=[row_block], block_groups=[bg])
 
-        mock_response = MagicMock()
-        mock_response.summary = "This is a test table"
-        mock_response.headers = ["Col_A", "Col_B"]
+        result = TableEnrichmentResult(
+            summary="This is a test table",
+            headers=["Col_A", "Col_B"],
+            header_row_count=0,
+            descriptions=["Row 1: val1 is in Col_A, val2 is in Col_B"],
+        )
 
-        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_summary:
-            mock_summary.return_value = mock_response
-            with patch("app.utils.indexing_helpers.get_rows_text", new_callable=AsyncMock) as mock_rows:
-                mock_rows.return_value = (["Row 1: val1 is in Col_A, val2 is in Col_B"], [])
-                await proc._enhance_tables_with_llm(container)
+        with patch(
+            "app.utils.table_enrichment.enrich_table_grid",
+            new_callable=AsyncMock,
+            return_value=result,
+        ):
+            await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
-        assert bg.description == "This is a test table"
         assert bg.data["table_summary"] == "This is a test table"
+        assert bg.data["column_headers"] == ["Col_A", "Col_B"]
 
     @pytest.mark.asyncio
     async def test_table_group_exception_continues(self):
-        """Exception in one table group doesn't stop others."""
-        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        """Exception in one table group doesn't stop others (only one attempted table
+
+        failing wouldn't raise anyway - use two tables so partial failure vs. success
+        is distinguishable and the record still isn't failed outright).
+        """
+        from app.models.blocks import (
+            Block, BlockGroup, BlockGroupChildren, BlocksContainer,
+            BlockType, DataFormat, GroupType, IndexRange,
+        )
+        from app.utils.table_enrichment import TableEnrichmentResult, enhance_tables_with_llm
         proc, _, _, config = _make_processor()
 
+        row1 = Block(index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"cells": ["a"]})
+        row2 = Block(index=1, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"cells": ["b"]})
+
         bg1 = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| A |"})
+        bg1.children = BlockGroupChildren.from_indices(block_indices=[0])
         bg2 = BlockGroup(index=1, type=GroupType.TABLE, data={"table_markdown": "| B |"})
-        container = BlocksContainer(blocks=[], block_groups=[bg1, bg2])
+        bg2.children = BlockGroupChildren.from_indices(block_indices=[1])
+        container = BlocksContainer(blocks=[row1, row2], block_groups=[bg1, bg2])
 
-        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_llm:
-            # First call raises, second succeeds
-            mock_response = MagicMock()
-            mock_response.summary = "Summary"
-            mock_response.headers = ["B"]
-            mock_llm.side_effect = [RuntimeError("fail"), mock_response]
+        success_result = TableEnrichmentResult(
+            summary="Summary", headers=["B"], header_row_count=0, descriptions=["d"]
+        )
 
-            await proc._enhance_tables_with_llm(container)
+        with patch(
+            "app.utils.table_enrichment.enrich_table_grid",
+            new_callable=AsyncMock,
+            side_effect=[RuntimeError("fail"), success_result],
+        ):
+            stats = await enhance_tables_with_llm(
+                container, proc.config_service, proc.logger, llm=MagicMock()
+            )
 
-        proc.logger.error.assert_called()
+        # Per-table failures are caught and logged as a warning inside
+        # _enhance_one_table, not surfaced as an exception to the gather - so the
+        # second table's success still lands.
+        proc.logger.warning.assert_called()
+        assert stats.attempted == 2
+        assert stats.succeeded == 1
+        assert stats.failed == 1
 
 
 # ===========================================================================
@@ -3323,7 +3373,7 @@ class TestProcessPdfWithDoclingCoverage:
     async def test_parse_failure(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
@@ -3332,23 +3382,21 @@ class TestProcessPdfWithDoclingCoverage:
 
     @pytest.mark.asyncio
     async def test_blocks_failure(self):
+        """process_pdf returning None covers parse/block failure in one shot."""
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
         )
-        assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         events = await _collect_events(
@@ -3394,30 +3442,51 @@ class TestEnhanceTablesWithLLM:
         """No TABLE block groups => returns early."""
         proc = _make_processor_cov()
         from app.models.blocks import BlocksContainer
+        from app.utils.table_enrichment import enhance_tables_with_llm
         bc = BlocksContainer(blocks=[], block_groups=[])
         # Should not raise
-        await proc._enhance_tables_with_llm(bc)
+        await enhance_tables_with_llm(bc, proc.config_service, proc.logger)
 
     @pytest.mark.asyncio
     async def test_table_group_no_markdown(self):
         """Table group without table_markdown in data => skipped."""
         proc = _make_processor_cov()
         from app.models.blocks import BlockGroup, BlocksContainer, GroupType
+        from app.utils.table_enrichment import enhance_tables_with_llm
         bg = BlockGroup(index=0, type=GroupType.TABLE, data={})
         bc = BlocksContainer(blocks=[], block_groups=[bg])
-        await proc._enhance_tables_with_llm(bc)
+        await enhance_tables_with_llm(
+            bc, proc.config_service, proc.logger, llm=MagicMock()
+        )
 
     @pytest.mark.asyncio
     async def test_table_group_no_llm_response(self):
-        """get_table_summary_n_headers returns None."""
-        proc = _make_processor_cov()
-        from app.models.blocks import BlockGroup, BlocksContainer, GroupType
-        bg = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| a | b |"})
-        bc = BlocksContainer(blocks=[], block_groups=[bg])
+        """enrich_table_grid failing on the only table degrades rather than raising
 
-        with patch("app.utils.indexing_helpers.get_table_summary_n_headers", new_callable=AsyncMock) as mock_fn:
+        (fail_on_all_errors defaults True, but with a single table that means the
+        whole call would raise - pass fail_on_all_errors=False to instead assert the
+        per-table degrade behavior)."""
+        proc = _make_processor_cov()
+        from app.models.blocks import (
+            Block, BlockGroup, BlockGroupChildren, BlocksContainer,
+            BlockType, DataFormat, GroupType,
+        )
+        from app.utils.table_enrichment import enhance_tables_with_llm
+
+        row = Block(index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"cells": ["a", "b"]})
+        bg = BlockGroup(index=0, type=GroupType.TABLE, data={"table_markdown": "| a | b |"})
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        bc = BlocksContainer(blocks=[row], block_groups=[bg])
+
+        with patch(
+            "app.utils.table_enrichment.enrich_table_grid", new_callable=AsyncMock
+        ) as mock_fn:
             mock_fn.return_value = None
-            await proc._enhance_tables_with_llm(bc)
+            mock_fn.side_effect = RuntimeError("no llm response")
+            await enhance_tables_with_llm(
+                bc, proc.config_service, proc.logger,
+                llm=MagicMock(), fail_on_all_errors=False,
+            )
 
 
 # ===================================================================
@@ -3457,7 +3526,7 @@ class TestProcessBlocksCoverage:
             with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
                 from app.models.blocks import BlocksContainer
                 mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
-                with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+                with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                     events = await _collect_events(
                         proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_bytes, "vr1")
                     )
@@ -3477,7 +3546,7 @@ class TestProcessBlocksCoverage:
             with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
                 from app.models.blocks import BlocksContainer
                 mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
-                with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+                with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                     events = await _collect_events(
                         proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
                     )
@@ -3501,7 +3570,7 @@ class TestProcessBlocksCoverage:
         with patch.object(proc, "_process_blockgroups", new_callable=AsyncMock) as mock_pd:
             from app.models.blocks import BlocksContainer
             mock_pd.return_value = BlocksContainer(blocks=[], block_groups=[])
-            with patch.object(proc, "_enhance_tables_with_llm", new_callable=AsyncMock):
+            with patch("app.events.processor.enhance_tables_with_llm", new_callable=AsyncMock):
                 events = await _collect_events(
                     proc.process_blocks("test", "r1", 1, "upload", "o1", blocks_dict, "vr1")
                 )

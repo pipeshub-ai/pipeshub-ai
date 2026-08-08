@@ -682,26 +682,29 @@ class TestEnsureConnectorInitializedDocNotFound:
 class TestGetConnectorStatsException:
     @pytest.mark.asyncio
     async def test_generic_exception_after_success(self):
-        """Line 1542 — exception in result parsing after logger is set."""
+        """When stats lookup returns success=False, raises 404."""
         from app.connectors.api.router import get_connector_stats_endpoint
         gp = AsyncMock()
-        gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": None})
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+
         req = MagicMock()
         req.app.container.logger.return_value = MagicMock()
-        req.state.user.get = lambda key, default=None: {
-            "orgId": "o1",
-            "userId": "user-1",
-        }.get(key, default)
-
-        # result["data"] is None so accessing it won't raise, but
-        # we make the result dict trigger an exception on the return
-        bad_result = MagicMock()
-        bad_result.__getitem__ = MagicMock(side_effect=[True, RuntimeError("serialize")])
-        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+        req.app.state.connector_registry = registry
+        req.state.user = MagicMock()
+        req.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "o1",
+        }.get(k, default)
+        req.headers = MagicMock()
+        req.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc:
             await get_connector_stats_endpoint(
                 request=req,
+                org_id="o1",
                 connector_id="c1",
                 graph_provider=gp,
             )
@@ -779,6 +782,19 @@ class TestGetPdfConversionInfo:
         record.mime_type = "application/vnd.google-apps.presentation"
         needs, name, ext = get_pdf_conversion_info(record)
         assert needs is True
+        assert ext == "pptx"
+
+    def test_pptx_mime_infers_missing_extension(self):
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "Quarterly review"
+        record.mime_type = (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert name == "Quarterly review"
+        assert ext == "pptx"
 
 
 # ============================================================================
@@ -1080,4 +1096,3 @@ class TestReindexConnectorKbAuth:
         
         assert exc.value.status_code == 404
         assert "not found or access denied" in exc.value.detail
-

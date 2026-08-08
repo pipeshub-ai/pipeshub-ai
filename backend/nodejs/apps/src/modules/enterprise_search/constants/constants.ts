@@ -38,9 +38,33 @@ export const FAIL_REASON_TYPE = {
 export type FailReasonType =
   (typeof FAIL_REASON_TYPE)[keyof typeof FAIL_REASON_TYPE];
 
+// Reasoning effort levels accepted from the client and forwarded to Python.
+// Shared between the Zod request validators and the Mongoose persistence
+// schemas so both stay in sync with the LLM factory's accepted values.
+//
+// 'none' is kept here for backward compatibility with already-persisted
+// conversations/agents (and isn't rejected on the wire), but is no longer
+// offered by either frontend selector and is silently floored to 'low' by
+// Python's LLM factory (`_reasoning_effort_kwargs` in
+// `backend/python/app/utils/aimodels.py`) instead of actually disabling
+// reasoning.
+export const REASONING_EFFORT_VALUES = [
+  'none',
+  'low',
+  'medium',
+  'high',
+  'max',
+] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
+
 export const PIPESHUB_CHAT_MODE = {
   WEB_SEARCH: 'web_search',
   INTERNAL_SEARCH: 'internal_search',
+  // Universal (non-scoped-agent) "Agent" query mode -- Python's agent loop
+  // decides internal-search vs web-search vs both per query. See
+  // `frontend/.../chat/types.ts::StreamChatModePayload`.
+  AGENT: 'agent',
   DEEP: 'deep',
   QUICK: 'quick',
   VERIFICATION: 'verification',

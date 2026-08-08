@@ -826,11 +826,11 @@ class AttachFileToRecordInput(BaseModel):
             "or 'I' (Inferred). Defaults to 'V'."
         ),
     )
-    visibility: str = Field(
-        default="AllUsers",
+    visibility: str | None = Field(
+        default=None,
         description=(
             "ContentDocumentLink Visibility: 'AllUsers' or "
-            "'InternalUsers'. Defaults to 'AllUsers'."
+            "'InternalUsers'. Omit unless the org has Communities enabled."
         ),
     )
 
@@ -855,7 +855,7 @@ class AttachFileToRecordData(BaseModel):
     content_document_id: str
     linked_record_id: str
     share_type: str
-    visibility: str
+    visibility: str | None = None
     weburl_linked_record_id: str | None = None
 
 

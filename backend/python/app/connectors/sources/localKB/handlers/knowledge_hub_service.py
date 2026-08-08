@@ -122,6 +122,8 @@ class KnowledgeHubService:
         flattened: bool | None = None,
         include: list[str] | None = None,
         record_group_ids: list[str] | None = None,
+        depth: int | None = None,
+        include_typed_records: bool = False,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
@@ -192,6 +194,7 @@ class KnowledgeHubService:
                     parent_type=parent_type,
                     include_filters=(parent_id is None) or (include and 'availableFilters' in include),
                     record_group_ids=record_group_ids,
+                    depth=depth,
                 )
             else:
                 # Browse mode - get direct children of parent only
@@ -280,6 +283,20 @@ class KnowledgeHubService:
                 ),
                 filters=filters_info,
             )
+
+            # Fetch typed records if requested (for LLM context enrichment)
+            if include_typed_records and items:
+                record_ids = [
+                    item.id for item in items
+                    if item.nodeType in (NodeType.RECORD, NodeType.FOLDER)
+                ]
+                if record_ids:
+                    try:
+                        response.typed_records = await self.graph_provider.get_typed_records_batch(
+                            record_ids
+                        )
+                    except Exception as e:
+                        self.logger.warning("Failed to fetch typed records: %s", e)
 
             # Add optional expansions
             if include:
@@ -585,6 +602,7 @@ class KnowledgeHubService:
         parent_type: str | None = None,
         include_filters: bool = False,
         record_group_ids: list[str] | None = None,
+        depth: int | None = None,
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """
         Search for nodes (global or scoped within parent).
@@ -613,6 +631,7 @@ class KnowledgeHubService:
             parent_id: Optional parent to scope search within (None for global)
             parent_type: Type of parent (required if parent_id provided)
             include_filters: Whether to fetch available filters
+            depth: Optional traversal depth limit for children-intersection search
 
         Returns:
             Tuple of (items, total_count, available_filters)
@@ -650,6 +669,7 @@ class KnowledgeHubService:
                 parent_id=parent_id,  # Can be None for global search
                 parent_type=parent_type,
                 record_group_ids=record_group_ids,
+                depth=depth,
             )
 
             nodes_data = result.get('nodes', [])

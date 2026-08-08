@@ -57,6 +57,7 @@ import { Conversation } from '../schema/conversation.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   addComputedFields,
+  assignAiModelField,
   buildAIResponseMessage,
   buildFiltersMetadata,
   buildConversationResponse,
@@ -71,6 +72,13 @@ import {
   sortMessages,
   attachPopulatedCitations,
 } from '../utils/utils';
+import {
+  AGUIEventType,
+  AGUI_PROTOCOL,
+  frameAGUI,
+  isAGUI,
+  resolveProtocol,
+} from '../utils/agui';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import EnterpriseSemanticSearch, {
   IEnterpriseSemanticSearch,
@@ -202,8 +210,11 @@ async function fetchDeletedAgentKeysForUser(
 
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
- * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
- * 
+ * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'quick' — Universal
+ * Agent Mode has no strategy selector, so it always runs the fast flat-ReAct loop rather
+ * than paying for the LLM tier-classifier round-trip 'auto' would trigger), or regular
+ * modes like 'quick'.
+ *
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
@@ -212,7 +223,7 @@ const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode:
   let agentMode: boolean = false;
 
   if (chatMode.includes('agent')) {
-    chatMode = chatMode.split(':')[1] || 'auto';
+    chatMode = chatMode.split(':')[1] || 'quick';
     agentMode = true;
   }
 
@@ -231,8 +242,7 @@ const assignToolsToPayload = (
   }
 };
 
-/**
- * Forward Slack / internal caller display name and email to the AI backend for LLM user context.
+/** Forward Slack / internal caller display name and email to the AI backend for LLM user context.
  * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
  * agent creator's userId/orgId.
  */
@@ -247,6 +257,21 @@ const assignCallerContextToAiPayload = (
   const rawEmail = body.callerEmail;
   if (typeof rawEmail === 'string' && rawEmail.trim()) {
     payload.callerEmail = rawEmail.trim();
+  }
+};
+
+/**
+ * Forward `agentCapabilities` from the request body to the AI backend payload.
+ * Only passes through when the value is a non-null object — ignores scalars and arrays.
+ * Capability booleans narrow what the Python backend enables; they never expand permissions.
+ */
+const assignAgentCapabilitiesToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  const caps = body.agentCapabilities;
+  if (caps !== null && caps !== undefined && typeof caps === 'object' && !Array.isArray(caps)) {
+    payload.agentCapabilities = caps;
   }
 };
 
@@ -595,6 +620,10 @@ const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'text/plain',
   'text/markdown',
   'text/mdx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'text/csv',
+  'text/tab-separated-values', // .tsv
 ]);
 
 export const uploadChatAttachments =
@@ -611,7 +640,7 @@ export const uploadChatAttachments =
       );
       if (invalidFile) {
         throw new BadRequestError(
-          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX.`,
+          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV.`,
         );
       }
 
@@ -758,6 +787,10 @@ export const streamChat =
     let savedConversation: IConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+    const protocol = resolveProtocol(
+      req.body as Record<string, unknown>,
+      req.query as Record<string, unknown>,
+    );
 
     if (!req.body.query) {
       throw new BadRequestError('Query is required');
@@ -820,13 +853,23 @@ export const streamChat =
 
       // Send initial connection event with conversationId + title and flush.
       // Title mirrors the persisted row (initial slice of query); avoids an extra
-      // GET /conversations/:id just for sidebar display while streaming.
+      // GET /conversations/:id just for sidebar display while streaming. AG-UI
+      // mode: this becomes `CUSTOM{name:"conversation_created"}` — see
+      // `streamAgentConversation`'s identical treatment.
       res.write(
-        `event: connected\ndata: ${JSON.stringify({
-          message: 'SSE connection established',
-          conversationId: newConversationId,
-          title: savedConversation.title || undefined,
-        })}\n\n`,
+        isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.CUSTOM, {
+              name: 'conversation_created',
+              value: {
+                conversationId: newConversationId,
+                title: savedConversation.title || undefined,
+              },
+            })
+          : `event: connected\ndata: ${JSON.stringify({
+              message: 'SSE connection established',
+              conversationId: newConversationId,
+              title: savedConversation.title || undefined,
+            })}\n\n`,
       );
       (res as any).flush?.();
 
@@ -842,13 +885,18 @@ export const streamChat =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: chatMode,
         conversationId: newConversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        // Explicit protocol propagation — Node hand-builds this request body,
+        // so a header alone would never reach Python (see agui.ts docstring).
+        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
+        assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -891,6 +939,7 @@ export const streamChat =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
+        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -905,7 +954,64 @@ export const streamChat =
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
 
-            if (eventType === 'complete' && dataLine) {
+            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
+              // Root RUN_FINISHED's `result` IS `completion_data` — see
+              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
+              // frames carry no `result` and are just forwarded through below.
+              try {
+                const parsed = JSON.parse(dataLine);
+                if (parsed.result) {
+                  completeData = parsed.result;
+                  logger.debug('Captured RUN_FINISHED result from AI backend', {
+                    requestId,
+                    conversationId: savedConversation?._id,
+                    answer: completeData?.answer,
+                    citationsCount: completeData?.citations?.length || 0,
+                  });
+                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
+                  // own enriched RUN_FINISHED after saving, same as `complete`.
+                } else {
+                  filteredChunk += event + '\n\n';
+                }
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_FINISHED event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  void markConversationFailed(
+                    savedConversation as IConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_ERROR event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
                 logger.debug('Captured complete event data from AI backend', {
@@ -925,7 +1031,7 @@ export const streamChat =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'error' && dataLine) {
+            } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
@@ -977,6 +1083,70 @@ export const streamChat =
                 }
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && savedConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.value.toolData ?? eventData.value,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse CUSTOM event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
+            } else if (!agui && eventType === 'ask_user_question' && dataLine && savedConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData.status === 'success') {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.toolData ?? eventData,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse ask_user_question event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
             } else {
               // Forward all other non-complete events
               filteredChunk += event + '\n\n';
@@ -1016,7 +1186,9 @@ export const streamChat =
 
             // Send final response event with the complete conversation data
             res.write(
-              `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
             );
 
             logger.debug(
@@ -1038,9 +1210,14 @@ export const streamChat =
 
             // Send error event
             res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                    message: 'No complete response received from AI service',
+                    code: 'no_response',
+                  })
+                : `event: error\ndata: ${JSON.stringify({
+                    error: 'No complete response received from AI service',
+                  })}\n\n`,
             );
           }
         } catch (dbError: any) {
@@ -1062,10 +1239,15 @@ export const streamChat =
 
           // Send error event
           res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'Failed to save conversation',
-              details: dbError.message,
-            })}\n\n`,
+            isAGUI(protocol)
+              ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                  message: 'Failed to save conversation',
+                  code: 'save_error',
+                })
+              : `event: error\ndata: ${JSON.stringify({
+                  error: 'Failed to save conversation',
+                  details: dbError.message,
+                })}\n\n`,
           );
         }
 
@@ -1093,10 +1275,15 @@ export const streamChat =
           });
         }
 
-        const errorEvent = `event: error\ndata: ${JSON.stringify({
-          error: error.message || 'Stream error occurred',
-          details: error.message,
-        })}\n\n`;
+        const errorEvent = isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.RUN_ERROR, {
+              message: error.message || 'Stream error occurred',
+              code: 'stream_error',
+            })
+          : `event: error\ndata: ${JSON.stringify({
+              error: error.message || 'Stream error occurred',
+              details: error.message,
+            })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
@@ -1129,10 +1316,15 @@ export const streamChat =
         error: error.message,
         stack: error.stack,
       });
-      const errorEvent = `event: error\ndata: ${JSON.stringify({
-        error: error.message || 'Internal server error',
-        details: error.message,
-      })}\n\n`;
+      const errorEvent = isAGUI(protocol)
+        ? frameAGUI(AGUIEventType.RUN_ERROR, {
+            message: error.message || 'Internal server error',
+            code: 'internal_error',
+          })
+        : `event: error\ndata: ${JSON.stringify({
+            error: error.message || 'Internal server error',
+            details: error.message,
+          })}\n\n`;
       res.write(errorEvent);
       res.end();
     } finally {
@@ -1293,6 +1485,7 @@ export const createConversation =
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
+          reasoningEffort: req.body.reasoningEffort || null,
           chatMode: req.body.chatMode || 'quick',
         },
       };
@@ -1617,6 +1810,7 @@ export const addMessage =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
+            reasoningEffort: req.body.reasoningEffort || null,
             chatMode: req.body.chatMode || 'quick',
           },
         };
@@ -1820,6 +2014,10 @@ export const addMessageStream =
     let existingConversation: IConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+    const protocol = resolveProtocol(
+      req.body as Record<string, unknown>,
+      req.query as Record<string, unknown>,
+    );
 
     if (!req.body.query) {
       throw new BadRequestError('Query is required');
@@ -1852,11 +2050,12 @@ export const addMessageStream =
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
 
@@ -1901,9 +2100,15 @@ export const addMessageStream =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
+      // Send initial connection event and flush. AG-UI mode: this becomes
+      // `CUSTOM{name:"conversation_created"}` — see `streamAgentConversation`.
       res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
+        isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.CUSTOM, {
+              name: 'conversation_created',
+              value: { conversationId },
+            })
+          : `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
       );
       (res as any).flush?.();
 
@@ -1947,13 +2152,18 @@ export const addMessageStream =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: chatMode,
         conversationId: conversationId || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        // Explicit protocol propagation — Node hand-builds this request body,
+        // so a header alone would never reach Python (see agui.ts docstring).
+        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
       if (agentMode) {
         assignToolsToPayload(aiPayload, req.body.tools);
+        assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
       }
 
       const aiCommandOptions: AICommandOptions = {
@@ -1998,6 +2208,7 @@ export const addMessageStream =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
+        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -2011,7 +2222,60 @@ export const addMessageStream =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (eventType === 'complete' && dataLine) {
+            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
+              // Root RUN_FINISHED's `result` IS `completion_data` — see
+              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
+              // frames carry no `result` and are just forwarded through below.
+              try {
+                const parsed = JSON.parse(dataLine);
+                if (parsed.result) {
+                  completeData = parsed.result;
+                  logger.debug('Captured RUN_FINISHED result from AI backend', {
+                    requestId,
+                    conversationId: existingConversation?._id,
+                    answer: completeData?.answer,
+                    citationsCount: completeData?.citations?.length || 0,
+                  });
+                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
+                  // own enriched RUN_FINISHED after saving, same as `complete`.
+                } else {
+                  filteredChunk += event + '\n\n';
+                }
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_FINISHED event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine);
+                const errorMessage = errorData.message || 'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                void markConversationFailed(
+                  existingConversation as IConversationDocument,
+                  errorMessage,
+                  session,
+                  'streaming_error',
+                  errorData.stack,
+                ).catch((markErr: any) => {
+                  logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
+                    requestId,
+                    error: markErr?.message,
+                  });
+                });
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_ERROR event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
                 logger.debug('Captured complete event data from AI backend', {
@@ -2031,7 +2295,7 @@ export const addMessageStream =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'error' && dataLine) {
+            } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
@@ -2039,7 +2303,7 @@ export const addMessageStream =
                   errorData.error ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                markConversationFailed(
+                void markConversationFailed(
                   existingConversation as IConversationDocument,
                   errorMessage,
                   session,
@@ -2048,7 +2312,12 @@ export const addMessageStream =
                   errorData.metadata
                     ? new Map(Object.entries(errorData.metadata))
                     : undefined,
-                );
+                ).catch((markErr: any) => {
+                  logger.error('Failed to mark conversation from AI error SSE', {
+                    requestId,
+                    error: markErr?.message,
+                  });
+                });
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -2059,16 +2328,85 @@ export const addMessageStream =
                 upstreamAiErrorEventForwarded = true;
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
-                  markConversationFailed(
+                  void markConversationFailed(
                     existingConversation as IConversationDocument,
                     errorMessage,
                     session,
                     'parse_error',
                     parseError.stack,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               }
+            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && existingConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.value.toolData ?? eventData.value,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse CUSTOM event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
+            } else if (!agui && eventType === 'ask_user_question' && dataLine && existingConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData.status === 'success') {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.toolData ?? eventData,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse ask_user_question event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
             } else {
               // Forward all non-complete events
               filteredChunk += event + '\n\n';
@@ -2151,7 +2489,9 @@ export const addMessageStream =
 
               // Send final response event with the complete conversation data
               res.write(
-                `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+                isAGUI(protocol)
+                  ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                  : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
 
               logger.debug(
@@ -2220,9 +2560,14 @@ export const addMessageStream =
 
           // Send error event
           res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'No complete response received from AI service',
-            })}\n\n`,
+            isAGUI(protocol)
+              ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                  message: 'No complete response received from AI service',
+                  code: 'no_response',
+                })
+              : `event: error\ndata: ${JSON.stringify({
+                  error: 'No complete response received from AI service',
+                })}\n\n`,
           );
         }
         } catch (dbError: any) {
@@ -2234,10 +2579,15 @@ export const addMessageStream =
 
           // Send error event
           res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'Failed to save AI response',
-              details: dbError.message,
-            })}\n\n`,
+            isAGUI(protocol)
+              ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                  message: 'Failed to save AI response',
+                  code: 'save_error',
+                })
+              : `event: error\ndata: ${JSON.stringify({
+                  error: 'Failed to save AI response',
+                  details: dbError.message,
+                })}\n\n`,
           );
         }
 
@@ -2264,10 +2614,15 @@ export const addMessageStream =
           });
         }
 
-        const errorEvent = `event: error\ndata: ${JSON.stringify({
-          error: error.message || 'Stream error occurred',
-          details: error.message,
-        })}\n\n`;
+        const errorEvent = isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.RUN_ERROR, {
+              message: error.message || 'Stream error occurred',
+              code: 'stream_error',
+            })
+          : `event: error\ndata: ${JSON.stringify({
+              error: error.message || 'Stream error occurred',
+              details: error.message,
+            })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
@@ -2324,10 +2679,15 @@ export const addMessageStream =
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
 
-      const errorEvent = `event: error\ndata: ${JSON.stringify({
-        error: error.message || 'Internal server error',
-        details: error.message,
-      })}\n\n`;
+      const errorEvent = isAGUI(protocol)
+        ? frameAGUI(AGUIEventType.RUN_ERROR, {
+            message: error.message || 'Internal server error',
+            code: 'internal_error',
+          })
+        : `event: error\ndata: ${JSON.stringify({
+            error: error.message || 'Internal server error',
+            details: error.message,
+          })}\n\n`;
       res.write(errorEvent);
       res.end();
     } finally {
@@ -2362,6 +2722,9 @@ export const getAllConversations = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId } = req.query;
     logger.debug('Fetching conversations', {
       requestId,
@@ -3138,6 +3501,10 @@ async function regenerateAnswersInternal(
   let messageIndex = -1;
 
   const modelInfo = extractModelInfo(req.body);
+  const protocol = resolveProtocol(
+    req.body as Record<string, unknown>,
+    req.query as Record<string, unknown>,
+  );
 
   // Helper function to validate and get conversation
   async function performRegenerateAnswersValidation(
@@ -3211,7 +3578,7 @@ async function regenerateAnswersInternal(
 
   try {
     // Initialize SSE response
-    initializeSSEResponse(res);
+    initializeSSEResponse(res, protocol);
 
     logger.debug('Attempting to regenerate answers via stream', {
       requestId,
@@ -3258,13 +3625,16 @@ async function regenerateAnswersInternal(
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
+      reasoningEffort: req.body.reasoningEffort || null,
       chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
+      ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
+      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
     }
 
     const regenEndpoint = regenIsAgentMode
@@ -3320,6 +3690,7 @@ async function regenerateAnswersInternal(
             citationsCount: completeData?.citations?.length || 0,
           });
         },
+        protocol,
       );
     });
 
@@ -3346,6 +3717,7 @@ async function regenerateAnswersInternal(
               savedCitations.length,
               requestId || '',
               startTime,
+              protocol,
             );
 
             logger.debug(
@@ -3369,6 +3741,7 @@ async function regenerateAnswersInternal(
                 session,
                 requestId || '',
                 'regeneration_error',
+                protocol,
               );
             }
 
@@ -3404,14 +3777,18 @@ async function regenerateAnswersInternal(
                 errorMessage,
                 undefined,
                 plainConversation,
+                protocol,
               );
             } else {
-              await sendSSEErrorEvent(res, errorMessage);
+              await sendSSEErrorEvent(res, errorMessage, undefined, undefined, protocol);
             }
           } else {
             await sendSSEErrorEvent(
               res,
               'No complete response received from AI service',
+              undefined,
+              undefined,
+              protocol,
             );
           }
         }
@@ -3449,9 +3826,10 @@ async function regenerateAnswersInternal(
                 errorMessage,
                 dbError.message,
                 plainConversation,
+                protocol,
               );
             } else {
-              await sendSSEErrorEvent(res, errorMessage, dbError.message);
+              await sendSSEErrorEvent(res, errorMessage, dbError.message, undefined, protocol);
             }
           } catch (replaceError: any) {
             logger.error(
@@ -3465,6 +3843,8 @@ async function regenerateAnswersInternal(
               res,
               'Failed to save regenerated AI response',
               dbError.message,
+              undefined,
+              protocol,
             );
           }
         } else {
@@ -3472,6 +3852,8 @@ async function regenerateAnswersInternal(
             res,
             'Failed to save regenerated AI response',
             dbError.message,
+            undefined,
+            protocol,
           );
         }
       }
@@ -3494,6 +3876,7 @@ async function regenerateAnswersInternal(
           session,
           requestId || '',
           'stream_error',
+          protocol,
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
@@ -3505,6 +3888,8 @@ async function regenerateAnswersInternal(
           res,
           error.message || 'Stream error occurred',
           error.message,
+          undefined,
+          protocol,
         );
       }
       res.end();
@@ -3532,6 +3917,7 @@ async function regenerateAnswersInternal(
         session,
         requestId || '',
         'regeneration_error',
+        protocol,
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
@@ -3543,6 +3929,8 @@ async function regenerateAnswersInternal(
         res,
         error.message || 'Internal server error',
         error.message,
+        undefined,
+        protocol,
       );
     }
     res.end();
@@ -4028,6 +4416,9 @@ export const listAllArchivesConversation = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId } = req.query;
 
     logger.debug('Fetching all archived conversations', {
@@ -4398,9 +4789,12 @@ export const searchHistory = async (
   const startTime = Date.now();
 
   try {
-    const { page, limit, skip } = getPaginationParams(req);
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+    const { page, limit, skip } = getPaginationParams(req);
     const sortOptions = buildSortOptions(req);
     const filter = buildFilter(req, orgId, userId);
 
@@ -4757,6 +5151,9 @@ export const archiveSearch = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = buildFilter(req, orgId, userId, searchId);
 
     logger.debug('Attempting to archive search', {
@@ -4830,6 +5227,9 @@ export const unarchiveSearch = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = {
       ...buildFilter(req, orgId, userId, searchId),
       isArchived: true,
@@ -4903,6 +5303,9 @@ export const deleteSearchHistory = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = buildFilter(req, orgId, userId);
 
     logger.debug('Attempting to delete search history', {
@@ -5335,6 +5738,10 @@ export const deleteAgent =
     let savedConversation: IAgentConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+    const protocol = resolveProtocol(
+      req.body as Record<string, unknown>,
+      req.query as Record<string, unknown>,
+    );
 
     if (!req.body.query) {
       throw new BadRequestError('Query is required');
@@ -5401,13 +5808,24 @@ export const deleteAgent =
 
       // Send initial connection event with conversationId + title and flush.
       // Title mirrors the persisted agent-conversation row; avoids a heavy fetch
-      // client-side just for the sidebar pending row.
+      // client-side just for the sidebar pending row. AG-UI mode: this becomes
+      // `CUSTOM{name:"conversation_created"}` — it can never become `RUN_STARTED`
+      // itself (Python emits the real one once it starts the run); this only
+      // exists because Node creates the conversation row BEFORE contacting Python.
       res.write(
-        `event: connected\ndata: ${JSON.stringify({
-          message: 'SSE connection established',
-          conversationId: newAgentConversationId,
-          title: savedConversation.title || undefined,
-        })}\n\n`,
+        isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.CUSTOM, {
+              name: 'conversation_created',
+              value: {
+                conversationId: newAgentConversationId,
+                title: savedConversation.title || undefined,
+              },
+            })
+          : `event: connected\ndata: ${JSON.stringify({
+              message: 'SSE connection established',
+              conversationId: newAgentConversationId,
+              title: savedConversation.title || undefined,
+            })}\n\n`,
       );
       (res as any).flush?.();
 
@@ -5423,13 +5841,18 @@ export const deleteAgent =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: newAgentConversationId || null,
+        // Explicit protocol propagation — Node hand-builds this request body,
+        // so a header alone would never reach Python (see agui.ts docstring).
+        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
 
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
 
       logger.info('aiPayload', aiPayload);
 
@@ -5475,6 +5898,7 @@ export const deleteAgent =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
+        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -5489,7 +5913,97 @@ export const deleteAgent =
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
 
-            if (eventType === 'complete' && dataLine) {
+            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
+              // Root RUN_FINISHED's `result` IS `completion_data` — see
+              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
+              // frames carry no `result` and are just forwarded through below.
+              try {
+                const parsed = JSON.parse(dataLine);
+                if (parsed.result) {
+                  completeData = parsed.result;
+                  logger.debug('Captured RUN_FINISHED result from AI backend', {
+                    requestId,
+                    conversationId: savedConversation?._id,
+                    answer: completeData?.answer,
+                    citationsCount: completeData?.citations?.length || 0,
+                    agentKey,
+                  });
+                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
+                  // own enriched RUN_FINISHED after saving, same as `complete`.
+                } else {
+                  filteredChunk += event + '\n\n';
+                }
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_FINISHED event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine) as Record<string, unknown>;
+                const errorMessage =
+                  (typeof errorData.message === 'string' && errorData.message) ||
+                  'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                if (savedConversation) {
+                  void markAgentConversationFailed(
+                    savedConversation as IAgentConversationDocument,
+                    errorMessage,
+                    session,
+                    'streaming_error',
+                    typeof errorData.stack === 'string' ? errorData.stack : undefined,
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark agent conversation from AI RUN_ERROR SSE', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
+                }
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_ERROR event data from AI stream', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && savedConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.value.toolData ?? eventData.value,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse CUSTOM event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
+            } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
                 logger.debug('Captured complete event data from AI backend', {
@@ -5510,7 +6024,7 @@ export const deleteAgent =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'error' && dataLine) {
+            } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine) as Record<string, unknown>;
                 const errorMessage =
@@ -5562,7 +6076,7 @@ export const deleteAgent =
                 }
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'ask_user_question' && dataLine && savedConversation) {
+            } else if (!agui && eventType === 'ask_user_question' && dataLine && savedConversation) {
               try {
                 const eventData = JSON.parse(dataLine);
                 if (eventData.status === 'success') {
@@ -5633,7 +6147,9 @@ export const deleteAgent =
 
             // Send final response event with the complete conversation data
             res.write(
-              `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
             );
 
             logger.debug(
@@ -5655,9 +6171,14 @@ export const deleteAgent =
 
             // Send error event
             res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                    message: 'No complete response received from AI service',
+                    code: 'no_response',
+                  })
+                : `event: error\ndata: ${JSON.stringify({
+                    error: 'No complete response received from AI service',
+                  })}\n\n`,
             );
           }
         } catch (dbError: any) {
@@ -5670,10 +6191,15 @@ export const deleteAgent =
 
           // Send error event
           res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'Failed to save conversation',
-              details: dbError.message,
-            })}\n\n`,
+            isAGUI(protocol)
+              ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                  message: 'Failed to save conversation',
+                  code: 'save_error',
+                })
+              : `event: error\ndata: ${JSON.stringify({
+                  error: 'Failed to save conversation',
+                  details: dbError.message,
+                })}\n\n`,
           );
         }
 
@@ -5700,10 +6226,15 @@ export const deleteAgent =
           });
         }
 
-        const errorEvent = `event: error\ndata: ${JSON.stringify({
-          error: error.message || 'Stream error occurred',
-          details: error.message,
-        })}\n\n`;
+        const errorEvent = isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.RUN_ERROR, {
+              message: error.message || 'Stream error occurred',
+              code: 'stream_error',
+            })
+          : `event: error\ndata: ${JSON.stringify({
+              error: error.message || 'Stream error occurred',
+              details: error.message,
+            })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
@@ -5730,10 +6261,15 @@ export const deleteAgent =
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
 
-      const errorEvent = `event: error\ndata: ${JSON.stringify({
-        error: error.message || 'Internal server error',
-        details: error.message,
-      })}\n\n`;
+      const errorEvent = isAGUI(protocol)
+        ? frameAGUI(AGUIEventType.RUN_ERROR, {
+            message: error.message || 'Internal server error',
+            code: 'internal_error',
+          })
+        : `event: error\ndata: ${JSON.stringify({
+            error: error.message || 'Internal server error',
+            details: error.message,
+          })}\n\n`;
       res.write(errorEvent);
       res.end();
     } finally {
@@ -5822,6 +6358,7 @@ export const createAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
@@ -6080,11 +6617,12 @@ export const createAgentConversation =
           'modelProvider',
           'chatMode',
           'modelFriendlyName',
+          'reasoningEffort',
         ];
         for (const field of fieldsToUpdate) {
           const value = req.body[field];
           if (value !== undefined && value !== null) {
-            (conversation.modelInfo as IAIModel)[field] = value;
+            assignAiModelField(conversation.modelInfo as IAIModel, field, value);
           }
         }
 
@@ -6115,6 +6653,7 @@ export const createAgentConversation =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
+            reasoningEffort: req.body.reasoningEffort || null,
             chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
@@ -6344,6 +6883,10 @@ export const addMessageStreamToAgentConversation =
     let existingConversation: IAgentConversationDocument | null = null;
 
     const modelInfo = extractModelInfo(req.body);
+    const protocol = resolveProtocol(
+      req.body as Record<string, unknown>,
+      req.query as Record<string, unknown>,
+    );
 
     if (!req.body.query) {
       throw new BadRequestError('Query is required');
@@ -6376,11 +6919,12 @@ export const addMessageStreamToAgentConversation =
         'modelProvider',
         'chatMode',
         'modelFriendlyName',
+        'reasoningEffort',
       ];
       for (const field of fieldsToUpdate) {
         const value = req.body[field];
         if (value !== undefined && value !== null) {
-          (conversation.modelInfo as IAIModel)[field] = value;
+          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
         }
       }
 
@@ -6426,9 +6970,15 @@ export const addMessageStreamToAgentConversation =
         'X-Accel-Buffering': 'no',
       });
 
-      // Send initial connection event and flush
+      // Send initial connection event and flush. AG-UI mode: this becomes
+      // `CUSTOM{name:"conversation_created"}` — see `streamAgentConversation`.
       res.write(
-        `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
+        isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.CUSTOM, {
+              name: 'conversation_created',
+              value: { conversationId },
+            })
+          : `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
       );
       (res as any).flush?.();
 
@@ -6472,13 +7022,18 @@ export const addMessageStreamToAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        reasoningEffort: req.body.reasoningEffort || null,
         chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
         conversationId: conversationId || null,
+        // Explicit protocol propagation — Node hand-builds this request body,
+        // so a header alone would never reach Python (see agui.ts docstring).
+        ...(isAGUI(protocol) ? { protocol: AGUI_PROTOCOL } : {}),
       };
       assignToolsToPayload(aiPayload, req.body.tools);
       assignCallerContextToAiPayload(aiPayload, req.body as Record<string, unknown>);
+      assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
 
       const aiCommandOptions: AICommandOptions = {
         uri: `${appConfig.aiBackend}/api/v1/agent/${agentKey}/chat/stream`,
@@ -6522,6 +7077,7 @@ export const addMessageStreamToAgentConversation =
         buffer = events.pop() || ''; // Keep incomplete event in buffer
 
         let filteredChunk = '';
+        const agui = isAGUI(protocol);
 
         for (const event of events) {
           if (event.trim()) {
@@ -6535,7 +7091,87 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (eventType === 'complete' && dataLine) {
+            if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
+              // Root RUN_FINISHED's `result` IS `completion_data` — see
+              // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
+              // frames carry no `result` and are just forwarded through below.
+              try {
+                const parsed = JSON.parse(dataLine);
+                if (parsed.result) {
+                  completeData = parsed.result;
+                  logger.debug('Captured RUN_FINISHED result from AI backend', {
+                    requestId,
+                    conversationId: existingConversation?._id,
+                    answer: completeData?.answer,
+                    citationsCount: completeData?.citations?.length || 0,
+                  });
+                  // DO NOT forward the root RUN_FINISHED — Node re-emits its
+                  // own enriched RUN_FINISHED after saving, same as `complete`.
+                } else {
+                  filteredChunk += event + '\n\n';
+                }
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_FINISHED event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+              try {
+                const errorData = JSON.parse(dataLine);
+                const errorMessage = errorData.message || 'Unknown error occurred';
+                upstreamAiErrorEventForwarded = true;
+                markAgentConversationFailed(
+                  existingConversation as IAgentConversationDocument,
+                  errorMessage,
+                  session,
+                  'streaming_error',
+                  errorData.stack,
+                );
+                filteredChunk += event + '\n\n';
+              } catch (parseError: any) {
+                logger.error('Failed to parse RUN_ERROR event data', {
+                  requestId,
+                  parseError: parseError.message,
+                  dataLine,
+                });
+                filteredChunk += event + '\n\n';
+              }
+            } else if (agui && eventType === AGUIEventType.CUSTOM && dataLine && existingConversation) {
+              try {
+                const eventData = JSON.parse(dataLine);
+                if (eventData?.name === 'ask_user_question' && eventData.value) {
+                  const toolCallMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{
+                      toolName: 'ask_user_question',
+                      toolResult: eventData.value.toolData ?? eventData.value,
+                    }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: toolCallMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                }
+              } catch (parseErr: any) {
+                logger.warn('Failed to parse CUSTOM event data', {
+                  requestId,
+                  error: parseErr?.message,
+                });
+              }
+              filteredChunk += event + '\n\n';
+            } else if (!agui && eventType === 'complete' && dataLine) {
               try {
                 completeData = JSON.parse(dataLine);
                 logger.debug('Captured complete event data from AI backend', {
@@ -6555,7 +7191,7 @@ export const addMessageStreamToAgentConversation =
                 // Forward the event if we can't parse it
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'error' && dataLine) {
+            } else if (!agui && eventType === 'error' && dataLine) {
               try {
                 const errorData = JSON.parse(dataLine);
                 const errorMessage =
@@ -6592,7 +7228,7 @@ export const addMessageStreamToAgentConversation =
                 }
                 filteredChunk += event + '\n\n';
               }
-            } else if (eventType === 'ask_user_question' && dataLine && existingConversation) {
+            } else if (!agui && eventType === 'ask_user_question' && dataLine && existingConversation) {
               try {
                 const eventData = JSON.parse(dataLine);
                 if (eventData.status === 'success') {
@@ -6706,7 +7342,9 @@ export const addMessageStreamToAgentConversation =
 
               // Send final response event with the complete conversation data
               res.write(
-                `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+                isAGUI(protocol)
+                  ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+                  : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
               );
 
               logger.debug(
@@ -6775,9 +7413,14 @@ export const addMessageStreamToAgentConversation =
 
             // Send error event
             res.write(
-              `event: error\ndata: ${JSON.stringify({
-                error: 'No complete response received from AI service',
-              })}\n\n`,
+              isAGUI(protocol)
+                ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                    message: 'No complete response received from AI service',
+                    code: 'no_response',
+                  })
+                : `event: error\ndata: ${JSON.stringify({
+                    error: 'No complete response received from AI service',
+                  })}\n\n`,
             );
           }
         } catch (dbError: any) {
@@ -6789,10 +7432,15 @@ export const addMessageStreamToAgentConversation =
 
           // Send error event
           res.write(
-            `event: error\ndata: ${JSON.stringify({
-              error: 'Failed to save AI response',
-              details: dbError.message,
-            })}\n\n`,
+            isAGUI(protocol)
+              ? frameAGUI(AGUIEventType.RUN_ERROR, {
+                  message: 'Failed to save AI response',
+                  code: 'save_error',
+                })
+              : `event: error\ndata: ${JSON.stringify({
+                  error: 'Failed to save AI response',
+                  details: dbError.message,
+                })}\n\n`,
           );
         }
 
@@ -6818,10 +7466,15 @@ export const addMessageStreamToAgentConversation =
           });
         }
 
-        const errorEvent = `event: error\ndata: ${JSON.stringify({
-          error: error.message || 'Stream error occurred',
-          details: error.message,
-        })}\n\n`;
+        const errorEvent = isAGUI(protocol)
+          ? frameAGUI(AGUIEventType.RUN_ERROR, {
+              message: error.message || 'Stream error occurred',
+              code: 'stream_error',
+            })
+          : `event: error\ndata: ${JSON.stringify({
+              error: error.message || 'Stream error occurred',
+              details: error.message,
+            })}\n\n`;
         res.write(errorEvent);
         res.end();
       });
@@ -6881,10 +7534,15 @@ export const addMessageStreamToAgentConversation =
         res.writeHead(500, { 'Content-Type': 'text/event-stream' });
       }
 
-      const errorEvent = `event: error\ndata: ${JSON.stringify({
-        error: error.message || 'Internal server error',
-        details: error.message,
-      })}\n\n`;
+      const errorEvent = isAGUI(protocol)
+        ? frameAGUI(AGUIEventType.RUN_ERROR, {
+            message: error.message || 'Internal server error',
+            code: 'internal_error',
+          })
+        : `event: error\ndata: ${JSON.stringify({
+            error: error.message || 'Internal server error',
+            details: error.message,
+          })}\n\n`;
       res.write(errorEvent);
       res.end();
     } finally {
@@ -6944,6 +7602,9 @@ export const getAllAgentConversations = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId, agentKey } = req.params;
     logger.debug('Fetching conversations', {
       requestId,

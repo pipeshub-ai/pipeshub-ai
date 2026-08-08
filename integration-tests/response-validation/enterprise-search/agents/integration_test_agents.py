@@ -215,7 +215,11 @@ class AgentsTestBase:
     """Shared agents_client fixture and agent create/cleanup helpers."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, agents_client: AgentsClient, pipeshub_client: PipeshubClient) -> None:
+    def _setup(
+        self,
+        agents_client: AgentsClient,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
         self.agents = agents_client
         self.client = pipeshub_client
         self.org_id = pipeshub_client.org_id

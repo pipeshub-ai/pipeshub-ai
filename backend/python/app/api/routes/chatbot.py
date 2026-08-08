@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 import base64
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -9,16 +10,18 @@ from uuid import uuid4
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from jinja2 import Template
 from io import BytesIO
 
 import pdfplumber
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, field_validator
 
+from app.config.constants.ai_models import validate_reasoning_effort
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
+from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
+from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, config_node_constants
@@ -27,13 +30,6 @@ from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.qna.prompt_templates import (
-    qna_prompt_with_retrieval_tool,
-    qna_prompt_instructions_2,
-    qna_prompt_with_retrieval_tool_second_part,
-    web_search_system_prompt,
-    web_search_user_prompt,
-)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
@@ -43,32 +39,15 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model_async
-from app.utils.cache_helpers import get_cached_user_info
-from app.utils.chat_helpers import (
-    CitationRefMapper,
-    build_message_content_array,
-    context_includes_jira_tickets,
-    enrich_virtual_record_id_to_result_with_fk_children,
-    flattened_result_sort_key,
-    get_flattened_results,
-    get_message_content,
-    record_to_message_content,
+from app.utils.attachment_mime_types import (
+    DELIMITED_MIME_TYPES,
+    DOCX_MIME_TYPES,
+    SPREADSHEET_MIME_TYPES,
+    SUPPORTED_ATTACHMENT_MIME_TYPES,
+    TEXT_ATTACHMENT_MIME_TYPES,
 )
-from app.utils.fetch_full_record import create_fetch_full_record_tool
-from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
-from app.utils.fetch_slack_nearby_messages import create_fetch_slack_nearby_messages_tool
-from app.utils.fetch_slack_thread import (
-    create_fetch_slack_thread_tool,
-    has_slack_connector_configured,
-)
-from app.utils.query_decompose import QueryDecompositionExpansionService
-from app.utils.fetch_url_tool import create_fetch_url_tool
-from app.utils.streaming import (
-    create_sse_event,
-    stream_llm_response_with_tools,
-)
-from app.utils.time_conversion import build_llm_time_context, get_epoch_timestamp_in_ms
-from app.utils.web_search_tool import create_web_search_tool
+from app.utils.streaming import create_sse_event
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
@@ -88,11 +67,28 @@ class ChatQuery(BaseModel):
     modelKey: str | None = None  # e.g., "uuid-of-the-model"
     modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: str | None = "internal_search"  # "quick", "analysis", "deep_research", "creative", "precise"
+    # "none" | "low" | "medium" | "high" | "max" — forwarded to the LLM factory's
+    # reasoning_effort param; absent/None means no explicit override (the LLM
+    # factory applies DEFAULT_REASONING_EFFORT for reasoning-capable models).
+    reasoningEffort: str | None = None
     mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
     attachments: list[dict[str, Any]] = []
+    # AG-UI is the only supported SSE wire protocol. This field is
+    # accepted but ignored — `resolve_protocol` always returns "agui".
+    protocol: str | None = None
+    # Per-request capability toggles for agent mode (both paths).
+    # When absent defaults to both enabled, preserving existing behavior.
+    agentCapabilities: dict[str, Any] | None = None
+    # TEMPORARY token-savings experiment — see `RecordIdShortener` in
+    # `utils/chat_helpers.py`. Opt-in and disabled by default: short "R<n>"
+    # labels are only valid for the request that minted them, so callers
+    # that rely on record ids surviving across turns should leave this off.
+    enableRecordIdShortening: bool = False
+
+    _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
 
 
 class AttachmentUploadItem(BaseModel):
@@ -105,100 +101,6 @@ class AttachmentUploadItem(BaseModel):
 class AttachmentUploadRequest(BaseModel):
     conversationId: str | None = None
     attachments: list[AttachmentUploadItem]
-
-
-class InternalSearchToolArgs(BaseModel):
-    query: str = Field(description="Search query for internal knowledge retrieval")
-    reason: str = Field(
-        default="Retrieve relevant internal records for the user question",
-        description="Why this retrieval is needed",
-    )
-
-
-def create_internal_search_tool(
-    retrieval_service: RetrievalService,
-    org_id: str,
-    user_id: str,
-    limit: int | None,
-    filter_groups: dict[str, Any] | None,
-    blob_store: "BlobStorage",
-    is_multimodal_llm: bool,
-    virtual_record_id_to_result: dict[str, Any],
-    graph_provider: IGraphDBProvider,
-    ref_mapper: CitationRefMapper,
-    final_results: list[dict[str, Any]],
-):
-    """Factory that creates a LangChain tool wrapping retrieval search."""
-
-    @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
-    async def search_internal_knowledge_tool(
-        query: str,
-        reason: str = "Retrieve relevant internal records for the user question",
-    ) -> dict[str, Any]:
-        """Search the company's internal knowledge base for relevant records matching the query.
-
-        Use this tool when you need context from internal documents, messages, emails,
-        files, or other knowledge sources to answer the user's question.
-
-        Args:
-            query: The search query to find relevant internal records
-            reason: Brief explanation of why this search is needed
-
-        Returns: Retrieved record blocks with metadata for citation, or {"ok": false, "error": "..."}.
-        """
-        try:
-            result = await retrieval_service.search_with_filters(
-                queries=[query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=limit,
-                filter_groups=filter_groups,
-            )
-
-            search_results = result.get("searchResults", [])
-            virtual_to_record_map = result.get("virtual_to_record_map", {})
-            status_code = result.get("status_code", 500)
-
-            if status_code in [202, 500, 503, 404]:
-                return {"ok": False, "error": result.get("message", "Search failed"), "result_type": "internal_search"}
-
-            flattened_results = await get_flattened_results(
-                search_results, blob_store, org_id, is_multimodal_llm,
-                virtual_record_id_to_result, virtual_to_record_map,
-                graph_provider=graph_provider,
-            )
-            await enrich_virtual_record_id_to_result_with_fk_children(
-                virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
-            )
-
-            existing_keys = {
-                (r["virtual_record_id"], r["block_index"]) for r in final_results
-            }
-            temp_final_results = sorted(flattened_results, key=flattened_result_sort_key)
-            
-            for r in flattened_results:
-                key = (r["virtual_record_id"], r["block_index"])
-                if key not in existing_keys:
-                    final_results.append(r)
-                    existing_keys.add(key)
-            final_results.sort(key=flattened_result_sort_key)
-
-            message_content_array, _ = build_message_content_array(temp_final_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=True)
-
-            message_content_array = [item for sublist in message_content_array for item in sublist]
-            return {
-                "ok": True,
-                "content": message_content_array,
-                "result_type": "content",
-                "has_jira_tickets_in_context": context_includes_jira_tickets(
-                    temp_final_results,
-                    virtual_record_id_to_result,
-                ),
-            }
-        except Exception as e:
-            return {"ok": False, "error": f"Internal search failed: {str(e)}", "result_type": "internal_search"}
-
-    return search_internal_knowledge_tool
 
 
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
@@ -263,6 +165,53 @@ async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     return await parser.parse_to_blocks(text.strip())
 
 
+async def _build_docx_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+) -> BlocksContainer:
+    """Parse a DOCX file into blocks via in-process Docling (same path as FileContentParser)."""
+    from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+
+    processor = DoclingProcessor(logger=logger, config=config_service)
+    stem = Path(file_name).stem if file_name else "document"
+    doc_name = file_name if file_name.lower().endswith(".docx") else f"{stem}.docx"
+    doc = await processor.parse_document(doc_name, file_content)
+    return await processor.create_blocks(doc)
+
+
+async def _build_excel_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+) -> BlocksContainer:
+    """Parse an XLSX file into blocks without LLM enrichment (chat upload path)."""
+    from app.modules.parsers.excel.excel_parser import ExcelParser
+
+    parser = ExcelParser(logger=logger, config_service=config_service)
+    await asyncio.to_thread(parser.load_workbook_from_binary, file_content)
+    return await parser.create_blocks_lightweight(max_rows=_CHAT_ATTACHMENT_MAX_TABLE_ROWS)
+
+
+async def _build_csv_blocks(
+    file_content: bytes,
+    file_name: str,
+    config_service: ConfigurationService,
+    mime_type: str,
+) -> BlocksContainer:
+    """Parse a CSV/TSV file into blocks without LLM enrichment, capped at max rows."""
+    from app.modules.parsers.csv.csv_parser import CSVParser
+
+    delimiter = "\t" if mime_type.lower() == "text/tab-separated-values" else ","
+    # Extension-based fallback when MIME is generic but filename says .tsv.
+    if delimiter == "," and Path(file_name).suffix.strip().lower() == ".tsv":
+        delimiter = "\t"
+    parser = CSVParser(config_service=config_service, delimiter=delimiter)
+    return await parser.parse_to_blocks_lightweight(
+        file_content, max_rows=_CHAT_ATTACHMENT_MAX_TABLE_ROWS
+    )
+
+
 # Dependency injection functions
 async def get_retrieval_service(request: Request) -> RetrievalService:
     container: QueryAppContainer = request.app.container
@@ -280,403 +229,6 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
     return container.config_service()
-
-
-async def _build_llm_user_context_string(
-    graph_provider: IGraphDBProvider,
-    user_id: str,
-    org_id: str,
-    send_user_info: Any,
-) -> str:
-    """Build user/org context for the chat LLM user message when sendUserInfo is enabled."""
-    if not send_user_info:
-        return ""
-    user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
-    user_info = user_info or {}
-    org_name = (org_info or {}).get("name")
-    if org_name:
-        return (
-            "I am the user of the organization. "
-            f"My name is {user_info.get('fullName', 'a user')} "
-            f"({user_info.get('designation', '')}) "
-            f"from {org_name}. "
-            "Please provide accurate and relevant information based on the available context."
-        )
-    return (
-        "I am the user. "
-        f"My name is {user_info.get('fullName', 'a user')} "
-        f"({user_info.get('designation', '')}) "
-        "Please provide accurate and relevant information based on the available context."
-    )
-
-
-def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
-    """Get model configuration based on chat mode and user selection"""
-    mode_configs = {
-        "analysis": {
-            "temperature": 0.3,
-            "max_tokens": 8192,
-            "system_prompt": "You are an analytical assistant. Provide detailed analysis with insights and patterns."
-        },
-        "deep_research": {
-            "temperature": 0.2,
-            "max_tokens": 16384,
-            "system_prompt": "You are a research assistant. Provide comprehensive, well-sourced answers with detailed explanations."
-        },
-        "creative": {
-            "temperature": 0.7,
-            "max_tokens": 16384,
-            "system_prompt": "You are a creative assistant. Provide innovative and imaginative responses while staying relevant."
-        },
-        "precise": {
-            "temperature": 0.05,
-            "max_tokens": 16384,
-            "system_prompt": "You are a precise assistant. Provide accurate, factual answers with high attention to detail."
-        },
-        "standard": {
-            "temperature": 0.2,
-            "max_tokens": 16384,
-            "system_prompt": "You are an enterprise questions answering expert"
-        },
-        "internal_search": {
-            "temperature": 0.1,
-            "max_tokens": 4096,
-            "system_prompt": (
-                "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
-                "You MUST ONLY answer based on the provided internal knowledge base documents/attachments. "
-                "Do NOT use your own training knowledge. "
-                "If the answer is not present in the provided context blocks, respond with: "
-                "'This information is not available in the internal knowledge base.'"
-            )
-        },
-        "web_search": {
-            "temperature": 0.1,
-            "max_tokens": 4096,
-            "system_prompt": web_search_system_prompt,
-        }
-    }
-    return mode_configs.get(chat_mode, mode_configs["internal_search"])
-
-
-_CITATION_SYSTEM_RULES = (
-    "\n\n## Citation Rules\n"
-    "When the message contains context blocks with Citation IDs (e.g., ref1, ref2), follow these rules:\n"
-    "- **Limit citations to the most relevant blocks.** Do NOT cite every sentence — only cite the most important, non-obvious, or specific factual claims.\n"
-    "- Cite by embedding the block's Citation ID as a markdown link: [source](ref1).\n"
-    "- Use EXACTLY the Citation ID shown in the context. Do NOT invent or modify Citation IDs.\n"
-    "- Do NOT manually assign citation numbers — the system numbers them automatically.\n"
-    "- If you cannot find the Citation ID for a fact, omit the citation rather than guessing.\n"
-)
-
-
-def _collapse_single_text_user_content(parts: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
-    """Use a plain string for a single text block; otherwise return OpenAI-style parts."""
-    if not parts:
-        return ""
-    if len(parts) == 1 and parts[0].get("type") == "text":
-        return parts[0].get("text", "")
-    return parts
-
-
-async def _append_conversation_history(
-    messages: list[dict[str, Any]],
-    previous_conversations: list[dict],
-    *,
-    is_multimodal_llm: bool = False,
-    blob_store: Any = None,
-    org_id: str = "",
-    ref_mapper: CitationRefMapper | None = None,
-    virtual_record_id_to_result: dict[str, Any] | None = None,
-    logger: Any = None,
-) -> None:
-    """Append prior user/assistant turns to the message list (mutates in place).
-
-    When *is_multimodal_llm* is True, image attachments on previous user_query
-    messages are fetched from blob storage and included as multimodal content
-    blocks alongside the text.
-
-    When *ref_mapper* and *virtual_record_id_to_result* are provided, PDF
-    attachments on previous user_query turns are resolved from blob storage
-    and appended in the same ``record_to_message_content`` format as current
-    query PDFs (Citation IDs + ``virtual_record_id_to_result`` for resolution).
-    """
-    has_previous_attachments = False
-    for conversation in previous_conversations:
-        if conversation.get("role") == "user_query":
-            text_content = conversation.get("content", "")
-            attachments = conversation.get("attachments") or []
-            content: str | list[dict[str, Any]] = text_content
-            if is_multimodal_llm and attachments and blob_store and org_id:
-                from app.utils.chat_helpers import build_multimodal_user_content
-                content = await build_multimodal_user_content(
-                    text_content, attachments, blob_store, org_id,
-                )
-                if isinstance(content, list):
-                    has_previous_attachments = True
-
-            doc_history_blocks: list[dict[str, Any]] = []
-            if (
-                ref_mapper is not None
-                and virtual_record_id_to_result is not None
-                and blob_store
-                and org_id
-            ):
-                attachments = [
-                    att
-                    for att in attachments
-                    if isinstance(att, dict)
-                    and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
-                ]
-                for att in attachments:
-                    vrid = att.get("virtualRecordId") or ""
-                    if not vrid:
-                        continue
-                    try:
-                        record = await blob_store.get_record_from_storage(vrid, org_id)
-                        if not record:
-                            continue
-                        virtual_record_id_to_result[vrid] = record
-                        blocks, ref_mapper = record_to_message_content(
-                            record,
-                            ref_mapper=ref_mapper,
-                            is_multimodal_llm=is_multimodal_llm,
-                        )
-                        doc_history_blocks.extend(blocks)
-                    except Exception as exc:
-                        if logger is not None:
-                            logger.warning(
-                                "Failed to resolve historical attachment vrid=%s: %s",
-                                vrid,
-                                exc,
-                            )
-
-            if doc_history_blocks:
-                parts: list[dict[str, Any]] = []
-                if isinstance(content, list):
-                    parts.extend(content)
-                else:
-                    if content:
-                        parts.append({"type": "text", "text": content})
-                parts.append({"type": "text", "text": "Attached documents:"})
-                parts.extend(doc_history_blocks)
-                has_previous_attachments = True
-                content = _collapse_single_text_user_content(parts)
-
-            messages.append({"role": "user", "content": content})
-        elif conversation.get("role") == "bot_response":
-            messages.append({"role": "assistant", "content": conversation.get("content")})
-    
-    return has_previous_attachments
-
-def _build_system_prompt(
-    chat_mode: str,
-    ai_models_config: dict[str, Any],
-    current_time: str | None,
-    timezone: str | None,
-    custom_prompt_key: str = "customSystemPrompt",
-    append_citation_rules: bool = False,
-) -> str:
-    """Build the system prompt with optional custom override, time context, and citation rules."""
-    mode_config = get_model_config_for_mode(chat_mode)
-    custom_system_prompt = ai_models_config.get(custom_prompt_key, "")
-    if custom_system_prompt:
-        mode_config["system_prompt"] +=  f"\n\n{custom_system_prompt}"
-
-    system_prompt = mode_config["system_prompt"]
-    time_context = build_llm_time_context(
-        current_time=current_time,
-        time_zone=timezone,
-    )
-    if time_context:
-        system_prompt += f"\n\n{time_context}"
-    if append_citation_rules:
-        system_prompt += _CITATION_SYSTEM_RULES
-
-    return system_prompt
-
-
-async def _build_chat_llm_messages(
-    query_info: ChatQuery,
-    ai_models_config: dict[str, Any],
-    final_results: list[dict[str, Any]],
-    virtual_record_id_to_result: dict[str, Any],
-    user_data: str,
-    logger: Any,
-    is_multimodal_llm: bool=False,
-    has_sql_connector: bool=False,
-    blob_store: Any = None,
-    org_id: str = "",
-    has_slack_connector: bool=False,
-) -> tuple[list[dict[str, Any]], CitationRefMapper]:
-    """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
-    system_prompt = _build_system_prompt(
-        chat_mode=query_info.chatMode,
-        ai_models_config=ai_models_config,
-        current_time=query_info.currentTime,
-        timezone=query_info.timezone,
-        append_citation_rules=bool(final_results),
-    )
-    if ai_models_config.get("customSystemPrompt"):
-        logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
-
-    ref_mapper = CitationRefMapper()
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    await _append_conversation_history(
-        messages, query_info.previousConversations,
-        is_multimodal_llm=is_multimodal_llm,
-        blob_store=blob_store,
-        org_id=org_id,
-        ref_mapper=ref_mapper,
-        virtual_record_id_to_result=virtual_record_id_to_result,
-        logger=logger,
-    )
-
-    image_blocks: list[dict[str, Any]] = []
-    if is_multimodal_llm and blob_store and org_id and query_info.attachments:
-        from app.utils.chat_helpers import build_multimodal_user_content
-        image_parts = await build_multimodal_user_content(
-            "", query_info.attachments, blob_store, org_id,
-        )
-        if isinstance(image_parts, list):
-            image_blocks = [p for p in image_parts if p.get("type") == "image_url"]
-
-    content, ref_mapper = get_message_content(
-        final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,
-        is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
-        image_blocks=image_blocks or None, has_slack_connector=has_slack_connector,
-        ref_mapper=ref_mapper,
-    )
-
-    messages.append({"role": "user", "content": content})
-    return messages, ref_mapper
-
-async def _build_attachment_llm_messages(
-    query_info: ChatQuery,
-    ai_models_config: dict[str, Any],
-    user_data: str,
-    logger: Any,
-    is_multimodal_llm: bool = False,
-    blob_store: Any = None,
-    org_id: str = "",
-    has_attachments: bool = True,
-    virtual_record_id_to_result: dict[str, Any] = {},
-) -> tuple[list[dict[str, Any]], CitationRefMapper]:
-    """Build messages for the tool-based retrieval path.
-
-    No retrieval context is pre-populated; the LLM decides whether to call
-    ``search_internal_knowledge`` based on the query, conversation history,
-    and any attached images.
-    """
-    system_prompt = _build_system_prompt(
-        chat_mode=query_info.chatMode,
-        ai_models_config=ai_models_config,
-        current_time=query_info.currentTime,
-        timezone=query_info.timezone,
-        append_citation_rules=False,
-    )
-    if ai_models_config.get("customSystemPrompt"):
-        logger.debug(f"Custom system prompt: {ai_models_config['customSystemPrompt']}")
-
-    ref_mapper = CitationRefMapper()
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    has_previous_attachments = await _append_conversation_history(
-        messages, query_info.previousConversations,
-        is_multimodal_llm=is_multimodal_llm,
-        blob_store=blob_store,
-        org_id=org_id,
-        ref_mapper=ref_mapper,
-        virtual_record_id_to_result=virtual_record_id_to_result,
-        logger=logger,
-    )
-
-    content: list[dict[str, Any]] = []
-
-    rendered_prompt = Template(qna_prompt_with_retrieval_tool).render(
-        user_data=user_data,
-        query=query_info.query,
-        has_attachments=has_attachments,
-        has_previous_attachments=has_previous_attachments,
-    )
-    content.append({"type": "text", "text": rendered_prompt})
-
-    if is_multimodal_llm and blob_store and org_id and query_info.attachments:
-        from app.utils.chat_helpers import build_multimodal_user_content
-        image_parts = await build_multimodal_user_content(
-            "", query_info.attachments, blob_store, org_id,
-        )
-        if isinstance(image_parts, list):
-            image_blocks = [p for p in image_parts if p.get("type") == "image_url"]
-            if image_blocks:
-                content.append({"type": "text", "text": "Attachments/Image queries (IMPORTANT: If any image below contains a question, you can call search_internal_knowledge for it — treat it exactly as if the user typed that question):"})
-                content.extend(image_blocks)
-
-    attachments = [
-        att for att in query_info.attachments
-        if isinstance(att, dict)
-        and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
-    ]
-    content_blocks: list[dict[str, Any]] = []
-    if attachments and blob_store and org_id:
-        for att in attachments:
-            vrid = att.get("virtualRecordId") or ""
-            if not vrid:
-                continue
-            try:
-                record = await blob_store.get_record_from_storage(vrid, org_id)
-                if not record:
-                    continue
-                virtual_record_id_to_result[vrid] = record
-                record_blocks, ref_mapper = record_to_message_content(
-                    record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
-                )
-                content_blocks.extend(record_blocks)
-            except Exception as exc:
-                logger.warning("Failed to resolve attachment vrid=%s: %s", vrid, exc)
-
-    if content_blocks:
-        content.append({"type": "text", "text": "Attached documents:"})
-        content.extend(content_blocks)
-
-    content.append({"type": "text", "text": "</queries>"})
-    content.append({"type": "text", "text": qna_prompt_with_retrieval_tool_second_part})
-
-    messages.append({"role": "user", "content": content})
-    return messages, ref_mapper
-
-
-async def _build_web_search_messages(
-    query_info: ChatQuery,
-    ai_models_config: dict[str, Any],
-    original_query: str,
-    *,
-    is_multimodal_llm: bool = False,
-    blob_store: Any = None,
-    org_id: str = "",
-) -> list[dict[str, Any]]:
-    """Build LLM messages for web search mode."""
-    system_prompt = _build_system_prompt(
-        chat_mode="web_search",
-        ai_models_config=ai_models_config,
-        current_time=query_info.currentTime,
-        timezone=query_info.timezone,
-        custom_prompt_key="customSystemPromptWebSearch",
-    )
-
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-    await _append_conversation_history(
-        messages, query_info.previousConversations,
-        is_multimodal_llm=is_multimodal_llm,
-        blob_store=blob_store,
-        org_id=org_id,
-    )
-
-    messages.append({
-        "role": "user",
-        "content": Template(web_search_user_prompt).render(
-            query=original_query,
-        )
-    })
-    return messages
 
 
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -738,7 +290,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "internal_search") -> tuple[BaseChatModel, dict, dict]:
+async def get_llm_for_chat(
+    config_service: ConfigurationService,
+    model_key: str = None,
+    model_name: str = None,
+    chat_mode: str = "internal_search",
+    reasoning_effort: str | None = None,
+) -> tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
 
     Returns:
@@ -762,7 +320,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                llm = await get_generator_model_async(model_provider, llm_config, model_name)
+                llm = await get_generator_model_async(
+                    model_provider, llm_config, model_name, reasoning_effort
+                )
                 return llm, llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
@@ -771,7 +331,9 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
+            llm = await get_generator_model_async(
+                model_provider, llm_config, default_model_name, reasoning_effort
+            )
             return llm, llm_config, ai_models_config
 
         # Fallback to first available model
@@ -779,394 +341,20 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
+        llm = await get_generator_model_async(
+            model_provider, llm_config, default_model_name, reasoning_effort
+        )
         return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
 
-
-async def _generate_internal_search_stream(
-    request: Request,
-    query_info: ChatQuery,
-    retrieval_service: RetrievalService,
-    graph_provider: IGraphDBProvider,
-    config_service: ConfigurationService,
-) -> AsyncGenerator[str, None]:
-    """Stream generator for internal knowledge-base search mode."""
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-
-        has_attachments = bool(query_info.attachments)
-        is_followup = len(query_info.previousConversations) > 0
-
-        try:
-            llm, config, ai_models_config = await get_llm_for_chat(
-                config_service,
-                query_info.modelKey,
-                query_info.modelName,
-                query_info.chatMode,
-            )
-            is_multimodal_llm = config.get("isMultimodal")
-            context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-
-            if llm is None:
-                raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-
-            if config.get("provider").lower() == "ollama":
-                query_info.mode = "no_tools"
-            else:
-                query_info.mode = "simple"
-
-            all_queries = [query_info.query]
-
-            org_id = request.state.user.get("orgId")
-            user_id = request.state.user.get("userId")
-
-            blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
-            virtual_record_id_to_result: dict[str, Any] = {}
-
-            send_user_info = request.query_params.get("sendUserInfo", True)
-            user_data = await _build_llm_user_context_string(
-                graph_provider, user_id, org_id, send_user_info,
-            )
-
-            use_retrieval_tool = (has_attachments or is_followup) and query_info.mode != "no_tools"
-            final_results: list[dict[str, Any]] = []
-            
-            if use_retrieval_tool:
-                # --- Tool path: retrieval exposed as a tool ---
-                # Used for attachment queries AND follow-up queries so the LLM
-                # decides whether it needs to search the knowledge base.
-                logger.info("Tool retrieval path: exposing retrieval as search_internal_knowledge tool (attachments=%s, followup=%s)", has_attachments, is_followup)
-                
-                messages, ref_mapper = await _build_attachment_llm_messages(
-                    query_info,
-                    ai_models_config,
-                    user_data,
-                    logger,
-                    is_multimodal_llm=is_multimodal_llm,
-                    
-                    blob_store=blob_store,
-                    org_id=org_id,
-                    has_attachments=has_attachments,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                )
-
-                search_tool = create_internal_search_tool(
-                    retrieval_service=retrieval_service,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
-                    blob_store=blob_store,
-                    is_multimodal_llm=is_multimodal_llm,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                    graph_provider=graph_provider,
-                    ref_mapper=ref_mapper,
-                    final_results=final_results,
-                )
-
-                tools = [search_tool]
-
-                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
-                deferred_tools = [fetch_tool]
-                if has_sql_connector:
-                    deferred_tools.append(create_execute_query_tool(
-                        config_service=config_service,
-                        graph_provider=graph_provider,
-                        org_id=org_id,
-                        conversation_id=query_info.conversationId,
-                        blob_store=blob_store,
-                    ))
-                if has_slack_connector:
-                    deferred_tools.append(create_fetch_slack_thread_tool(
-                        virtual_record_id_to_result=virtual_record_id_to_result,
-                        org_id=org_id,
-                        graph_provider=graph_provider,
-                        blob_store=blob_store,
-                        config_service=config_service,
-                    ))
-                    deferred_tools.append(create_fetch_slack_nearby_messages_tool(
-                        config_service=config_service,
-                    ))
-                
-
-                tool_runtime_kwargs = {
-                    "blob_store": blob_store,
-                    "graph_provider": graph_provider,
-                    "org_id": org_id,
-                    "has_sql_connector": has_sql_connector,
-                    "has_slack_connector": has_slack_connector,
-                }
-
-            else:
-                # --- Standard path: upfront retrieval (first query, no attachments) ---
-                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-
-                result = await retrieval_service.search_with_filters(
-                    queries=all_queries,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
-                )
-
-                search_results = result.get("searchResults", [])
-                virtual_to_record_map = result.get("virtual_to_record_map", {})
-                status_code = result.get("status_code", 500)
-
-                if status_code in [202, 500, 503, 404]:
-                    raise HTTPException(status_code=status_code, detail=result)
-
-                yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
-
-                flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm,
-                    virtual_record_id_to_result, virtual_to_record_map,
-                    graph_provider=graph_provider,
-                )
-                await enrich_virtual_record_id_to_result_with_fk_children(
-                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
-                )
-
-                final_results = sorted(flattened_results, key=flattened_result_sort_key)
-
-                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                tools = []
-                if has_sql_connector:
-                    tools.append(create_execute_query_tool(
-                        config_service=config_service,
-                        graph_provider=graph_provider,
-                        org_id=org_id,
-                        conversation_id=query_info.conversationId,
-                        blob_store=blob_store,
-                    ))
-                if has_slack_connector:
-                    tools.append(create_fetch_slack_thread_tool(
-                        virtual_record_id_to_result=virtual_record_id_to_result,
-                        org_id=org_id,
-                        graph_provider=graph_provider,
-                        blob_store=blob_store,
-                        config_service=config_service,
-                    ))
-                    tools.append(create_fetch_slack_nearby_messages_tool(
-                        config_service=config_service,
-                    ))
-                messages, ref_mapper = await _build_chat_llm_messages(
-                    query_info,
-                    ai_models_config,
-                    final_results,
-                    virtual_record_id_to_result,
-                    user_data,
-                    logger,
-                    is_multimodal_llm=is_multimodal_llm,
-                    has_sql_connector=has_sql_connector,
-                    blob_store=blob_store,
-                    org_id=org_id,
-                    has_slack_connector=has_slack_connector,
-                )
-
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
-                tools.append(fetch_tool)
-                tool_runtime_kwargs = {
-                    "blob_store": blob_store,
-                    "graph_provider": graph_provider,
-                    "org_id": org_id,
-                    "has_sql_connector": has_sql_connector,
-                    "has_slack_connector": has_slack_connector,
-                }
-                deferred_tools = []
-
-        except HTTPException as e:
-            logger.error(f"HTTPException: {str(e)}", exc_info=True)
-            detail = e.detail
-            if isinstance(detail, dict):
-                yield create_sse_event("error", {
-                    "status": detail.get("status", "error"),
-                    "message": detail.get("message", "No results found"),
-                })
-            else:
-                yield create_sse_event("error", {
-                    "status": "error",
-                    "message": str(detail) if detail else f"HTTP {e.status_code} error",
-                })
-            return
-        except Exception as e:
-            logger.error(f"Error processing internal search query: {str(e)}", exc_info=True)
-            yield create_sse_event("error", {"error": str(e)})
-            return
-
-        try:
-            async for stream_event in stream_llm_response_with_tools(
-                llm=llm,
-                messages=messages,
-                final_results=final_results,
-                all_queries=all_queries,
-                retrieval_service=retrieval_service,
-                user_id=user_id,
-                org_id=org_id,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                blob_store=blob_store,
-                is_multimodal_llm=is_multimodal_llm,
-                context_length=context_length,
-                tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
-                target_words_per_chunk=1,
-                mode=query_info.mode,
-                ref_mapper=ref_mapper,
-                max_hops=3 if has_attachments else 2,
-                conversation_id=query_info.conversationId,
-                defer_tool_until_called_name="search_internal_knowledge" if deferred_tools else None,
-                deferred_tool=deferred_tools if deferred_tools else None,
-            ):
-                yield create_sse_event(stream_event["event"], stream_event["data"])
-        except Exception as stream_error:
-            logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
-            yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
-
-    except Exception as e:
-        logger.error(f"Error in internal search stream: {str(e)}", exc_info=True)
-        yield create_sse_event("error", {"error": str(e)})
-
-
-async def _generate_web_search_stream(
-    request: Request,
-    query_info: ChatQuery,
-    config_service: ConfigurationService,
-) -> AsyncGenerator[str, None]:
-    """Stream generator for web search mode."""
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-
-        try:
-            original_query = query_info.query
-
-            llm, config, ai_models_config = await get_llm_for_chat(
-                config_service,
-                query_info.modelKey,
-                query_info.modelName,
-                query_info.chatMode,
-            )
-            is_multimodal_llm = config.get("isMultimodal")
-            context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-
-            if llm is None:
-                raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-
-            if config.get("provider").lower() == "ollama":
-                query_info.mode = "no_tools"
-            else:
-                query_info.mode = "simple"
-
-            # Load web search provider configuration
-            web_search_config = await config_service.get_config(
-                config_node_constants.WEB_SEARCH.value,
-                default={},
-                use_cache=False,
-            )
-            web_search_provider_config = None
-            if web_search_config and web_search_config.get("providers"):
-                providers = web_search_config.get("providers", [])
-                default_provider = next(
-                    (p for p in providers if p.get("isDefault")), None,
-                )
-                if default_provider:
-                    web_search_provider_config = {
-                        "provider": default_provider.get("provider"),
-                        "configuration": default_provider.get("configuration", {}),
-                    }
-                    logger.info(
-                        "Web search provider selected",
-                        extra={"provider": web_search_provider_config["provider"]},
-                    )
-            else:
-                logger.warning("No web search config found; proceeding without a configured provider")
-
-            # Build messages for web search
-            messages = await _build_web_search_messages(
-                query_info=query_info,
-                ai_models_config=ai_models_config,
-                original_query=original_query,
-            )
-
-            # Prepare web search tools. Share a single CitationRefMapper across tools so
-            # tiny web-ref URLs minted by one tool can be resolved by another (fetch_url
-            # may receive a ref minted by web_search).
-            ref_mapper = CitationRefMapper()
-            tools = [
-                create_web_search_tool(web_search_provider_config),
-                create_fetch_url_tool(
-                    ref_mapper=ref_mapper,
-                ),
-            ]
-            tool_runtime_kwargs = {
-                "config_service": config_service,
-            }
-
-        except Exception as e:
-            logger.error(f"Error setting up web search: {str(e)}", exc_info=True)
-            yield create_sse_event("error", {"error": str(e)})
-            return
-
-        org_id = request.state.user.get("orgId")
-        user_id = request.state.user.get("userId")
-
-        try:
-            async for stream_event in stream_llm_response_with_tools(
-                llm=llm,
-                messages=messages,
-                final_results=[],
-                all_queries=[query_info.query],
-                retrieval_service=None,
-                user_id=user_id,
-                org_id=org_id,
-                virtual_record_id_to_result={},
-                blob_store=None,
-                is_multimodal_llm=is_multimodal_llm,
-                context_length=context_length,
-                tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
-                target_words_per_chunk=1,
-                mode=query_info.mode,
-                ref_mapper=ref_mapper,
-                chat_mode="web_search",
-            ):
-                yield create_sse_event(stream_event["event"], stream_event["data"])
-        except Exception as stream_error:
-            logger.error(f"Error during web search LLM streaming: {str(stream_error)}", exc_info=True)
-            yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
-
-    except Exception as e:
-        logger.error(f"Error in web search stream: {str(e)}", exc_info=True)
-        yield create_sse_event("error", {"error": str(e)})
-
-
-_SUPPORTED_ATTACHMENT_MIME_TYPES = {
-    "application/pdf",
-    "image/jpeg",
-    "image/jpg",
-    "image/png",
-    "text/plain",
-    "text/markdown",
-    "text/mdx",
-}
-
-_TEXT_ATTACHMENT_MIME_TYPES = {"text/plain", "text/markdown", "text/mdx"}
-_DOC_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | {"application/pdf"}
+# Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
+_CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
-    return mime_type.lower() in _SUPPORTED_ATTACHMENT_MIME_TYPES
+    return mime_type.lower() in SUPPORTED_ATTACHMENT_MIME_TYPES
 
 
 def _is_image_attachment(mime_type: str) -> bool:
@@ -1174,7 +362,19 @@ def _is_image_attachment(mime_type: str) -> bool:
 
 
 def _is_text_attachment(mime_type: str) -> bool:
-    return mime_type.lower() in _TEXT_ATTACHMENT_MIME_TYPES
+    return mime_type.lower() in TEXT_ATTACHMENT_MIME_TYPES
+
+
+def _is_docx_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in DOCX_MIME_TYPES
+
+
+def _is_spreadsheet_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in SPREADSHEET_MIME_TYPES
+
+
+def _is_delimited_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in DELIMITED_MIME_TYPES
 
 
 def _attachment_extension(file_name: str, mime_type: str) -> str:
@@ -1194,6 +394,14 @@ def _attachment_extension(file_name: str, mime_type: str) -> str:
         return "md"
     if mime_lower == "text/mdx":
         return "mdx"
+    if mime_lower in DOCX_MIME_TYPES:
+        return "docx"
+    if mime_lower in SPREADSHEET_MIME_TYPES:
+        return "xlsx"
+    if mime_lower == "text/csv":
+        return "csv"
+    if mime_lower == "text/tab-separated-values":
+        return "tsv"
     return "bin"
 
 
@@ -1269,7 +477,10 @@ async def upload_chat_attachments(
         if not _is_supported_attachment_mime(item.mimeType):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported attachment type '{item.mimeType}': {item.fileName}. Supported: PDF, JPEG, PNG, TXT, MD, MDX.",
+                detail=(
+                    f"Unsupported attachment type '{item.mimeType}': {item.fileName}. "
+                    "Supported: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV."
+                ),
             )
         if item.size <= 0:
             raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
@@ -1279,6 +490,9 @@ async def upload_chat_attachments(
         extension = _attachment_extension(item.fileName, item.mimeType)
         is_image = _is_image_attachment(item.mimeType)
         is_text = _is_text_attachment(item.mimeType)
+        is_docx = _is_docx_attachment(item.mimeType)
+        is_spreadsheet = _is_spreadsheet_attachment(item.mimeType)
+        is_delimited = _is_delimited_attachment(item.mimeType)
 
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
@@ -1320,18 +534,44 @@ async def upload_chat_attachments(
         }
 
         needs_ocr = False
+        parse_mode = "pdfplumber"
         if is_image:
             try:
                 block_containers = _build_image_blocks(file_binary, item.mimeType)
                 parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "image_direct"
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
                 parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "text"
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
+        elif is_docx:
+            try:
+                block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "docling"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse DOCX attachment {item.fileName}: {str(e)}")
+        elif is_spreadsheet:
+            try:
+                block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "excel_lightweight"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse Excel attachment {item.fileName}: {str(e)}")
+        elif is_delimited:
+            try:
+                block_containers = await _build_csv_blocks(
+                    file_binary, item.fileName, config_service, item.mimeType
+                )
+                parsed_blocks_by_record[record_id] = block_containers
+                parse_mode = "csv_lightweight"
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse CSV attachment {item.fileName}: {str(e)}")
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -1349,9 +589,11 @@ async def upload_chat_attachments(
                         _build_pdf_image_blocks, file_binary
                     )
                     ocr_image_pages_used += page_count
+                    parse_mode = "image_direct"
                 else:
                     parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
                     block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                    parse_mode = "pdfplumber"
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
@@ -1377,7 +619,11 @@ async def upload_chat_attachments(
                 "mimeType": item.mimeType,
                 "extension": extension,
                 "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
-                "ocrMode": "image_direct" if needs_ocr else "pdfplumber",
+                "parseMode": parse_mode,
+                # Deprecated: kept for backward compatibility with clients still
+                # reading `ocrMode`. `parse_mode` covers non-OCR parse paths too
+                # (e.g. csv_lightweight, docling) so `parseMode` is the canonical field.
+                "ocrMode": parse_mode,
             }
         )
 
@@ -1395,12 +641,31 @@ async def upload_chat_attachments(
         for rd in record_docs
     ]
     await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-    if not is_service_account:
+    if is_service_account:
+        # Service accounts have no user graph node, so no USER -> RECORD edge
+        # can be created. Grant an org-scoped permission edge instead so the
+        # uploaded file is readable org-wide through the standard ACL path
+        # (orgAccessPermissionEdge in check_record_access_with_details).
+        permission_edges = [
+            {
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": rd["_key"],
+                "to_collection": CollectionNames.RECORDS.value,
+                "type": "ORGANIZATION",
+                "role": "READER",
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            for rd in record_docs
+        ]
+        await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+    else:
         permission_edges = [
             {
                 "from_id": user_key,
                 "from_collection": CollectionNames.USERS.value,
-                "to_id": rd['_key'],
+                "to_id": rd["_key"],
                 "to_collection": CollectionNames.RECORDS.value,
                 "type": "USER",
                 "role": "OWNER",
@@ -1596,6 +861,120 @@ async def delete_chat_attachment(
     )
 
 
+async def _generate_chat_stream_via_agent_loop(
+    request: Request,
+    query_info: "ChatQuery",
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+) -> AsyncGenerator[str, None]:
+    """Adapts a validated `ChatQuery` + the authenticated request into the
+    plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
+    expects (see that module's docstring for why it never sees `ChatQuery`
+    or `Request` directly -- avoids both a circular import and coupling the
+    agents layer to FastAPI), then streams straight from it.
+
+    Tool calling is left on for every provider, including Ollama: without it,
+    `internal_search` can never reach the `fetch_full_record` tool the agent
+    loop registers mid-run, so full-record retrieval would silently degrade
+    to snippet-only answers. Models that genuinely can't bind tools surface
+    that as a normal LLM-call error from within the agent loop, same as any
+    other provider misconfiguration."""
+    container = request.app.container
+    logger_ = container.logger()
+    user = getattr(request.state, "user", {}) or {}
+    org_id = user.get("orgId")
+    user_id = user.get("userId")
+    protocol = resolve_protocol(query_info.protocol, request)
+
+    try:
+        llm, model_config, ai_models_config = await get_llm_for_chat(
+            config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
+            reasoning_effort=query_info.reasoningEffort,
+        )
+        if llm is None:
+            raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+    except Exception as exc:
+        logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        if protocol == "agui":
+            evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
+            yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+        else:
+            yield create_sse_event("error", {"error": str(exc)})
+        return
+
+    policy = resolve_chat_mode_policy(query_info.chatMode)
+    is_multimodal_llm = bool(model_config.get("isMultimodal"))
+    context_length = model_config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+
+    # When the request carries agentCapabilities and we're in agent mode,
+    # build a capabilities-aware policy instead of the static AGENT_POLICY.
+    chat_mode_str = (query_info.chatMode or "").strip().lower()
+    if chat_mode_str == "agent" or chat_mode_str.startswith("agent:"):
+        raw_caps = query_info.agentCapabilities
+        if raw_caps and isinstance(raw_caps, dict):
+            caps = AgentCapabilities(
+                internal_search=bool(raw_caps.get("internalSearch", True)),
+                web_search=bool(raw_caps.get("webSearch", True)),
+                deep_search=bool(raw_caps.get("deepSearch", False)),
+            )
+            policy = resolve_agent_policy(caps)
+
+    query_dict = {
+        "query": query_info.query,
+        "limit": query_info.limit,
+        "previous_conversations": query_info.previousConversations,
+        "filters": query_info.filters,
+        "retrievalMode": query_info.retrievalMode,
+        "quickMode": query_info.quickMode,
+        "chatMode": query_info.chatMode,
+        "timezone": query_info.timezone,
+        "currentTime": query_info.currentTime,
+        "conversationId": query_info.conversationId,
+        "attachments": query_info.attachments,
+        "enableRecordIdShortening": query_info.enableRecordIdShortening,
+    }
+    user_info = {
+        "userId": user_id,
+        "orgId": org_id,
+        "userEmail": user.get("email") or "",
+        "sendUserInfo": request.query_params.get("sendUserInfo", True),
+    }
+
+    org_info: dict[str, Any] | None = None
+    try:
+        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+        if user_doc and isinstance(user_doc, dict):
+            for field in ("fullName", "firstName", "lastName", "displayName"):
+                if user_doc.get(field):
+                    user_info[field] = user_doc[field]
+        if org_id:
+            org_doc = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+            if org_doc and isinstance(org_doc, dict):
+                raw_account_type = str(org_doc.get("accountType", "")).lower()
+                org_info = {
+                    "orgId": org_id,
+                    "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
+                    "name": org_doc.get("name") or "",
+                }
+    except Exception:
+        logger_.debug("Failed to enrich user/org context for prompt", exc_info=True)
+
+    client_name = request.headers.get("client-name")
+
+    async for event in run_chat_stream(
+        query_dict, user_info, llm, policy, logger_,
+        retrieval_service=retrieval_service, graph_provider=graph_provider,
+        reranker_service=None, config_service=config_service,
+        org_info=org_info,
+        model_name=query_info.modelName, model_key=query_info.modelKey,
+        is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+        ai_models_config=ai_models_config, protocol=protocol,
+        client_name=client_name,
+    ):
+        yield event
+
+
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(
@@ -1604,7 +983,12 @@ async def askAIStream(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
-    """Perform semantic search across documents with streaming events and tool support"""
+    """Perform semantic search across documents with streaming events and tool support.
+
+    Every mode (`internal_search`, `web_search`, `agent`) routes through the
+    agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
+    for the mode → tool/prefetch behavior.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -1628,20 +1012,13 @@ async def askAIStream(
         "search_type": _search_type,
     })
 
-    if query_info.chatMode == "web_search":
-        stream = _generate_web_search_stream(
-            request=request,
-            query_info=query_info,
-            config_service=config_service,
-        )
-    else:
-        stream = _generate_internal_search_stream(
-            request=request,
-            query_info=query_info,
-            retrieval_service=retrieval_service,
-            graph_provider=graph_provider,
-            config_service=config_service,
-        )
+    stream = _generate_chat_stream_via_agent_loop(
+        request=request,
+        query_info=query_info,
+        retrieval_service=retrieval_service,
+        graph_provider=graph_provider,
+        config_service=config_service,
+    )
 
     return StreamingResponse(
         stream,

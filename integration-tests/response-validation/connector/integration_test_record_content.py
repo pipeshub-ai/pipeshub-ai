@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -63,8 +64,13 @@ class TestConnectorRecordContent:
 
         # content leads with the pre-formatted metadata header plus an LLM-written
         # summary, so assert only the deterministic Record ID line — the prose is
-        # paraphrased, never verbatim.
-        assert f"Record ID       : {record_id}" in content, content[:500]
+        # paraphrased, never verbatim. Spacing around the colon is not part of the
+        # contract (Prompt tuning #2848 dropped column padding).
+        assert re.search(
+            rf"^Record ID[^\S\r\n]*:[^\S\r\n]*{re.escape(record_id)}[^\S\r\n]*$",
+            content,
+            re.MULTILINE,
+        ), content[:500]
         assert indexed_text_record["record_name_stem"] in content
 
         # the parsed block text is flattened into the same string, so the uploaded

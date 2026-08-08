@@ -50,6 +50,42 @@ class TestAiConfigEventService:
 
         assert result is False
 
+    @pytest.mark.asyncio
+    async def test_llm_configured_reloads_the_already_initialized_store(self):
+        """The store singleton is looked up with no arguments — it must
+        never be (re)created from `retrieval_service.config_service` here,
+        only read back if service startup already initialized it (see
+        `query_main.initialize_container`)."""
+        svc = self._make_service()
+        svc.retrieval_service.get_llm_instance = AsyncMock(return_value=MagicMock())
+        fake_store = AsyncMock()
+
+        with patch(
+            "app.services.messaging.kafka.handlers.ai_config.get_llm_api_mode_store",
+            return_value=fake_store,
+        ) as mock_get_store:
+            result = await svc.process_event("llmConfigured", {"provider": "openai"})
+
+        assert result is True
+        mock_get_store.assert_called_once_with()
+        fake_store.load.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_llm_configured_tolerates_uninitialized_store(self):
+        """Nothing to reload if service startup hasn't initialized the
+        singleton yet (e.g. this handler races startup in a test/edge
+        case) — must not raise."""
+        svc = self._make_service()
+        svc.retrieval_service.get_llm_instance = AsyncMock(return_value=MagicMock())
+
+        with patch(
+            "app.services.messaging.kafka.handlers.ai_config.get_llm_api_mode_store",
+            return_value=None,
+        ):
+            result = await svc.process_event("llmConfigured", {"provider": "openai"})
+
+        assert result is True
+
     # -- embeddingModelConfigured --
 
     @pytest.mark.asyncio
@@ -313,7 +349,9 @@ class TestEntityEventService:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_user_added_immediate_sync(self):
+    async def test_user_added_immediate_sync_does_not_trigger_sync(self):
+        # Immediate per-app sync on userAdded is currently disabled in
+        # EntityEventService.__handle_user_added (commented out).
         svc = self._make_service()
         svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
         svc.graph_provider.get_document = AsyncMock(return_value={"accountType": "ENTERPRISE"})
@@ -325,6 +363,7 @@ class TestEntityEventService:
 
         svc._EntityEventService__get_or_create_knowledge_base = AsyncMock(return_value={})
         svc._EntityEventService__create_user_kb_app_relation = AsyncMock(return_value=True)
+        svc._EntityEventService__get_or_create_all_team_and_add_user = AsyncMock(return_value=None)
         svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
 
         payload = {
@@ -336,7 +375,7 @@ class TestEntityEventService:
 
         result = await svc.process_event("userAdded", payload)
         assert result is True
-        svc._EntityEventService__handle_sync_event.assert_awaited()
+        svc._EntityEventService__handle_sync_event.assert_not_awaited()
 
     # -- userUpdated --
 

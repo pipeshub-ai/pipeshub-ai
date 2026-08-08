@@ -183,6 +183,43 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_typed_records_batch(
+        self,
+        record_ids: list[str],
+    ) -> dict[str, "Record"]:
+        """Batch-fetch typed Record instances for the given record IDs.
+
+        Returns a dict mapping record ID to typed Record (FileRecord,
+        TicketRecord, etc.). IDs not found or failing typed construction
+        are silently omitted from the result.
+        """
+        pass
+
+    @abstractmethod
+    async def get_node_depths_batch(
+        self,
+        parent_id: str,
+        node_ids: list[str],
+        max_depth: int = 3,
+        parent_type: str | None = None,
+    ) -> dict[str, int]:
+        """Compute traversal depth for each node relative to a parent.
+
+        For record/folder parents: traverses recordRelations
+        (PARENT_CHILD / ATTACHMENT) edges.
+
+        For recordGroup parents: records belonging to the group are
+        level 1; their children via recordRelations are level 2+.
+
+        For app parents: records directly under the connector's record
+        groups are level 1; their children via recordRelations are level 2+.
+
+        Returns ``{node_id: depth}`` for every reachable node_id.
+        Unreachable IDs are omitted.
+        """
+        pass
+
+    @abstractmethod
     async def get_all_documents(
         self,
         collection: str,
@@ -209,6 +246,7 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -225,6 +263,8 @@ class IGraphDBProvider(ABC):
                           database's natural order is used (stable per query but
                           not guaranteed across restarts).
             transaction:  Optional transaction ID.
+            raise_on_error: Propagate database errors instead of returning an
+                            empty page.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -995,6 +1035,8 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         record_group_id: str | None = None,
         is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1007,9 +1049,17 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return
             offset (int): Number of records to skip
             transaction (Optional[Any]): Optional transaction context
+            record_group_id (Optional[str]): Scope results to a specific record group
+            is_placeholder (Optional[bool]): Filter on placeholder flag - True returns only 
+                        stubs, False excludes them, None ignores the flag
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Dict]: List of records matching the status filters
+            list[Record]: Typed records matching the filters, sorted by key.
         """
         pass
 
@@ -1109,14 +1159,68 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def reset_indexing_status_to_queued_for_record_ids(
-        self, record_ids: list[str]
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str
     ) -> None:
         """
-        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
+        Set indexingStatus to the specified status for each id (deduplicated).
         Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
-        for a single record. Used before reindex (API and batched sync). Skips missing records;
-        logs errors without raising.
+        for a single record. Generic method for updating record status during reindex operations.
+        Skips missing records; logs errors without raising.
+        
+        Args:
+            record_ids: List of record IDs to update
+            status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+        """
+        pass
+
+    @abstractmethod
+    async def compare_and_set_indexing_status(
+        self,
+        record_ids: list[str],
+        expected: str,
+        new_status: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        Atomically set indexingStatus to `new_status` on each id, but only while that
+        id still holds `expected`. One round-trip regardless of how many ids.
+
+        Publishing to the message broker and updating the record are two writes to
+        two systems, so they cannot be made atomic. The indexing service may consume
+        the event and advance the record (IN_PROGRESS, COMPLETED) before the producer
+        gets to mark it QUEUED. An unconditional write would clobber that and strand
+        the record at QUEUED forever, so the write has to be conditional rather than
+        merely ordered.
+
+        Args:
+            record_ids: Record keys to attempt the swap on. Pass a one-element list
+                        for a single record.
+            expected: Status a record must currently hold for its write to apply
+            new_status: Status to write
+            transaction: Optional transaction context
+
+        Returns:
+            list[str]: The ids actually updated. Ids absent from the result held some
+                       other status and were left alone - a normal outcome, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def get_existing_record_keys(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """
+        Return the subset of record_ids that exist, in one round-trip.
+
+        Args:
+            record_ids: Record keys to check
+            transaction: Optional transaction context
+
+        Returns:
+            set[str]: Keys that exist. Missing ids are simply absent.
         """
         pass
 
@@ -1241,6 +1345,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -1265,6 +1371,11 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
             List[Record]: List of properly typed Record instances. Origin is not
@@ -1285,6 +1396,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -1305,9 +1418,14 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Record]: List of properly typed Record instances
+            List[Record]: List of properly typed Record instances, sorted by key.
         """
         pass
 
@@ -2365,7 +2483,8 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -2389,6 +2508,9 @@ class IGraphDBProvider(ABC):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (Optional[Dict[str, int]]): Optional source-creation time bounds in epoch ms.
+                Keys: 'source_created_after_ms' (inclusive lower), 'source_created_before_ms' (inclusive upper).
+                Filters on record.sourceCreatedAtTimestamp.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -3297,6 +3419,29 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ids of team-scoped apps this user may access.
+
+        Mirrors the team-visibility rules used by
+        :meth:`get_filtered_connector_instances` for non-admin users: an app is
+        accessible when the user has a direct ``userAppRelation`` edge to it, or
+        reaches it through a team ``PERMISSION`` edge. Used to gate read-only
+        access (e.g. connector stats) so it matches connector-list visibility.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of accessible team app ids (empty when the user has none).
+        """
+        pass
+
+    @abstractmethod
     async def store_page_token(
         self,
         channel_id: str,
@@ -3581,6 +3726,7 @@ class IGraphDBProvider(ABC):
         parent_id: str | None = None,
         parent_type: str | None = None,
         record_group_ids: list[str] | None = None,
+        depth: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -3620,6 +3766,8 @@ class IGraphDBProvider(ABC):
             record_group_ids: Optional list of record group IDs to restrict visibility.
                 When set, only recordGroup nodes whose IDs are in this list are returned;
                 non-recordGroup nodes (folders, records, apps) pass through unfiltered.
+            depth: Optional traversal depth limit for record/folder children-intersection
+                traversal. None preserves the existing unlimited (100-level) behavior.
             transaction: Optional transaction ID
 
         Returns:
@@ -3707,6 +3855,62 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with id, name, nodeType, subType or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Resolve a node to its metadata ONLY if it belongs to org_id and user_key
+        holds any permission role on it.
+
+        Returns a dict with keys: id, name, nodeType, subType, connector,
+        webUrl, recordType, indexingStatus, userRole.
+        Returns None for missing nodes AND for permission-denied — callers
+        must not distinguish between the two cases.
+
+        Args:
+            node_id: Node ID (record _key, recordGroup _key, or app _key)
+            user_key: User's internal key
+            org_id: Organization ID
+            folder_mime_types: MIME types that classify a record as a folder
+            transaction: Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return cross-reference edges (anything except PARENT_CHILD / ATTACHMENT)
+        enriched with recordName, recordType, connectorName, webUrl,
+        permission-filtered and bounded, in a single query.
+
+        Args:
+            record_id: Source record ID (_key)
+            org_id: Organization ID (used to scope results)
+            user_key: User's internal key (used for permission filtering)
+            relation_types: Relation types to include (e.g. LINKED_TO, RELATED, BLOCKS …)
+            limit: Maximum number of results to return
+            transaction: Optional transaction context
+
+        Returns:
+            List of dicts with id, name, recordType, connectorName, webUrl,
+            relationshipType, hasChildren.
         """
         pass
 
@@ -4263,5 +4467,59 @@ class IGraphDBProvider(ABC):
             Dict with ``valid: True`` and context on success, or
             ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
             on failure.
+        """
+        pass
+
+    @abstractmethod
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
+
+        Each entry is ``{"id": str, "type": "record"|"recordGroup"}``.
+        Reuses the same ``_get_permission_role_*`` fragments as
+        ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
+        Apps are not checked here — callers keep App trail segments via ACL.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_parent_adjacency(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 20,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Batched upward parent-adjacency for retrieved records (one round trip).
+
+        Structure + names only — does **not** apply breadcrumb priority or ACL.
+        Every node is org-scoped (``orgId == org_id``; apps may omit orgId).
+
+        Name coalesce (navigate-aligned)::
+
+            app:          name → appName → _key
+            record:       recordName → name → title → _key
+            recordGroup:  groupName → name → _key
+
+        Return shape::
+
+            {
+              "nodes": {
+                "<id>": {"id": str, "type": "app"|"recordGroup"|"record", "name": str},
+              },
+              "parents": {
+                "<child_id>": [
+                  {"parent_id": str, "parent_type": str, "via": "recordRelations"|"belongsTo"},
+                  ...
+                ],
+              },
+            }
         """
         pass

@@ -35,6 +35,13 @@ from helper.graph_provider_utils import (  # noqa: E402
     async_wait_for_stable_record_count,
     wait_until_graph_condition,
 )
+from helper.storage_incremental import (  # noqa: E402
+    assert_incremental_new_files,
+    record_names_from_keys,
+    settle_record_baseline,
+    sync_until_names_visible,
+    unique_incremental_csv_files,
+)
 from connectors.azure_blob.azure_blob_storage_helper import (  # type: ignore[import-not-found]  # noqa: E402
     AzureBlobStorageHelper,
 )
@@ -99,70 +106,40 @@ class TestAzureBlobConnector:
         """
         TC-INCR-001: Upload new files, run incremental sync, verify:
         - New files appear as new Records in the graph
-        - Existing record count is stable (old records unchanged)
+        - Existing record count does not drop (old records unchanged)
         """
         connector_id = azure_blob_connector["connector_id"]
         container_name = azure_blob_connector["container_name"]
-        before_count = await graph_provider.count_records(connector_id)
 
-        new_files = {
-            "incremental-test/new-file-alpha.csv": b"id,name,value\n1,alpha,100\n2,bravo,200\n",
-            "incremental-test/new-file-beta.csv": b"id,name,value\n1,charlie,300\n2,delta,400\n",
-        }
+        before_count = await settle_record_baseline(
+            pipeshub_client, graph_provider, connector_id
+        )
+        new_files = unique_incremental_csv_files()
+        new_names = record_names_from_keys(new_files)
         for blob_key, file_bytes in new_files.items():
-            azure_blob_storage.upload_blob(container_name, blob_key, file_bytes, content_type="text/csv")
-
+            azure_blob_storage.upload_blob(
+                container_name, blob_key, file_bytes, content_type="text/csv"
+            )
         logger.info(
-            "Uploaded %d new files for incremental sync (connector %s)",
-            len(new_files), connector_id,
+            "Uploaded %d new files for incremental sync (connector %s): %s",
+            len(new_files), connector_id, new_names,
         )
 
-        pipeshub_client.toggle_sync(connector_id, enable=False)
-        pipeshub_client.wait(3)
-        pipeshub_client.toggle_sync(connector_id, enable=True)
-
-        async def _incr_done() -> bool:
-            return await graph_provider.count_records(connector_id) > before_count
-
-        await wait_until_graph_condition(
+        after_count = await sync_until_names_visible(
+            pipeshub_client, graph_provider, connector_id, new_names
+        )
+        await assert_incremental_new_files(
+            graph_provider,
             connector_id,
-            check=_incr_done,
-            timeout=180,
-            poll_interval=10,
-            description="incremental sync (new files)",
-        )
-
-        after_count = await graph_provider.count_records(connector_id)
-        assert after_count > before_count, (
-            f"Expected record count to increase after uploading new files; "
-            f"before={before_count}, after={after_count} (connector {connector_id})"
-        )
-
-        all_names = await graph_provider.fetch_record_names(connector_id)
-        logger.info(
-            "Record names after incremental sync (%d total): %s (connector %s)",
-            len(all_names), all_names[:20], connector_id,
-        )
-
-        new_names = [Path(blob_key).name for blob_key in new_files]
-        for name in new_names:
-            found = await graph_provider.record_paths_or_names_contain(connector_id, [name])
-            if not found:
-                logger.warning(
-                    "New file '%s' not found by exact name in graph "
-                    "(container %s, connector %s)",
-                    name, container_name, connector_id,
-                )
-
-        assert after_count >= before_count, (
-            f"Old records lost during incremental sync; before={before_count}, after={after_count} "
-            f"(connector {connector_id})"
+            before_count=before_count,
+            after_count=after_count,
+            new_names=new_names,
         )
 
         azure_blob_connector["incr_sync_count"] = after_count
         logger.info(
-            "TC-INCR-001 passed: before=%d, after=%d (connector %s)",
-            before_count, after_count, connector_id,
+            "TC-INCR-001 passed: before=%d, after=%d, new=%s (connector %s)",
+            before_count, after_count, new_names, connector_id,
         )
 
     # ------------------------------------------------------------------ #

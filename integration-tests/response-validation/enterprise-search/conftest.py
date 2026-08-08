@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+from dataclasses import asdict
 from typing import Any, TypedDict
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
@@ -34,6 +35,7 @@ from ai_models_setup import (
     teardown_test_llm_model,
 )
 from pipeshub_client import PipeshubClient
+from xdist_shared import shared_session_resource
 
 logger = logging.getLogger("enterprise-search-conftest")
 
@@ -114,6 +116,8 @@ def asana_pdf_blob() -> AsanaPdfBlob:
 
 @pytest.fixture(scope="session")
 def session_kb(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
     pipeshub_client: PipeshubClient,
     ai_models_configured,
     reasoning_multimodal_llm_model: SeededAIModel,
@@ -122,18 +126,22 @@ def session_kb(
     """Session-scoped KB with the Asana DR PDF uploaded and indexed.
 
     Yields ``{"kb_id": str, "record_id": str}``. Deletes the KB on teardown.
+
+    Uploading and indexing the PDF is the single most expensive piece of setup in
+    this suite, so under ``-n`` it runs once per run and every worker queries the
+    same KB rather than each building its own.
     """
     del ai_models_configured  # fixture ordering only
     del reasoning_multimodal_llm_model  # ensure OCR fallback has a multimodal LLM
 
     kb_client = KBClient(pipeshub_client)
 
-    kb_resp = kb_client.create_kb(name="enterprise-search-it-kb")
-    kb_id = _extract_kb_id(kb_resp)
-    assert kb_id, f"KB create returned no id: {kb_resp}"
-    logger.info("Created KB %s for enterprise search IT", kb_id)
+    def _build() -> dict[str, str]:
+        kb_resp = kb_client.create_kb(name="enterprise-search-it-kb")
+        kb_id = _extract_kb_id(kb_resp)
+        assert kb_id, f"KB create returned no id: {kb_resp}"
+        logger.info("Created KB %s for enterprise search IT", kb_id)
 
-    try:
         buffer = asana_pdf_blob["buffer"]
         originalname = asana_pdf_blob["originalname"]
         mimetype = asana_pdf_blob["mimetype"]
@@ -167,13 +175,25 @@ def session_kb(
             f"Search/conversation tests will not have any data to query."
         )
 
-        yield {"kb_id": kb_id, "record_id": record_id}
-    finally:
+        return {"kb_id": kb_id, "record_id": record_id}
+
+    def _teardown(kb: dict[str, str]) -> None:
         try:
-            kb_client.delete_kb(kb_id)
-            logger.info("Deleted KB %s", kb_id)
+            kb_client.delete_kb(kb["kb_id"])
+            logger.info("Deleted KB %s", kb["kb_id"])
         except Exception as e:
-            logger.warning("Failed to delete KB %s: %s", kb_id, e)
+            logger.warning("Failed to delete KB %s: %s", kb["kb_id"], e)
+
+    with shared_session_resource(
+        "session_kb",
+        config=request.config,
+        tmp_path_factory=tmp_path_factory,
+        create=_build,
+        destroy=_teardown,
+        dump=lambda kb: kb,
+        load=lambda raw: raw,
+    ) as kb:
+        yield kb
 
 
 def _agent_create_payload(
@@ -235,6 +255,8 @@ def _delete_agent(agents: AgentsClient, agent_key: str) -> None:
 
 @pytest.fixture(scope="session")
 def reasoning_multimodal_llm_model(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
     pipeshub_client: PipeshubClient,
     ai_models_configured,
 ) -> SeededAIModel:
@@ -248,31 +270,39 @@ def reasoning_multimodal_llm_model(
     """
     del ai_models_configured  # fixture ordering only
 
-    seeded_by_fixture: SeededAIModel | None = None
-    try:
-        seeded_by_fixture = setup_test_llm_model(
-            pipeshub_client,
-            is_reasoning=True,
-            is_multimodal=True,
-            is_default=False,
-        )
+    def _seed() -> SeededAIModel:
+        try:
+            seeded = setup_test_llm_model(
+                pipeshub_client,
+                is_reasoning=True,
+                is_multimodal=True,
+                is_default=False,
+            )
+        except RuntimeError as e:
+            pytest.fail(
+                f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
+                "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
+                "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
+                "Set TEST_AI_MODEL_PROVIDER=azureOpenAI to prefer Azure when multiple "
+                "providers are configured."
+            )
         logger.info(
             "Seeded reasoning multimodal LLM for agent ITs: modelKey=%s model=%s",
-            seeded_by_fixture.model_key,
-            seeded_by_fixture.model_name,
+            seeded.model_key,
+            seeded.model_name,
         )
+        return seeded
+
+    with shared_session_resource(
+        "reasoning_multimodal_llm_model",
+        config=request.config,
+        tmp_path_factory=tmp_path_factory,
+        create=_seed,
+        destroy=lambda seeded: teardown_test_llm_model(pipeshub_client, seeded),
+        dump=asdict,
+        load=lambda raw: SeededAIModel(**raw),
+    ) as seeded_by_fixture:
         yield seeded_by_fixture
-    except RuntimeError as e:
-        pytest.fail(
-            f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
-            "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
-            "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
-            "Set TEST_AI_MODEL_PROVIDER=azureOpenAI to prefer Azure when multiple "
-            "providers are configured."
-        )
-    finally:
-        if seeded_by_fixture is not None:
-            teardown_test_llm_model(pipeshub_client, seeded_by_fixture)
 
 
 @pytest.fixture(scope="session")

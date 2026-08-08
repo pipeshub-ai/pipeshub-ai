@@ -154,6 +154,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
+    skills: true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -461,6 +462,7 @@ export function AgentBuilderSidebar(props: {
               />
             </Box>
           ) : null}
+
         </Box>
       </ScrollArea>
     </Box>

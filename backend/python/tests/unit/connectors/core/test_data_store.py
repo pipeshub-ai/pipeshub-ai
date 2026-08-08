@@ -30,6 +30,14 @@ class ConcreteDataStoreProvider(DataStoreProvider):
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         return await func(*args, **kwargs)
 
+    async def compare_and_set_indexing_status(
+        self, record_ids: list, expected: str, new_status: str
+    ) -> list:
+        return list(record_ids)
+
+    async def get_existing_record_keys(self, record_ids: list) -> set:
+        return set(record_ids)
+
 
 class ConcreteTransactionStore(TransactionStore):
     """Minimal concrete implementation of TransactionStore for testing."""
@@ -63,7 +71,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_path(self, record_id):
         return None
 
-    async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0):
+    async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
 
     async def get_record_group_by_external_id(self, connector_id, external_id):

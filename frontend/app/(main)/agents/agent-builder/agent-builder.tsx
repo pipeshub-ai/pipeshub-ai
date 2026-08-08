@@ -90,6 +90,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    availableSkills,
     activeAgentConnectors,
     configuredConnectors,
     toolsets,
@@ -149,7 +150,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     availableTools,
     availableModels,
     availableKnowledgeBases,
-    configuredConnectors
+    configuredConnectors,
+    availableSkills
   );
   const { reconstructFlowFromAgent } = useAgentBuilderReconstruction();
 

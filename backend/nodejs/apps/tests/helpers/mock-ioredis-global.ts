@@ -32,6 +32,9 @@ class FakeRedis extends EventEmitter {
   eval(..._args: any[]) { return Promise.resolve(null); }
   quit() { return Promise.resolve('OK'); }
   disconnect() { return Promise.resolve(); }
+  // Needed by redis-streams.service.ts, which uses `lazyConnect: true` and
+  // explicitly awaits `redis.connect()` before treating the client as ready.
+  connect() { return Promise.resolve(); }
   getBuffer(_key: string) { return Promise.resolve(null); }
   scan(..._args: any[]) { return Promise.resolve(['0', []]); }
   watch(..._args: any[]) { return Promise.resolve(); }

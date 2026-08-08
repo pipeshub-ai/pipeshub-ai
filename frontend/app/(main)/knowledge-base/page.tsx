@@ -23,6 +23,7 @@ import {
   FolderDetailsSidebar,
   ReindexScopeDialog,
 } from './components';
+import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
@@ -2027,6 +2028,27 @@ function KnowledgeBasePageContent() {
     setIsFolderDetailsOpen(true);
   }, []);
 
+  const openCollectionStatsPanel = useKnowledgeBaseStore((s) => s.openCollectionStatsPanel);
+
+  const showCollectionIndexingStatus = !isAllRecordsMode && !!nodeId && !!selectedKbId;
+
+  const collectionStatsTarget = useMemo(() => {
+    if (!selectedKbId) return null;
+    const crumbs = tableData?.breadcrumbs;
+    const collectionCrumb =
+      crumbs?.find((b) => b.id === selectedKbId) ??
+      crumbs?.find((b) => b.nodeType === 'app' || b.nodeType === 'kb');
+    return {
+      id: selectedKbId,
+      name: collectionCrumb?.name ?? tableData?.currentNode?.name ?? 'Collection',
+    };
+  }, [selectedKbId, tableData?.breadcrumbs, tableData?.currentNode?.name]);
+
+  const handleCollectionIndexingStatusClick = useCallback(() => {
+    if (!collectionStatsTarget) return;
+    openCollectionStatsPanel(collectionStatsTarget.id, collectionStatsTarget.name);
+  }, [collectionStatsTarget, openCollectionStatsPanel]);
+
   // Handle share
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
@@ -2252,6 +2274,15 @@ function KnowledgeBasePageContent() {
       const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
       if (isKnowledgeHubNode) {
+        if (
+          item.nodeType === 'recordGroup' &&
+          item.recordGroupType?.toUpperCase() === 'SLACK_CHANNEL' &&
+          item.webUrl
+        ) {
+          window.open(item.webUrl, '_blank', 'noopener,noreferrer');
+          return;
+        }
+
         const containerTypes: NodeType[] = ['app', 'folder', 'recordGroup'];
         const isNavigableContainer =
           containerTypes.includes(item.nodeType) ||
@@ -2991,6 +3022,8 @@ function KnowledgeBasePageContent() {
               onInfoClick={handleFolderInfoClick}
               onFind={handleFind}
               onRefresh={handleRefresh}
+              showIndexingStatus={showCollectionIndexingStatus}
+              onIndexingStatusClick={handleCollectionIndexingStatusClick}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
               onCreateFolder={handleCreateFolder}
@@ -3297,6 +3330,9 @@ function KnowledgeBasePageContent() {
           }}
         />
       )}
+
+      {/* Collection Stats Panel */}
+      <CollectionStatsPanel />
     </Flex>
   );
 }

@@ -1084,7 +1084,7 @@ class TestGetRecords:
         assert result["success"] is False
         assert result["code"] == 404
 
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_500(self):
         from app.connectors.api.router import get_records
 
         gp = AsyncMock()
@@ -1094,25 +1094,25 @@ class TestGetRecords:
         container.logger = MagicMock(return_value=MagicMock())
         request = _mock_request(container=container)
 
-        result = await get_records(
-            request=request,
-            graph_provider=gp,
-            page=1,
-            limit=20,
-            search=None,
-            record_types=None,
-            origins=None,
-            connectors=None,
-            indexing_status=None,
-            permissions=None,
-            date_from=None,
-            date_to=None,
-            sort_by="createdAtTimestamp",
-            sort_order="desc",
-            source="all",
-        )
-        assert result["records"] == []
-        assert "error" in result
+        with pytest.raises(HTTPException) as exc_info:
+            await get_records(
+                request=request,
+                graph_provider=gp,
+                page=1,
+                limit=20,
+                search=None,
+                record_types=None,
+                origins=None,
+                connectors=None,
+                indexing_status=None,
+                permissions=None,
+                date_from=None,
+                date_to=None,
+                sort_by="createdAtTimestamp",
+                sort_order="desc",
+                source="all",
+            )
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     async def test_sort_order_normalization(self):
         from app.connectors.api.router import get_records
@@ -1357,22 +1357,30 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={
             "success": True,
             "data": {"totalRecords": 100},
         })
+
+        connector_registry = AsyncMock()
+        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
         request = MagicMock()
         request.app = MagicMock()
         request.app.container = container
-        request.state.user.get = lambda key, default=None: {
-            "orgId": "org-1",
-            "userId": "user-1",
-        }.get(key, default)
+        request.app.state.connector_registry = connector_registry
+        request.state = MagicMock()
+        request.state.user = MagicMock()
+        request.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "org-1",
+        }.get(k, default)
+        request.headers = MagicMock()
+        request.headers.get = lambda k, default=None: default
 
-        result = await get_connector_stats_endpoint(request, "conn-1", gp)
+        result = await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
         assert result["success"] is True
         assert result["data"]["totalRecords"] == 100
         gp.get_connector_stats.assert_awaited_once_with("org-1", "conn-1")
@@ -1381,20 +1389,28 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
+
+        connector_registry = AsyncMock()
+        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
         request = MagicMock()
         request.app = MagicMock()
         request.app.container = container
-        request.state.user.get = lambda key, default=None: {
-            "orgId": "org-1",
-            "userId": "user-1",
-        }.get(key, default)
+        request.app.state.connector_registry = connector_registry
+        request.state = MagicMock()
+        request.state.user = MagicMock()
+        request.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "org-1",
+        }.get(k, default)
+        request.headers = MagicMock()
+        request.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(request, "conn-1", gp)
+            await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
 
@@ -2913,10 +2929,12 @@ class TestDownloadFile:
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.GOOGLE_DRIVE)
+        connector_instance = {"_key": "conn-1", "type": "googledrive", "name": "Drive", "isActive": False}
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
-            {"_key": "org-1"},  # org
-            {"_key": "conn-1", "type": "googledrive", "name": "Drive", "isActive": False},  # connector instance
+            {"_key": "org-1"},        # org lookup in download_file
+            connector_instance,        # connector instance in download_file
+            connector_instance,        # connector instance in _resolve_record_content_response
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
 
@@ -2938,10 +2956,12 @@ class TestDownloadFile:
         handler.validate_token = MagicMock(return_value=payload)
 
         record = _mock_record(connector_name=Connectors.SLACK)
+        connector_instance = {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True}
         gp = AsyncMock()
         gp.get_document = AsyncMock(side_effect=[
-            {"_key": "org-1"},  # org
-            {"_key": "conn-1", "type": "slack", "name": "My Slack", "isActive": True},  # connector instance
+            {"_key": "org-1"},    # org lookup in download_file
+            connector_instance,   # connector instance in download_file
+            connector_instance,   # connector instance in _resolve_record_content_response
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
 
@@ -2976,7 +2996,7 @@ class TestStreamRecord:
         request = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
-            await stream_record(request, "rec-1", None, gp, config_service)
+            await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_record_not_found_raises_404(self):
@@ -2990,7 +3010,7 @@ class TestStreamRecord:
         request = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
-            await stream_record(request, "rec-1", None, gp, config_service)
+            await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_no_access_raises_403(self):
@@ -3009,7 +3029,7 @@ class TestStreamRecord:
         request = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
-            await stream_record(request, "rec-1", None, gp, config_service)
+            await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     async def test_connector_instance_not_found_raises_404(self):
@@ -3028,7 +3048,7 @@ class TestStreamRecord:
         request = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
-            await stream_record(request, "rec-1", None, gp, config_service)
+            await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_success_without_conversion(self):
@@ -3053,7 +3073,7 @@ class TestStreamRecord:
         config_service = AsyncMock()
         request = _mock_request(container=container)
 
-        result = await stream_record(request, "rec-1", None, gp, config_service)
+        result = await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert isinstance(result, Response)
 
 
