@@ -164,7 +164,9 @@
       "usernameLabel": "Username",
       "usernamePlaceholder": "eg: user@gmail.com",
       "passwordLabel": "Password",
-      "passwordPlaceholder": "Enter Password"
+      "passwordPlaceholder": "Enter Password",
+      "saveSuccessFallback": "SMTP configuration saved.",
+      "saveErrorFallback": "Could not save SMTP configuration."
     },
     "nav": {
       "prev": "Prev",
@@ -358,7 +360,6 @@
       "subtitleExisting": "Confirm or update your PipesHub server URL.",
       "label": "Server URL",
       "submit": "Connect",
-      "changeServer": "Change server",
       "errors": {
         "empty": "Please enter a server URL.",
         "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
@@ -766,7 +767,8 @@
     "dark": "Dark",
     "documentation": "Documentation",
     "darkMode": "Dark Mode",
-    "lightMode": "Light Mode"
+    "lightMode": "Light Mode",
+    "organisations": "Organisations"
   },
   "workspace": {
     "users": {
@@ -897,7 +899,8 @@
         "viewGroup": "View Group",
         "delete": "Delete",
         "deleteError": "Failed to delete group",
-        "deleteSuccess": "Group deleted"
+        "deleteSuccess": "Group deleted",
+        "managePermissions": "Manage Permissions"
       },
       "create": {
         "accessComingSoon": "Access Permissions Coming Soon",
@@ -944,6 +947,18 @@
         "saveSuccess": "Group updated!",
         "saveSuccessDescription": "Changes to '{{name}}' saved successfully",
         "undo": "Undo"
+      },
+      "permissions": {
+        "title": "Access Permissions",
+        "titleWithName": "{{name}} — Access Permissions",
+        "subtitle": "Control what members of this group are allowed to do.",
+        "save": "Save Changes",
+        "saving": "Saving...",
+        "discard": "Discard",
+        "saveSuccess": "Permissions saved",
+        "saveError": "Failed to save permissions",
+        "loadError": "Failed to load permissions",
+        "empty": "No permissions are defined yet."
       }
     },
     "teams": {
@@ -1329,7 +1344,10 @@
         "users": "Users",
         "groups": "Groups",
         "teams": "Teams",
-        "webSearch": "Web Search"
+        "webSearch": "Web Search",
+        "tenants": "Tenants",
+        "superOrgs": "Organisations",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1603,7 +1621,8 @@
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
         "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "oauth": "Configure OAuth 2.0",
+        "github": "Configure GitHub Authentication"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -2253,6 +2272,179 @@
           "description": "LLM-based document classification and metadata extraction"
         }
       }
+    },
+    "tenants": {
+      "title": "Tenants",
+      "subtitle": "Create and manage tenant organisations within the workspace",
+      "createTenant": "Create Tenant",
+      "searchPlaceholder": "Search tenants...",
+      "emptyTitle": "No tenants created yet",
+      "emptyDescription": "Tenants are separate organisations that you manage on this platform.",
+      "noFilterResults": "No tenants match the applied filters",
+      "noFilterResultsHint": "Try adjusting or clearing the filters above",
+      "noSearchResults": "No tenants match your search",
+      "listDeleteDescription": "This will permanently remove the tenant and all its users.",
+      "columns": {
+        "name": "Name",
+        "domain": "Domain",
+        "contactEmail": "Contact Email",
+        "accountType": "Account Type",
+        "createdOn": "Created On"
+      },
+      "actions": {
+        "tenantDetails": "Details",
+        "viewUsers": "View Users",
+        "viewUserGroups": "User Groups",
+        "delete": "Delete",
+        "deleteError": "Failed to delete tenant",
+        "deleteSuccess": "Tenant deleted",
+        "deleteSystemTooltip": "This tenant cannot be deleted"
+      },
+      "groups": {
+        "title": "User Groups",
+        "subtitle": "Manage user groups for this tenant",
+        "backToTenants": "Back to Tenants",
+        "emptyTitle": "No user groups yet",
+        "emptyDescription": "Create a user group to get started.",
+        "noSearchResults": "No groups match your search",
+        "noSearchResultsHint": "Try adjusting or clearing the search above"
+      },
+      "create": {
+        "title": "Create Tenant",
+        "accountTypeLabel": "Account Type",
+        "registeredNameLabel": "Registered Name",
+        "registeredNamePlaceholder": "e.g. Acme Inc.",
+        "shortNameLabel": "Short Name",
+        "shortNamePlaceholder": "e.g. Acme",
+        "contactEmailLabel": "Contact Email",
+        "contactEmailPlaceholder": "e.g. admin@acme.com",
+        "submit": "Create Tenant",
+        "cancel": "Cancel",
+        "successTitle": "Tenant created!",
+        "successDescription": "Tenant was created successfully",
+        "errorGeneric": "Failed to create tenant",
+        "inheritanceTitle": "Configuration Inheritance",
+        "inheritanceDescription": "Enable to inherit settings from your organisation. Disable to let the tenant manage its own settings.",
+        "inheritance": {
+          "aiModels": "AI Models",
+          "aiModelsHintOn": "Tenant is ready to use immediately (no AI setup required)",
+          "aiModelsHintOff": "Tenant must configure their own AI models",
+          "smtp": "Email (SMTP)",
+          "authentication": "Authentication",
+          "prompts": "System Prompts",
+          "platformSettings": "Platform Settings",
+          "connectors": "Connectors",
+          "toolsets": "Toolsets"
+        }
+      },
+      "invite": {
+        "title": "Invite User",
+        "send": "Send Invite",
+        "cancel": "Cancel",
+        "tenantLabel": "Tenant",
+        "emailLabel": "Invite to",
+        "emailPlaceholder": "Enter one or more email addresses",
+        "groupLabel": "Add to a User Group",
+        "groupPlaceholder": "Search or select user group(s)",
+        "successTitle": "Invite sent!",
+        "successDescription": "{{email}} has been invited",
+        "errorGeneric": "Failed to send invite"
+      },
+      "detail": {
+        "registeredNameLabel": "Registered Name",
+        "shortNameLabel": "Short Name",
+        "contactEmailLabel": "Contact Email",
+        "domainLabel": "Domain",
+        "accountTypeLabel": "Account Type",
+        "inheritanceTitle": "Configuration Inheritance",
+        "inheritanceDescription": "When enabled, the tenant uses your organisation's settings instead of its own."
+      },
+      "edit": {
+        "edit": "Edit Tenant",
+        "save": "Save Changes",
+        "cancel": "Cancel",
+        "deleteButton": "Delete Tenant",
+        "deleteTitle": "Delete tenant '{{name}}'",
+        "deleteDescription": "Are you sure you want to delete this tenant?",
+        "deleteConfirmInputLabel": "Type \"{{name}}\" to confirm",
+        "deleteSuccess": "Tenant deleted",
+        "deleteSuccessDescription": "Tenant has been deleted",
+        "deleteError": "Failed to delete tenant",
+        "deleting": "Deleting...",
+        "saveSuccess": "Tenant updated!",
+        "saveSuccessDescription": "Tenant updated successfully",
+        "saveError": "Failed to update tenant"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth Apps",
+      "subtitle": "Manage OAuth credentials for connectors and actions. Apps marked as Default are automatically used for new connections unless overridden.",
+      "addButton": "Add OAuth App",
+      "tabs": {
+        "connectors": "Connectors",
+        "toolsets": "Actions"
+      },
+      "typeSelector": {
+        "connectorLabel": "Connector Type",
+        "toolsetLabel": "Action Type",
+        "loading": "Loading..."
+      },
+      "scope": {
+        "team": "Team",
+        "personal": "Personal"
+      },
+      "loading": "Loading...",
+      "search": {
+        "placeholder": "Search apps..."
+      },
+      "empty": {
+        "title": "No OAuth Apps for {{typeLabel}}",
+        "connectorDescription": "Add an OAuth app to allow connectors of this type to authenticate using your credentials.",
+        "connectorDescriptionPersonal": "Add an OAuth app to allow this connector type to authenticate on your behalf.",
+        "toolsetDescription": "Add an OAuth app to allow actions of this type to authenticate using your credentials.",
+        "noSearchResults": "No OAuth apps match your search.",
+        "addButton": "Add OAuth App"
+      },
+      "form": {
+        "titleCreate": "Add OAuth App for {{typeName}}",
+        "titleEdit": "Edit OAuth App",
+        "redirectUriTitle": "Redirect / Callback URL",
+        "redirectUriDescription": "Register this URL in your identity provider's OAuth app configuration.",
+        "copied": "Copied!",
+        "copy": "Copy",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. {{typeName}} Production",
+        "nameRequired": "Name is required.",
+        "credentialsTitle": "Credentials",
+        "fieldRequired": "{{fieldName}} is required.",
+        "settingsTitle": "Settings",
+        "isDefaultLabel": "Set as Default",
+        "isDefaultDescription": "Use this app by default for new connections of this type.",
+        "allowChildOverrideLabel": "Allow Child Override",
+        "allowChildOverrideDescription": "Allow child organisations to configure their own OAuth app for this type.",
+        "cancelButton": "Cancel",
+        "createButton": "Create",
+        "saveButton": "Save Changes",
+        "savingLabel": "Saving...",
+        "schemaError": "Could not load schema for this type.",
+        "genericError": "An error occurred. Please try again."
+      },
+      "delete": {
+        "title": "Delete \"{{name}}\"?",
+        "message": "This OAuth app will be permanently deleted. Connector instances currently using it may stop working.",
+        "confirmLabel": "Delete",
+        "forceDeleteButton": "Force Delete",
+        "forceTitle": "Force Delete \"{{name}}\"?",
+        "forceMessage": "This OAuth app is currently in use. Force deleting it will remove it and may break existing connector connections that rely on it. This action cannot be undone.",
+        "forceConfirmLabel": "Force Delete",
+        "successMessage": "OAuth app \"{{name}}\" has been deleted."
+      },
+      "errors": {
+        "loadTypes": "Could not load available OAuth app types.",
+        "loadConnectors": "Could not load connector OAuth apps.",
+        "loadToolsets": "Could not load action OAuth apps.",
+        "deleteGeneric": "Failed to delete OAuth app."
+      }
     }
   },
   "filePreview": {
@@ -2698,6 +2890,16 @@
       "savingToastDescription": "This will take a few seconds",
       "successToast": "Account created successfully!",
       "failToast": "Sign up failed. Please try again.",
+      "createWorkspaceTitle": "Create a New Workspace",
+      "createWorkspaceSubtitle": "Set up a new workspace for your organisation.",
+      "fullNameLabel": "Full Name*",
+      "fullNamePlaceholder": "Enter your full name",
+      "verificationSentToast": "Check your inbox",
+      "verificationSentDescription": "A verification link has been sent to your email. Click it to activate your organisation.",
+      "accountCreatedToast": "Account created",
+      "accountCreatedDescription": "Your organisation is ready. You can sign in now.",
+      "emailFailedToast": "Organisation created",
+      "emailFailedDescription": "We couldn't send the verification email. Please contact support.",
       "errors": {
         "firstNameRequired": "First name is required.",
         "lastNameRequired": "Last name is required.",
@@ -2707,7 +2909,8 @@
         "passwordRequired": "Password is required.",
         "confirmPasswordRequired": "Please confirm your password.",
         "passwordsMismatch": "Passwords do not match.",
-        "emailAlreadyExists": "An account with this email already exists."
+        "emailAlreadyExists": "An account with this email already exists.",
+        "fullNameRequired": "Full name is required."
       },
       "confirmDialog": {
         "title": "How PipesHub assigns permissions",
@@ -2717,7 +2920,9 @@
         "emailNotePre": "Make sure the email you registered with —",
         "emailNotePost": "— is the same one used in your organisation's apps so your permissions are recognised correctly.",
         "cancelButton": "Cancel",
-        "signUpButton": "Sign Up"
+        "signUpButton": "Sign Up",
+        "verificationNoteTitle": "Verification required",
+        "verificationNoteBody": "A verification link will be sent to the email above. Your organisation will only be accessible after you verify it."
       }
     },
     "login": {
@@ -2727,7 +2932,11 @@
       "emailVerifyFailedDescription": "The link may be invalid or expired.",
       "samlErrorTitle": "Error in logging in with SAML",
       "samlSignInFailedTitle": "Sign-in failed",
-      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again."
+      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again.",
+      "orgEmailVerifiedTitle": "Organisation verified",
+      "orgEmailVerifiedDescription": "Your organisation is now active. Sign in to continue.",
+      "orgEmailVerifyFailedTitle": "Verification failed",
+      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again."
     },
     "common": {
       "signIn": "Sign In",

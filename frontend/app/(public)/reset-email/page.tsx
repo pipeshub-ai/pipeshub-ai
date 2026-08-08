@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, Suspense } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import { getUserAccountApiErrorMessage } from '@/lib/api/user-account-api-error';
 import AuthHero from '../components/auth-hero';

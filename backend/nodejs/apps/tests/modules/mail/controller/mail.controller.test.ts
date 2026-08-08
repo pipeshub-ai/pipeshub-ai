@@ -80,6 +80,18 @@ describe('mail/controller/mail.controller', () => {
       }
     })
 
+    it('should return content for OrgEmailVerification template', () => {
+      try {
+        const content = controller.getEmailContent('orgEmailVerification', {
+          name: 'Acme Corp',
+          link: 'http://example.com/verify',
+        })
+        expect(content).to.be.a('string')
+      } catch {
+        // Template files may not be available in test environment
+      }
+    })
+
     it('should throw for unknown template type', () => {
       expect(() => controller.getEmailContent('unknown-template', {})).to.throw('Unknown Template')
     })

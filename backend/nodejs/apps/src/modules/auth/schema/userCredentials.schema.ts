@@ -1,4 +1,4 @@
-import mongoose, { Document, Schema, model } from 'mongoose';
+import mongoose, { Document, Schema, Model } from 'mongoose';
 
 // Define the TypeScript interface for UserCredential document
 export interface IUserCredentials extends Document {
@@ -70,9 +70,7 @@ userCredentialSchema.pre(
   },
 );
 
-// Create and export the model
-export const UserCredentials = model<IUserCredentials>(
-  'userCredentials',
-  userCredentialSchema,
-  'userCredentials',
-);
+// Guard against double-registration if the model is already on mongoose.models.
+export const UserCredentials: Model<IUserCredentials> =
+  (mongoose.models['userCredentials'] as Model<IUserCredentials>) ||
+  mongoose.model<IUserCredentials>('userCredentials', userCredentialSchema, 'userCredentials');

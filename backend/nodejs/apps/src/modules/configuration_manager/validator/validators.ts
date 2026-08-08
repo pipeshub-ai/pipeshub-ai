@@ -118,6 +118,13 @@ export const googleAuthConfigSchema = z.object({
   }),
 });
 
+export const githubAuthConfigSchema = z.object({
+  body: z.object({
+    clientId: z.string().min(1, { message: 'GitHub client ID is required' }),
+    clientSecret: z.string().min(1, { message: 'GitHub client secret is required' }),
+  }),
+});
+
 export const oauthConfigSchema = z.object({
   body: z.object({
     providerName: z.string().min(1, { message: 'Provider name is required' }),

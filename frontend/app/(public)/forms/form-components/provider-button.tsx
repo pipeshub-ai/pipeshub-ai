@@ -6,7 +6,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AuthProviderType = 'sso' | 'google' | 'microsoft' | 'oauth';
+export type AuthProviderType = 'sso' | 'google' | 'microsoft' | 'oauth' | 'github';
 
 const PROVIDER_CONFIG: Record<
   AuthProviderType,
@@ -45,6 +45,17 @@ const PROVIDER_CONFIG: Record<
       <span className="material-icons-outlined" style={{ fontSize: '18px' }}>
         login
       </span>
+    ),
+  },
+  github: {
+    label: 'Continue with GitHub',
+    icon: (
+      <Image
+        src="/icons/auth-config/github.svg"
+        alt="GitHub"
+        width={18}
+        height={18}
+      />
     ),
   },
 };

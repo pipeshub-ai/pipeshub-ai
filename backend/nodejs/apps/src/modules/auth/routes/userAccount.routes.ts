@@ -122,7 +122,7 @@ export function createUserAccountRouter(container: Container) {
 
   const resetPasswordValidationSchema = z.object({
     body: z.object({
-      currentPassword: z.string(),
+      currentPassword: z.string().optional(),
       newPassword: z.string(),
       'cf-turnstile-response': z.string().optional(),
     }),

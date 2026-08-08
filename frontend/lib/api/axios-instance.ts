@@ -1,5 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
-import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
+import { useAuthStore, logoutAndRedirect } from '@/config';
 import { extractApiErrorMessage, processError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
@@ -23,6 +23,7 @@ declare module 'axios' {
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? '';
 
 const API_TIMEOUT = 90_000;
+const SESSION_TOKEN_STORAGE_KEY = 'workspace_session_token';
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
@@ -117,6 +118,8 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
       const apiMessage = extractApiErrorMessage(error.response.data);
       if (apiMessage === SESSION_EXPIRED_LOGOUT_MESSAGE) {
+        localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+        sessionStorage.clear();
         logoutAndRedirect();
         return Promise.reject(processError(error));
       }

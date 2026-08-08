@@ -2,7 +2,7 @@ import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisService } from '../../../libs/services/redis.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';

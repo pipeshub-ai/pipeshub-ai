@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import { Container } from 'inversify';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { handleMCPRequest } from '../controller/mcp.controller';
 
