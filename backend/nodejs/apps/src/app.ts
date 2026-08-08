@@ -79,6 +79,7 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
@@ -535,6 +536,11 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-clients',
       createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/personal-access-tokens',
+      createPatRouter(this.oauthProviderContainer),
     );
 
     // MCP (Model Context Protocol) routes

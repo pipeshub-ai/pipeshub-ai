@@ -11,9 +11,11 @@ import { OAuthAppService } from '../services/oauth.app.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
 import { AuthorizationCodeService } from '../services/authorization_code.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
+import { PatService } from '../services/pat.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
+import { PatController } from '../controller/pat.controller'
 import { OAuthAuthMiddleware } from '../middlewares/oauth.auth.middleware'
 
 const loggerConfig = {
@@ -140,6 +142,16 @@ export class OAuthProviderContainer {
         .bind<OAuthAuthMiddleware>('OAuthAuthMiddleware')
         .toConstantValue(oauthAuthMiddleware)
 
+      const configService = container.get<ConfigService>('ConfigService')
+      const patService = new PatService(
+        logger,
+        encryptionService,
+        configService,
+        oauthTokenService,
+        scopeValidatorService,
+      )
+      container.bind<PatService>('PatService').toConstantValue(patService)
+
       // Initialize Controllers
       container
         .bind<OAuthAppController>('OAuthAppController')
@@ -151,6 +163,10 @@ export class OAuthProviderContainer {
             scopeValidatorService,
           )
         })
+
+      container.bind<PatController>('PatController').toDynamicValue(() => {
+        return new PatController(logger, patService, scopeValidatorService)
+      })
 
       container
         .bind<OAuthProviderController>('OAuthProviderController')
