@@ -183,3 +183,31 @@ async def wait_for_sync_completion(
 
     logger.info("✅ Sync complete: %d records", final_count)
     return final_count
+
+
+async def apply_filter_full_sync(
+    pipeshub_client: "PipeshubClient",
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    filters: Dict[str, Any],
+    *,
+    timeout: int = 300,
+) -> int:
+    """Set a full filter payload then force a full sync (wipes+recreates sync edges).
+
+    A full sync is required for scope *narrowing* to be reflected: it strips
+    ``BELONGS_TO`` connector-wide and recreates it only for in-scope entities, so
+    entities that left the filter drop out of BELONGS_TO-guarded counts.
+
+    Changing the filter sets the backend ``pendingFullSync`` flag, so the re-enable that
+    ``update_connector_filters_sync_safe`` performs is itself a full sync — no separate
+    ``resync`` is needed (that would just run a redundant second full sync).
+
+    ``filters`` must already carry the ``sync.values`` nesting the connector reads
+    (see ``load_connector_filters``); the filters-sync endpoint stores the payload
+    verbatim, so a flat dict is written to the wrong path and silently ignored.
+    """
+    pipeshub_client.update_connector_filters_sync_safe(connector_id, filters=filters)
+    return await wait_for_sync_completion(
+        pipeshub_client, graph_provider, connector_id, timeout=timeout,
+    )

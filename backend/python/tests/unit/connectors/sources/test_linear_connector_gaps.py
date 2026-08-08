@@ -35,6 +35,8 @@ def _make_connector() -> LinearConnector:
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.get_placeholder_records = AsyncMock(return_value=[])
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
     dsp = MagicMock()
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=None)
@@ -1423,12 +1425,13 @@ class TestRunSyncFilterLogging:
         )
         conn._fetch_users = AsyncMock(return_value=[])
         conn._fetch_teams = AsyncMock(return_value=([], []))
-        conn._sync_issues_for_teams = AsyncMock()
+        conn._sync_issues_for_teams = AsyncMock(return_value=set())
         conn._sync_attachments = AsyncMock()
         conn._sync_documents = AsyncMock()
         conn._sync_projects_for_teams = AsyncMock()
         conn._sync_deleted_issues = AsyncMock()
         conn._sync_deleted_projects = AsyncMock()
+        conn._sweep_placeholder_records = AsyncMock(return_value=0)
 
         with patch(
             "app.connectors.sources.linear.connector.load_connector_filters",
