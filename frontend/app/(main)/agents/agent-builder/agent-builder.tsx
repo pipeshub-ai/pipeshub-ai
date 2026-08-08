@@ -41,6 +41,7 @@ import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
 } from './sidebar-toolset-utils';
+import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -94,11 +95,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     activeAgentConnectors,
     configuredConnectors,
     toolsets,
+    mcpServers,
     loading,
     loadedAgent,
     error,
     setError,
     refreshToolsets,
+    refreshMcpServers,
     refreshAgent,
   } = useAgentBuilderData(editingKey);
 
@@ -390,7 +393,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills', 'mcpServers'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -983,6 +986,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             activeToolsetTypeKeys={activeToolsetTypeKeys}
             toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
             refreshToolsets={refreshToolsets}
+            mcpServers={mcpServers}
+            mcpMergeCheckNodes={nodes as McpInstanceIdFlowNode[]}
+            refreshMcpServers={() => refreshMcpServers(effectiveAgentKey, isServiceAccount)}
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
             isServiceAccount={isServiceAccount}

@@ -246,6 +246,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
+    # Initialize MCP catalog registry (mirrors the toolset registry above) — needed
+    # by `get_assistant_agent`'s `mcpServers` resolution and by the agent-loop
+    # runtime's `MCPToolProvider`/`MCPAccessResolver`. Lightweight (no heavy SDK
+    # imports, unlike the toolset registry), so no `to_thread` offload needed.
+    logger.info("🔄 Initializing in-memory MCP server registry for agents...")
+    from app.agents.mcp.registry import get_mcp_registry
+
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")

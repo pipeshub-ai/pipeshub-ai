@@ -33,6 +33,7 @@ export default defineConfig({
       'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
       'app/(main)/chat/utils/__tests__/build-chat-artifact.test.ts',
       'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
+      'app/(main)/workspace/mcp-servers/__tests__/oauth-dcr-requirement.test.ts',
       'lib/store/__tests__/auth-store.test.ts',
     ],
     passWithNoTests: false,

@@ -294,6 +294,7 @@ class TestGetAgent:
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
                 [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
                   "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
+                [],  # mcp servers projection
                 [{"share_with_org": True}],  # org share query
             ]
         )
@@ -324,6 +325,7 @@ class TestGetAgent:
                 [],  # toolsets query
                 [],  # knowledge query
                 [],  # skills query
+                [],  # mcp servers projection
                 [],  # org share query
             ]
         )
@@ -337,6 +339,7 @@ class TestGetAgent:
         assert result["toolsets"] == []
         assert result["knowledge"] == []
         assert result["skills"] == []
+        assert result["mcpServers"] == []
         assert result["shareWithOrg"] is False
 
     @pytest.mark.asyncio
@@ -350,6 +353,7 @@ class TestGetAgent:
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
                 [],  # skills query
+                [],  # mcp servers projection
                 [],  # org share query
             ]
         )

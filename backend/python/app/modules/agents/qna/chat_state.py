@@ -116,6 +116,14 @@ class ChatState(TypedDict):
     toolset_configs: dict[str, dict] | None  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
     agent_toolsets: list[dict] | None  # Toolset metadata from graph (instanceId, name, tools) - NO userId stored
 
+    # MCP server attachment — parallel to the toolset fields above, populated by
+    # `agent.py`'s chat handler for both custom agents (graph `mcpServers`) and the
+    # assistant/placeholder agent (`get_authenticated_mcp_servers`). Consumed by the
+    # agent-loop runtime's `MCPToolProvider`/`MCPAccessResolver` (`app/agents/agent_loop/`).
+    mcp_servers: list[dict] | None  # Attached MCP server metadata (instanceId, name, tools) - NO secrets stored
+    mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
+    mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
+
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
     planned_tool_calls: list[dict[str, Any]] | None  # List of planned tool calls to execute
@@ -592,6 +600,11 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "tool_to_toolset_map": tool_to_toolset_map,
         "toolset_configs": toolset_configs,
         "agent_toolsets": toolsets,
+
+        # MCP servers (resolved by agent.py's chat handler; see ChatState field comments)
+        "mcp_servers": chat_query.get("mcpServers", []),
+        "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
+        "mcp_tool_load_failures": [],
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),

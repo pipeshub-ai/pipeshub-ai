@@ -13,6 +13,7 @@ from typing import Any
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.lazy_tools_wiring import (
+    MCP_PARENT,
     META_TOOL_NAMES,
     PipesHubGlobalCatalogFallback,
     group_connector_toolsets,
@@ -207,6 +208,27 @@ class TestGroupConnectorToolsets:
         # The whole jira group is pulled in once ANY of its members is
         # present in the grant, not just the one that matched.
         assert set(registry.tools_in_toolset("jira")) == {"jira_create_issue", "jira_search_issues"}
+
+    def test_never_reparents_a_group_already_nested_under_mcp_parent(self) -> None:
+        """An MCP instance group (`MCPToolProvider`, `mcp_tool_loader.py`)
+        is registered with `parent=MCP_PARENT` from the moment it's loaded
+        — never top-level — so it must never be swept under `"connectors"`
+        even if one of its tool names is in this turn's grant."""
+        registry = _registry_with_connectors()
+        registry.register_tool(_ConnectorTool("jira_mcp", "search"))
+        registry.register_toolset(MCP_PARENT, "Attached MCP servers", [])
+        registry.register_toolset(
+            "mcp_jiramcp", "Jira MCP server tools", ["jira_mcp_search"], parent=MCP_PARENT,
+        )
+
+        grouped_anything = group_connector_toolsets(
+            registry, ["jira_create_issue", "slack_send_message", "jira_mcp_search"],
+        )
+
+        assert grouped_anything is True
+        assert {g.name for g in registry.children_of("connectors")} == {"jira", "slack"}
+        mcp_group = next(g for g in registry.toolsets() if g.name == "mcp_jiramcp")
+        assert mcp_group.parent == MCP_PARENT
 
 
 class TestRegisterLazyToolMetaTools:

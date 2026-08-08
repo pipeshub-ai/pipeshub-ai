@@ -117,13 +117,29 @@ export function mergeToolsFromAgentDetail(
   return Array.from(byFull.values());
 }
 
-/** Collect `fullName` from GET /agents/:id `toolsets[].tools[]` for stream payloads */
+/**
+ * Collect `fullName` from GET /agents/:id `toolsets[].tools[]` AND `mcpServers[].tools[]`
+ * for stream payloads. This is the "select all" catalog consumed by the chat Actions/MCP
+ * tabs — MCP names MUST be included here, otherwise toggling any single toolset tool off
+ * would diff against a catalog missing MCP names and silently drop every MCP tool too
+ * (see `toggleTool`/`setGroupToolsEnabled` in `agent-scoped-resources-panel.tsx`).
+ */
 export function extractAgentToolFullNames(agent: AgentDetail | null | undefined): string[] {
   const names: string[] = [];
   if (agent?.toolsets?.length) {
     for (const ts of agent.toolsets) {
       if (!ts?.tools?.length) continue;
       for (const t of ts.tools) {
+        if (typeof t.fullName === 'string') {
+          names.push(t.fullName);
+        }
+      }
+    }
+  }
+  if (agent?.mcpServers?.length) {
+    for (const server of agent.mcpServers) {
+      if (!server?.tools?.length) continue;
+      for (const t of server.tools) {
         if (typeof t.fullName === 'string') {
           names.push(t.fullName);
         }
@@ -206,6 +222,37 @@ export function buildAgentChatToolGroups(agent: AgentDetail | null | undefined):
       toolDescriptions: {
         [WEB_SEARCH_TOOL_FULL_NAME]: `Search the web using ${providerLabel || provider}.`,
       },
+    });
+  }
+  return groups;
+}
+
+/** MCP server groups for agent chat MCP tab — mirrors `buildAgentChatToolGroups` one-to-one. */
+export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): AgentChatToolGroupRow[] {
+  const groups: AgentChatToolGroupRow[] = [];
+  if (!agent?.mcpServers?.length) return groups;
+
+  for (const server of agent.mcpServers) {
+    const fullNames = (server.tools || [])
+      .map((t) => (typeof t.fullName === 'string' ? t.fullName.trim() : ''))
+      .filter(Boolean);
+    if (fullNames.length === 0) continue;
+
+    const toolDescriptions: Record<string, string> = {};
+    for (const t of server.tools || []) {
+      const fn = typeof t.fullName === 'string' ? t.fullName.trim() : '';
+      if (!fn) continue;
+      const d = typeof t.description === 'string' ? t.description.trim() : '';
+      if (d) toolDescriptions[fn] = d;
+    }
+
+    const instanceId = typeof server.instanceId === 'string' ? server.instanceId.trim() : '';
+    groups.push({
+      label: (server.displayName || server.name || 'MCP Server').trim(),
+      toolsetSlug: 'mcp',
+      ...(instanceId ? { instanceId } : {}),
+      fullNames,
+      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
     });
   }
   return groups;

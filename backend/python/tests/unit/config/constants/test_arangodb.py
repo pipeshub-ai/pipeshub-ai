@@ -136,11 +136,14 @@ class TestCollectionNames:
         assert CollectionNames.AGENT_KNOWLEDGE.value == "agentKnowledge"
         assert CollectionNames.AGENT_TOOLSETS.value == "agentToolsets"
         assert CollectionNames.AGENT_TOOLS.value == "agentTools"
+        assert CollectionNames.AGENT_MCP_SERVERS.value == "agentMcpServers"
 
     def test_agent_edge_collections(self):
         assert CollectionNames.AGENT_HAS_KNOWLEDGE.value == "agentHasKnowledge"
         assert CollectionNames.AGENT_HAS_TOOLSET.value == "agentHasToolset"
         assert CollectionNames.TOOLSET_HAS_TOOL.value == "toolsetHasTool"
+        assert CollectionNames.AGENT_HAS_MCP_SERVER.value == "agentHasMcpServer"
+        assert CollectionNames.MCP_SERVER_HAS_TOOL.value == "mcpServerHasTool"
 
     def test_sql_collections(self):
         assert CollectionNames.SQL_TABLES.value == "sqlTables"

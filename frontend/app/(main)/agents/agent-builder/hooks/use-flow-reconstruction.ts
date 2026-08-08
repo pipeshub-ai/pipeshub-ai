@@ -11,7 +11,13 @@ import {
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
 import { selectPreferredModel, llmNodeTypeSlug } from '../agent-model-utils';
-import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition, AgentSkillReference } from '../../types';
+import type {
+  AgentConfiguredModel,
+  AgentToolset,
+  AgentToolDefinition,
+  AgentSkillReference,
+  AgentMcpServer,
+} from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
@@ -80,6 +86,7 @@ export function useAgentBuilderReconstruction(): {
           llm: { x: 950, baseY: 400 },           // Layer 3: LLMs
           tools: { x: 1400, baseY: 400 },        // Layer 4: Toolsets (separate layer)
           skills: { x: 1400, baseY: 750 },       // Layer 4b: Skills (below toolsets, same column)
+          mcp: { x: 1400, baseY: 1050 },         // Layer 4c: MCP servers (below skills, same column)
           agent: { x: 1850, baseY: 400 },        // Layer 5: Agent Core
           output: { x: 2300, baseY: 400 },       // Layer 6: Response Output
         },
@@ -123,6 +130,7 @@ export function useAgentBuilderReconstruction(): {
         toolsets: toolsetsCount,
         knowledge: agent.knowledge?.length || 0,
         skills: agent.skills?.length || 0,
+        mcp: agent.mcpServers?.length || 0,
       };
 
 
@@ -173,6 +181,7 @@ export function useAgentBuilderReconstruction(): {
         if (counts.llm > 0) addPositions('llm', counts.llm, 1.5);
         if (counts.toolsets > 0) addPositions('tools', counts.toolsets, 1.0);
         if (counts.skills > 0) addPositions('skills', counts.skills, 1.0);
+        if (counts.mcp > 0) addPositions('mcp', counts.mcp, 1.0);
 
         if (connectedPositions.length === 0) {
           return { x: layout.layers.agent.x, y: layout.layers.agent.baseY };
@@ -729,6 +738,53 @@ export function useAgentBuilderReconstruction(): {
         });
       }
 
+      // 4d. MCP server nodes — one node per attached instance (never merged; unlike toolsets,
+      // an agent can attach several distinct instances but never two of the same typeId).
+      const mcpServerNodes: Node<FlowNodeData>[] = [];
+      if (agent.mcpServers && agent.mcpServers.length > 0) {
+        agent.mcpServers.forEach((mcpServer: AgentMcpServer, index: number) => {
+          const instanceId = mcpServer.instanceId || mcpServer._key || '';
+          if (!instanceId) return;
+          const displayName = mcpServer.displayName || mcpServer.name || t('agentBuilder.mcpServerDefaultName');
+          const mcpTools = (mcpServer.tools || []).map((tool) => ({
+            name: tool.name,
+            fullName: tool.fullName || `${mcpServer.name}.${tool.name}`,
+            description: tool.description || '',
+          }));
+
+          nodeCounter += 1;
+          const nodeId = `mcp-${instanceId}-${nodeCounter}`;
+          const mcpNode: Node<FlowNodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('mcp', index, counts.mcp),
+            data: {
+              id: nodeId,
+              type: `mcp-${instanceId}`,
+              label: normalizeDisplayName(displayName),
+              description: t('agentBuilder.mcpServerWithToolCount', {
+                count: mcpTools.length,
+              }),
+              icon: 'hub',
+              category: 'mcp-server',
+              config: {
+                instanceId,
+                name: mcpServer.name,
+                displayName,
+                typeId: mcpServer.typeId || undefined,
+                tools: mcpTools,
+                isAuthenticated: true,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(mcpNode);
+          mcpServerNodes.push(mcpNode);
+        });
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<FlowNodeData> = {
@@ -749,7 +805,7 @@ export function useAgentBuilderReconstruction(): {
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills'],
+          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills', 'mcpServers'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -849,6 +905,19 @@ export function useAgentBuilderReconstruction(): {
           target: 'agent-core-1',
           sourceHandle: 'output',
           targetHandle: 'skills',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      mcpServerNodes.forEach((mcpNode) => {
+        edges.push({
+          id: `e-mcp-agent-${(edgeCounter += 1)}`,
+          source: mcpNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'mcpServers',
           type: 'smoothstep',
           style: edgeStyle,
           animated: false,
