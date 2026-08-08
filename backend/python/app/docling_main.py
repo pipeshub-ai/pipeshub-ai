@@ -18,10 +18,13 @@ from app.containers.docling import DoclingAppContainer, initialize_container
 from app.services.docling.docling_service import (
     DoclingService,
     set_docling_service,
+    set_resource_governor,
 )
 from app.services.docling.docling_service import (
     app as docling_app,
 )
+from app.services.messaging.config import messaging_env
+from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -77,10 +80,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
 
+    # One governor per process, sharing the HEAVY_PARSE ceiling/adaptation
+    # concept with the Parsing Service but sized from *this* container's own
+    # cgroup/CPU limits (Docling typically runs in its own, differently
+    # sized container). Wired into the mounted docling_service module via a
+    # module-level singleton since it has its own FastAPI app/state (see
+    # set_resource_governor's docstring).
+    worker_count = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=worker_count,
+    )
+    app.state.governor = governor
+    set_resource_governor(governor)
+    governor_task = asyncio.create_task(governor.run())
+
     yield
 
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
+    governor.stop()
+    governor_task.cancel()
+    try:
+        await governor_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("Error during resource governor shutdown")
+    governor.close()
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
 
@@ -146,13 +174,22 @@ async def health_check() -> JSONResponse:
         is_healthy = await svc.health_check()
 
         if is_healthy:
+            content: dict = {
+                "status": "healthy",
+                "service": "docling",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+            governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+            if governor is not None:
+                try:
+                    content["resource_governor"] = governor.stats()
+                except Exception as stats_error:
+                    # Observability failure must not fail the liveness
+                    # probe — the service itself is still healthy.
+                    content["resource_governor"] = {"error": str(stats_error)}
             return JSONResponse(
                 status_code=HttpStatusCode.SUCCESS.value,
-                content={
-                    "status": "healthy",
-                    "service": "docling",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
+                content=content,
             )
         else:
             return JSONResponse(

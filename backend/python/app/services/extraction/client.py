@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
 
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,7 @@ class ExtractionClient(BaseServiceClient):
         read_timeout: float = 600.0,  # 10 min — LLM calls can be slow
         max_retries: int = 2,
         retry_delay: float = 2.0,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
     ) -> None:
         super().__init__(
             service_url=service_url or os.getenv("EXTRACTION_SERVICE_URL", "http://localhost:8093"),
@@ -47,6 +51,7 @@ class ExtractionClient(BaseServiceClient):
             read_timeout=read_timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
         )
 
     async def classify(

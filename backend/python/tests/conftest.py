@@ -203,6 +203,19 @@ def _inject_document_stub() -> None:
 _inject_document_stub()
 
 
+@pytest.fixture(autouse=True)
+def _reset_default_backpressure_coordinator():
+    """ParsingClient/DoclingClient default to a process-wide
+    BackpressureCoordinator singleton when the caller doesn't pass one
+    explicitly (see app.services.messaging.backpressure) — without a reset,
+    a 429 signalled in one test's client would leak a pause into unrelated
+    tests constructed later in the same worker process."""
+    from app.services.messaging.backpressure import set_default_backpressure_coordinator
+    set_default_backpressure_coordinator(None)
+    yield
+    set_default_backpressure_coordinator(None)
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""

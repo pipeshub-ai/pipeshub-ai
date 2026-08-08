@@ -17,19 +17,25 @@ hierarchy or the (sometimes name-mangled) method names tests patch directly.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
+from app.services.resource_governor import gate_pool, parse_cost
+from app.services.resource_governor.models import ParseTier
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.services.messaging.distributed_concurrency import (
         DistributedConcurrencyManager,
     )
     from app.services.messaging.retry_manager import RetryManager
+    from app.services.resource_governor import ResourceGovernor
 
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 
@@ -43,6 +49,12 @@ class ConcurrencyHost(Protocol):
     concurrency_manager: "DistributedConcurrencyManager | None"
     retry_manager: "RetryManager | None"
     _distributed_log_times: dict[str, float]
+    # Present on both indexing consumers; None unless a ResourceGovernor was
+    # injected at construction time (see Phase 1 of the adaptive-concurrency
+    # plan). When None, consumers fall back to the legacy per-worker-loop
+    # ``asyncio.Semaphore`` pair created alongside it.
+    governor: "ResourceGovernor | None"
+    parsing_semaphore: Any
 
 
 async def bridge_to_main_loop(
@@ -271,3 +283,99 @@ async def increment_retry_and_check(
             message_id, messaging_env.max_delivery_attempts
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# ResourceGovernor-backed node-local gates (Phase 1 of the adaptive-concurrency
+# plan). The distributed Redis lease stays sized to the *resolved ceiling*
+# (never the adaptive value) — the lease is the cluster-wide cap, the gate
+# below is the node-local cap; see plan section "Phase 1 — Indexing consumers".
+# ---------------------------------------------------------------------------
+
+
+def index_ceiling(host: ConcurrencyHost) -> int:
+    """Cluster-wide indexing lease limit: the resolved INDEX ceiling when a
+    governor is present, else the legacy static env var."""
+    governor = host.governor
+    if governor is not None:
+        return governor.ceilings.index
+    return messaging_env.max_concurrent_indexing
+
+
+def parse_ceiling(host: ConcurrencyHost) -> int:
+    """Cluster-wide parsing lease limit: the resolved HEAVY_PARSE ceiling
+    (the more conservative of the two tiers) when a governor is present,
+    else the legacy static env var."""
+    governor = host.governor
+    if governor is not None:
+        return governor.ceilings.heavy
+    return messaging_env.max_concurrent_parsing
+
+
+def pending_task_ceiling(host: ConcurrencyHost) -> int:
+    """How many in-flight (queued-or-processing) tasks the consumer allows
+    before pausing partition/stream reads (Phase 6 of the adaptive-
+    concurrency plan).
+
+    An explicit ``MAX_PENDING_INDEXING_TASKS`` always wins. Otherwise, with a
+    governor present the cap derives from the *resolved* index/heavy-parse
+    ceilings — which reflect this node's actual cgroup/CPU limits — rather
+    than the static ``MAX_CONCURRENT_*`` env defaults baked into
+    ``messaging_env.max_pending_indexing_tasks``, which would either overshoot
+    a small container or undershoot a large one.
+    """
+    if os.getenv("MAX_PENDING_INDEXING_TASKS"):
+        return messaging_env.max_pending_indexing_tasks
+    governor = host.governor
+    if governor is not None:
+        ceilings = governor.ceilings
+        return max(ceilings.index, ceilings.heavy) * 4
+    return messaging_env.max_pending_indexing_tasks
+
+
+@dataclass
+class ParsingAdmission:
+    """What was acquired for one message's parsing phase, so release can
+    hand back exactly what was taken.
+
+    ``_release`` is a closure bound at acquisition time to whichever
+    primitive (governor gate or legacy semaphore) actually granted the
+    permit, so ``release_parsing_slot`` doesn't need to branch on the
+    primitive's type.
+    """
+
+    cost: int
+    _release: Callable[[], None]
+
+
+async def acquire_parsing_slot(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    size_bytes: int | None,
+) -> ParsingAdmission:
+    """Acquire a parsing permit, routing heavy vs. light through the
+    governor when one is configured, else falling back to the single legacy
+    ``parsing_semaphore`` (pre-governor behaviour, cost always 1).
+    """
+    governor = host.governor
+    if governor is not None:
+        resolved_tier = tier if tier is not None else ParseTier.HEAVY
+        cost = parse_cost(resolved_tier, size_bytes)
+        gate = governor.gate(gate_pool(resolved_tier))
+        await gate.acquire(cost=cost)
+        return ParsingAdmission(cost=cost, _release=lambda: gate.release(cost))
+
+    legacy_semaphore = host.parsing_semaphore
+    if legacy_semaphore is None:
+        raise RuntimeError("No parsing concurrency primitive configured")
+    await legacy_semaphore.acquire()
+    return ParsingAdmission(cost=1, _release=legacy_semaphore.release)
+
+
+def release_parsing_slot(admission: ParsingAdmission | None) -> None:
+    """Release a permit acquired via ``acquire_parsing_slot``. A no-op when
+    ``admission`` is ``None`` so callers can release unconditionally from a
+    ``finally`` block without an extra guard."""
+    if admission is None:
+        return
+    admission._release()

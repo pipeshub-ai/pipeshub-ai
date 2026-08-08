@@ -15,16 +15,24 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.models.blocks import BlocksContainer
-from app.services.base_client import BaseServiceClient, ServiceCallError
+from app.services.base_client import (
+    BaseServiceClient,
+    ServiceBackpressureError,
+    ServiceCallError,
+)
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.parsing.interface import (
     ParseErrorCode,
     ParseResult,
     ParserProvider,
 )
 from app.utils.image_utils import get_extension_from_mimetype
+
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +61,7 @@ class ParsingClient(BaseServiceClient):
         read_timeout: float = 2400.0,  # 40 min — matching DoclingClient
         max_retries: int = 3,
         retry_delay: float = 2.0,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
     ) -> None:
         super().__init__(
             service_url=service_url or os.getenv("PARSING_SERVICE_URL", "http://localhost:8092"),
@@ -60,6 +69,7 @@ class ParsingClient(BaseServiceClient):
             read_timeout=read_timeout,
             max_retries=max_retries,
             retry_delay=retry_delay,
+            backpressure_coordinator=backpressure_coordinator or get_default_backpressure_coordinator(),
         )
 
     async def parse(
@@ -75,7 +85,10 @@ class ParsingClient(BaseServiceClient):
         """Parse *file_content* by calling the Parsing Service.
 
         Returns a :class:`ParseResult` on success.
-        Raises :class:`ParsingClientError` on expected failures.
+        Raises :class:`ParsingClientError` on expected failures, including
+        ``PARSE_BACKPRESSURE`` when the service is saturated and its own
+        backpressure attempt budget (see ``BaseServiceClient``) is exhausted
+        — this is retryable, unlike the other error codes.
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
         if not extension:
@@ -94,12 +107,19 @@ class ParsingClient(BaseServiceClient):
         if provider is not None:
             form_data["provider"] = provider.value
 
-        response = await self._post_multipart(
-            "/api/v1/parse",
-            files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
-            data=form_data,
-            operation="parse",
-        )
+        try:
+            response = await self._post_multipart(
+                "/api/v1/parse",
+                files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
+                data=form_data,
+                operation="parse",
+            )
+        except ServiceBackpressureError as exc:
+            raise ParsingClientError(
+                code=ParseErrorCode.PARSE_BACKPRESSURE,
+                message=str(exc),
+                details={"retry_after": exc.retry_after},
+            ) from exc
 
         body = response.json()
 
