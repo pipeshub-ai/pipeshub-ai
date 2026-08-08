@@ -33,7 +33,11 @@ def _make_service():
     app_container = MagicMock()
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
-    app_container.config_service.return_value = AsyncMock()
+    config_service = AsyncMock()
+    # Empty config ⇒ not MANUAL, so appEnabled immediate-sync tests proceed
+    # unless they override get_config for a specific strategy.
+    config_service.get_config = AsyncMock(return_value={})
+    app_container.config_service.return_value = config_service
     app_container.data_store = AsyncMock()
     return EntityEventService(logger, graph_provider, app_container)
 
@@ -197,6 +201,85 @@ class TestHandleAppEnabledExtended:
         assert call_kwargs["value"]["connectorId"] == "conn-1"
         assert call_kwargs["value"]["scope"] == "team"
         assert call_kwargs["value"]["fullSync"] is True
+
+    @pytest.mark.asyncio
+    async def test_app_enabled_manual_strategy_skips_immediate_sync(self):
+        """Bug B defense-in-depth: an appEnabled event carrying
+        syncAction="immediate" for a MANUAL-strategy connector must not start
+        a sync, even though the toggle endpoint is supposed to have already
+        downgraded it -- this event can arrive from other producers too."""
+        svc = _make_service()
+        svc.graph_provider.get_document = AsyncMock(
+            return_value={"accountType": "ENTERPRISE"}
+        )
+        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        config_service = svc.app_container.config_service()
+        config_service.get_config = AsyncMock(
+            return_value={"sync": {"selectedStrategy": "MANUAL"}}
+        )
+
+        result = await svc.process_event(
+            "appEnabled",
+            {
+                "orgId": "org-1",
+                "apps": ["Local FS"],
+                "syncAction": "immediate",
+                "connectorId": "conn-1",
+                "scope": "personal",
+            },
+        )
+        assert result is True
+        svc._EntityEventService__handle_sync_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_app_enabled_config_read_failure_skips_immediate_sync(self):
+        """A transient etcd failure must not authorize immediate sync — that
+        would crawl a MANUAL connector whose strategy we could not confirm."""
+        svc = _make_service()
+        svc.graph_provider.get_document = AsyncMock(
+            return_value={"accountType": "ENTERPRISE"}
+        )
+        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        config_service = svc.app_container.config_service()
+        config_service.get_config = AsyncMock(
+            side_effect=RuntimeError("etcd unavailable")
+        )
+
+        result = await svc.process_event(
+            "appEnabled",
+            {
+                "orgId": "org-1",
+                "apps": ["Local FS"],
+                "syncAction": "immediate",
+                "connectorId": "conn-1",
+                "scope": "personal",
+            },
+        )
+        assert result is True
+        svc._EntityEventService__handle_sync_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_app_enabled_no_connector_id_skips_manual_check(self):
+        """Without a connectorId there is nothing to look up in etcd, so the
+        MANUAL check must be skipped rather than raising -- immediate sync
+        proceeds as before (e.g. multi-app org-level enable events)."""
+        svc = _make_service()
+        svc.graph_provider.get_document = AsyncMock(
+            return_value={"accountType": "ENTERPRISE"}
+        )
+        svc._EntityEventService__handle_sync_event = AsyncMock(return_value=True)
+        config_service = svc.app_container.config_service()
+        config_service.get_config = AsyncMock(
+            return_value={"sync": {"selectedStrategy": "MANUAL"}}
+        )
+
+        result = await svc.process_event(
+            "appEnabled",
+            {"orgId": "org-1", "apps": ["Gmail"], "syncAction": "immediate"},
+        )
+        assert result is True
+        svc._EntityEventService__handle_sync_event.assert_awaited_once()
+        config_service.get_config.assert_not_awaited()
 
 
 # ===================================================================

@@ -219,6 +219,7 @@ record_schema = {
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
+            "queuedAt": {"type": ["number", "null"], "default": None},
             "parsingStatus": {
                 "type": "string",
                 "enum": [

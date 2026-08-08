@@ -62,7 +62,7 @@ from app.connectors.core.constants import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.auth_builder import AuthType
-from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.connector_builder import ConnectorScope, SyncStrategy
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.sources.local_fs.connector import LocalFsConnector
@@ -6610,6 +6610,11 @@ async def toggle_connector_instance(
             target_status = not current_agent_status
             status_field = "isAgentActive"
 
+        # Resolve connector config before any status write when enabling sync.
+        # Kept in outer scope so the MANUAL syncAction check below can reuse it
+        # instead of re-fetching after update_connector_instance().
+        config = None
+
         # Validate prerequisites when enabling
         if toggle_type == "sync" and not current_sync_status:
             auth_type = (instance.get("authType") or "").upper()
@@ -6709,6 +6714,19 @@ async def toggle_connector_instance(
             event_type = "appEnabled" if target_status else "appDisabled"
             credentials_route = f"api/v1/configurationManager/internal/connectors/{connector_id}/config"
 
+            # MANUAL strategy must not trigger a crawl just because the connector
+            # was toggled on; only the explicit sync-trigger endpoints should sync
+            # it. Reuse the config already loaded in the enable-validation block
+            # above — resolving strategy after update_connector_instance() would
+            # leave isActive flipped if get_config failed (no appEnabled /
+            # appDisabled publish, and on disable no connectors_map cleanup).
+            # Disable never needs the strategy: appDisabled ignores syncAction.
+            sync_action = "immediate"
+            if target_status:
+                sync_config = (config or {}).get("sync") or {}
+                if sync_config.get("selectedStrategy") == SyncStrategy.MANUAL.value:
+                    sync_action = "none"
+
             payload = {
                 "orgId": user_info["orgId"],
                 "appGroup": instance["appGroup"],
@@ -6716,7 +6734,7 @@ async def toggle_connector_instance(
                 "credentialsRoute": credentials_route,
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
-                "syncAction": "immediate",
+                "syncAction": sync_action,
                 "scope": instance.get("scope"),
                 "fullSync": full_sync,
             }

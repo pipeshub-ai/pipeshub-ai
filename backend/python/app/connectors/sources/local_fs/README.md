@@ -25,7 +25,7 @@ If the path is missing or permission-denied, `init` and `test_connection_and_acc
 1. Create or open a **personal** Local FS connector instance.
 2. If your deployment requires saving **filters/sync** while the instance is **inactive**, turn sync off, set **Local folder path** and options, then save.
 3. **Activate** the connector when ready.
-4. Run a **manual sync** — Local FS uses **MANUAL** strategy; turning “Active” on does **not** crawl the folder by itself.
+4. Run a **manual sync** — Local FS uses **MANUAL** strategy, and that is now honored on every sync-trigger path (service startup, and toggling **Active** on via the API/UI), not just startup: none of them crawl the folder by itself. Trigger the sync explicitly instead. A first run (no prior sync point) does a full crawl; a later run only diffs and applies what changed on disk (see §Bug A in the incremental-sync design notes), and a full re-crawl can still be forced via `fullSync: true` on the sync request.
 5. Confirm records appear in the connector / KB UI and indexing progresses.
 
 ## 3. Indexing pipeline (Kafka)

@@ -65,6 +65,11 @@ def _make_request(
     container = MagicMock()
     container.logger.return_value = logging.getLogger("test")
     container.config_service.return_value = AsyncMock()
+    # Default to a real (empty) dict rather than an auto-mocked child, since
+    # toggle_connector_instance chains .get(...) off this return value (sync
+    # strategy lookup) -- an unconfigured AsyncMock attribute there returns
+    # another coroutine instead of a value and breaks that chain.
+    container.config_service.return_value.get_config = AsyncMock(return_value={})
     container.messaging_producer = AsyncMock()
     container.messaging_producer.send_message = AsyncMock()
 

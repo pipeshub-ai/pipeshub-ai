@@ -801,6 +801,12 @@ class GraphDataStore(DataStoreProvider):
     async def get_existing_record_keys(self, record_ids: list[str]) -> set[str]:
         return await self.graph_provider.get_existing_record_keys(record_ids)
 
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
+        # No transaction, mirroring compare_and_set_indexing_status above: callers
+        # use this for best-effort side-writes (e.g. stamping queuedAt) that must
+        # not block or roll back the record status change they follow.
+        return await self.graph_provider.batch_update_nodes(nodes, collection)
+
     @asynccontextmanager
     async def transaction(self) -> AsyncContextManager["TransactionStore"]:
         """

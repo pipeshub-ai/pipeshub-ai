@@ -236,6 +236,7 @@ class Record(BaseModel):
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
+    queued_at: int | None = Field(default=None, description="Epoch ms when the record most recently transitioned into QUEUED; null when it has never been queued or has since advanced. Used to age-gate orphan recovery separately from processing_started_at.")
 
     # Source information
     weburl: str | None = None
@@ -344,6 +345,7 @@ class Record(BaseModel):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "processingStartedAt": self.processing_started_at,
+            "queuedAt": self.queued_at,
             "parsingStatus": self.parsing_status,
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
@@ -399,6 +401,7 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             processing_started_at=arango_base_record.get("processingStartedAt"),
+            queued_at=arango_base_record.get("queuedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
             indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),

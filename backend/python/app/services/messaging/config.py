@@ -220,6 +220,18 @@ class MessagingEnvConfig:
     def stale_recovery_page_size(self) -> int:
         return int(os.getenv("STALE_INDEXING_RECOVERY_PAGE_SIZE", "100"))
 
+    @property
+    def stale_queued_recovery_after_seconds(self) -> float:
+        """Minimum age of a QUEUED record's queuedAt before the sweep treats it as
+        orphaned and re-publishes it.
+
+        Must sit above the largest broker reclaim window so the sweep never races
+        normal in-flight redelivery: Kafka's max.poll.interval.ms default (300s)
+        dominates Redis Streams' claim_min_idle_ms default (30s). 900s (15 min)
+        clears both comfortably.
+        """
+        return float(os.getenv("STALE_QUEUED_RECOVERY_AFTER_SECONDS", "900"))
+
 
 messaging_env = MessagingEnvConfig()
 

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 from fastapi.responses import JSONResponse
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.services.messaging.config import MessageBrokerType
 
 
@@ -100,6 +100,22 @@ def _make_graph_provider():
                 record
                 for record in records
                 if record.get("parsingStatus") == filters["parsingStatus"]
+            ]
+        # The QUEUED/NOT_STARTED sweep passes (added for the orphan-recovery
+        # sweep) share this same call shape with the pre-existing
+        # indexingStatus == IN_PROGRESS pass below, which several tests rely
+        # on matching fixture records that omit "indexingStatus" entirely.
+        # Only filter for the two new statuses so that legacy behavior for
+        # the IN_PROGRESS pass is undisturbed.
+        indexing_status = filters.get("indexingStatus")
+        if indexing_status in (
+            ProgressStatus.QUEUED.value,
+            ProgressStatus.NOT_STARTED.value,
+        ):
+            return [
+                record
+                for record in records
+                if record.get("indexingStatus") == indexing_status
             ]
         return records
 
@@ -1765,3 +1781,237 @@ class TestRecoverInProgressRecordsAdditional:
         gp.update_node.assert_not_awaited()
         producer = mock_container.kafka_consumers[0][2]
         producer.send_event.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# QUEUED / NOT_STARTED orphan recovery (Bug C sweep)
+# ---------------------------------------------------------------------------
+def _make_status_scoped_graph_provider(records_by_indexing_status: dict):
+    """A graph_provider double whose get_documents_paginated actually filters
+    by the requested indexingStatus/parsingStatus, unlike _make_graph_provider()
+    above (which only ever branches on "parsingStatus" and otherwise returns
+    every record unfiltered). The QUEUED/NOT_STARTED sweep passes share the
+    exact same get_documents_paginated call shape as the pre-existing
+    IN_PROGRESS passes, so precise filtering is needed here to keep the two
+    sets of passes from seeing each other's fixture records.
+    """
+    gp = MagicMock()
+    gp.update_node = AsyncMock(return_value=True)
+    gp.compare_and_set_indexing_status = AsyncMock(
+        side_effect=lambda ids, expected, new_status: list(ids)
+    )
+
+    async def get_documents_paginated(*_args, **kwargs):
+        filters = kwargs.get("filters") or {}
+        status = filters.get("indexingStatus") or filters.get("parsingStatus")
+        return list(records_by_indexing_status.get(status, []))
+
+    gp.get_documents_paginated = AsyncMock(side_effect=get_documents_paginated)
+
+    async def get_document(doc_id, collection):
+        if collection != CollectionNames.RECORDS.value:
+            return None
+        for records in records_by_indexing_status.values():
+            for record in records:
+                if record.get("_key") == doc_id:
+                    return record
+        return None
+
+    gp.get_document = AsyncMock(side_effect=get_document)
+    return gp
+
+
+class TestQueuedRecoverySweep:
+    """Age-gated recovery of QUEUED records orphaned by broker retention loss
+    or a publish failure (see is_queued_stale in indexing_main.py)."""
+
+    async def test_fresh_queued_at_is_not_recovered(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        now_ms = int(time.time() * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "fresh.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": now_ms - 5_000,  # 5s old, well under the 900s default
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_stale_queued_at_is_republished_exactly_once(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        now_ms = int(time.time() * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "orphaned.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": now_ms - 1_000_000,  # well past the 900s default
+                "version": 0,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["r1"], ProgressStatus.QUEUED.value, ProgressStatus.QUEUED.value
+        )
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event.assert_awaited_once()
+
+    async def test_missing_queued_at_is_not_recovered(self):
+        """Opposite convention from IN_PROGRESS's processingStartedAt: absence
+        of queuedAt must not be treated as proof of staleness, or every
+        pre-rollout QUEUED row would be republished on the first sweep tick."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "no-timestamp.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": None,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_live_consumer_wins_cas_race(self):
+        """If a live consumer/redelivery already advanced the record between
+        the scan and the recovery attempt, compare_and_set_indexing_status
+        must lose cleanly rather than clobbering the newer state."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        now_ms = int(time.time() * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "raced.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": now_ms - 1_000_000,
+            }],
+        })
+        # CAS reports nothing swapped: a live worker already moved it on.
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=[])
+
+        await recover_in_progress_records(mock_container, gp)
+
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_failed_republish_restores_original_queued_at(self):
+        """Non-distributed mode stamps a fresh queuedAt before publish; if the
+        publish then fails, that stamp must be rolled back or the next sweep
+        treats the still-orphaned record as fresh for the full threshold."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        producer = mock_container.kafka_consumers[0][2]
+        producer.send_event = AsyncMock(side_effect=RuntimeError("broker down"))
+        original_queued_at = int(time.time() * 1000) - 1_000_000
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.QUEUED.value: [{
+                "_key": "r1",
+                "recordName": "orphaned.pdf",
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAt": original_queued_at,
+                "version": 0,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        # First update_node is the pre-publish reset (fresh queuedAt); last is
+        # the restore after publish failure.
+        assert gp.update_node.await_count >= 2
+        restored = gp.update_node.await_args_list[-1].args[2]
+        assert restored["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert restored["queuedAt"] == original_queued_at
+
+
+class TestNotStartedRecoverySweep:
+    """Age-gated recovery of NOT_STARTED records stranded outside both QUEUED
+    and IN_PROGRESS by a publish failure (e.g. mid-sync network disconnect)."""
+
+    async def test_stale_not_started_record_is_republished(self):
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        # Past the QUEUED/NOT_STARTED orphan window
+        # (stale_queued_recovery_after_seconds, default 900s).
+        old_created_at = int((time.time() - 3_000) * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.NOT_STARTED.value: [{
+                "_key": "r1",
+                "recordName": "stranded.pdf",
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "connectorName": "GOOGLE_DRIVE",
+                "createdAtTimestamp": old_created_at,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_awaited_once()
+        mock_container.kafka_consumers[0][2].send_event.assert_awaited_once()
+
+    async def test_fresh_not_started_record_is_not_recovered(self):
+        """NOT_STARTED must use the same generous orphan window as QUEUED, not
+        the short concurrency-lease cutoff — otherwise distributed mode would
+        republish records whose newRecord events are still in flight."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        # Older than one lease interval, but well under the 900s orphan window.
+        recent_created_at = int((time.time() - 120) * 1000)
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.NOT_STARTED.value: [{
+                "_key": "r1",
+                "recordName": "fresh.pdf",
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "connectorName": "GOOGLE_DRIVE",
+                "createdAtTimestamp": recent_created_at,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()
+
+    async def test_local_fs_not_started_record_is_never_swept(self):
+        """Local FS stamps createdAtTimestamp with the file's mtime, not a
+        server clock (see local_fs/connector.py _build_file_record), so an old
+        file created "just now" would look immediately stale under the
+        generic predicate. Local FS must be excluded from this pass."""
+        from app.indexing_main import recover_in_progress_records
+
+        mock_container = _make_container()
+        gp = _make_status_scoped_graph_provider({
+            ProgressStatus.NOT_STARTED.value: [{
+                "_key": "r1",
+                "recordName": "old-file.pdf",
+                "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                "connectorName": Connectors.LOCAL_FS.value,
+                # An ancient mtime -- would trip the generic wall-clock
+                # predicate immediately if it were not excluded by name.
+                "createdAtTimestamp": 0,
+            }],
+        })
+
+        await recover_in_progress_records(mock_container, gp)
+
+        gp.compare_and_set_indexing_status.assert_not_awaited()
+        mock_container.kafka_consumers[0][2].send_event.assert_not_awaited()

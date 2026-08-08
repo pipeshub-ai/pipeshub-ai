@@ -59,6 +59,11 @@ def _make_request(
     container = MagicMock()
     container.logger.return_value = logging.getLogger("test")
     container.config_service.return_value = AsyncMock()
+    # Default to a real (empty) dict rather than an auto-mocked child, since
+    # toggle_connector_instance chains .get(...) off this return value (sync
+    # strategy lookup) -- an unconfigured AsyncMock attribute there returns
+    # another coroutine instead of a value and breaks that chain.
+    container.config_service.return_value.get_config = AsyncMock(return_value={})
     container.messaging_producer = AsyncMock()
     container.messaging_producer.send_message = AsyncMock()
 
@@ -1254,6 +1259,93 @@ class TestToggleConnectorInstanceDeep:
         with pytest.raises(HTTPException) as exc_info:
             await toggle_connector_instance("c1", req, graph_provider=graph_provider)
         assert exc_info.value.status_code == 500
+
+    async def test_enable_manual_strategy_emits_no_immediate_sync_action(self):
+        """Bug B: toggling a MANUAL-strategy connector on must not emit
+        syncAction: "immediate" -- only an explicit sync trigger should crawl."""
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(is_admin=True, body={"type": "sync", "fullSync": False})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "free"}
+        )
+        instance = _make_instance(
+            scope="team", created_by="u1", auth_type="NONE",
+            is_active=False, is_configured=True, connector_type="LOCAL FS",
+        )
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+        req.app.state.connector_registry.update_connector_instance = AsyncMock(
+            return_value=True
+        )
+
+        config_service = req.app.container.config_service()
+        config_service.get_config = AsyncMock(
+            return_value={"sync": {"selectedStrategy": "MANUAL"}}
+        )
+        producer = req.app.container.messaging_producer
+        producer.send_message = AsyncMock()
+
+        with patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch(_TIMESTAMP_PATCH, return_value=1000), \
+             patch(
+                 "app.connectors.api.router._ensure_connector_initialized",
+                 new_callable=AsyncMock,
+                 return_value=MagicMock(),
+             ):
+            result = await toggle_connector_instance(
+                "c1", req, graph_provider=graph_provider
+            )
+
+        assert result["success"] is True
+        producer.send_message.assert_called_once()
+        payload = producer.send_message.call_args[1]["message"]["payload"]
+        assert payload["syncAction"] == "none"
+
+    async def test_enable_non_manual_strategy_emits_immediate_sync_action(self):
+        """Bug B counterpart: SCHEDULED/WEBHOOK (or unset) strategies keep the
+        pre-existing immediate-crawl-on-enable behavior."""
+        from app.connectors.api.router import toggle_connector_instance
+
+        req = _make_request(is_admin=True, body={"type": "sync", "fullSync": False})
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"_key": "o1", "accountType": "free"}
+        )
+        instance = _make_instance(
+            scope="team", created_by="u1", auth_type="API_TOKEN",
+            is_active=False, is_configured=True,
+        )
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(
+            return_value=instance
+        )
+        req.app.state.connector_registry.update_connector_instance = AsyncMock(
+            return_value=True
+        )
+
+        config_service = req.app.container.config_service()
+        config_service.get_config = AsyncMock(
+            return_value={"sync": {"selectedStrategy": "SCHEDULED"}}
+        )
+        producer = req.app.container.messaging_producer
+        producer.send_message = AsyncMock()
+
+        with patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch(_TIMESTAMP_PATCH, return_value=1000), \
+             patch(
+                 "app.connectors.api.router._ensure_connector_initialized",
+                 new_callable=AsyncMock,
+                 return_value=MagicMock(),
+             ):
+            result = await toggle_connector_instance(
+                "c1", req, graph_provider=graph_provider
+            )
+
+        assert result["success"] is True
+        payload = producer.send_message.call_args[1]["message"]["payload"]
+        assert payload["syncAction"] == "immediate"
 
 
 # ===========================================================================
