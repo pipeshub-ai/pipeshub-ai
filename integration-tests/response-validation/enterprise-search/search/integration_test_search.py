@@ -29,9 +29,6 @@ from openapi_schema_validator import (
 )
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
-# TODO: add connector filter support to tests
-# CONNECTOR_SEARCH_QUERY = "What are some new news?"
-# CONNECTOR_APP_ID = "ed6d6cc4-70bd-4838-9aeb-488e910c833a"
 SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip()
 
 # Search history is a single per-user collection that every test here writes to,
@@ -106,16 +103,6 @@ class TestSemanticSearch(SearchTestBase):
         )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         self._assert_search_response_ok(resp.json(), SEARCH_QUERY)
-
-    # TODO: add connector filter support to tests
-    # def test_post_search_with_connector_filter_response_matches_spec(self) -> None:
-    #     resp = self.search.create_search(
-    #         query=CONNECTOR_SEARCH_QUERY,
-    #         filters={"apps": [CONNECTOR_APP_ID]},
-    #         limit=5,
-    #         timeout=self.timeout,
-    #     )
-    #     ...
 
     def test_get_search_history_response_matches_spec(self) -> None:
         self._create_search()

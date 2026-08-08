@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import sys
 import uuid
 from pathlib import Path
@@ -45,6 +44,7 @@ from helper.agui_sse import (
 )
 from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
+from helper.conversation_seeds import seed_query
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -52,14 +52,8 @@ from openapi_schema_validator import (
 
 SEARCH_QUERY = "every year asana undertakes which exercise?"
 
-# Question -> keywords that should appear in a KB-grounded answer.
-_KB_QA_POOL: list[tuple[str, list[str]]] = [
-    (SEARCH_QUERY, ["disaster recovery"]),
-    (
-        "What disaster recovery exercise does Asana perform annually?",
-        ["disaster recovery"],
-    ),
-]
+# Lowercase keywords a KB-grounded answer to SEARCH_QUERY must contain.
+KB_ANSWER_KEYWORDS = ("disaster recovery",)
 
 _AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
 _AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
@@ -224,6 +218,7 @@ class _AgentStreamTestBase:
         accumulated_answer = ""
         saw_finished = False
         error_message: str | None = None
+        finished_result: dict[str, Any] | None = None
 
         with self.conversations.stream_message(
             agent_key,
@@ -262,11 +257,14 @@ class _AgentStreamTestBase:
                     continue
 
                 saw_finished = True
+                finished_result = run_finished_result(payload)
                 if not accumulated_answer.strip():
-                    accumulated_answer = answer_from_completion(run_finished_result(payload))
+                    accumulated_answer = answer_from_completion(finished_result)
                 break
 
-        return StreamOutcome(conversation_id, accumulated_answer, saw_finished, error_message)
+        return StreamOutcome(
+            conversation_id, accumulated_answer, saw_finished, error_message, finished_result
+        )
 
 
 @pytest.mark.integration
@@ -321,77 +319,25 @@ class TestAgentConversationStream(_AgentStreamTestBase):
     # Positive tests
     # ------------------------------------------------------------------------
 
-    def test_stream_agent_conversation_response_matches_spec(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
+    def test_stream_agent_conversation_matches_spec_and_answers_from_kb(self) -> None:
+        """One KB-grounded stream, asserted three ways.
 
-        with self.conversations.stream_conversation(
-            agent_key,
-            query=SEARCH_QUERY,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-            assert "text/event-stream" in content_type, (
-                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
-            )
-
-            accumulated_answer = ""
-            saw_finished = False
-
-            for envelope in iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(envelope, _AGENT_STREAM_SSE_EVENT_REF)
-
-                payload = json.loads(envelope["data"])
-                event = envelope["event"]
-
-                if event == AGUI.STATE_DELTA:
-                    acc = state_delta_answer(payload)
-                    if acc is not None:
-                        accumulated_answer = acc
-
-                if is_root_error(event, payload):
-                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
-
-                if is_root_finished(event, payload):
-                    saw_finished = True
-                    if not accumulated_answer.strip():
-                        accumulated_answer = answer_from_completion(
-                            run_finished_result(payload)
-                        )
-                    break
-
-            assert saw_finished, "stream ended without a RUN_FINISHED event"
-            assert accumulated_answer.strip(), "stream finished but answer text was empty"
-
-    def test_stream_agent_conversation_completes_with_answer(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-
+        ``_stream_agent_conversation`` validates every envelope against
+        ``AgentStreamSSEEvent`` and the SSE content type as it reads, so the schema
+        contract, the completion contract and the answer quality all come off a single
+        agent run rather than three.
+        """
         outcome = self._stream_agent_conversation(
-            agent_key,
+            self.agent_session["primary_agent"],
             query=SEARCH_QUERY,
         )
 
         assert outcome.finished, "stream ended without a RUN_FINISHED event"
         assert outcome.conversation_id, "stream did not yield a conversation id"
         assert outcome.answer.strip(), "stream finished but answer text was empty"
-
-    def test_stream_agent_conversation_random_question_answer_is_plausible(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-        query, expected_keywords = random.choice(_KB_QA_POOL)
-
-        outcome = self._stream_agent_conversation(
-            agent_key,
-            query=query,
-        )
-
-        assert outcome.finished, f"stream ended without RUN_FINISHED for query={query!r}"
-        assert outcome.conversation_id, f"no conversation id for query={query!r}"
-        answer = outcome.answer
-        answer_lower = answer.lower()
-        assert any(kw.lower() in answer_lower for kw in expected_keywords), (
-            f"answer did not contain any of {expected_keywords!r} for query={query!r}: "
-            f"{answer[:500]!r}"
+        assert any(kw in outcome.answer.lower() for kw in KB_ANSWER_KEYWORDS), (
+            f"answer did not contain any of {KB_ANSWER_KEYWORDS!r} for "
+            f"query={SEARCH_QUERY!r}: {outcome.answer[:500]!r}"
         )
 
     # ------------------------------------------------------------------------
@@ -455,7 +401,11 @@ class TestAgentConversationStream(_AgentStreamTestBase):
         )
 
     def test_stream_agent_conversation_deleted_agent_fails(self) -> None:
-        deleted_key = self.agent_session["secondary_agents"][0]
+        # disposable_agent exists to be destroyed here. Deleting a shared secondary key
+        # would leave every later "some other agent" probe pointing at a corpse, and the
+        # gateway answers identically for a missing agent and one that merely does not
+        # own the conversation — so those probes would pass without proving anything.
+        deleted_key = self.agent_session["disposable_agent"]
 
         delete_resp = self.agents.delete_agent(deleted_key, timeout=self.timeout)
         assert delete_resp.status_code < 300, (
@@ -485,61 +435,18 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
     # Positive tests
     # ------------------------------------------------------------------------
 
-    def test_add_message_stream_response_matches_spec(self) -> None:
+    def test_add_message_stream_matches_spec_answers_from_kb_and_appends(self) -> None:
+        """One cheap seed plus one KB-grounded follow-up, asserted four ways.
+
+        ``_stream_add_message`` validates every envelope against
+        ``AgentMessageStreamSSEEvent`` and the SSE content type as it reads, and returns
+        the RUN_FINISHED result, so the schema contract, completion, answer quality and
+        the appended-message count all come off a single follow-up run.
+        """
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query="stream-create conversation for add-message spec test",
-        )
-
-        with self.conversations.stream_message(
-            agent_key,
-            conversation_id,
-            query=SEARCH_QUERY,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            content_type = (resp.headers.get("Content-Type") or "").lower()
-            assert "text/event-stream" in content_type, (
-                f"expected text/event-stream, got Content-Type={resp.headers.get('Content-Type')!r}"
-            )
-
-            accumulated_answer = ""
-            saw_finished = False
-
-            for envelope in iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-
-                payload = json.loads(envelope["data"])
-                event = envelope["event"]
-
-                if event == AGUI.STATE_DELTA:
-                    acc = state_delta_answer(payload)
-                    if acc is not None:
-                        accumulated_answer = acc
-
-                if is_root_error(event, payload):
-                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
-
-                if is_root_finished(event, payload):
-                    saw_finished = True
-                    if not accumulated_answer.strip():
-                        accumulated_answer = answer_from_completion(
-                            run_finished_result(payload)
-                        )
-                    break
-
-            assert saw_finished, "stream ended without a RUN_FINISHED event"
-            assert accumulated_answer.strip(), "stream finished but answer text was empty"
-
-    def test_add_message_stream_completes_with_answer(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-        conversation_id = self._create_agent_conversation_id(
-            agent_key,
-            query="stream-create conversation for add-message positive test",
+            query=seed_query(uuid.uuid4().hex),
         )
 
         outcome = self._stream_add_message(
@@ -550,78 +457,36 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
         assert outcome.finished, "stream ended without a RUN_FINISHED event"
         assert outcome.answer.strip(), "stream finished but answer text was empty"
-
-    def test_add_message_stream_random_kb_question_plausible(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-        query, expected_keywords = random.choice(_KB_QA_POOL)
-        conversation_id = self._create_agent_conversation_id(
-            agent_key,
-            query="stream-create conversation for add-message KB test",
+        assert any(kw in outcome.answer.lower() for kw in KB_ANSWER_KEYWORDS), (
+            f"answer did not contain any of {KB_ANSWER_KEYWORDS!r} for "
+            f"query={SEARCH_QUERY!r}: {outcome.answer[:500]!r}"
         )
 
-        outcome = self._stream_add_message(
-            agent_key,
-            conversation_id,
-            query=query,
+        result = outcome.result or {}
+        conv = result.get("conversation")
+        assert isinstance(conv, dict), (
+            f"RUN_FINISHED result carried no conversation object: {result!r}"
         )
-
-        assert outcome.finished, f"stream ended without RUN_FINISHED for query={query!r}"
-        answer = outcome.answer
-        answer_lower = answer.lower()
-        assert any(kw.lower() in answer_lower for kw in expected_keywords), (
-            f"answer did not contain any of {expected_keywords!r} for query={query!r}: "
-            f"{answer[:500]!r}"
+        assert conv.get("_id") == conversation_id, (
+            f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
         )
-
-    def test_add_message_stream_updates_conversation_message_count(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-        conversation_id = self._create_agent_conversation_id(
-            agent_key,
-            query="stream-create conversation for message-count test",
+        messages = conv.get("messages")
+        assert isinstance(messages, list), (
+            f"RUN_FINISHED conversation.messages was not a list: {messages!r}"
         )
-
-        with self.conversations.stream_message(
-            agent_key,
-            conversation_id,
-            query="follow-up question",
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            saw_finished = False
-            for envelope in iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-                payload = json.loads(envelope["data"])
-                if is_root_error(envelope["event"], payload):
-                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
-                if not is_root_finished(envelope["event"], payload):
-                    continue
-
-                saw_finished = True
-                result = run_finished_result(payload)
-                conv = result.get("conversation") or {}
-                assert conv.get("_id") == conversation_id, (
-                    f"RUN_FINISHED conversation id mismatch: {conv.get('_id')!r}"
-                )
-                msgs = conv.get("messages") or []
-                non_empty_contents = [
-                    m.get("content") for m in msgs
-                    if isinstance(m, dict) and (m.get("content") or "").strip()
-                ]
-                assert len(non_empty_contents) >= 2, (
-                    f"expected at least 2 non-empty message contents, got {len(non_empty_contents)}"
-                )
-                break
-
-            assert saw_finished, "stream ended without a RUN_FINISHED event"
+        non_empty_contents = [
+            m.get("content") for m in messages
+            if isinstance(m, dict) and (m.get("content") or "").strip()
+        ]
+        assert len(non_empty_contents) >= 2, (
+            f"expected at least 2 non-empty message contents, got {len(non_empty_contents)}"
+        )
 
     def test_add_message_stream_quick_mode_completes(self) -> None:
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query=SEARCH_QUERY,
+            query=seed_query(uuid.uuid4().hex),
         )
 
         outcome = self._stream_add_message(
@@ -666,7 +531,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query=SEARCH_QUERY,
+            query=seed_query(uuid.uuid4().hex),
         )
         body = dict(json_body)
         body["chatMode"] = "quick"
@@ -753,17 +618,18 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
 
         raise AssertionError("stream ended without a RUN_ERROR event")
 
-    def test_add_message_wrong_agent_key_emits_error(self) -> None:
-        primary_key = self.agent_session["primary_agent"]
+    def test_add_message_wrong_agent_key_emits_error(
+        self,
+        readonly_agent_conversation: dict[str, str],
+    ) -> None:
+        # secondary_agents[0] is live but does not own this conversation — that is the
+        # property under test, and it only holds because the delete-agent test consumes
+        # disposable_agent rather than a shared secondary key.
         wrong_key = self.agent_session["secondary_agents"][0]
-        conversation_id = self._create_agent_conversation_id(
-            primary_key,
-            query="stream-create conversation for wrong-agent-key test",
-        )
 
         outcome = self._stream_add_message(
             wrong_key,
-            conversation_id,
+            readonly_agent_conversation["conversation_id"],
             query=SEARCH_QUERY,
             allow_error=True,
         )
@@ -869,15 +735,10 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         label: str,
         payload: dict[str, Any],
     ) -> None:
-        agent_key = self.agent_session["primary_agent"]
-        conversation_id = self._create_agent_conversation_id(
-            agent_key,
-            query=SEARCH_QUERY,
-        )
-
+        # A placeholder id is fine since validation runs before the lookup.
         resp = self.conversations.stream_message(
-            agent_key,
-            conversation_id,
+            self.agent_session["primary_agent"],
+            "0" * 24,
             json=payload,
             stream=False,
             timeout=self.timeout,

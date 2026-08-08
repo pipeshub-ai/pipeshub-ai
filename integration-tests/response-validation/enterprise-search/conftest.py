@@ -10,8 +10,10 @@ To swap PDFs, update ASANA_PDF_BLOB_URL below — accepts either a github.com
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
+from collections.abc import Iterator
 from dataclasses import asdict
 from typing import Any, TypedDict
 from urllib.parse import unquote, urlparse
@@ -20,8 +22,19 @@ from uuid import uuid4
 import pytest
 import requests
 
+from helper.agui_sse import (
+    is_root_error,
+    is_root_finished,
+    iter_sse_envelopes,
+    run_finished_result,
+)
 from helper.clients.kb_client import KBClient
 from helper.clients.agents_client import AgentsClient
+from helper.clients.conversations_client import (
+    AgentConversationsClient,
+    ConversationsClient,
+)
+from helper.conversation_seeds import seed_query
 from messaging.test_e2e_record_pipeline import (
     TERMINAL_STATUSES,
     _extract_kb_id,
@@ -39,12 +52,31 @@ from xdist_shared import shared_session_resource
 
 logger = logging.getLogger("enterprise-search-conftest")
 
-_AGENT_COUNT = 5
+_SECONDARY_AGENT_COUNT = 2
 
 
 class AgentSession(TypedDict):
+    """Agents by role. Only ``primary_agent`` has the KB attached.
+
+    A knowledge-free agent never gets the retrieval toolset registered
+    (``app/modules/agents/qna/chat_state.py`` derives ``has_knowledge`` from it), so a
+    stream against one is structurally a single LLM turn — it cannot spend a turn
+    searching. Files that assert only on gateway/Mongo behaviour use ``workhorse_agent``
+    for exactly that reason.
+    """
+
     primary_agent: str
+    workhorse_agent: str
     secondary_agents: list[str]
+    disposable_agent: str
+    all_agents: list[str]
+
+
+class ReadOnlyConversation(TypedDict):
+    conversation_id: str
+    bot_message_id: str
+    user_message_id: str
+    search_token: str
 
 
 class AsanaPdfBlob(TypedDict):
@@ -312,15 +344,28 @@ def agent_session(
     reasoning_multimodal_llm_model: SeededAIModel,
     session_kb: dict[str, str],
 ) -> AgentSession:
-    """Session-scoped agents for agent conversation stream ITs.
+    """Session-scoped agents by role for the agent conversation ITs.
 
-    Creates five agents: one primary (KB-attached) and four secondary (no knowledge).
-    Yields ``{"primary_agent": str, "secondary_agents": [str, ...]}`` (4 secondary keys).
-    Deletes all agents on teardown.
+    Creates five: ``primary_agent`` (the only one with the KB attached),
+    ``workhorse_agent`` for fixture-only conversations, two ``secondary_agents`` used
+    as "some other agent" scoping probes, and ``disposable_agent``, which exists to be
+    deleted. Deletes whatever survives on teardown.
     """
     kb_id = session_kb["kb_id"]
     org_id = pipeshub_client.org_id
     created_keys: list[str] = []
+
+    def _create_knowledge_free(label: str) -> str:
+        agent_key = _create_agent(
+            agents_client,
+            _agent_create_payload(
+                name=f"integration-agent-{label}-{uuid4().hex[:8]}",
+                seeded_model=reasoning_multimodal_llm_model,
+            ),
+        )
+        created_keys.append(agent_key)
+        logger.info("Created knowledge-free agent %s (%s)", agent_key, label)
+        return agent_key
 
     try:
         primary_key = _create_agent(
@@ -335,24 +380,23 @@ def agent_session(
         created_keys.append(primary_key)
         logger.info("Created primary agent %s with KB %s", primary_key, kb_id)
 
-        secondary_keys: list[str] = []
-        for index in range(2, _AGENT_COUNT + 1):
-            agent_key = _create_agent(
-                agents_client,
-                _agent_create_payload(
-                    name=f"integration-agent-{index}-{uuid4().hex[:8]}",
-                    seeded_model=reasoning_multimodal_llm_model,
-                ),
-            )
-            created_keys.append(agent_key)
-            secondary_keys.append(agent_key)
-            logger.info("Created secondary agent %s", agent_key)
-
-        assert len(secondary_keys) == _AGENT_COUNT - 1
+        workhorse_key = _create_knowledge_free("workhorse")
+        secondary_keys = [
+            _create_knowledge_free(f"secondary-{index}")
+            for index in range(1, _SECONDARY_AGENT_COUNT + 1)
+        ]
+        # Owned by the delete-agent test alone. Nothing else may read it: a shared key
+        # that one test deletes leaves every later "some other agent" probe pointing at
+        # a corpse, and the gateway answers identically for a missing agent and one that
+        # simply does not own the conversation.
+        disposable_key = _create_knowledge_free("disposable")
 
         yield AgentSession(
             primary_agent=primary_key,
+            workhorse_agent=workhorse_key,
             secondary_agents=secondary_keys,
+            disposable_agent=disposable_key,
+            all_agents=list(created_keys),
         )
     finally:
         for agent_key in reversed(created_keys):
@@ -361,3 +405,127 @@ def agent_session(
                 logger.info("Deleted agent %s", agent_key)
             except Exception as e:
                 logger.warning("Failed to delete agent %s: %s", agent_key, e)
+
+
+def _conversation_id_from_stream(resp: requests.Response) -> str:
+    assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+    for envelope in iter_sse_envelopes(resp):
+        payload = json.loads(envelope["data"])
+        if is_root_error(envelope["event"], payload):
+            raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
+        if not is_root_finished(envelope["event"], payload):
+            continue
+        result = run_finished_result(payload)
+        conversation = result.get("conversation") or {}
+        conversation_id = conversation.get("_id")
+        assert isinstance(conversation_id, str) and conversation_id, (
+            f"RUN_FINISHED result missing conversation._id: {result!r}"
+        )
+        return conversation_id
+    raise AssertionError("conversation stream ended without a RUN_FINISHED event")
+
+
+def _bot_and_user_message_ids(body: Any) -> tuple[str, str]:
+    assert isinstance(body, dict), (
+        f"Expected a JSON object response body, got: {body!r}"
+    )
+    conversation = body.get("conversation")
+    assert isinstance(conversation, dict), (
+        f"Expected conversation object, got: {body!r}"
+    )
+    messages = [m for m in (conversation.get("messages") or []) if isinstance(m, dict)]
+    assert messages, f"Expected non-empty messages list, got: {body!r}"
+
+    last = messages[-1]
+    assert last.get("messageType") == "bot_response", (
+        f"Expected last message bot_response, got: {last!r}"
+    )
+    bot_id = last.get("_id") or last.get("id")
+    assert isinstance(bot_id, str) and bot_id, f"Expected bot message id, got: {last!r}"
+
+    user_id = next(
+        (
+            m.get("_id") or m.get("id")
+            for m in messages
+            if m.get("messageType") == "user_query" and (m.get("_id") or m.get("id"))
+        ),
+        None,
+    )
+    assert isinstance(user_id, str) and user_id, (
+        f"No user_query id found in messages: {messages!r}"
+    )
+    return bot_id, user_id
+
+
+@pytest.fixture(scope="session")
+def readonly_agent_conversation(
+    agent_conversations_client: AgentConversationsClient,
+    agent_session: AgentSession,
+) -> Iterator[ReadOnlyConversation]:
+    """One agent conversation shared by every read-only negative test.
+
+    Deliberately does not go through the per-file
+    ``_stream_create_agent_conversation_id`` helpers: those append to a function-scoped
+    ``created_conversations`` fixture that soft-deletes on teardown, which would destroy
+    this after its first borrower.
+
+    Not wrapped in ``shared_session_resource`` either — unlike ``session_kb`` this is
+    not an org-wide singleton, it belongs to a per-worker ``agent_session``, so sharing
+    it across workers would hand one a conversation on an agent it never created.
+    """
+    agent_key = agent_session["workhorse_agent"]
+    token = uuid4().hex
+    with agent_conversations_client.stream_conversation(
+        agent_key, query=seed_query(token), timeout=180,
+    ) as resp:
+        conversation_id = _conversation_id_from_stream(resp)
+
+    resp = agent_conversations_client.get_conversation(agent_key, conversation_id)
+    assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+    bot_id, user_id = _bot_and_user_message_ids(resp.json())
+    logger.info(
+        "Read-only agent conversation %s on agent %s", conversation_id, agent_key
+    )
+
+    try:
+        yield ReadOnlyConversation(
+            conversation_id=conversation_id,
+            bot_message_id=bot_id,
+            user_message_id=user_id,
+            search_token=token,
+        )
+    finally:
+        try:
+            agent_conversations_client.delete_conversation(agent_key, conversation_id)
+        except Exception as e:
+            logger.warning("Failed to delete conversation %s: %s", conversation_id, e)
+
+
+@pytest.fixture(scope="session")
+def readonly_conversation(
+    conversations_client: ConversationsClient,
+) -> Iterator[ReadOnlyConversation]:
+    """Non-agent twin of ``readonly_agent_conversation``, for the /conversations router."""
+    token = uuid4().hex
+    with conversations_client.stream_conversation(
+        query=seed_query(token), timeout=180,
+    ) as resp:
+        conversation_id = _conversation_id_from_stream(resp)
+
+    resp = conversations_client.get_conversation(conversation_id)
+    assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+    bot_id, user_id = _bot_and_user_message_ids(resp.json())
+    logger.info("Read-only conversation %s", conversation_id)
+
+    try:
+        yield ReadOnlyConversation(
+            conversation_id=conversation_id,
+            bot_message_id=bot_id,
+            user_message_id=user_id,
+            search_token=token,
+        )
+    finally:
+        try:
+            conversations_client.delete_conversation(conversation_id)
+        except Exception as e:
+            logger.warning("Failed to delete conversation %s: %s", conversation_id, e)

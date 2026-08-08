@@ -591,7 +591,7 @@ class TestListAgents(AgentsTestBase):
         assert len(agents) <= 2, f"Expected at most 2 agents, got {len(agents)}: {body!r}"
         assert body["pagination"]["currentPage"] == 1
         assert body["pagination"]["limit"] == 2
-        assert body["pagination"]["totalItems"] >= len(agent_session["secondary_agents"]) + 1
+        assert body["pagination"]["totalItems"] >= len(agent_session["all_agents"])
 
     def test_list_agents_supports_search_query_param(
         self,
