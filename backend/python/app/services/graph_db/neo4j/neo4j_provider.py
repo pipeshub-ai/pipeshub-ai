@@ -7992,7 +7992,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Aggregate indexable-leaf-record status counts per container subtree.
 
         Runs at most one query per container type (app / recordGroup / folder / record).
-        Folder and internal placeholder records are excluded from the counts.
+        Folder, internal, and placeholder stub records are excluded from the counts.
         """
         rollups: dict[str, list[dict]] = {}
         if not containers:
@@ -8005,9 +8005,11 @@ class Neo4jProvider(IGraphDBProvider):
             if c_id and c_type in ids_by_type:
                 ids_by_type[c_type].append(c_id)
 
-        # Common leaf-record eligibility: not internal, and not a folder-record.
+        # Common leaf-record eligibility: not internal, not a placeholder stub,
+        # and not a folder-record (mirror get_connector_stats).
         leaf_filter = (
             "coalesce(r.isInternal, false) = false "
+            "AND coalesce(r.isPlaceholder, false) = false "
             "AND NOT EXISTS { MATCH (r)-[:IS_OF_TYPE]->(f:File) WHERE f.isFile = false }"
         )
         ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(DISTINCT r) AS cnt"

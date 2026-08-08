@@ -40,6 +40,7 @@ class TestIndexingRollups:
         assert "RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']" in query
         assert "->{1,100}(r:Record)" in query
         assert "coalesce(r.isInternal, false) = false" in query
+        assert "coalesce(r.isPlaceholder, false) = false" in query
         assert kwargs["parameters"] == {"ids": ["web-path-1"], "org_id": "org-1"}
         assert kwargs["txn_id"] == "txn-1"
         assert result == {

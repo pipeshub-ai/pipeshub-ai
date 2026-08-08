@@ -15543,9 +15543,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> dict:
         """Aggregate indexable-leaf-record status counts per container subtree.
 
-        Runs at most one AQL per container type. Folder-records and internal
-        placeholder records are excluded from the counts. Record-group rollups
-        include nested groups, matching the Neo4j provider semantics.
+        Runs at most one AQL per container type. Folder-records, internal
+        records, and placeholder stubs are excluded from the counts.
+        Record-group rollups include nested groups, matching Neo4j.
         """
         rollups: dict[str, list[dict]] = {}
         if not containers:
@@ -15558,8 +15558,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if c_id and c_type in ids_by_type:
                 ids_by_type[c_type].append(c_id)
 
-        # Reused by every branch: drop folder-records (isOfType -> file with isFile=false).
+        # Reused by every branch: drop folder-records (isOfType -> file with isFile=false)
+        # and placeholder stubs (mirror get_connector_stats).
         leaf_filter = """
+                FILTER doc.isPlaceholder != true
                 LET targetInfo = doc.recordType == @file_record_type ? FIRST(
                     FOR e IN @@is_of_type
                         FILTER e._from == doc._id

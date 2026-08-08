@@ -12,9 +12,8 @@ export interface IndexingQueueCopy {
 }
 
 /**
- * Undelivered stream lag plus consumer PEL. Lag alone goes to 0 once messages
- * are delivered, even when the indexer is still chewing through (or retrying)
- * them — which is exactly when "Indexing 0 of N" feels stuck.
+ * Org-scoped remaining indexing work. Backend puts the org backlog in `lag`
+ * and leaves `pending` at 0 (deployment-wide PEL must not leak across tenants).
  */
 export function indexingQueueBacklog(
   queue: IndexingQueueStatus | null | undefined
@@ -80,8 +79,8 @@ export function formatQueueEta(etaSeconds: number | null | undefined): IndexingQ
 }
 
 /**
- * Whether to surface the shared-queue line under run progress.
- * Shown during indexing when the org stream still has meaningful backlog.
+ * Whether to surface the queue line under run progress.
+ * Shown during indexing when this org still has meaningful backlog.
  */
 export function shouldShowIndexingQueue(
   queue: IndexingQueueStatus | null | undefined,
@@ -100,7 +99,7 @@ export function describeIndexingQueueCompact(): IndexingQueueCopy {
   };
 }
 
-/** Detail/overview line with jobs-ahead and optional ETA. */
+/** Detail/overview line with org backlog count and optional ETA. */
 export function describeIndexingQueueDetail(
   queue: IndexingQueueStatus
 ): { jobs: IndexingQueueCopy; eta: IndexingQueueCopy | null } {
@@ -108,7 +107,7 @@ export function describeIndexingQueueDetail(
   return {
     jobs: {
       key: 'workspace.connectors.syncProgress.queue.waitingDetail',
-      text: 'Waiting in shared indexing queue · ~{{count}} jobs ahead',
+      text: 'Waiting in indexing queue · ~{{count}} jobs in your organization',
       params: { count: backlog },
     },
     eta: formatQueueEta(queue.etaSeconds),

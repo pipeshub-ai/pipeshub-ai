@@ -98,6 +98,7 @@ class TestIndexingRollups:
         kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
         assert "OUTBOUND CONCAT(@record_prefix, cid) @@record_relations" in query
         assert "FILTER doc.isInternal != true" in query
+        assert "FILTER doc.isPlaceholder != true" in query
         assert kwargs["bind_vars"]["ids"] == ["web-path-1"]
         assert kwargs["bind_vars"]["record_prefix"] == "records/"
         assert kwargs["txn_id"] == "txn-1"

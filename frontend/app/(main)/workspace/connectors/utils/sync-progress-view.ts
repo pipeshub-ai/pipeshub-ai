@@ -21,7 +21,16 @@ interface Translatable {
 }
 
 export type SyncProgressView =
-  | ({ mode: 'discovering'; label: string; detail: string | null; detailKey?: string; detailParams?: Record<string, number>; subtitle?: string | null; subtitleKey?: string } & Translatable)
+  | ({
+      mode: 'discovering';
+      label: string;
+      detail: string | null;
+      detailKey?: string;
+      detailParams?: Record<string, number>;
+      subtitle?: string | null;
+      subtitleKey?: string;
+      subtitleParams?: Record<string, number>;
+    } & Translatable)
   | ({ mode: 'indexing'; label: string; percent: number } & Translatable)
   | ({ mode: 'settled'; label: string; failed: number; hasErrors: boolean } & Translatable)
   | ({
@@ -95,10 +104,17 @@ export function describeSyncProgress(
     const isFullSync =
       normalizedStatus === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING || Boolean(run?.fullSync);
     const discovered = run?.discovered ?? 0;
+    // After force/restart, Redis counters reset to 0 while prior Kafka work may
+    // still be indexing. Surface lifetime coverage so Current sync isn't blank.
+    const priorPending =
+      discovered === 0
+        ? (progress?.coverage?.inProgress ?? 0) + (progress?.coverage?.queued ?? 0)
+        : 0;
     // A full sync of mostly-unchanged content shows no queued/indexed records
     // (only new or changed pages are re-indexed) while lifetime coverage still
     // climbs. Explain that 0/0 so the panel doesn't read as "stuck".
-    const showCheckingChanges = isFullSync && discovered === 0;
+    const showCheckingChanges = isFullSync && discovered === 0 && priorPending === 0;
+    const showPriorPending = priorPending > 0;
     return {
       mode: 'discovering',
       label: isFullSync ? 'Full sync - syncing source…' : 'Syncing source…',
@@ -106,10 +122,17 @@ export function describeSyncProgress(
       detail: discovered > 0 ? `${discovered} queued` : null,
       detailKey: discovered > 0 ? `${KEY_PREFIX}.queuedCount` : undefined,
       detailParams: discovered > 0 ? { count: discovered } : undefined,
-      subtitle: showCheckingChanges
-        ? 'Checking source for changes - only new or updated pages are re-indexed.'
-        : null,
-      subtitleKey: showCheckingChanges ? `${KEY_PREFIX}.fullSyncCheckingChanges` : undefined,
+      subtitle: showPriorPending
+        ? `${priorPending} record${priorPending === 1 ? '' : 's'} from previous sync still processing`
+        : showCheckingChanges
+          ? 'Checking source for changes - only new or updated pages are re-indexed.'
+          : null,
+      subtitleKey: showPriorPending
+        ? `${KEY_PREFIX}.priorSyncStillProcessing`
+        : showCheckingChanges
+          ? `${KEY_PREFIX}.fullSyncCheckingChanges`
+          : undefined,
+      subtitleParams: showPriorPending ? { count: priorPending } : undefined,
     };
   }
 

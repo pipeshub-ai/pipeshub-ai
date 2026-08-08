@@ -357,7 +357,10 @@ export function OverviewTab({
           />
           {syncProgressView.mode === 'discovering' && syncProgressView.subtitle && (
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
-              {t(syncProgressView.subtitleKey ?? '', { defaultValue: syncProgressView.subtitle })}
+              {t(syncProgressView.subtitleKey ?? '', {
+                defaultValue: syncProgressView.subtitle,
+                ...syncProgressView.subtitleParams,
+              })}
             </Text>
           )}
           {showRunBreakdown && runData && (

@@ -268,6 +268,10 @@ class RecordEventHandler(BaseEventService):
 
             if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
+                # Track immediately so Current sync Indexed does not lag graph Completed.
+                await self._track_indexing_outcome(
+                    doc, ProgressStatus.COMPLETED.value, payload
+                )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
@@ -298,7 +302,8 @@ class RecordEventHandler(BaseEventService):
                             record_id=record_id,
                             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-                            reason="Connector is inactive"
+                            reason="Connector is inactive",
+                            payload=payload,
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -358,6 +363,7 @@ class RecordEventHandler(BaseEventService):
                     indexing_status=ProgressStatus.COMPLETED.value,
                     extraction_status=ProgressStatus.COMPLETED.value,
                     reason="Folder record — no content to index",
+                    payload=payload,
                 )
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
@@ -830,6 +836,7 @@ class RecordEventHandler(BaseEventService):
         indexing_status: str,
         extraction_status: str,
         reason: str | None = None,
+        payload: dict | None = None,
     ) -> dict|None:
         """Update document status in database"""
         try:
@@ -871,7 +878,12 @@ class RecordEventHandler(BaseEventService):
                 )
                 return None
             self.logger.info(f"✅ Updated document status for record {record_id}")
-            return record
+            # Bump run counters as soon as graph status is terminal so Current
+            # sync Indexed does not trail Records Status Completed across polls.
+            # finally/_track_indexing_outcome remains an idempotent safety net.
+            if payload is not None:
+                await self._track_indexing_outcome(doc, indexing_status, payload)
+            return doc
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
             return None

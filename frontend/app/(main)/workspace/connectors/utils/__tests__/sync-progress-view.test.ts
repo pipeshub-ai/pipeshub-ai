@@ -113,6 +113,39 @@ describe('describeSyncProgress', () => {
     expect(view.mode === 'discovering' && (view.subtitle ?? null)).toBe(null);
   });
 
+  it('explains prior pending work after a restart with zero discovered', () => {
+    const view = describeSyncProgress(
+      makeProgress({
+        isActive: true,
+        phase: 'DISCOVERING',
+        run: { discovered: 0 },
+        coverage: { queued: 31, inProgress: 6, total: 238 },
+      })
+    );
+    expect(view.mode).toBe('discovering');
+    if (view.mode === 'discovering') {
+      expect(view.subtitle).toContain('37 records from previous sync still processing');
+      expect(view.subtitleKey).toBe('workspace.connectors.syncProgress.priorSyncStillProcessing');
+      expect(view.subtitleParams).toEqual({ count: 37 });
+    }
+  });
+
+  it('prefers prior-pending subtitle over full-sync checking-for-changes copy', () => {
+    const view = describeSyncProgress(
+      makeProgress({
+        isActive: true,
+        phase: 'DISCOVERING',
+        run: { fullSync: true, discovered: 0 },
+        coverage: { queued: 2, inProgress: 0 },
+      })
+    );
+    expect(view.mode).toBe('discovering');
+    if (view.mode === 'discovering') {
+      expect(view.subtitleKey).toBe('workspace.connectors.syncProgress.priorSyncStillProcessing');
+      expect(view.subtitle).toContain('previous sync');
+    }
+  });
+
   it('reports the deleting state regardless of run/coverage', () => {
     const view = describeSyncProgress(
       makeProgress({ isActive: true, phase: 'DISCOVERING', coverage: { total: 100, failed: 0 } }),

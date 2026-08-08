@@ -234,6 +234,9 @@ class DataSourceEntitiesProcessor:
             "source_created_at": 0,  # Will be updated when real parent is synced
             "source_updated_at": 0,  # Will be updated when real parent is synced
             "is_placeholder": True,  # Reconciled to False when the real record syncs
+            # Stubs never get Kafka events; keep them terminal so rollups/stats
+            # never treat them as forever-QUEUED work.
+            "indexing_status": ProgressStatus.AUTO_INDEX_OFF.value,
         }
 
         # Map RecordType to appropriate Record class
@@ -987,6 +990,15 @@ class DataSourceEntitiesProcessor:
             else await self._handle_record_group(record, tx_store)
         )
 
+        # Same-revision terminal records must not be re-queued (e.g. Jira
+        # re-emitting unchanged attachments on a parent ticket change).
+        _TERMINAL_INDEXING = {
+            ProgressStatus.COMPLETED.value,
+            ProgressStatus.EMPTY.value,
+            ProgressStatus.AUTO_INDEX_OFF.value,
+        }
+        skip_auto_index_publish = False
+
         if existing_record is None:
             self.logger.debug("New record: %s", record)
             await self._handle_new_record(record, tx_store)
@@ -998,7 +1010,23 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
-            if (
+            promoting_placeholder = (
+                existing_record.is_placeholder and not record.is_placeholder
+            )
+            revision_changed = (
+                record.external_revision_id != existing_record.external_revision_id
+            )
+            same_revision_terminal = (
+                record.origin != OriginTypes.UPLOAD
+                and not promoting_placeholder
+                and not revision_changed
+                and existing_record.indexing_status in _TERMINAL_INDEXING
+            )
+            if same_revision_terminal:
+                # Keep terminal status; do not force NOT_STARTED / Kafka reindex.
+                record.indexing_status = existing_record.indexing_status
+                skip_auto_index_publish = True
+            elif (
                 record.origin != OriginTypes.UPLOAD
                 and existing_record.indexing_status == ProgressStatus.COMPLETED.value
             ):
@@ -1009,10 +1037,10 @@ class DataSourceEntitiesProcessor:
                 record.weburl = existing_record.weburl
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
-            if existing_record.is_placeholder and not record.is_placeholder:
+            if promoting_placeholder:
                 record.is_placeholder = False
             #check if revision Id is same as existing record
-            if record.external_revision_id != existing_record.external_revision_id:
+            if revision_changed:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
@@ -1061,6 +1089,10 @@ class DataSourceEntitiesProcessor:
         # Create record if it doesn't exist
         # Record download function
         # Create a permission edge between the record and the app with sync status if it doesn't exist
+        if skip_auto_index_publish:
+            await self._track_unchanged(record)
+            object.__setattr__(record, "_skip_auto_index_publish", True)
+
         if existing_record is None:
             return record
 
@@ -1137,6 +1169,11 @@ class DataSourceEntitiesProcessor:
 
                     if record.is_placeholder:
                         self.logger.debug(f"Skipping automatic indexing event for placeholder record {record.id}")
+                        continue
+
+                    # Same-revision terminal records were counted as unchanged in
+                    # _process_record — do not inflate discovered / re-queue Kafka.
+                    if getattr(record, "_skip_auto_index_publish", False):
                         continue
 
                     payload = record.to_kafka_record()

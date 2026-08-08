@@ -519,8 +519,10 @@ export interface SyncProgressCoverage {
 }
 
 /**
- * Org-wide Redis Streams lag for `record-events`. Explains why a finished
- * discovery run can sit at "Indexing 0 of N" while older jobs drain.
+ * Org-scoped indexing backlog (remaining work across this org's connectors).
+ * Explains why a finished discovery run can sit at "Indexing 0 of N" while
+ * older jobs for the organization drain. `lag` carries the backlog; `pending`
+ * is unused (kept for API compat).
  */
 export interface IndexingQueueStatus {
   lag: number;

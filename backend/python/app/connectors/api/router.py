@@ -1650,10 +1650,14 @@ async def get_connector_sync_progress_endpoint(
 
         run_view = summarize_run(run)
         coverage: dict[str, Any] = {}
-        # Active views render run-scoped counters, so lifetime graph statistics
-        # are unused until the run settles. Avoid recomputing them on every
-        # five-second progress poll; the first settled poll loads the fallback.
-        if include_coverage and not run_view["isActive"]:
+        # Lifetime graph stats are unused for most active polls (run counters
+        # drive the UI). Load them when idle, or right after a force/restart
+        # when discovered is still 0 so Current sync can explain prior pending.
+        run_discovered = int(run_view.get("discovered") or 0)
+        load_coverage = include_coverage and (
+            not run_view["isActive"] or run_discovered == 0
+        )
+        if load_coverage:
             try:
                 stats_result = await graph_provider.get_connector_stats(org_id, connector_id)
                 if stats_result.get("success"):
@@ -1662,10 +1666,12 @@ async def get_connector_sync_progress_endpoint(
                 logger.debug(f"Failed to load coverage stats for {connector_id}: {stats_err}")
 
         indexing_queue = None
-        # Shared record-events lag explains "Indexing 0 of N" while discovery is
-        # done but the org-wide indexer is still draining older work.
+        # Org-scoped backlog explains "Indexing 0 of N" while discovery is done
+        # but this org's indexer work is still draining.
         if store is not None and store.redis is not None:
-            indexing_queue = await get_indexing_queue_for_progress(logger, store.redis)
+            indexing_queue = await get_indexing_queue_for_progress(
+                logger, store.redis, org_id
+            )
 
         return {
             "success": True,

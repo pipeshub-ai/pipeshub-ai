@@ -1,7 +1,9 @@
-"""Org-wide indexing queue snapshot for sync-progress UI.
+"""Org-scoped indexing queue snapshot for sync-progress UI.
 
-Reads Redis Streams consumer-group lag for ``record-events``. Best-effort:
-Kafka deployments (or Redis errors) return ``None`` so the UI hides the line.
+Sums remaining work across this org's connector sync-progress Redis hashes.
+Never exposes deployment-wide Redis Streams / Kafka consumer lag (that would
+leak other tenants' backlog size). Best-effort: Redis errors return ``None``
+so the UI hides the line.
 """
 
 from __future__ import annotations
@@ -10,93 +12,149 @@ import logging
 import time
 from typing import Any, Optional
 
-from app.services.messaging.config import Topic
+from app.connectors.services.sync_progress_store import (
+    STALE_THRESHOLD_MS,
+    SyncPhase,
+)
 
-RECORD_EVENTS_STREAM = Topic.RECORD_EVENTS.value
-RECORDS_CONSUMER_GROUP = "records_consumer_group"
-# Shared sample used to derive a rough drain rate across progress polls.
-_THROUGHPUT_SAMPLE_KEY = "indexing_queue:throughput_sample"
+# Per-org sample used to derive a rough drain rate across progress polls.
+_THROUGHPUT_SAMPLE_KEY_PREFIX = "indexing_queue:throughput_sample:"
 _MIN_SAMPLE_INTERVAL_SECONDS = 5.0
-# Card lists poll sync-progress per connector; reuse one XINFO for a few seconds
-# so N concurrent polls don't each hit Redis Streams admin commands.
+# Card lists poll sync-progress per connector; reuse one org scan briefly.
 _SNAPSHOT_CACHE_TTL_SECONDS = 2.0
-_snapshot_cache: tuple[float, Optional[dict[str, Any]]] | None = None
+# Cache keyed by org_id so tenants never share a snapshot.
+_snapshot_cache: dict[str, tuple[float, Optional[dict[str, Any]]]] = {}
+
+_PROGRESS_KEY_PREFIX = "connector_sync_progress:"
 
 
 def clear_indexing_queue_snapshot_cache() -> None:
     """Drop the in-process snapshot cache (tests / after Redis reconnect)."""
-    global _snapshot_cache
-    _snapshot_cache = None
+    _snapshot_cache.clear()
 
 
-def _as_group_dict(group: Any) -> dict[str, Any]:
-    if isinstance(group, dict):
-        return group
-    # redis-py may return a flat list [name, val, name, val, ...]
-    if isinstance(group, (list, tuple)):
-        out: dict[str, Any] = {}
-        for i in range(0, len(group) - 1, 2):
-            out[str(group[i])] = group[i + 1]
-        return out
-    return {}
+def _decode(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value) if value is not None else ""
 
 
-def _int_field(group: dict[str, Any], key: str, default: int = 0) -> int:
+def _int_field(data: dict[str, Any], key: str, default: int = 0) -> int:
+    raw = data.get(key, default)
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
     try:
-        return int(group.get(key, default) or 0)
+        return int(raw or default)
     except (TypeError, ValueError):
         return default
 
 
-async def fetch_indexing_queue_snapshot(redis_client: Any) -> Optional[dict[str, Any]]:
-    """Return ``{lag, pending, etaSeconds}`` or ``None`` when unavailable."""
-    global _snapshot_cache
-    if redis_client is None:
+def _remaining_for_run(run: dict[str, Any]) -> int:
+    """Remaining indexable work for one connector run hash."""
+    phase = _decode(run.get("phase") or SyncPhase.IDLE)
+    if phase in (SyncPhase.IDLE, SyncPhase.DONE, SyncPhase.FAILED, ""):
+        return 0
+
+    heartbeat = _int_field(run, "heartbeatAt")
+    if heartbeat:
+        now_ms = int(time.time() * 1000)
+        if (now_ms - heartbeat) > STALE_THRESHOLD_MS:
+            return 0
+
+    discovered = _int_field(run, "discovered")
+    indexed = _int_field(run, "indexed")
+    failed = _int_field(run, "failed")
+    skipped = _int_field(run, "skipped")
+    total = _int_field(run, "total")
+    processed = indexed + failed + skipped
+    # While discovering, total is unset — use discovered as the work queued so far.
+    denominator = total if total > 0 else discovered
+    return max(0, denominator - processed)
+
+
+async def _scan_org_progress_keys(redis_client: Any, org_id: str) -> list[str]:
+    pattern = f"{_PROGRESS_KEY_PREFIX}{org_id}:*"
+    keys: list[str] = []
+    cursor: int | bytes = 0
+    while True:
+        cursor, batch = await redis_client.scan(cursor, match=pattern, count=100)
+        for key in batch or []:
+            key_str = _decode(key)
+            # Outcomes sets are sibling keys; they are not run hashes.
+            if ":outcomes:" in key_str:
+                continue
+            keys.append(key_str)
+        if cursor == 0 or cursor == b"0" or cursor == "0":
+            break
+    return keys
+
+
+async def _sum_org_backlog(redis_client: Any, org_id: str) -> int:
+    keys = await _scan_org_progress_keys(redis_client, org_id)
+    backlog = 0
+    for key in keys:
+        try:
+            raw = await redis_client.hgetall(key)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        # Normalize bytes keys from redis-py.
+        run = {_decode(k): v for k, v in raw.items()}
+        backlog += _remaining_for_run(run)
+    return backlog
+
+
+async def fetch_indexing_queue_snapshot(
+    redis_client: Any, org_id: str
+) -> Optional[dict[str, Any]]:
+    """Return ``{lag, pending, etaSeconds}`` for this org, or ``None``.
+
+    ``lag`` carries the org backlog (FE still sums lag+pending). ``pending``
+    is always 0 — PEL is deployment-wide and must not leak.
+    """
+    if redis_client is None or not org_id:
         return None
 
     now = time.time()
-    if _snapshot_cache is not None:
-        cached_at, cached = _snapshot_cache
+    cached = _snapshot_cache.get(org_id)
+    if cached is not None:
+        cached_at, snap = cached
         if now - cached_at < _SNAPSHOT_CACHE_TTL_SECONDS:
-            return cached
+            return snap
 
     try:
-        groups = await redis_client.xinfo_groups(RECORD_EVENTS_STREAM)
+        backlog = await _sum_org_backlog(redis_client, org_id)
     except Exception:
-        _snapshot_cache = (now, None)
+        _snapshot_cache[org_id] = (now, None)
         return None
 
-    target: Optional[dict[str, Any]] = None
-    for group in groups or []:
-        parsed = _as_group_dict(group)
-        if parsed.get("name") == RECORDS_CONSUMER_GROUP:
-            target = parsed
-            break
-    if target is None:
-        _snapshot_cache = (now, None)
-        return None
-
-    lag = max(0, _int_field(target, "lag"))
-    pending = max(0, _int_field(target, "pending"))
-    eta_seconds = await _estimate_eta_seconds(redis_client, lag)
+    eta_seconds = await _estimate_eta_seconds(redis_client, org_id, backlog)
     snap = {
-        "lag": lag,
-        "pending": pending,
+        "lag": backlog,
+        "pending": 0,
         "etaSeconds": eta_seconds,
     }
-    _snapshot_cache = (now, snap)
+    _snapshot_cache[org_id] = (now, snap)
     return snap
 
 
-async def _estimate_eta_seconds(redis_client: Any, lag: int) -> Optional[int]:
-    """Rough ETA from lag drain rate across progress polls. None if unknown."""
-    if lag <= 0:
+async def _estimate_eta_seconds(
+    redis_client: Any, org_id: str, backlog: int
+) -> Optional[int]:
+    """Rough ETA from org backlog drain rate across progress polls."""
+    if backlog <= 0:
         return 0
+    sample_key = f"{_THROUGHPUT_SAMPLE_KEY_PREFIX}{org_id}"
     now = time.time()
     try:
-        prev = await redis_client.hgetall(_THROUGHPUT_SAMPLE_KEY)
+        prev = await redis_client.hgetall(sample_key)
     except Exception:
         prev = {}
+
+    # Normalize bytes.
+    if prev:
+        prev = {_decode(k): _decode(v) for k, v in prev.items()}
 
     rate: Optional[float] = None
     if prev:
@@ -107,11 +165,10 @@ async def _estimate_eta_seconds(redis_client: Any, lag: int) -> Optional[int]:
             prev_lag, prev_at = 0, 0.0
         dt = now - prev_at
         if prev_at > 0 and dt >= _MIN_SAMPLE_INTERVAL_SECONDS:
-            drained = prev_lag - lag
+            drained = prev_lag - backlog
             if drained > 0:
                 rate = drained / dt
 
-    # Refresh the sample when enough time has passed (or first write).
     try:
         prev_at = float((prev or {}).get("at", 0) or 0)
     except (TypeError, ValueError):
@@ -119,24 +176,24 @@ async def _estimate_eta_seconds(redis_client: Any, lag: int) -> Optional[int]:
     if prev_at <= 0 or (now - prev_at) >= _MIN_SAMPLE_INTERVAL_SECONDS:
         try:
             await redis_client.hset(
-                _THROUGHPUT_SAMPLE_KEY,
-                mapping={"lag": lag, "at": str(now)},
+                sample_key,
+                mapping={"lag": backlog, "at": str(now)},
             )
-            await redis_client.expire(_THROUGHPUT_SAMPLE_KEY, 3600)
+            await redis_client.expire(sample_key, 3600)
         except Exception:
             pass
 
     if rate is None or rate <= 0:
         return None
-    return max(1, int(round(lag / rate)))
+    return max(1, int(round(backlog / rate)))
 
 
 async def get_indexing_queue_for_progress(
-    logger: logging.Logger, redis_client: Any
+    logger: logging.Logger, redis_client: Any, org_id: str
 ) -> Optional[dict[str, Any]]:
     """Wrapper that never raises — sync-progress must stay available."""
     try:
-        return await fetch_indexing_queue_snapshot(redis_client)
+        return await fetch_indexing_queue_snapshot(redis_client, org_id)
     except Exception as exc:
         logger.debug("Indexing queue snapshot unavailable: %s", exc)
         return None
