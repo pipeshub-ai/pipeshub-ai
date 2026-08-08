@@ -63,15 +63,22 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       HEADER_REQUEST_ID,
       'client-name'
     ]);
-    // Ensure content-type is set to application/json if not present
-    if (!headers['content-type'] && !headers['Content-Type']) {
-      headers['content-type'] = 'application/json';
+    // Normalize to lowercase keys so case-variants (e.g. content-type from
+    // Express + Content-Type from the caller) collapse to one entry. fetch
+    // otherwise emits "application/json, application/json", which FastAPI
+    // does not treat as JSON and then fails Pydantic body parsing with
+    // model_attributes_type.
+    const normalized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+      const lower = key.toLowerCase();
+      if (allowedHeaders.has(lower) && value !== undefined && value !== null) {
+        normalized[lower] = String(value);
+      }
     }
-    return Object.fromEntries(
-      Object.entries(headers).filter(([key]) =>
-        allowedHeaders.has(key.toLowerCase()),
-      ),
-    );
+    if (!normalized['content-type']) {
+      normalized['content-type'] = 'application/json';
+    }
+    return normalized;
   }
 
   /**

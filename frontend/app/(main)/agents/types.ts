@@ -126,6 +126,29 @@ export interface AgentToolset {
   type: string;
 }
 
+/** Tool nested under `mcpServers[].tools[]` — the attach-time snapshot, no live schema. */
+export interface AgentMcpTool {
+  _key?: string;
+  name: string;
+  fullName: string;
+  description?: string;
+}
+
+/**
+ * Attached MCP server instance on a single agent — mirrors `AgentToolset` but keyed by
+ * `instanceId` only (no logical "type" grouping: an agent may attach several distinct
+ * instances, never two of the same `typeId`). See `linked_mcp_servers` in
+ * `arango_http_provider.py`'s `get_agent`.
+ */
+export interface AgentMcpServer {
+  _key: string;
+  name: string;
+  displayName?: string;
+  typeId?: string | null;
+  instanceId: string;
+  tools: AgentMcpTool[];
+}
+
 /**
  * `agent` object from GET /api/v1/agents/:id (success payload).
  * Optional fields are omitted by some API versions or edge records.
@@ -151,6 +174,7 @@ export interface AgentDetail {
   _key: string;
   _id: string;
   toolsets: AgentToolset[];
+  mcpServers?: AgentMcpServer[];
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];

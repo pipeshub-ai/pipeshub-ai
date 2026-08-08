@@ -1,0 +1,37 @@
+﻿F
+================================== FAILURES ===================================
+______________________ TestToolsetError.test_base_error _______________________
+
+self = <unit.api.routes.test_toolsets.TestToolsetError object at 0x000001E5849794B0>
+
+    def test_base_error(self) -> None:
+>       from app.api.routes.toolsets import ToolsetError
+
+tests\unit\api\routes\test_toolsets.py:17: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app\api\routes\toolsets.py:28: in <module>
+    from app.agents.registry.toolset_registry import ToolsetRegistry
+app\agents\registry\toolset_registry.py:12: in <module>
+    from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetCategory
+app\connectors\core\registry\tool_builder.py:20: in <module>
+    from app.connectors.core.registry.auth_builder import (
+app\connectors\core\registry\auth_builder.py:30: in <module>
+    from app.connectors.core.registry.types import AuthField, DocumentationLink
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    """
+    Shared types for connector and toolset registries.
+    
+    This module contains common data structures used across the registry system
+    to avoid circular dependencies.
+    """
+    
+    from dataclasses import dataclass, field
+    from enum import Enum
+>   from typing import Any, Literal, Optional, Self
+E   ImportError: cannot import name 'Self' from 'typing' (C:\Users\Tushar\AppData\Local\Programs\Python\Python310\lib\typing.py)
+
+app\connectors\core\registry\types.py:10: ImportError
+=========================== short test summary info ===========================
+FAILED tests/unit/api/routes/test_toolsets.py::TestToolsetError::test_base_error
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!

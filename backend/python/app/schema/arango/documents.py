@@ -1244,6 +1244,31 @@ tool_schema = {
 }
 
 
+# MCP Server Node Schema — per-agent attachment of an org-wide MCP instance
+# (see app/agents/mcp/service.py). No secrets: credentials live in etcd,
+# keyed by instanceId + owner id, never on this node. Mirrors toolset_schema.
+mcp_server_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "name": {"type": "string"},  # Instance display name, snapshotted at attach time
+            "displayName": {"type": "string"},
+            "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
+            "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "createdBy": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["name", "displayName", "instanceId", "userId", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the MCP server schema.",
+}
+
+
 # Agent Skills Node Schema — agent_loop_lib SkillManager's GraphSkillStore.
 # `content`/`resources` carry the full SKILL.md so the store can serve
 # `get_skill`/`get_resource` from one document; every other property is a

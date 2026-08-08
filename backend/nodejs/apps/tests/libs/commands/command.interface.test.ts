@@ -183,13 +183,22 @@ describe('command.interface', () => {
       expect(result).to.have.property('content-type', 'text/plain')
     })
 
-    it('should preserve existing Content-Type header (mixed case) and not add lowercase duplicate', () => {
+    it('should normalize Content-Type to lowercase content-type', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({
         'Content-Type': 'text/html',
       })
-      // Content-Type should pass through the allowedHeaders filter (lowered to content-type)
-      expect(result).to.have.property('Content-Type', 'text/html')
+      expect(result).to.have.property('content-type', 'text/html')
+      expect(result).not.to.have.property('Content-Type')
+    })
+
+    it('should collapse duplicate content-type case variants to a single header', () => {
+      const cmd = new TestCommand('http://example.com')
+      const result = cmd.testSanitizeHeaders({
+        'content-type': 'application/json',
+        'Content-Type': 'application/json',
+      })
+      expect(result).to.deep.equal({ 'content-type': 'application/json' })
     })
 
     it('should keep authorization header', () => {
@@ -228,14 +237,16 @@ describe('command.interface', () => {
       expect(result).to.have.property('x-request-id', '12345')
     })
 
-    it('should be case-insensitive when filtering headers', () => {
+    it('should normalize allowed headers to lowercase keys', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({
         Authorization: 'Bearer xyz',
         'X-Is-Admin': 'false',
       })
-      expect(result).to.have.property('Authorization', 'Bearer xyz')
-      expect(result).to.have.property('X-Is-Admin', 'false')
+      expect(result).to.have.property('authorization', 'Bearer xyz')
+      expect(result).to.have.property('x-is-admin', 'false')
+      expect(result).not.to.have.property('Authorization')
+      expect(result).not.to.have.property('X-Is-Admin')
     })
   })
 

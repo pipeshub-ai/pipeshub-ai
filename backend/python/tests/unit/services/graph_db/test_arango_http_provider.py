@@ -14315,6 +14315,8 @@ class TestHardDeleteAllAgents:
                 [{"_key": "tool1"}],  # tool nodes
                 [{"_key": "tse1"}],  # toolset edges
                 [{"_key": "ts1"}],  # toolset nodes
+                [],  # no mcp server ids
+                [],  # no agent->mcp server edges deleted
                 [{"_key": "pe1"}],  # permission edges
                 [{"_key": "a1"}],  # agent docs
             ]
@@ -14324,6 +14326,7 @@ class TestHardDeleteAllAgents:
         assert result["toolsets_deleted"] == 1
         assert result["tools_deleted"] == 1
         assert result["knowledge_deleted"] == 1
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_nothing_to_delete(self, connected_provider):
@@ -14333,12 +14336,15 @@ class TestHardDeleteAllAgents:
                 None,  # no toolset ids
                 None,  # no toolset edges
                 None,  # no toolsets
+                None,  # no mcp server ids
+                None,  # no agent->mcp server edges deleted
                 None,  # no permissions
                 None,  # no agents
             ]
         )
         result = await connected_provider.hard_delete_all_agents()
         assert result["agents_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
@@ -16915,6 +16921,10 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
+            # mcp_server_ids (no MCP servers attached)
+            [],
+            # deleted_mcp_server_edges (none)
+            [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
             # deleted_agents from step 9
@@ -16926,6 +16936,7 @@ class TestHardDeleteAgent:
         assert result["knowledge_deleted"] == 1
         assert result["tools_deleted"] == 1
         assert result["toolsets_deleted"] == 1
+        assert result["mcp_servers_deleted"] == 0
         assert result["edges_deleted"] > 0
 
     @pytest.mark.asyncio
@@ -16935,6 +16946,8 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
+            [],    # no mcp_server_ids
+            [],    # no deleted_mcp_server_edges
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -16944,6 +16957,7 @@ class TestHardDeleteAgent:
         assert result["knowledge_deleted"] == 0
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_knowledge_with_no_orphans(self, connected_provider):
@@ -16953,6 +16967,8 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
+            [],                       # no mcp_server_ids
+            [],                       # no deleted_mcp_server_edges
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -16971,6 +16987,8 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
+            [],                      # no mcp_server_ids
+            [],                      # no deleted_mcp_server_edges
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -16979,6 +16997,7 @@ class TestHardDeleteAgent:
         assert result["agents_deleted"] == 1
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -16989,6 +17008,7 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["knowledge_deleted"] == 0
         assert result["edges_deleted"] == 0
+        assert result["mcp_servers_deleted"] == 0
 
     @pytest.mark.asyncio
     async def test_permissions_deleted(self, connected_provider):
@@ -16997,6 +17017,8 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
+            [],                      # no mcp_server_ids
+            [],                      # no deleted_mcp_server_edges
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])

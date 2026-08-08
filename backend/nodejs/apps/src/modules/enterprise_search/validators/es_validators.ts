@@ -407,6 +407,58 @@ const agentToolsetSchema = z
     tools: z.array(agentToolRefSchema).optional(),
   });
 
+/**
+ * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
+ * `api/routes/agent.py`) — no secrets, just enough to resolve the instance +
+ * an optional stored tool selection at chat time.
+ */
+const agentMcpServerSchema = z.object({
+  instanceId: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server instanceId is required' })
+    .max(256),
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server name is required' })
+    .max(200),
+  displayName: z.string().max(200).optional(),
+  typeId: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).max(200).optional(),
+});
+
+/**
+ * `mcpServers` on create/update agent payloads. Rejects two attached
+ * instances sharing the same `typeId`, mirroring Python's `_parse_mcp_servers`
+ * duplicate-type rejection — instances with no `typeId` (custom/unregistered
+ * servers) are exempt, same as the Python side.
+ */
+const agentMcpServersSchema = z
+  .array(agentMcpServerSchema)
+  .max(50)
+  .optional()
+  .superRefine((servers, ctx) => {
+    if (!servers) {
+      return;
+    }
+    const seenTypeIds = new Set<string>();
+    servers.forEach((server, index) => {
+      if (!server.typeId) {
+        return;
+      }
+      if (seenTypeIds.has(server.typeId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate MCP server type "${server.typeId}" — only one instance per server type is allowed`,
+          path: [index, 'typeId'],
+        });
+        return;
+      }
+      seenTypeIds.add(server.typeId);
+    });
+  });
+
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
@@ -493,6 +545,7 @@ const createAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
@@ -527,6 +580,7 @@ const updateAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),

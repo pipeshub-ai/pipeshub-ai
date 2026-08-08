@@ -237,11 +237,14 @@ class CollectionNames(Enum):
     AGENT_KNOWLEDGE = "agentKnowledge"
     AGENT_TOOLSETS = "agentToolsets"
     AGENT_TOOLS = "agentTools"
+    AGENT_MCP_SERVERS = "agentMcpServers"
 
     # Agent Builder Graph edges
     AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
+    AGENT_HAS_MCP_SERVER = "agentHasMcpServer"
+    MCP_SERVER_HAS_TOOL = "mcpServerHasTool"
 
     # Agent Skills collections (agent_loop_lib SkillManager — GraphSkillStore)
     AGENT_SKILLS = "agentSkills"

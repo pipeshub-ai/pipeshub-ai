@@ -120,6 +120,7 @@ from app.agents.agent_loop.loops.orchestrator import (
     register_coordination_tools,
 )
 from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
@@ -278,6 +279,15 @@ class PipesHubAgentFactory:
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
+        # MCP servers attached to this agent (or, for the assistant/placeholder
+        # agent, every MCP instance the executing user has authenticated — see
+        # `get_authenticated_mcp_servers`) — loaded right after connector
+        # toolsets so their tools count toward every composition/lazy-disclosure
+        # decision below exactly like any other tool. `context.mcp_servers`/
+        # `mcp_server_configs` are empty for a request with no attached MCP
+        # servers, so this is a cheap no-op in the common case (see
+        # `MCPToolProvider.load_into`).
+        await MCPToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
