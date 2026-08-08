@@ -887,6 +887,17 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    # Optional — feeds resolve_entity_filters / entity_filter_resolution /
+    # mention_binding (see app.agents.agent_loop.hooks.entity_filter). Any
+    # failure degrades gracefully to those tools/hooks no-op'ing rather than
+    # blocking chat.
+    entity_vector_store = None
+    if hasattr(container, "entity_vector_store"):
+        try:
+            entity_vector_store = await container.entity_vector_store()
+        except Exception as exc:
+            logger_.warning("entity_vector_store unavailable for chat: %s", exc)
+
     try:
         llm, model_config, ai_models_config = await get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
@@ -971,6 +982,7 @@ async def _generate_chat_stream_via_agent_loop(
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
         ai_models_config=ai_models_config, protocol=protocol,
         client_name=client_name,
+        entity_vector_store=entity_vector_store,
     ):
         yield event
 

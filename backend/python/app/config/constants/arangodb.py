@@ -166,6 +166,11 @@ class CollectionNames(Enum):
     COMMENTS = "comments"
     TICKETS = "tickets"
     ENTITY_RELATIONS = "entityRelations"
+    # EE governance store (Phase 7): both hold generic documents written via
+    # the existing batch_upsert_nodes/get_nodes_by_filters primitives — no
+    # dedicated provider methods needed, see app/modules/knowledge_graph/governance/.
+    KG_MERGE_SUGGESTIONS = "kgMergeSuggestions"
+    KG_ONTOLOGIES = "kgOntologies"
     PROJECTS = "projects"
     PULLREQUESTS = "prs"
     MEETINGS = "meetings"
@@ -257,6 +262,7 @@ class CollectionNames(Enum):
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    ENTITIES = "entities"
 
 
 class ExtensionTypes(Enum):
@@ -584,6 +590,7 @@ class EntityRelations(Enum):
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
     MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
     INVOLVED_IN = "INVOLVED_IN"
+    SAME_AS = "SAME_AS"  # Bi-temporal cross-app identity link (shared hard key, e.g. email)
 
 
 class EventTypes(Enum):

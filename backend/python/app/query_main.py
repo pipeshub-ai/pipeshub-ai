@@ -18,7 +18,9 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-qs")
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
+from app.api.routes.entity_sync import router as entity_sync_router
 from app.api.routes.health import router as health_router
+from app.api.routes.kg_governance import router as kg_governance_router
 from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.speech import router as speech_router
@@ -387,6 +389,8 @@ app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")
+app.include_router(entity_sync_router)
+app.include_router(kg_governance_router)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:

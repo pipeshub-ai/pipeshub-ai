@@ -85,75 +85,72 @@ def _build_frontier_prompt(fixture_name: str) -> str:
 # ---------------------------------------------------------------------------
 # MID-tier ceilings (default UNKNOWN_PROFILE → MID, includes worked traces)
 #
-# Re-measured after the block-token-usage optimization: `_CITATION_RULES`
-# gained a one-time "Record & Block Structure" explainer so the model can
-# parse the new compact `[idx|refN] content` block format (replacing the
-# old per-block `* Block Index / Citation ID / Block Type / Block Content`
-# scaffolding), and the worked traces were updated to match. This grows the
-# always-on system prompt by a small, fixed amount per request in exchange
-# for removing repeated per-block labels from every retrieval and full-record
-# tool result — a net token win once more than a couple of blocks are
-# returned. Baseline sizes / ceilings with ~10% headroom:
-#   no_sources:             7,162 →  7,900
-#   kb_only:               11,129 → 12,250
-#   kb_plus_3_apps:        11,338 → 12,500  (also checked in test_prompt_invariants.py)
-#   duplicate_apps:        11,375 → 12,550
-#   web_search_mode:        9,541 → 10,500
-#   kb_plus_service_tools: 11,784 → 13,000
-#   run_code_no_web:        8,362 →  9,200
-#   composed_agents:       12,721 → 14,000
-#   service_only:           7,947 →  8,750
-#   lazy_with_pinned:      12,944 → 14,250
-#   kb_with_full_record:   12,329 → 13,600
+# Re-measured after the KG entity tools fix expanded `source_catalog.py`'s
+# "Entities" paragraph — stronger nudge to call `search_entities` first, plus
+# unconditional mentions of the progressive `expand_neighbors`,
+# `get_relationships`, and `find_records_by_entity` tools (so the LLM knows
+# they exist before their first grant) — only fixtures with
+# `has_knowledge=True` grow. Baseline sizes / ceilings with ~10% headroom:
+#   no_sources:             7,135 →  7,900  (unaffected: no knowledge sources)
+#   kb_only:               13,315 → 14,650
+#   kb_plus_3_apps:        13,524 → 14,900  (also checked in test_prompt_invariants.py)
+#   duplicate_apps:        13,561 → 14,950
+#   web_search_mode:        9,829 → 10,850
+#   kb_plus_service_tools: 13,970 → 15,400
+#   run_code_no_web:        8,335 →  9,200  (unaffected: no knowledge sources)
+#   composed_agents:       14,907 → 16,400
+#   service_only:           7,920 →  8,750  (unaffected: no knowledge sources)
+#   lazy_with_pinned:      15,212 → 16,750
+#   kb_with_full_record:   14,435 → 15,900
 # ---------------------------------------------------------------------------
 _MID_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            7_900,
-    "kb_only":              12_250,
-    "kb_plus_3_apps":       12_500,
-    "duplicate_apps":       12_550,
-    "web_search_mode":      10_500,
-    "kb_plus_service_tools": 13_000,
+    "kb_only":              14_650,
+    "kb_plus_3_apps":       14_900,
+    "duplicate_apps":       14_950,
+    "web_search_mode":      10_850,
+    "kb_plus_service_tools": 15_400,
     "run_code_no_web":       9_200,
-    "composed_agents":      14_000,
+    "composed_agents":      16_400,
     "service_only":          8_750,
-    "lazy_with_pinned":     14_250,
-    "kb_with_full_record":  13_600,
+    "lazy_with_pinned":     16_750,
+    "kb_with_full_record":  15_900,
 }
 
 # ---------------------------------------------------------------------------
 # FRONTIER-tier ceilings (anthropic/200k → FRONTIER, no worked traces)
 #
-# Re-measured after the same block-token-usage optimization described above
-# `_MID_CHAR_CEILINGS` (the "Record & Block Structure" explainer in
-# `_CITATION_RULES` is tier-independent, so FRONTIER grows by the same fixed
-# amount even without worked traces). `no_sources` and `run_code_no_web`
-# are unchanged — those fixtures never render `_CITATION_RULES`.
+# Re-measured for the same reason as `_MID_CHAR_CEILINGS` above (the expanded
+# "Entities" paragraph in `source_catalog.py` is tier-independent, so
+# FRONTIER grows by the same fixed amount even without worked traces).
+# `no_sources`, `run_code_no_web`, and `service_only` are unaffected — those
+# fixtures never render a knowledge-sources block.
 #
 # Baseline sizes / ceilings with ~10% headroom:
-#   no_sources:            4,568 →  5,050
-#   kb_only:               8,535 →  9,400
-#   kb_plus_3_apps:        8,744 →  9,650
-#   duplicate_apps:        8,781 →  9,700
-#   web_search_mode:       6,947 →  7,650
-#   kb_plus_service_tools: 9,190 → 10,150
-#   run_code_no_web:       5,768 →  6,350
-#   composed_agents:      10,127 → 11,150
-#   service_only:          5,353 →  5,900
-#   lazy_with_pinned:     10,350 → 11,400
-#   kb_with_full_record:   9,735 → 10,750
+#   no_sources:            4,541 →  5,050
+#   kb_only:              10,721 → 11,800
+#   kb_plus_3_apps:       10,930 → 12,050
+#   duplicate_apps:       10,967 → 12,100
+#   web_search_mode:       7,235 →  8,000
+#   kb_plus_service_tools: 11,376 → 12,550
+#   run_code_no_web:       5,741 →  6,350
+#   composed_agents:      12,313 → 13,550
+#   service_only:          5,326 →  5,900
+#   lazy_with_pinned:     12,618 → 13,900
+#   kb_with_full_record:  11,841 → 13,050
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "no_sources":            5_050,
-    "kb_only":               9_400,
-    "kb_plus_3_apps":        9_650,
-    "duplicate_apps":        9_700,
-    "web_search_mode":       7_650,
-    "kb_plus_service_tools": 10_150,
+    "kb_only":              11_800,
+    "kb_plus_3_apps":       12_050,
+    "duplicate_apps":       12_100,
+    "web_search_mode":       8_000,
+    "kb_plus_service_tools": 12_550,
     "run_code_no_web":       6_350,
-    "composed_agents":      11_150,
+    "composed_agents":      13_550,
     "service_only":          5_900,
-    "lazy_with_pinned":     11_400,
-    "kb_with_full_record":  10_750,
+    "lazy_with_pinned":     13_900,
+    "kb_with_full_record":  13_050,
 }
 
 

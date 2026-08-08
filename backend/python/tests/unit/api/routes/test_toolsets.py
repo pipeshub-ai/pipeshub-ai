@@ -568,7 +568,7 @@ class TestGetToolsetById:
 
 class TestCheckUserIsAdmin:
     @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
+    @patch("app.api.middlewares.admin.httpx.AsyncClient")
     async def test_admin_returns_true(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
@@ -593,7 +593,7 @@ class TestCheckUserIsAdmin:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
+    @patch("app.api.middlewares.admin.httpx.AsyncClient")
     async def test_non_admin_returns_false(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
@@ -618,7 +618,7 @@ class TestCheckUserIsAdmin:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
+    @patch("app.api.middlewares.admin.httpx.AsyncClient")
     async def test_fallback_endpoint_on_config_error(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
@@ -644,7 +644,7 @@ class TestCheckUserIsAdmin:
         assert "user-1/adminCheck" in call_args[0][0]
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
+    @patch("app.api.middlewares.admin.httpx.AsyncClient")
     async def test_exception_returns_false(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
@@ -664,7 +664,7 @@ class TestCheckUserIsAdmin:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.api.routes.toolsets.httpx.AsyncClient")
+    @patch("app.api.middlewares.admin.httpx.AsyncClient")
     async def test_forwards_auth_headers(self, mock_client_cls) -> None:
         from app.api.routes.toolsets import _check_user_is_admin
 
@@ -4917,7 +4917,7 @@ class TestCheckUserIsAdmin:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.api.middlewares.admin.httpx.AsyncClient", return_value=mock_client):
             result = await _check_user_is_admin("u1", request, cs)
         assert result is True
 
@@ -4936,7 +4936,7 @@ class TestCheckUserIsAdmin:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", return_value=mock_client):
+        with patch("app.api.middlewares.admin.httpx.AsyncClient", return_value=mock_client):
             result = await _check_user_is_admin("u1", request, cs)
         assert result is False
 
@@ -4948,7 +4948,7 @@ class TestCheckUserIsAdmin:
         request = MagicMock()
         request.headers = {}
 
-        with patch("app.api.routes.toolsets.httpx.AsyncClient", side_effect=Exception("network")):
+        with patch("app.api.middlewares.admin.httpx.AsyncClient", side_effect=Exception("network")):
             result = await _check_user_is_admin("u1", request, cs)
         assert result is False
 

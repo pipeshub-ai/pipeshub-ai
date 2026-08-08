@@ -298,6 +298,9 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     container_name: qdrant
     restart: always
     environment:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 import pytest
 
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.models.entities import EntityType
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +170,105 @@ class TestApply:
 
         orch.vector_store.apply.assert_awaited_once()
         orch.graph_provider.batch_upsert_nodes.assert_awaited()
+
+
+# =========================================================================
+# _sync_record_group_entity (Phase 2 — Layer-0 RecordGroup sync)
+# =========================================================================
+class TestSyncRecordGroupEntity:
+    """Tests for SinkOrchestrator._sync_record_group_entity."""
+
+    def _make_ctx_with_group(self, record_group_id="rg-1", org_id="org-1", connector_id="conn-1"):
+        record = MagicMock()
+        record.id = "rec-001"
+        record.record_group_id = record_group_id
+        record.org_id = org_id
+        record.connector_id = connector_id
+        ctx = MagicMock()
+        ctx.record = record
+        return ctx
+
+    def _make_orchestrator_with_evs(self, group_doc=None):
+        graph_provider = AsyncMock()
+        graph_provider.get_record_group_by_id = AsyncMock(return_value=group_doc)
+        entity_vector_store = AsyncMock()
+        orch = SinkOrchestrator(
+            graphdb=AsyncMock(),
+            blob_storage=AsyncMock(),
+            vector_store=AsyncMock(),
+            graph_provider=graph_provider,
+            logger=MagicMock(),
+            entity_vector_store=entity_vector_store,
+        )
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_no_entity_vector_store_is_noop(self):
+        orch = SinkOrchestrator(
+            graphdb=AsyncMock(),
+            blob_storage=AsyncMock(),
+            vector_store=AsyncMock(),
+            graph_provider=AsyncMock(),
+            logger=MagicMock(),
+        )
+        await orch._sync_record_group_entity(self._make_ctx_with_group())
+        # No exception, and no graph provider lookup attempted.
+        orch.graph_provider.get_record_group_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_record_group_id_skips_lookup(self):
+        orch = self._make_orchestrator_with_evs()
+        ctx = self._make_ctx_with_group(record_group_id=None)
+
+        await orch._sync_record_group_entity(ctx)
+
+        orch.graph_provider.get_record_group_by_id.assert_not_awaited()
+        orch.entity_vector_store.sync_entity_if_stale.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_group_not_found_skips_sync(self):
+        orch = self._make_orchestrator_with_evs(group_doc=None)
+        ctx = self._make_ctx_with_group()
+
+        await orch._sync_record_group_entity(ctx)
+
+        orch.entity_vector_store.sync_entity_if_stale.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_group_found_syncs_record_group_entity(self):
+        orch = self._make_orchestrator_with_evs(
+            group_doc={"groupName": "Engineering Space", "connectorId": "conn-1"}
+        )
+        ctx = self._make_ctx_with_group(record_group_id="rg-42", org_id="org-9")
+
+        await orch._sync_record_group_entity(ctx)
+
+        orch.graph_provider.get_record_group_by_id.assert_awaited_once_with("rg-42")
+        orch.entity_vector_store.sync_entity_if_stale.assert_awaited_once()
+        synced_entity = orch.entity_vector_store.sync_entity_if_stale.call_args[0][0]
+        assert synced_entity.entity_id == "rg-42"
+        assert synced_entity.entity_type == EntityType.RECORD_GROUP
+        assert synced_entity.name == "Engineering Space"
+        assert synced_entity.org_id == "org-9"
+
+    @pytest.mark.asyncio
+    async def test_group_with_blank_name_is_skipped(self):
+        orch = self._make_orchestrator_with_evs(group_doc={"groupName": "   "})
+        ctx = self._make_ctx_with_group()
+
+        await orch._sync_record_group_entity(ctx)
+
+        orch.entity_vector_store.sync_entity_if_stale.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_is_non_fatal(self):
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_group_by_id = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        ctx = self._make_ctx_with_group()
+
+        # Must not raise — this is best-effort.
+        await orch._sync_record_group_entity(ctx)
+
+        orch.entity_vector_store.sync_entity_if_stale.assert_not_awaited()

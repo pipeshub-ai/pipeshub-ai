@@ -87,6 +87,11 @@ class OAuthScopes(str, Enum):
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"
 
+    # Knowledge Graph Governance (EE) — entity merge, dedup suggestions,
+    # ontology promote/deprecate. Distinct from CONNECTOR_SYNC since these
+    # mutate canonical graph identity, not just trigger a data pull.
+    KG_GOVERNANCE = "kg:governance"
+
 
 class DefaultEndpoints(Enum):
     """Constants for default endpoints"""

@@ -765,6 +765,20 @@ class KnowledgeGraph:
                 ),
                 required=False,
             ),
+            ToolParameter(
+                name="entity_ids",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional entity IDs (people, departments, categories, topics, languages) "
+                    "from a prior resolve_entity_filters call — narrows results to records "
+                    "connected to these entities. Most queries do not need this: common "
+                    "mentions in the query text (a department or topic name) are already "
+                    "picked up automatically. Use it when you want to be explicit or when the "
+                    "automatic match seems wrong."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
         ],
         tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
         args_summary=lambda args: (
@@ -786,6 +800,7 @@ class KnowledgeGraph:
         created_before: str | None = None,
         modified_after: str | None = None,
         modified_before: str | None = None,
+        entity_ids: list[str] | None = None,
     ) -> str:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
@@ -797,6 +812,361 @@ class KnowledgeGraph:
             created_before=created_before,
             modified_after=modified_after,
             modified_before=modified_before,
+            entity_ids=entity_ids,
+        )
+
+    # -----------------------------------------------------------------------
+    # resolve_entity_filters — progressive entity discovery (search-scaled)
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/resolve_entity_filters",
+        short_description="Resolve a department/topic/category/language/person mention to entity IDs",
+        description=(
+            "Look up canonical knowledge-graph entities (departments, categories, topics, "
+            "languages, people) by natural-language name — the entity-side counterpart to "
+            "search(), which is for content. Returns entity IDs and how confidently they "
+            "matched, not documents.\n\n"
+            "You usually do NOT need to call this before search(): a department/category/"
+            "topic name mentioned directly in a search() query is picked up automatically. "
+            "Call this explicitly when:\n"
+            "  - You want to see candidate entities before deciding (e.g. disambiguate "
+            "'Engineering' the department vs a topic tagged 'engineering').\n"
+            "  - You want to pass specific entity_ids into a later search() call yourself.\n"
+            "  - The automatic match on a prior search() seems wrong and you want to inspect "
+            "what matched.\n\n"
+            "Results include filterable=true/false — only filterable entities (department, "
+            "category, subcategory, topic, language) can be passed as search()'s entity_ids; "
+            "person matches are informational only today."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="The entity name or description to resolve — e.g. 'legal', 'Q3 roadmap topic', 'the design team'.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_types",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional filter on entity type: 'department', 'category', 'subcategory', "
+                    "'topic', 'language', 'person'. Omit to search all types."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="top_k",
+                type=ParameterType.INTEGER,
+                description="Maximum candidates to return (1-25, default 10).",
+                required=False,
+                default=10,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Resolved entity "{args.get("query", "")}"' if args.get("query") else None
+        ),
+        result_summary=lambda args, result: (
+            _resolve_entity_filters_result_summary(args, result)
+        ),
+        display_name="Resolved knowledge graph entities",
+    )
+    async def resolve_entity_filters(
+        self,
+        query: str | None = None,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+    ) -> str:
+        """Progressive entity lookup — calls ops/entity_search.py."""
+        from .ops.entity_search import execute_resolve_entity_filters
+        return await execute_resolve_entity_filters(
+            self.state,
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+        )
+
+    # -----------------------------------------------------------------------
+    # search_entities — essential (turn-0) entity discovery
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_entities",
+        short_description="Find departments/categories/topics/languages/people and more",
+        description=(
+            "Semantic lookup over knowledge-graph entities (departments, categories, topics, "
+            "languages, people) by natural-language name or description — available from the "
+            "start of the conversation, no prior tool call needed.\n\n"
+            "PROACTIVELY call this whenever the user's query mentions a term that could be an "
+            "entity (a team, topic, category, project name, person), even alongside a content "
+            "search. It returns richer context than content search alone: connectedRecordCount, "
+            "connectedRecords (preview of record titles linked to the entity), and "
+            "connectedEntities (co-occurring departments/categories/topics/languages on those "
+            "records). This context often answers the question directly or narrows down which "
+            "records to inspect next.\n\n"
+            "Once you have an entityId from the results, use find_records_by_entity("
+            "entity_id=..., entity_type=...) to see ALL records connected to it "
+            "(permission-filtered, paginated). This is especially useful when "
+            "connectedRecordCount > 0.\n\n"
+            "Results include filterable=true/false — only filterable entities (department, "
+            "category, subcategory, topic, language) can be passed as search()'s entity_ids or "
+            "to find_records_by_entity; person matches are informational only today."
+        ),
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="The entity name or description to search for — e.g. 'legal', 'Q3 roadmap topic', 'the design team'.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_types",
+                type=ParameterType.ARRAY,
+                description=(
+                    "Optional filter on entity type: 'department', 'category', 'subcategory', "
+                    "'topic', 'language', 'person'. Omit to search all types."
+                ),
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="top_k",
+                type=ParameterType.INTEGER,
+                description="Maximum candidates to return (1-25, default 10).",
+                required=False,
+                default=10,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searched entities for "{args.get("query", "")}"' if args.get("query") else None
+        ),
+        result_summary=lambda args, result: (
+            _resolve_entity_filters_result_summary(args, result)
+        ),
+        display_name="Searched knowledge graph entities",
+    )
+    async def search_entities(
+        self,
+        query: str | None = None,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+    ) -> str:
+        """Essential entity discovery — calls ops/entity_discovery.py."""
+        from .ops.entity_discovery import execute_search_entities
+        return await execute_search_entities(
+            self.state,
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+        )
+
+    # -----------------------------------------------------------------------
+    # find_records_by_entity — progressive entity-to-record traversal
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/find_records_by_entity",
+        short_description="Find records connected to a specific entity (department/category/topic/language)",
+        description=(
+            "Given an entityId (from search_entities or "
+            "resolve_entity_filters), find the records connected to it — e.g. every record "
+            "tagged with a topic, or every record belonging to a department. "
+            "Permission-filtered to what you can access.\n\n"
+            "Use this after identifying an entity, when the question is about a whole entity's "
+            "records rather than content search ('show me everything in Legal', 'what's tagged "
+            "Q3 Roadmap'). For content search that happens to mention an entity name, search() "
+            "already applies this filter automatically — you usually do not need this tool "
+            "first.\n\n"
+            "Only filterable entity types are supported: department, category, subcategory, "
+            "topic, language. Person entities are informational only today."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_id",
+                type=ParameterType.STRING,
+                description="The entityId to find records for — get this from search_entities or resolve_entity_filters.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_type",
+                type=ParameterType.STRING,
+                description="The entity's type: 'department', 'category', 'subcategory', 'topic', or 'language'.",
+                required=True,
+            ),
+            ToolParameter(
+                name="record_types",
+                type=ParameterType.ARRAY,
+                description="Optional filter by record type (e.g. 'CONFLUENCE_PAGE', 'FILE', 'TICKET').",
+                required=False,
+                items={"type": "string"},
+            ),
+            ToolParameter(
+                name="page",
+                type=ParameterType.INTEGER,
+                description="Page number (1-based).",
+                required=False,
+                default=1,
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Records per page (1-50, default 20).",
+                required=False,
+                default=20,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Found records for entity {args.get("entity_id", "")}' if args.get("entity_id") else None
+        ),
+        result_summary=lambda args, result: (
+            _find_records_by_entity_result_summary(args, result)
+        ),
+        display_name="Found records connected to entity",
+    )
+    async def find_records_by_entity(
+        self,
+        entity_id: str | None = None,
+        entity_type: str | None = None,
+        record_types: list[str] | None = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> tuple[bool, str]:
+        """Entity-to-record traversal — calls ops/entity_records.py."""
+        from .ops.entity_records import execute_find_records_by_entity
+        return await execute_find_records_by_entity(
+            self.state,
+            entity_id=entity_id,
+            entity_type=entity_type,
+            record_types=record_types,
+            page=page,
+            limit=limit,
+        )
+
+    # -----------------------------------------------------------------------
+    # expand_neighbors — progressive full 1-hop entity neighborhood
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/expand_neighbors",
+        short_description="Show everything directly connected to one entity",
+        description=(
+            "Given an entityId (from search_entities or resolve_entity_filters), return its "
+            "full graph neighborhood: parent/child entities (category<->subcategory hierarchy), "
+            "co-occurring entities of other types (departments/categories/topics/languages that "
+            "share records with it), a preview of connected records, connected record count, "
+            "and (for person entities) relationship types like ASSIGNED_TO/CREATED_BY.\n\n"
+            "Use this to re-inspect an entity's neighborhood once you already hold its "
+            "entityId — e.g. after the user asks a follow-up about an entity mentioned earlier. "
+            "For a full permission-filtered record list use find_records_by_entity instead; for "
+            "how two specific entities relate to EACH OTHER use get_relationships."
+        ),
+        parameters=[
+            ToolParameter(
+                name="entity_id",
+                type=ParameterType.STRING,
+                description="The entityId to expand — get this from search_entities or resolve_entity_filters.",
+                required=True,
+            ),
+            ToolParameter(
+                name="entity_type",
+                type=ParameterType.STRING,
+                description="The entity's type: 'department', 'category', 'subcategory', 'topic', 'language', or 'person'.",
+                required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Expanded neighbors of entity {args.get("entity_id", "")}' if args.get("entity_id") else None
+        ),
+        result_summary=lambda args, result: (
+            _expand_neighbors_result_summary(args, result)
+        ),
+        display_name="Expanded entity neighborhood",
+    )
+    async def expand_neighbors(
+        self,
+        entity_id: str | None = None,
+        entity_type: str | None = None,
+    ) -> str:
+        """1-hop entity neighborhood — calls ops/entity_traversal.py."""
+        from .ops.entity_traversal import execute_expand_neighbors
+        return await execute_expand_neighbors(
+            self.state,
+            entity_id=entity_id,
+            entity_type=entity_type,
+        )
+
+    # -----------------------------------------------------------------------
+    # get_relationships — progressive pairwise entity connection
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/get_relationships",
+        short_description="Check how two entities are connected",
+        description=(
+            "Given two entityIds (from search_entities or resolve_entity_filters), find how "
+            "they are connected: a direct graph edge (today, only category<->subcategory "
+            "hierarchy has one) and shared records — records tagged with BOTH entities.\n\n"
+            "Use this to answer questions like 'how are Legal and the Compliance topic "
+            "related?' or 'do these two departments share any documents?'. This checks real "
+            "graph edges and shared records, not a semantic similarity."
+        ),
+        parameters=[
+            ToolParameter(
+                name="source_entity_id",
+                type=ParameterType.STRING,
+                description="The first entityId — get this from search_entities or resolve_entity_filters.",
+                required=True,
+            ),
+            ToolParameter(
+                name="source_entity_type",
+                type=ParameterType.STRING,
+                description="The first entity's type: 'department', 'category', 'subcategory', 'topic', 'language', or 'person'.",
+                required=True,
+            ),
+            ToolParameter(
+                name="target_entity_id",
+                type=ParameterType.STRING,
+                description="The second entityId to compare against.",
+                required=True,
+            ),
+            ToolParameter(
+                name="target_entity_type",
+                type=ParameterType.STRING,
+                description="The second entity's type: 'department', 'category', 'subcategory', 'topic', 'language', or 'person'.",
+                required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Checked relationship between {args.get("source_entity_id", "")} and '
+            f'{args.get("target_entity_id", "")}'
+            if args.get("source_entity_id") and args.get("target_entity_id") else None
+        ),
+        result_summary=lambda args, result: (
+            _get_relationships_result_summary(args, result)
+        ),
+        display_name="Checked entity relationship",
+    )
+    async def get_relationships(
+        self,
+        source_entity_id: str | None = None,
+        source_entity_type: str | None = None,
+        target_entity_id: str | None = None,
+        target_entity_type: str | None = None,
+    ) -> str:
+        """Pairwise entity connection — calls ops/entity_traversal.py."""
+        from .ops.entity_traversal import execute_get_relationships
+        return await execute_get_relationships(
+            self.state,
+            source_entity_id=source_entity_id,
+            source_entity_type=source_entity_type,
+            target_entity_id=target_entity_id,
+            target_entity_type=target_entity_type,
         )
 
     # -----------------------------------------------------------------------
@@ -964,6 +1334,84 @@ def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | 
     if not names:
         return header
     return header + "\n" + bullet_list(names)
+
+
+def _resolve_entity_filters_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe
+
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("status") == "error":
+        return parsed.get("message") or "Entity resolution failed"
+    results = parsed.get("results") or []
+    if not results:
+        return parsed.get("message") or "No matching entities found"
+    names = [r.get("name") for r in results[:3] if isinstance(r, dict) and r.get("name")]
+    suffix = f" (+{len(results) - 3} more)" if len(results) > 3 else ""
+    return f"Found {len(results)} entit{'y' if len(results) == 1 else 'ies'}: " + ", ".join(names) + suffix
+
+
+def _find_records_by_entity_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    content = result.content or ""
+    if not content:
+        return None
+    text = str(content)
+    first_line = text.split("\n", 1)[0]
+    if result.is_error:
+        return f"Lookup failed: {first_line}"
+    if "No accessible records found" in text or "was not found" in text:
+        return first_line
+    return first_line or "Found records"
+
+
+def _expand_neighbors_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe
+
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("status") == "error":
+        return parsed.get("message") or "Neighborhood lookup failed"
+    rel = parsed.get("relationships") or {}
+    parts = []
+    if rel.get("parentEntity"):
+        parts.append("1 parent")
+    if rel.get("childEntities"):
+        parts.append(f"{len(rel['childEntities'])} children")
+    if rel.get("connectedEntities"):
+        parts.append(f"{len(rel['connectedEntities'])} related entities")
+    count = rel.get("connectedRecordCount") or 0
+    parts.append(f"{count} connected record{'s' if count != 1 else ''}")
+    return "Found " + ", ".join(parts)
+
+
+def _get_relationships_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe
+
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("status") == "error":
+        return parsed.get("message") or "Relationship lookup failed"
+    edges = parsed.get("directEdges") or []
+    shared = parsed.get("sharedRecordCount") or 0
+    if not edges and not shared:
+        return "No direct connection or shared records found"
+    parts = []
+    if edges:
+        parts.append(f"{len(edges)} direct edge{'s' if len(edges) != 1 else ''}")
+    parts.append(f"{shared} shared record{'s' if shared != 1 else ''}")
+    return "Found " + ", ".join(parts)
 
 
 def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:

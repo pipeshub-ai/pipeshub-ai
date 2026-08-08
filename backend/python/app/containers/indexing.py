@@ -7,7 +7,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
-from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME, VECTOR_DB_ENTITIES_COLLECTION_NAME
 from app.utils.logger import create_logger
 
 load_dotenv(override=True)
@@ -80,6 +80,14 @@ class IndexingAppContainer(BaseAppContainer):
         collection_name=VECTOR_DB_COLLECTION_NAME,
     )
 
+    entity_vector_store = providers.Resource(
+        container_utils.create_entity_vector_store,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+    )
+
     sink_orchestrator = providers.Resource(
         container_utils.create_sink_orchestrator,
         logger=logger,
@@ -87,6 +95,7 @@ class IndexingAppContainer(BaseAppContainer):
         blob_storage=blob_storage,
         vector_store=vector_store,
         graph_provider=graph_provider,
+        entity_vector_store=entity_vector_store,
     )
 
 

@@ -4501,3 +4501,348 @@ class IGraphDBProvider(ABC):
             }
         """
         pass
+
+    @abstractmethod
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Org-scoped, paginated read of knowledge-graph entities for repair/
+        backfill sync into the entity vector store (see ``EntityVectorStore``
+        and ``api/routes/entity_sync.py``).
+
+            Supported ``entity_types`` values today (``EntityType`` in
+            ``app.models.entities``): ``record_group``, ``person``,
+            ``category``, ``subcategory``, ``department``, ``topic``,
+            ``language``. ``person`` covers internal org Users only (present
+            for every connector via provisioning, ``orgId`` set directly);
+            connector-specific external contacts (e.g. Salesforce People) are
+            a future extension. Unknown or not-yet-implemented types are
+            silently skipped rather than raising, so callers can safely pass
+            the full ``EntityType`` enum.
+
+        Taxonomy nodes (category/subcategory/department/topic/language) carry
+        no ``orgId`` field of their own — they are deduplicated globally by
+        name and shared across organisations at the graph layer. Org scoping
+        for these types is therefore derived by traversing from this org's
+        ``records`` through the corresponding ``belongsTo*`` edge, which also
+        means only taxonomy actually referenced by the org's own data is
+        returned (never another org's unrelated categories).
+
+        Args:
+            org_id:       Organisation to scope the read to. Always applied —
+                          never optional, to avoid a cross-tenant leak.
+            entity_types: Optional subset of ``EntityType`` values (lowercase
+                          strings) to restrict the read to. ``None`` means all
+                          supported types.
+            limit:        Max rows returned per call (page size).
+            offset:       Rows to skip, for pagination across repeated calls.
+
+        Returns:
+            List of dicts shaped like ``EntityRecord`` source fields:
+            ``{entityId, entityType, name, description?, aliases?,
+            parentEntityId?, parentEntityType?, connectorId?}``. Callers
+            should keep paging (increasing ``offset`` by ``limit``) until a
+            page returns fewer than ``limit`` rows.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_relationships(
+        self,
+        org_id: str,
+        entity_id: str,
+        entity_type: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """1-level graph-neighborhood summary for a single entity — lets a
+        caller show "what is this entity connected to" without a full
+        ``find_records_by_entity``-style traversal.
+
+        Only entities produced by the knowledge-graph extraction pipeline
+        (see ``app.models.entities.EntityType``) are supported:
+
+        - ``category``/``subcategory``: hierarchy via ``interCategoryRelations``
+          (category has no parent; subcategory1/2/3 chain up to a category).
+        - ``department``/``topic``/``language``: no hierarchy edges exist —
+          only ``connectedRecordCount`` is populated.
+        - ``person``: relationship types via ``entityRelations`` (edgeType
+          property), e.g. ASSIGNED_TO, CREATED_BY, REPORTED_BY.
+
+        Args:
+            org_id: Organisation scope (defensive filtering where the node
+                schema allows it; taxonomy nodes are globally deduplicated by
+                name and carry no ``orgId`` of their own — see
+                ``get_entities_for_sync``).
+            entity_id: Graph DB node key (``entityId`` from a prior
+                ``search_entities``/``resolve_entity_filters`` result).
+            entity_type: ``EntityType`` value identifying which node
+                collection ``entity_id`` lives in.
+            limit: Max child entities returned (hierarchy fan-out cap).
+
+        Returns:
+            ``{"parentEntity": {"entityId", "entityType", "name"} | None,
+            "childEntities": [{"entityId", "entityType", "name"}, ...],
+            "relationshipTypes": [str, ...],
+            "connectedRecordCount": int,
+            "connectedEntities": [{"entityType", "entityId", "name"}, ...],
+            "connectedRecords": [{"recordId", "name", "recordType"}, ...]
+            }``.  ``connectedEntities`` contains entities of other types
+            that co-occur on the same records (2-hop: entity → records →
+            other entities via all ``belongsTo*`` edges, self excluded).
+            ``connectedRecords`` contains a short list (capped at 5) of
+            record titles/types directly linked to this entity.
+            This is an orientation signal,
+            NOT a permission-filtered list — never render
+            ``connectedRecordCount`` as "records you can access"; use
+            ``get_accessible_virtual_record_ids`` (via
+            ``find_records_by_entity``) for the permission-checked list.
+            An unknown/unsupported ``entity_type`` returns the zero-valued
+            shape rather than raising.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_pair_relationships(
+        self,
+        org_id: str,
+        source_entity_id: str,
+        source_entity_type: str,
+        target_entity_id: str,
+        target_entity_type: str,
+    ) -> dict[str, Any]:
+        """How two specific entities are connected — the pairwise
+        counterpart to ``get_entity_relationships``'s single-entity
+        neighborhood summary.
+
+        Checks two independent signals, both derived from real graph edges
+        (never a co-occurrence heuristic):
+
+        - **Direct edge**: only exists today between ``category`` and
+          ``subcategory`` (``interCategoryRelations`` hierarchy). No other
+          entity-type pair has a direct edge in the current graph — taxonomy
+          nodes connect to each other only *through* records, and
+          ``entityRelations`` links records to ``person`` nodes, not
+          entities to each other.
+        - **Shared records**: records connected to *both* entities via
+          their respective ``belongsTo*`` edges (set intersection). Only
+          computed when both entity types have a ``belongsTo*`` edge
+          (excludes ``person`` — see ``get_entity_relationships``).
+
+        Args:
+            org_id: Organisation scope (defensive; taxonomy nodes carry no
+                ``orgId`` of their own, same caveat as
+                ``get_entity_relationships``).
+            source_entity_id: Graph DB node key for the first entity.
+            source_entity_type: ``EntityType`` value for ``source_entity_id``.
+            target_entity_id: Graph DB node key for the second entity.
+            target_entity_type: ``EntityType`` value for ``target_entity_id``.
+
+        Returns:
+            ``{"directEdges": [{"edgeType", "edgeCollection", "direction"}, ...],
+            "sharedRecordCount": int,
+            "sharedRecords": [{"recordId", "name", "recordType"}, ...]}``.
+            ``sharedRecords`` is capped at 5. An unknown/unsupported entity
+            type on either side returns the zero-valued shape rather than
+            raising. Not permission-filtered — this is an orientation
+            signal, same caveat as ``connectedRecordCount`` on
+            ``get_entity_relationships``.
+        """
+        pass
+
+    # ==================== Bi-temporal Canonical Edge Operations ====================
+    # KG Clean Rebuild Phase 6 — Graphiti-style bi-temporality
+    # (``app.modules.knowledge_graph.contracts.graph_models.GraphEdge``) plus
+    # cross-app hard-key linking. Distinct from ``batch_create_entity_relations``
+    # above: that method UPSERTs in place (one current row per
+    # (_from, _to, edgeType), no history). These methods never mutate a past
+    # edge's identity — a superseded fact is *closed* (``invalid_at``/
+    # ``expired_at`` set) and a new edge is inserted, so ``get_bitemporal_edges``
+    # can answer "what did we believe was true as of time T" as well as
+    # "what is true now".
+
+    @abstractmethod
+    async def upsert_bitemporal_edge(
+        self,
+        org_id: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        edge_type: str,
+        attributes: dict[str, Any] | None = None,
+        valid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Write a canonical, bi-temporal edge — the graph-side counterpart to
+        ``GraphEdge`` (``app.modules.knowledge_graph.contracts.graph_models``).
+
+        Looks for a currently-active edge (``invalid_at``/``expired_at`` both
+        unset) matching ``(org_id, from_id, from_collection, to_id,
+        to_collection, edge_type)``:
+
+        - None found: insert a new edge with ``valid_at`` (defaults to now)
+          and ``created_at`` = now; ``invalid_at``/``expired_at`` unset.
+        - Found, ``attributes`` unchanged: no-op — returns the existing edge
+          unmodified (repeated syncs of an unchanged fact must not spam the
+          history with no-op versions).
+        - Found, ``attributes`` differ (a contradicting/updated fact):
+          contradiction handling — set the *old* edge's ``invalid_at`` to the
+          new edge's ``valid_at`` and ``expired_at`` to now (transaction time),
+          then insert the new edge as the current version.
+
+        Args:
+            org_id:          Organisation the edge belongs to (bind var on
+                              every write — never trust caller-inferred scope).
+            from_id:         Source node key.
+            from_collection: Source node's collection name.
+            to_id:           Target node key.
+            to_collection:   Target node's collection name.
+            edge_type:       Edge type discriminator (e.g. ``EntityRelations``
+                              value, or ``"SAME_AS"`` for cross-app links).
+            attributes:      Free-form edge attributes; compared for equality
+                              against the current edge to decide no-op vs.
+                              supersede.
+            valid_at:        Epoch ms this fact became true in the world.
+                              Defaults to now. Must be provided explicitly for
+                              backfill/historical writes.
+            transaction:      Optional transaction context.
+
+        Returns:
+            The resulting current edge document, including ``edgeId``
+            (``_key``), ``validAtTimestamp``, ``createdAtTimestamp``, and null
+            ``invalidAtTimestamp``/``expiredAtTimestamp``.
+        """
+        pass
+
+    @abstractmethod
+    async def invalidate_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        invalid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Close out all currently-active bi-temporal edges matching the given
+        (partial) filter, without inserting a replacement.
+
+        Used when a fact simply stops being true (e.g. a person leaves a
+        department) rather than being superseded by a new fact — the latter
+        goes through ``upsert_bitemporal_edge`` instead, which invalidates and
+        replaces in one call.
+
+        At least one of ``from_id``/``to_id`` must be provided — invalidating
+        every edge for an org with no other filter is almost certainly a bug,
+        not a use case, so implementations should reject (return 0 and log)
+        an all-None filter rather than closing an org's entire edge history.
+
+        Args:
+            org_id:          Organisation to scope the write to.
+            from_id, from_collection, to_id, to_collection, edge_type:
+                              Optional filters; only currently-active edges
+                              (``invalid_at``/``expired_at`` unset) matching
+                              every provided filter are closed.
+            invalid_at:       Epoch ms the fact stopped being true. Defaults
+                              to now.
+            transaction:      Optional transaction context.
+
+        Returns:
+            Number of edges invalidated.
+        """
+        pass
+
+    @abstractmethod
+    async def get_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        as_of: int | None = None,
+        include_history: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Read bi-temporal edges, optionally as of a point in time.
+
+        Args:
+            org_id:          Organisation to scope the read to.
+            from_id, from_collection, to_id, to_collection, edge_type:
+                              Optional filters narrowing which edges to
+                              consider; any may be omitted to broaden the
+                              read (still always org-scoped).
+            as_of:            Epoch ms. When set, returns edges that were
+                              valid and known as of this instant — i.e.
+                              ``valid_at <= as_of``, ``created_at <= as_of``,
+                              and (``invalid_at`` is null or ``> as_of``) and
+                              (``expired_at`` is null or ``> as_of``). When
+                              ``None``, equivalent to "now" — only edges where
+                              ``GraphEdge.is_current`` is true.
+            include_history:  When true, ignores the invalid/expired filter
+                              entirely and returns every version (current and
+                              superseded) matching the other filters —
+                              intended for provenance/debugging, not normal
+                              query paths. Mutually informative with ``as_of``:
+                              if both are set, ``as_of`` wins (history implies
+                              "all time", so a specific instant takes
+                              precedence).
+            limit, offset:    Pagination.
+
+        Returns:
+            List of edge documents (see ``upsert_bitemporal_edge`` return
+            shape), most-recently-valid first.
+        """
+        pass
+
+    @abstractmethod
+    async def find_nodes_by_hard_key(
+        self,
+        org_id: str,
+        collections: list[str],
+        field: str,
+        value: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Look up nodes sharing an exact hard-key value across one or more
+        node collections, scoped to an org — the graph-side primitive behind
+        cross-app entity linking (e.g. the same ``email`` appearing on a
+        ``users`` document and a connector-specific contact/person document).
+
+        This is a value-equality lookup only (no fuzzy/semantic matching —
+        that is ``EntityResolutionService``'s job at the indexing layer, see
+        ``app.modules.knowledge_graph.indexing.resolution``); hard keys are
+        exact by definition (email, external_id, issue_key, FQN, ...).
+
+        Args:
+            org_id:      Organisation to scope the read to. Every collection
+                         passed must carry an ``orgId`` field directly (e.g.
+                         ``users``) — this is a hard ``org_id`` filter, not a
+                         traversal-derived scope. Globally-deduplicated
+                         collections with no ``orgId`` of their own (e.g.
+                         ``people``, keyed by a hash of ``email`` across all
+                         orgs) will simply never match this filter; linking
+                         those requires a separate, org-unaware lookup and is
+                         not implemented by this method.
+            collections: Node collections to search (e.g. ``["users"]``).
+                         Collections without an index on ``field`` will
+                         simply scan — callers should keep this list small
+                         and specific.
+            field:       Document field to match on (e.g. ``"email"``).
+            value:       Exact value to match.
+            limit:       Max nodes returned across all collections combined.
+
+        Returns:
+            List of matching node documents, each tagged with its source
+            ``_collection`` so callers can distinguish e.g. a ``users`` hit
+            from a ``people`` hit without re-deriving it from the key.
+        """
+        pass

@@ -93,6 +93,9 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    entity_filter_resolution,
+    mention_binding,
+    progressive_entity_tools,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -101,6 +104,7 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     stash_tool_call_metadata,
 )
+from app.agents.agent_loop.hooks.progressive_tools import PROGRESSIVE_TOOL_NAMES
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
 from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
@@ -642,6 +646,18 @@ class PipesHubAgentFactory:
                 len(tool_names), context.org_id, context.conversation_id,
             )
 
+        # Progressive disclosure for resolve_entity_filters/
+        # find_records_by_entity/expand_neighbors/get_relationships (see
+        # hooks/progressive_tools.py's module docstring): excluded from the
+        # top-level agent's initial grant here — the `progressive_entity_tools`
+        # POST_TOOL_USE hook (wired in `_build_hooks` below) re-grants them
+        # once the model has made its first knowledge-graph call (search/
+        # navigate/list_files/lookup_record/search_entities). Skipped for
+        # deep mode's orchestrator: its own grant is always just the four
+        # coordination tools, which never include them anyway.
+        if mode.loop_kind != "orchestrator":
+            tool_names = [n for n in tool_names if n not in PROGRESSIVE_TOOL_NAMES]
+
         spec = AgentSpec(
             name="pipeshub-agent",
             system_prompt=prompt_builder,
@@ -786,9 +802,17 @@ class PipesHubAgentFactory:
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
+        hooks.on(HookEvent.POST_TOOL_USE).use(progressive_entity_tools(context))
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+
+        # Knowledge-graph entity filtering/mention resolution — deterministic
+        # (always-on) siblings of the probabilistic resolve_entity_filters
+        # tool. mention_binding runs first so a pronoun substitution lands
+        # in ctx.tool_input["query"] before entity_filter_resolution reads it.
+        hooks.on(HookEvent.PRE_TOOL_USE).use(mention_binding(context))
+        hooks.on(HookEvent.PRE_TOOL_USE).use(entity_filter_resolution(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 

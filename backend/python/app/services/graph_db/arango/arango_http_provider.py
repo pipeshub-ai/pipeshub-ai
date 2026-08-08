@@ -43,6 +43,7 @@ from app.models.entities import (
     CodeFileRecord,
     CommentRecord,
     DealRecord,
+    EntityType,
     FileRecord,
     LinkRecord,
     MailRecord,
@@ -15080,6 +15081,793 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as exc:
             self.logger.warning("get_record_parent_adjacency: AQL failed — %s", exc)
             return {"nodes": {}, "parents": {}}
+
+    # ------------------------------------------------------------------
+    # Entity sync (knowledge-graph vector-store backfill)
+    # ------------------------------------------------------------------
+
+    # entity_type -> (edge_collection, {node_collection: entity_type}).
+    # Category and subcategory share one edge collection (belongsToCategory
+    # fans out to categories/ + subcategories1/2/3/), so they are queried
+    # together and split back out by node collection.
+    _TAXONOMY_EDGE_GROUPS: dict[str, tuple[str, dict[str, str]]] = {
+        "category_group": (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            {
+                CollectionNames.CATEGORIES.value: EntityType.CATEGORY.value,
+                CollectionNames.SUBCATEGORIES1.value: EntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES2.value: EntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES3.value: EntityType.SUBCATEGORY.value,
+            },
+        ),
+        "department_group": (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            {CollectionNames.DEPARTMENTS.value: EntityType.DEPARTMENT.value},
+        ),
+        "topic_group": (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            {CollectionNames.TOPICS.value: EntityType.TOPIC.value},
+        ),
+        "language_group": (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            {CollectionNames.LANGUAGES.value: EntityType.LANGUAGE.value},
+        ),
+    }
+    _ENTITY_TYPE_TO_TAXONOMY_GROUP: dict[str, str] = {
+        EntityType.CATEGORY.value: "category_group",
+        EntityType.SUBCATEGORY.value: "category_group",
+        EntityType.DEPARTMENT.value: "department_group",
+        EntityType.TOPIC.value: "topic_group",
+        EntityType.LANGUAGE.value: "language_group",
+    }
+
+    async def _get_record_group_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """RecordGroup nodes carry ``orgId`` directly — no traversal needed."""
+        query = f"""
+            FOR rg IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER rg.orgId == @org_id
+                SORT rg._key
+                LIMIT @offset, @limit
+                RETURN {{
+                    entityId: rg._key,
+                    entityType: @entity_type,
+                    name: NOT_NULL(rg.groupName, rg._key),
+                    connectorId: rg.connectorId,
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                    "entity_type": EntityType.RECORD_GROUP.value,
+                },
+            )
+            return rows or []
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (record_group) failed: %s", exc)
+            return []
+
+    async def _get_person_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """Users carry ``orgId`` directly — no traversal needed.
+
+        Only internal org Users are covered today (present for every
+        connector via provisioning); connector-specific external contacts
+        (e.g. Salesforce People/Contacts) are a future extension.
+        """
+        query = f"""
+            FOR u IN {CollectionNames.USERS.value}
+                FILTER u.orgId == @org_id
+                SORT u._key
+                LIMIT @offset, @limit
+                RETURN {{
+                    entityId: u._key,
+                    entityType: @entity_type,
+                    name: NOT_NULL(u.fullName, u.email, u._key),
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                    "entity_type": EntityType.PERSON.value,
+                },
+            )
+            return rows or []
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (person) failed: %s", exc)
+            return []
+
+    async def _get_taxonomy_entities_for_sync(
+        self,
+        org_id: str,
+        edge_collection: str,
+        node_collection_types: dict[str, str],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """Taxonomy nodes (category/subcategory/department/topic/language)
+        carry no ``orgId`` of their own — they are deduplicated globally by
+        name (see ``GraphDBTransformer._find_or_create_node``). Org scoping
+        is derived by walking OUTBOUND from this org's own records over the
+        ``belongsTo*`` edge, so only taxonomy this org's data actually
+        references is ever returned.
+        """
+        node_collections = list(node_collection_types.keys())
+        query = f"""
+            LET touched = (
+                FOR rec IN {CollectionNames.RECORDS.value}
+                    FILTER rec.orgId == @org_id
+                    FOR v IN 1..1 OUTBOUND rec {edge_collection}
+                        FILTER PARSE_IDENTIFIER(v._id).collection IN @node_collections
+                        RETURN DISTINCT v
+            )
+            FOR v IN touched
+                SORT v._key
+                LIMIT @offset, @limit
+                RETURN {{
+                    entityId: v._key,
+                    name: NOT_NULL(v.name, v._key),
+                    _collection: PARSE_IDENTIFIER(v._id).collection,
+                }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "node_collections": node_collections,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_entities_for_sync (taxonomy via %s) failed: %s", edge_collection, exc
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            collection = row.pop("_collection", None)
+            row["entityType"] = node_collection_types.get(collection)
+            if row["entityType"]:
+                results.append(row)
+        return results
+
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_entities_for_sync`."""
+        if not org_id:
+            return []
+        wanted = set(entity_types) if entity_types else None
+        results: list[dict[str, Any]] = []
+
+        if wanted is None or EntityType.RECORD_GROUP.value in wanted:
+            results.extend(
+                await self._get_record_group_entities_for_sync(org_id, limit, offset)
+            )
+
+        if wanted is None or EntityType.PERSON.value in wanted:
+            results.extend(
+                await self._get_person_entities_for_sync(org_id, limit, offset)
+            )
+
+        groups_to_query: set[str] = set()
+        for etype, group in self._ENTITY_TYPE_TO_TAXONOMY_GROUP.items():
+            if wanted is None or etype in wanted:
+                groups_to_query.add(group)
+
+        for group in groups_to_query:
+            edge_collection, node_map = self._TAXONOMY_EDGE_GROUPS[group]
+            rows = await self._get_taxonomy_entities_for_sync(
+                org_id, edge_collection, node_map, limit, offset
+            )
+            if wanted is not None:
+                rows = [r for r in rows if r.get("entityType") in wanted]
+            results.extend(rows)
+
+        return results
+
+    # Mirrors _ENTITY_TYPE_TO_TAXONOMY_GROUP's simplification: SUBCATEGORY has
+    # no depth field yet, so it always resolves to the level-1 collection
+    # (see entity_filters.py's ENTITY_TYPE_TO_FILTER_KEY docstring for the
+    # same limitation on the filtering side).
+    _ENTITY_TYPE_TO_NODE_COLLECTION: dict[str, str] = {
+        EntityType.DEPARTMENT.value: CollectionNames.DEPARTMENTS.value,
+        EntityType.CATEGORY.value: CollectionNames.CATEGORIES.value,
+        EntityType.SUBCATEGORY.value: CollectionNames.SUBCATEGORIES1.value,
+        EntityType.TOPIC.value: CollectionNames.TOPICS.value,
+        EntityType.LANGUAGE.value: CollectionNames.LANGUAGES.value,
+        EntityType.PERSON.value: CollectionNames.USERS.value,
+    }
+
+    async def get_entity_relationships(
+        self,
+        org_id: str,
+        entity_id: str,
+        entity_type: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.get_entity_relationships`."""
+        empty: dict[str, Any] = {
+            "parentEntity": None, "childEntities": [], "relationshipTypes": [],
+            "connectedRecordCount": 0, "connectedEntities": [],
+            "connectedRecords": [],
+        }
+        node_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(entity_type)
+        if not org_id or not entity_id or not node_collection:
+            return empty
+        node_ref = f"{node_collection}/{entity_id}"
+
+        if entity_type == EntityType.PERSON.value:
+            return await self._get_person_entity_relationships(node_ref)
+
+        belongs_to_edge = self._taxonomy_belongs_to_edge(entity_type)
+        if not belongs_to_edge:
+            return empty
+
+        try:
+            connected_record_count = await self._count_edges(belongs_to_edge, node_ref, "_to")
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships: record count failed: %s", exc)
+            connected_record_count = 0
+
+        parent_entity: dict[str, Any] | None = None
+        child_entities: list[dict[str, Any]] = []
+        try:
+            if entity_type == EntityType.CATEGORY.value:
+                child_entities = await self._entity_neighbor_summaries(
+                    node_ref, CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    CollectionNames.SUBCATEGORIES1.value, EntityType.SUBCATEGORY.value,
+                    direction="inbound", limit=limit,
+                )
+            elif entity_type == EntityType.SUBCATEGORY.value:
+                parents = await self._entity_neighbor_summaries(
+                    node_ref, CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    CollectionNames.CATEGORIES.value, EntityType.CATEGORY.value,
+                    direction="outbound", limit=1,
+                )
+                parent_entity = parents[0] if parents else None
+                child_entities = await self._entity_neighbor_summaries(
+                    node_ref, CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    CollectionNames.SUBCATEGORIES2.value, EntityType.SUBCATEGORY.value,
+                    direction="inbound", limit=limit,
+                )
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships: hierarchy lookup failed: %s", exc)
+
+        connected_entities = await self._get_co_occurring_entities(
+            node_ref, belongs_to_edge, limit=limit,
+        )
+        connected_records = await self._get_connected_record_summaries(
+            node_ref, belongs_to_edge, limit=5,
+        )
+
+        return {
+            "parentEntity": parent_entity,
+            "childEntities": child_entities,
+            "relationshipTypes": [],
+            "connectedRecordCount": connected_record_count,
+            "connectedEntities": connected_entities,
+            "connectedRecords": connected_records,
+        }
+
+    def _taxonomy_belongs_to_edge(self, entity_type: str) -> str | None:
+        group = self._ENTITY_TYPE_TO_TAXONOMY_GROUP.get(entity_type)
+        if not group:
+            return None
+        edge_collection, _ = self._TAXONOMY_EDGE_GROUPS[group]
+        return edge_collection
+
+    async def _entity_neighbor_summaries(
+        self,
+        node_ref: str,
+        edge_collection: str,
+        target_collection: str,
+        target_entity_type: str,
+        direction: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        nodes = await self.get_related_nodes(node_ref, edge_collection, target_collection, direction=direction)
+        return [
+            {"entityId": n.get("_key"), "entityType": target_entity_type, "name": n.get("name")}
+            for n in (nodes or [])[: max(1, limit)]
+        ]
+
+    async def _count_edges(self, edge_collection: str, node_ref: str, side: str) -> int:
+        """side is '_to' or '_from' — which edge endpoint must equal node_ref."""
+        query = f"""
+            RETURN LENGTH(
+                FOR edge IN {edge_collection}
+                    FILTER edge.{side} == @node_ref
+                    RETURN 1
+            )
+        """
+        rows = await self.execute_query(query, bind_vars={"node_ref": node_ref})
+        return int(rows[0]) if rows else 0
+
+    async def _get_co_occurring_entities(
+        self, node_ref: str, belongs_to_edge: str, limit: int = 20,
+        record_cap: int = 50,
+    ) -> list[dict[str, Any]]:
+        """2-hop: entity → records (INBOUND via *belongs_to_edge*) →
+        other entities (OUTBOUND via ALL belongsTo* edges, self excluded).
+
+        Shows what departments/categories/topics/languages share records
+        with this entity — orientation context for the agent."""
+        cats = CollectionNames.CATEGORIES.value
+        query = f"""
+            LET records = (
+                FOR edge IN {belongs_to_edge}
+                    FILTER edge._to == @node_ref
+                    LIMIT @record_cap
+                    RETURN edge._from
+            )
+            LET co = UNION_DISTINCT(
+                (FOR r IN records
+                    FOR d IN OUTBOUND r {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                        FILTER d._id != @node_ref
+                        RETURN DISTINCT {{entityType: "department",
+                                          entityId: d._key,
+                                          name: d.departmentName}}),
+                (FOR r IN records
+                    FOR c IN OUTBOUND r {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER c._id != @node_ref
+                        RETURN DISTINCT {{entityType:
+                            IS_SAME_COLLECTION("{cats}", c)
+                                ? "category" : "subcategory",
+                                          entityId: c._key,
+                                          name: c.name}}),
+                (FOR r IN records
+                    FOR t IN OUTBOUND r {CollectionNames.BELONGS_TO_TOPIC.value}
+                        FILTER t._id != @node_ref
+                        RETURN DISTINCT {{entityType: "topic",
+                                          entityId: t._key,
+                                          name: t.name}}),
+                (FOR r IN records
+                    FOR l IN OUTBOUND r {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                        FILTER l._id != @node_ref
+                        RETURN DISTINCT {{entityType: "language",
+                                          entityId: l._key,
+                                          name: l.name}})
+            )
+            FOR e IN co
+                LIMIT @limit
+                RETURN e
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "node_ref": node_ref,
+                    "record_cap": record_cap,
+                    "limit": max(1, limit),
+                },
+            )
+            return rows or []
+        except Exception as exc:
+            self.logger.warning("_get_co_occurring_entities failed: %s", exc)
+            return []
+
+    async def _get_connected_record_summaries(
+        self, node_ref: str, belongs_to_edge: str, limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Short list of record titles connected to this entity — orientation
+        context so the agent can see what documents are linked without a
+        separate ``find_records_by_entity`` call."""
+        query = f"""
+            FOR edge IN {belongs_to_edge}
+                FILTER edge._to == @node_ref
+                LIMIT @limit
+                LET rec = DOCUMENT(edge._from)
+                FILTER rec != null
+                RETURN {{recordId: rec._key, name: rec.recordName,
+                         recordType: rec.recordType}}
+        """
+        try:
+            rows = await self.execute_query(
+                query, bind_vars={"node_ref": node_ref, "limit": max(1, limit)},
+            )
+            return [r for r in (rows or []) if r.get("recordId")]
+        except Exception as exc:
+            self.logger.warning("_get_connected_record_summaries failed: %s", exc)
+            return []
+
+    _CATEGORY_HIERARCHY_TYPES: frozenset[str] = frozenset({
+        EntityType.CATEGORY.value, EntityType.SUBCATEGORY.value,
+    })
+
+    async def get_entity_pair_relationships(
+        self,
+        org_id: str,
+        source_entity_id: str,
+        source_entity_type: str,
+        target_entity_id: str,
+        target_entity_type: str,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.get_entity_pair_relationships`."""
+        empty: dict[str, Any] = {
+            "directEdges": [], "sharedRecordCount": 0, "sharedRecords": [],
+        }
+        source_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(source_entity_type)
+        target_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(target_entity_type)
+        if (
+            not org_id or not source_entity_id or not target_entity_id
+            or not source_collection or not target_collection
+        ):
+            return empty
+        source_ref = f"{source_collection}/{source_entity_id}"
+        target_ref = f"{target_collection}/{target_entity_id}"
+
+        direct_edges = await self._get_direct_entity_edges(
+            source_ref, source_entity_type, target_ref, target_entity_type,
+        )
+
+        source_belongs_to = self._taxonomy_belongs_to_edge(source_entity_type)
+        target_belongs_to = self._taxonomy_belongs_to_edge(target_entity_type)
+        shared_count = 0
+        shared_records: list[dict[str, Any]] = []
+        if source_belongs_to and target_belongs_to:
+            shared_count, shared_records = await self._get_shared_records(
+                source_ref, source_belongs_to, target_ref, target_belongs_to,
+            )
+
+        return {
+            "directEdges": direct_edges,
+            "sharedRecordCount": shared_count,
+            "sharedRecords": shared_records,
+        }
+
+    async def _get_direct_entity_edges(
+        self, source_ref: str, source_type: str, target_ref: str, target_type: str,
+    ) -> list[dict[str, Any]]:
+        """Only category<->subcategory has a direct edge in today's graph
+        (``interCategoryRelations``) — every other entity-type pair connects
+        only through shared records, not through a direct edge."""
+        if source_type not in self._CATEGORY_HIERARCHY_TYPES or target_type not in self._CATEGORY_HIERARCHY_TYPES:
+            return []
+        query = f"""
+            FOR edge IN {CollectionNames.INTER_CATEGORY_RELATIONS.value}
+                FILTER (edge._from == @a AND edge._to == @b)
+                    OR (edge._from == @b AND edge._to == @a)
+                RETURN edge
+        """
+        try:
+            rows = await self.execute_query(
+                query, bind_vars={"a": source_ref, "b": target_ref},
+            )
+        except Exception as exc:
+            self.logger.warning("get_entity_pair_relationships: hierarchy edge check failed: %s", exc)
+            return []
+        edges: list[dict[str, Any]] = []
+        for row in rows or []:
+            direction = "outbound" if row.get("_from") == source_ref else "inbound"
+            edges.append({
+                "edgeType": "CATEGORY_HIERARCHY",
+                "edgeCollection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                "direction": direction,
+            })
+        return edges
+
+    async def _get_shared_records(
+        self, source_ref: str, source_edge: str, target_ref: str, target_edge: str,
+        limit: int = 5, record_cap: int = 500,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Records connected to both entities via their respective
+        ``belongsTo*`` edges (set intersection)."""
+        query = f"""
+            LET records_a = (
+                FOR e IN {source_edge}
+                    FILTER e._to == @source_ref
+                    LIMIT @record_cap
+                    RETURN e._from
+            )
+            LET records_b = (
+                FOR e IN {target_edge}
+                    FILTER e._to == @target_ref
+                    LIMIT @record_cap
+                    RETURN e._from
+            )
+            LET shared = INTERSECTION(records_a, records_b)
+            RETURN {{
+                count: LENGTH(shared),
+                sample: (
+                    FOR r IN shared
+                        LIMIT @limit
+                        LET rec = DOCUMENT(r)
+                        FILTER rec != null
+                        RETURN {{recordId: rec._key, name: rec.recordName, recordType: rec.recordType}}
+                )
+            }}
+        """
+        try:
+            rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "source_ref": source_ref, "target_ref": target_ref,
+                    "record_cap": record_cap, "limit": max(1, limit),
+                },
+            )
+        except Exception as exc:
+            self.logger.warning("get_entity_pair_relationships: shared records query failed: %s", exc)
+            return 0, []
+        if not rows:
+            return 0, []
+        row = rows[0]
+        return int(row.get("count") or 0), row.get("sample") or []
+
+    async def _get_person_entity_relationships(self, node_ref: str) -> dict[str, Any]:
+        query = f"""
+            FOR edge IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER edge._to == @node_ref
+                COLLECT edgeType = edge.edgeType WITH COUNT INTO cnt
+                RETURN {{edgeType: edgeType, count: cnt}}
+        """
+        try:
+            rows = await self.execute_query(query, bind_vars={"node_ref": node_ref}) or []
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships (person) failed: %s", exc)
+            rows = []
+        return {
+            "parentEntity": None,
+            "childEntities": [],
+            "relationshipTypes": sorted({r["edgeType"] for r in rows if r.get("edgeType")}),
+            "connectedRecordCount": sum(int(r.get("count") or 0) for r in rows),
+            "connectedEntities": [],
+            "connectedRecords": [],
+        }
+
+    # ------------------------------------------------------------------
+    # Bi-temporal canonical edges + cross-app hard-key linking (Phase 6)
+    # ------------------------------------------------------------------
+    # Reuses the entityRelations collection/schema (edgeType is one of
+    # EntityRelations, additionalProperties: True) — see
+    # IGraphDBProvider.upsert_bitemporal_edge for the write semantics this
+    # implements (no-op unchanged / invalidate+replace on contradiction).
+
+    async def upsert_bitemporal_edge(
+        self,
+        org_id: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        edge_type: str,
+        attributes: dict[str, Any] | None = None,
+        valid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.upsert_bitemporal_edge`."""
+        now = get_epoch_timestamp_in_ms()
+        valid_at = valid_at if valid_at is not None else now
+        attributes = attributes or {}
+        from_ref = f"{from_collection}/{from_id}"
+        to_ref = f"{to_collection}/{to_id}"
+
+        query = f"""
+            FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER e._from == @from_ref AND e._to == @to_ref
+                    AND e.edgeType == @edge_type AND e.orgId == @org_id
+                    AND e.invalidAtTimestamp == null AND e.expiredAtTimestamp == null
+                SORT e.validAtTimestamp DESC
+                LIMIT 1
+                RETURN e
+        """
+        try:
+            existing_rows = await self.execute_query(
+                query,
+                bind_vars={
+                    "from_ref": from_ref, "to_ref": to_ref,
+                    "edge_type": edge_type, "org_id": org_id,
+                },
+                transaction=transaction,
+            )
+        except Exception as exc:
+            self.logger.warning("upsert_bitemporal_edge: current-edge lookup failed: %s", exc)
+            existing_rows = []
+
+        existing = existing_rows[0] if existing_rows else None
+        if existing is not None and (existing.get("attributes") or {}) == attributes:
+            return existing
+
+        new_edge = {
+            "_from": from_ref,
+            "_to": to_ref,
+            # Denormalized alongside _from/_to (not just derivable from them)
+            # so a Neo4j-backed org sees the identical, self-describing edge
+            # shape from get_bitemporal_edges — Neo4j relationship properties
+            # can't express the endpoint's collection/label, only its id
+            # (see the Neo4j implementation below). Needed by callers like
+            # EntityMergeService that redirect edges without a DB-specific
+            # endpoint-parsing step (Phase 7).
+            "fromId": from_id,
+            "fromCollection": from_collection,
+            "toId": to_id,
+            "toCollection": to_collection,
+            "edgeType": edge_type,
+            "orgId": org_id,
+            "attributes": attributes,
+            "validAtTimestamp": valid_at,
+            "invalidAtTimestamp": None,
+            "createdAtTimestamp": now,
+            "expiredAtTimestamp": None,
+        }
+        write_query = f"""
+            INSERT @new_edge IN {CollectionNames.ENTITY_RELATIONS.value}
+            RETURN NEW
+        """
+        try:
+            if existing is not None:
+                await self._invalidate_edge_document(existing["_key"], valid_at, now, transaction)
+            inserted_rows = await self.execute_query(
+                write_query, bind_vars={"new_edge": new_edge}, transaction=transaction,
+            )
+            return inserted_rows[0] if inserted_rows else new_edge
+        except Exception as exc:
+            self.logger.error("upsert_bitemporal_edge failed: %s", exc)
+            raise
+
+    async def _invalidate_edge_document(
+        self, edge_key: str, invalid_at: int, expired_at: int, transaction: str | None,
+    ) -> None:
+        query = f"""
+            UPDATE @key WITH {{ invalidAtTimestamp: @invalid_at, expiredAtTimestamp: @expired_at }}
+            IN {CollectionNames.ENTITY_RELATIONS.value}
+        """
+        await self.execute_query(
+            query,
+            bind_vars={"key": edge_key, "invalid_at": invalid_at, "expired_at": expired_at},
+            transaction=transaction,
+        )
+
+    async def invalidate_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        invalid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.invalidate_bitemporal_edges`."""
+        if not from_id and not to_id:
+            self.logger.warning(
+                "invalidate_bitemporal_edges: refusing org-wide invalidate with no from_id/to_id filter"
+            )
+            return 0
+
+        now = get_epoch_timestamp_in_ms()
+        invalid_at = invalid_at if invalid_at is not None else now
+
+        filters = ["e.orgId == @org_id", "e.invalidAtTimestamp == null", "e.expiredAtTimestamp == null"]
+        bind_vars: dict[str, Any] = {"org_id": org_id, "invalid_at": invalid_at, "expired_at": now}
+        if from_id:
+            filters.append("e._from == @from_ref")
+            bind_vars["from_ref"] = f"{from_collection}/{from_id}"
+        if to_id:
+            filters.append("e._to == @to_ref")
+            bind_vars["to_ref"] = f"{to_collection}/{to_id}"
+        if edge_type:
+            filters.append("e.edgeType == @edge_type")
+            bind_vars["edge_type"] = edge_type
+
+        query = f"""
+            FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER {" AND ".join(filters)}
+                UPDATE e WITH {{ invalidAtTimestamp: @invalid_at, expiredAtTimestamp: @expired_at }}
+                IN {CollectionNames.ENTITY_RELATIONS.value}
+                RETURN NEW
+        """
+        try:
+            rows = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return len(rows or [])
+        except Exception as exc:
+            self.logger.error("invalidate_bitemporal_edges failed: %s", exc)
+            return 0
+
+    async def get_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        as_of: int | None = None,
+        include_history: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_bitemporal_edges`."""
+        filters = ["e.orgId == @org_id"]
+        bind_vars: dict[str, Any] = {
+            "org_id": org_id, "offset": max(0, offset), "limit": max(1, limit),
+        }
+        if from_id:
+            filters.append("e._from == @from_ref")
+            bind_vars["from_ref"] = f"{from_collection}/{from_id}"
+        if to_id:
+            filters.append("e._to == @to_ref")
+            bind_vars["to_ref"] = f"{to_collection}/{to_id}"
+        if edge_type:
+            filters.append("e.edgeType == @edge_type")
+            bind_vars["edge_type"] = edge_type
+
+        if as_of is not None:
+            bind_vars["as_of"] = as_of
+            filters.append("e.validAtTimestamp <= @as_of")
+            filters.append("e.createdAtTimestamp <= @as_of")
+            filters.append("(e.invalidAtTimestamp == null OR e.invalidAtTimestamp > @as_of)")
+            filters.append("(e.expiredAtTimestamp == null OR e.expiredAtTimestamp > @as_of)")
+        elif not include_history:
+            filters.append("e.invalidAtTimestamp == null")
+            filters.append("e.expiredAtTimestamp == null")
+
+        query = f"""
+            FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER {" AND ".join(filters)}
+                SORT e.validAtTimestamp DESC
+                LIMIT @offset, @limit
+                RETURN e
+        """
+        try:
+            return await self.execute_query(query, bind_vars=bind_vars, transaction=None) or []
+        except Exception as exc:
+            self.logger.warning("get_bitemporal_edges failed: %s", exc)
+            return []
+
+    async def find_nodes_by_hard_key(
+        self,
+        org_id: str,
+        collections: list[str],
+        field: str,
+        value: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_nodes_by_hard_key`."""
+        if not collections or not field or not value:
+            return []
+        results: list[dict[str, Any]] = []
+        remaining = max(1, limit)
+        for collection in collections:
+            if remaining <= 0:
+                break
+            query = f"""
+                FOR n IN @@collection
+                    FILTER n.orgId == @org_id AND n.{field} == @value
+                    LIMIT @limit
+                    RETURN MERGE(n, {{ _collection: @collection }})
+            """
+            try:
+                rows = await self.execute_query(
+                    query,
+                    bind_vars={
+                        "@collection": collection, "collection": collection,
+                        "org_id": org_id, "value": value, "limit": remaining,
+                    },
+                )
+            except Exception as exc:
+                self.logger.warning("find_nodes_by_hard_key: lookup in %s failed: %s", collection, exc)
+                continue
+            results.extend(rows or [])
+            remaining = limit - len(results)
+        return results[:limit]
 
     async def get_user_app_ids(
         self,

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,8 +10,8 @@ import pytest
 from app.agents.actions.knowledge_graph.ops.search import (
     execute_search,
     normalize_source_ids,
+    resolve_entity_filter_groups,
 )
-
 
 # ---------------------------------------------------------------------------
 # normalize_source_ids
@@ -503,3 +502,239 @@ class TestExecuteSearchException:
         parsed = json.loads(result)
         assert parsed["status"] == "error"
         assert "boom" in parsed["message"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_entity_filter_groups + execute_search entity-filter wiring
+# ---------------------------------------------------------------------------
+
+class TestResolveEntityFilterGroups:
+    def test_no_signals_returns_empty(self) -> None:
+        result = resolve_entity_filter_groups({}, query="legal docs", entity_ids=None)
+        assert result == {}
+
+    def test_reads_hook_cache_for_matching_query_without_consuming_it(self) -> None:
+        state = {"_kg_query_entity_filters": {"legal docs": {"departments": ["Legal"]}}}
+        result = resolve_entity_filter_groups(state, query="legal docs", entity_ids=None)
+        assert result == {"departments": ["Legal"]}
+        # Read (not popped) — a second call with the same query text in the
+        # same turn must still get the filter (Bug 5 fix).
+        assert state["_kg_query_entity_filters"] == {"legal docs": {"departments": ["Legal"]}}
+        result2 = resolve_entity_filter_groups(state, query="legal docs", entity_ids=None)
+        assert result2 == {"departments": ["Legal"]}
+
+    def test_resolves_explicit_entity_ids_to_names_via_cache(self) -> None:
+        state = {
+            "_kg_entity_id_filter_key": {
+                "d1": ("departments", "Legal"),
+                "t1": ("topics", "Roadmap"),
+            }
+        }
+        result = resolve_entity_filter_groups(state, query="q", entity_ids=["d1", "t1"])
+        assert result == {"departments": ["Legal"], "topics": ["Roadmap"]}
+
+    def test_unresolvable_entity_id_is_dropped_not_errored(self) -> None:
+        state = {"_kg_entity_id_filter_key": {"d1": ("departments", "Legal")}}
+        result = resolve_entity_filter_groups(state, query="q", entity_ids=["d1", "unknown-id"])
+        assert result == {"departments": ["Legal"]}
+
+    def test_merges_hook_and_explicit_signals(self) -> None:
+        state = {
+            "_kg_query_entity_filters": {"q": {"departments": ["Legal"]}},
+            "_kg_entity_id_filter_key": {"t1": ("topics", "Roadmap")},
+        }
+        result = resolve_entity_filter_groups(state, query="q", entity_ids=["t1"])
+        assert result == {"departments": ["Legal"], "topics": ["Roadmap"]}
+
+    def test_none_query_skips_hook_cache_lookup(self) -> None:
+        state = {"_kg_query_entity_filters": {"q": {"departments": ["d1"]}}}
+        result = resolve_entity_filter_groups(state, query=None, entity_ids=None)
+        assert result == {}
+
+
+class TestExecuteSearchEntityFilters:
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_hook_cached_filters_merged_into_search_with_filters(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [],
+            "virtual_to_record_map": {},
+        }
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "_kg_query_entity_filters": {"legal team": {"departments": ["d1"]}},
+        }
+        await execute_search(state, "legal team")
+        # First attempt carries the entity filter. Since the mock always
+        # returns empty searchResults, the zero-result fallback (see
+        # ops/search.py) fires a second, entity-filter-free attempt — assert
+        # on the first call to verify the merge itself, independent of that
+        # fallback (covered separately below).
+        _, kwargs = retrieval.search_with_filters.call_args_list[0]
+        assert kwargs["filter_groups"]["departments"] == ["d1"]
+        assert kwargs["filter_groups"]["apps"] == ["app-1"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_explicit_entity_ids_merged_into_search_with_filters(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [],
+            "virtual_to_record_map": {},
+        }
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "_kg_entity_id_filter_key": {"t1": ("topics", "Roadmap")},
+        }
+        await execute_search(state, "roadmap", entity_ids=["t1"])
+        # See comment in test_hook_cached_filters_merged_into_search_with_filters
+        # above — assert on the first (entity-filtered) attempt.
+        _, kwargs = retrieval.search_with_filters.call_args_list[0]
+        assert kwargs["filter_groups"]["topics"] == ["Roadmap"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_no_entity_signals_leaves_filter_groups_unchanged(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [],
+            "virtual_to_record_map": {},
+        }
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+        }
+        await execute_search(state, "test query")
+        _, kwargs = retrieval.search_with_filters.call_args
+        assert kwargs["filter_groups"] == {"apps": ["app-1"], "kb": []}
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_zero_results_with_entity_filters_retries_without_them(self, mock_parse) -> None:
+        """Bug fix: entity filters are a hard AND constraint at the graph
+        layer — if the graph has no belongsTo* edge yet linking any
+        accessible record to the matched entity, get_accessible_virtual_record_ids
+        returns an empty mapping and searchResults comes back empty even
+        though content-matching documents exist. execute_search must retry
+        once without entity filters rather than silently reporting "no
+        results"."""
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [
+            {"status_code": 200, "searchResults": [], "virtual_to_record_map": {}},
+            {
+                "status_code": 200,
+                "searchResults": [{"virtual_record_id": "vr1", "block_index": 0}],
+                "virtual_to_record_map": {"vr1": {"id": "r1"}},
+            },
+        ]
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "_kg_query_entity_filters": {"context graph": {"topics": ["Context graph governance"]}},
+        }
+        with patch(
+            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            new_callable=AsyncMock,
+        ) as mock_flatten, patch(
+            "app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+        ) as mock_build_content, patch(
+            "app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled",
+            return_value=None,
+        ), patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"), patch(
+            "app.modules.agents.record_escalation.build_candidates",
+        ) as mock_build_cands, patch(
+            "app.agents.actions.retrieval.retrieval._dedupe_append_final_results",
+            side_effect=lambda old, new: old + new,
+        ):
+            mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
+            mock_build_content.return_value = (
+                [[{"type": "text", "text": "Fallback content"}]], MagicMock(),
+            )
+            plan = MagicMock()
+            plan.has_candidates = False
+            mock_build_cands.return_value = plan
+
+            result = await execute_search(state, "context graph")
+
+        assert retrieval.search_with_filters.call_count == 2
+        first_kwargs = retrieval.search_with_filters.call_args_list[0].kwargs
+        second_kwargs = retrieval.search_with_filters.call_args_list[1].kwargs
+        assert first_kwargs["filter_groups"].get("topics") == ["Context graph governance"]
+        assert "topics" not in second_kwargs["filter_groups"]
+        assert "No results found" not in result
+        assert "Fallback content" in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_zero_results_persist_after_fallback_reports_no_results(self, mock_parse) -> None:
+        """When even the entity-filter-free retry comes back empty, the tool
+        must still report "No results found" (not raise or loop again)."""
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [], "virtual_to_record_map": {},
+        }
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "_kg_query_entity_filters": {"context graph": {"topics": ["Context graph governance"]}},
+        }
+        result = await execute_search(state, "context graph")
+        assert retrieval.search_with_filters.call_count == 2
+        parsed = json.loads(result)
+        assert parsed["status"] == "success"
+        assert parsed["result_count"] == 0
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_no_retry_when_no_entity_filters_present(self, mock_parse) -> None:
+        """A plain empty result with no entity filters at play must not
+        trigger a second (redundant) retrieval-service call."""
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [], "virtual_to_record_map": {},
+        }
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+        }
+        await execute_search(state, "no entity mentions here")
+        assert retrieval.search_with_filters.call_count == 1

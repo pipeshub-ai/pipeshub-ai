@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
+from app.modules.agents.context.retrieval_routing import build_routing_guidance
 from app.modules.agents.context.source_catalog import (
     SourceCatalog,
     SourceKind,
 )
-from app.modules.agents.context.retrieval_routing import build_routing_guidance
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -297,6 +294,54 @@ class TestCanonicalKnowledgeBlock:
         catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
         rendered = catalog.render()
         assert "Combining them" in rendered
+
+    def test_entities_and_relationships_section_present(self) -> None:
+        """Bugs 2+3: the entity/relationship concept must be explained so the
+        agent understands the knowledge system beyond raw records."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render()
+        assert "Entities" in rendered
+        assert "departments" in rendered.lower() and "topics" in rendered.lower()
+
+    def test_search_entities_always_mentioned(self) -> None:
+        """search_entities is essential (turn-0) so its mention must not be
+        gated behind a grant check, unlike the progressive tools below."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(tool_names=["knowledgegraph__search"])
+        assert "knowledgegraph__search_entities(query=...)" in rendered
+
+    def test_find_records_by_entity_always_mentioned(self) -> None:
+        """find_records_by_entity is always mentioned in the prompt (even
+        before progressive grant) so the LLM knows to call it once it has
+        entity results with connectedRecordCount > 0.  The tool will be
+        available by then because the progressive hook fires on any KG tool
+        call, including search_entities itself."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(tool_names=["knowledgegraph__search"])
+        assert "knowledgegraph__find_records_by_entity(entity_id=..., entity_type=...)" in rendered
+
+    def test_expand_neighbors_always_mentioned(self) -> None:
+        """expand_neighbors is progressive but always mentioned, same
+        rationale as find_records_by_entity above."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(tool_names=["knowledgegraph__search"])
+        assert "knowledgegraph__expand_neighbors(entity_id=..., entity_type=...)" in rendered
+
+    def test_get_relationships_always_mentioned(self) -> None:
+        """get_relationships is progressive but always mentioned, same
+        rationale as find_records_by_entity above."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(tool_names=["knowledgegraph__search"])
+        assert "knowledgegraph__get_relationships(source_entity_id=..." in rendered
+
+    def test_entities_paragraph_nudges_search_entities_first(self) -> None:
+        """The rewritten Entities paragraph should lead with an
+        action-oriented instruction to call search_entities, not just
+        describe automatic filtering."""
+        catalog = _catalog_from_knowledge([_make_app_entry("Confluence", "confluence", CONF_ID)])
+        rendered = catalog.render(tool_names=["knowledgegraph__search"])
+        assert "start with" in rendered
+        assert "connectedRecords" in rendered and "connectedEntities" in rendered
 
 
 class TestBuildRoutingGuidance:

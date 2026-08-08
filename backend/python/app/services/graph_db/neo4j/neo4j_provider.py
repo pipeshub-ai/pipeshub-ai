@@ -68,6 +68,7 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
 )
+from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
@@ -13530,6 +13531,890 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as exc:
             self.logger.warning("get_record_parent_adjacency: Cypher failed — %s", exc)
             return {"nodes": {}, "parents": {}}
+
+    # ------------------------------------------------------------------
+    # Entity sync (knowledge-graph vector-store backfill)
+    # ------------------------------------------------------------------
+
+    _TAXONOMY_EDGE_GROUPS: dict[str, tuple[str, dict[str, str]]] = {
+        "category_group": (
+            CollectionNames.BELONGS_TO_CATEGORY.value,
+            {
+                CollectionNames.CATEGORIES.value: KnowledgeGraphEntityType.CATEGORY.value,
+                CollectionNames.SUBCATEGORIES1.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES2.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+                CollectionNames.SUBCATEGORIES3.value: KnowledgeGraphEntityType.SUBCATEGORY.value,
+            },
+        ),
+        "department_group": (
+            CollectionNames.BELONGS_TO_DEPARTMENT.value,
+            {CollectionNames.DEPARTMENTS.value: KnowledgeGraphEntityType.DEPARTMENT.value},
+        ),
+        "topic_group": (
+            CollectionNames.BELONGS_TO_TOPIC.value,
+            {CollectionNames.TOPICS.value: KnowledgeGraphEntityType.TOPIC.value},
+        ),
+        "language_group": (
+            CollectionNames.BELONGS_TO_LANGUAGE.value,
+            {CollectionNames.LANGUAGES.value: KnowledgeGraphEntityType.LANGUAGE.value},
+        ),
+    }
+    _ENTITY_TYPE_TO_TAXONOMY_GROUP: dict[str, str] = {
+        KnowledgeGraphEntityType.CATEGORY.value: "category_group",
+        KnowledgeGraphEntityType.SUBCATEGORY.value: "category_group",
+        KnowledgeGraphEntityType.DEPARTMENT.value: "department_group",
+        KnowledgeGraphEntityType.TOPIC.value: "topic_group",
+        KnowledgeGraphEntityType.LANGUAGE.value: "language_group",
+    }
+
+    async def _get_record_group_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """RecordGroup nodes carry ``orgId`` directly — no traversal needed."""
+        if not self.client:
+            return []
+        rg_label = collection_to_label(CollectionNames.RECORD_GROUPS.value)
+        query = f"""
+            MATCH (rg:{rg_label} {{orgId: $org_id}})
+            WITH rg ORDER BY rg.id
+            SKIP $offset LIMIT $limit
+            RETURN rg.id AS entityId,
+                   coalesce(rg.groupName, rg.id) AS name,
+                   rg.connectorId AS connectorId
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+            results = []
+            for row in rows or []:
+                if not row.get("entityId"):
+                    continue
+                row = dict(row)
+                row["entityType"] = KnowledgeGraphEntityType.RECORD_GROUP.value
+                results.append(row)
+            return results
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (record_group) failed: %s", exc)
+            return []
+
+    async def _get_person_entities_for_sync(
+        self, org_id: str, limit: int, offset: int
+    ) -> list[dict[str, Any]]:
+        """Users carry ``orgId`` directly — no traversal needed.
+
+        Only internal org Users are covered today; connector-specific
+        external contacts (e.g. Salesforce People) are a future extension.
+        """
+        if not self.client:
+            return []
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        query = f"""
+            MATCH (u:{user_label} {{orgId: $org_id}})
+            WITH u ORDER BY u.id
+            SKIP $offset LIMIT $limit
+            RETURN u.id AS entityId,
+                   coalesce(u.fullName, u.email, u.id) AS name
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "org_id": org_id,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+            results = []
+            for row in rows or []:
+                if not row.get("entityId"):
+                    continue
+                row = dict(row)
+                row["entityType"] = KnowledgeGraphEntityType.PERSON.value
+                results.append(row)
+            return results
+        except Exception as exc:
+            self.logger.warning("get_entities_for_sync (person) failed: %s", exc)
+            return []
+
+    async def _get_taxonomy_entities_for_sync(
+        self,
+        org_id: str,
+        edge_collection: str,
+        node_label_types: dict[str, str],
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """See ArangoHTTPProvider._get_taxonomy_entities_for_sync — taxonomy
+        nodes carry no ``orgId`` of their own; scoping is derived by walking
+        outward from this org's own Record nodes."""
+        if not self.client:
+            return []
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        node_labels = [collection_to_label(c) for c in node_label_types]
+        # label_to_type keyed by Neo4j label (not Arango collection name),
+        # since that is what `labels(v)` returns from the query below.
+        label_to_type = {
+            collection_to_label(c): etype for c, etype in node_label_types.items()
+        }
+        query = f"""
+            MATCH (rec:{record_label} {{orgId: $org_id}})-[:{rel_type}]->(v)
+            WHERE any(l IN labels(v) WHERE l IN $node_labels)
+            WITH DISTINCT v
+            ORDER BY v.id
+            SKIP $offset LIMIT $limit
+            RETURN v.id AS entityId, coalesce(v.name, v.id) AS name, labels(v) AS nodeLabels
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "org_id": org_id,
+                    "node_labels": node_labels,
+                    "offset": max(0, offset),
+                    "limit": max(1, limit),
+                },
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "get_entities_for_sync (taxonomy via %s) failed: %s", edge_collection, exc
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for row in rows or []:
+            if not row.get("entityId"):
+                continue
+            matched_label = next(
+                (label for label in row.get("nodeLabels") or [] if label in label_to_type),
+                None,
+            )
+            if not matched_label:
+                continue
+            results.append(
+                {
+                    "entityId": row["entityId"],
+                    "name": row.get("name") or row["entityId"],
+                    "entityType": label_to_type[matched_label],
+                }
+            )
+        return results
+
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_entities_for_sync`."""
+        if not org_id:
+            return []
+        wanted = set(entity_types) if entity_types else None
+        results: list[dict[str, Any]] = []
+
+        if wanted is None or KnowledgeGraphEntityType.RECORD_GROUP.value in wanted:
+            results.extend(
+                await self._get_record_group_entities_for_sync(org_id, limit, offset)
+            )
+
+        if wanted is None or KnowledgeGraphEntityType.PERSON.value in wanted:
+            results.extend(
+                await self._get_person_entities_for_sync(org_id, limit, offset)
+            )
+
+        groups_to_query: set[str] = set()
+        for etype, group in self._ENTITY_TYPE_TO_TAXONOMY_GROUP.items():
+            if wanted is None or etype in wanted:
+                groups_to_query.add(group)
+
+        for group in groups_to_query:
+            edge_collection, node_map = self._TAXONOMY_EDGE_GROUPS[group]
+            rows = await self._get_taxonomy_entities_for_sync(
+                org_id, edge_collection, node_map, limit, offset
+            )
+            if wanted is not None:
+                rows = [r for r in rows if r.get("entityType") in wanted]
+            results.extend(rows)
+
+        return results
+
+    # See ArangoHTTPProvider._ENTITY_TYPE_TO_NODE_COLLECTION — SUBCATEGORY
+    # always resolves to the level-1 collection (no depth field yet).
+    _ENTITY_TYPE_TO_NODE_COLLECTION: dict[str, str] = {
+        KnowledgeGraphEntityType.DEPARTMENT.value: CollectionNames.DEPARTMENTS.value,
+        KnowledgeGraphEntityType.CATEGORY.value: CollectionNames.CATEGORIES.value,
+        KnowledgeGraphEntityType.SUBCATEGORY.value: CollectionNames.SUBCATEGORIES1.value,
+        KnowledgeGraphEntityType.TOPIC.value: CollectionNames.TOPICS.value,
+        KnowledgeGraphEntityType.LANGUAGE.value: CollectionNames.LANGUAGES.value,
+        KnowledgeGraphEntityType.PERSON.value: CollectionNames.USERS.value,
+    }
+
+    async def get_entity_relationships(
+        self,
+        org_id: str,
+        entity_id: str,
+        entity_type: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.get_entity_relationships`."""
+        empty: dict[str, Any] = {
+            "parentEntity": None, "childEntities": [], "relationshipTypes": [],
+            "connectedRecordCount": 0, "connectedEntities": [],
+            "connectedRecords": [],
+        }
+        node_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(entity_type)
+        if not self.client or not org_id or not entity_id or not node_collection:
+            return empty
+
+        if entity_type == KnowledgeGraphEntityType.PERSON.value:
+            return await self._get_person_entity_relationships(entity_id)
+
+        group = self._ENTITY_TYPE_TO_TAXONOMY_GROUP.get(entity_type)
+        if not group:
+            return empty
+        belongs_to_edge, _ = self._TAXONOMY_EDGE_GROUPS[group]
+
+        try:
+            connected_record_count = await self._count_related(
+                entity_id, node_collection, CollectionNames.RECORDS.value,
+                belongs_to_edge, direction="inbound",
+            )
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships: record count failed: %s", exc)
+            connected_record_count = 0
+
+        parent_entity: dict[str, Any] | None = None
+        child_entities: list[dict[str, Any]] = []
+        try:
+            if entity_type == KnowledgeGraphEntityType.CATEGORY.value:
+                child_entities = await self._entity_neighbor_summaries(
+                    entity_id, node_collection, CollectionNames.SUBCATEGORIES1.value,
+                    CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    KnowledgeGraphEntityType.SUBCATEGORY.value, direction="inbound", limit=limit,
+                )
+            elif entity_type == KnowledgeGraphEntityType.SUBCATEGORY.value:
+                parents = await self._entity_neighbor_summaries(
+                    entity_id, node_collection, CollectionNames.CATEGORIES.value,
+                    CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    KnowledgeGraphEntityType.CATEGORY.value, direction="outbound", limit=1,
+                )
+                parent_entity = parents[0] if parents else None
+                child_entities = await self._entity_neighbor_summaries(
+                    entity_id, node_collection, CollectionNames.SUBCATEGORIES2.value,
+                    CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                    KnowledgeGraphEntityType.SUBCATEGORY.value, direction="inbound", limit=limit,
+                )
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships: hierarchy lookup failed: %s", exc)
+
+        connected_entities = await self._get_co_occurring_entities(
+            entity_id, node_collection, belongs_to_edge, limit=limit,
+        )
+        connected_records = await self._get_connected_record_summaries(
+            entity_id, node_collection, belongs_to_edge, limit=5,
+        )
+
+        return {
+            "parentEntity": parent_entity,
+            "childEntities": child_entities,
+            "relationshipTypes": [],
+            "connectedRecordCount": connected_record_count,
+            "connectedEntities": connected_entities,
+            "connectedRecords": connected_records,
+        }
+
+    async def _get_co_occurring_entities(
+        self,
+        entity_id: str,
+        node_collection: str,
+        belongs_to_edge: str,
+        limit: int = 20,
+        record_cap: int = 50,
+    ) -> list[dict[str, Any]]:
+        """2-hop: entity → records (INBOUND) → other entities (OUTBOUND via
+        ALL belongsTo* edges, self excluded)."""
+        if not self.client:
+            return []
+        source_label = collection_to_label(node_collection)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        dept_label = collection_to_label(CollectionNames.DEPARTMENTS.value)
+        cat_label = collection_to_label(CollectionNames.CATEGORIES.value)
+        subcat_label = collection_to_label(CollectionNames.SUBCATEGORIES1.value)
+        topic_label = collection_to_label(CollectionNames.TOPICS.value)
+        lang_label = collection_to_label(CollectionNames.LANGUAGES.value)
+        bt_rel = edge_collection_to_relationship(belongs_to_edge)
+        bt_dept = edge_collection_to_relationship(CollectionNames.BELONGS_TO_DEPARTMENT.value)
+        bt_cat = edge_collection_to_relationship(CollectionNames.BELONGS_TO_CATEGORY.value)
+        bt_topic = edge_collection_to_relationship(CollectionNames.BELONGS_TO_TOPIC.value)
+        bt_lang = edge_collection_to_relationship(CollectionNames.BELONGS_TO_LANGUAGE.value)
+        query = f"""
+            MATCH (r:{record_label})-[:{bt_rel}]->(src:{source_label} {{id: $entity_id}})
+            WITH r LIMIT $record_cap
+            CALL {{
+                WITH r
+                OPTIONAL MATCH (r)-[:{bt_dept}]->(d:{dept_label})
+                WHERE d.id <> $entity_id
+                RETURN DISTINCT 'department' AS entityType, d.id AS entityId, d.departmentName AS name
+                UNION
+                WITH r
+                OPTIONAL MATCH (r)-[:{bt_cat}]->(c:{cat_label})
+                WHERE c.id <> $entity_id
+                RETURN DISTINCT 'category' AS entityType, c.id AS entityId, c.name AS name
+                UNION
+                WITH r
+                OPTIONAL MATCH (r)-[:{bt_cat}]->(sc:{subcat_label})
+                WHERE sc.id <> $entity_id
+                RETURN DISTINCT 'subcategory' AS entityType, sc.id AS entityId, sc.name AS name
+                UNION
+                WITH r
+                OPTIONAL MATCH (r)-[:{bt_topic}]->(t:{topic_label})
+                WHERE t.id <> $entity_id
+                RETURN DISTINCT 'topic' AS entityType, t.id AS entityId, t.name AS name
+                UNION
+                WITH r
+                OPTIONAL MATCH (r)-[:{bt_lang}]->(l:{lang_label})
+                WHERE l.id <> $entity_id
+                RETURN DISTINCT 'language' AS entityType, l.id AS entityId, l.name AS name
+            }}
+            WITH DISTINCT entityType, entityId, name
+            WHERE entityId IS NOT NULL
+            RETURN entityType, entityId, name
+            LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "entity_id": entity_id,
+                    "record_cap": record_cap,
+                    "limit": max(1, limit),
+                },
+            )
+            return [
+                {"entityType": r["entityType"], "entityId": r["entityId"], "name": r.get("name")}
+                for r in (rows or []) if r.get("entityId")
+            ]
+        except Exception as exc:
+            self.logger.warning("_get_co_occurring_entities failed: %s", exc)
+            return []
+
+    async def _get_connected_record_summaries(
+        self,
+        entity_id: str,
+        node_collection: str,
+        belongs_to_edge: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Short list of record titles connected to this entity."""
+        if not self.client:
+            return []
+        source_label = collection_to_label(node_collection)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        rel_type = edge_collection_to_relationship(belongs_to_edge)
+        query = f"""
+            MATCH (r:{record_label})-[:{rel_type}]->(src:{source_label} {{id: $entity_id}})
+            RETURN r.id AS recordId, r.recordName AS name, r.recordType AS recordType
+            LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query, parameters={"entity_id": entity_id, "limit": max(1, limit)},
+            )
+            return [
+                {"recordId": r["recordId"], "name": r.get("name"), "recordType": r.get("recordType")}
+                for r in (rows or []) if r.get("recordId")
+            ]
+        except Exception as exc:
+            self.logger.warning("_get_connected_record_summaries failed: %s", exc)
+            return []
+
+    async def _entity_neighbor_summaries(
+        self,
+        entity_id: str,
+        source_collection: str,
+        target_collection: str,
+        edge_collection: str,
+        target_entity_type: str,
+        direction: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        source_label = collection_to_label(source_collection)
+        target_label = collection_to_label(target_collection)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        if direction == "outbound":
+            query = f"""
+                MATCH (src:{source_label} {{id: $entity_id}})-[:{rel_type}]->(tgt:{target_label})
+                RETURN tgt.id AS entityId, tgt.name AS name
+                LIMIT $limit
+            """
+        else:
+            query = f"""
+                MATCH (tgt:{target_label})-[:{rel_type}]->(src:{source_label} {{id: $entity_id}})
+                RETURN tgt.id AS entityId, tgt.name AS name
+                LIMIT $limit
+            """
+        rows = await self.client.execute_query(
+            query, parameters={"entity_id": entity_id, "limit": max(1, limit)},
+        )
+        return [
+            {"entityId": r["entityId"], "entityType": target_entity_type, "name": r.get("name")}
+            for r in (rows or []) if r.get("entityId")
+        ]
+
+    async def _count_related(
+        self,
+        entity_id: str,
+        node_collection: str,
+        other_collection: str,
+        edge_collection: str,
+        direction: str,
+    ) -> int:
+        node_label = collection_to_label(node_collection)
+        other_label = collection_to_label(other_collection)
+        rel_type = edge_collection_to_relationship(edge_collection)
+        if direction == "outbound":
+            query = f"""
+                MATCH (n:{node_label} {{id: $entity_id}})-[:{rel_type}]->(o:{other_label})
+                RETURN count(o) AS cnt
+            """
+        else:
+            query = f"""
+                MATCH (o:{other_label})-[:{rel_type}]->(n:{node_label} {{id: $entity_id}})
+                RETURN count(o) AS cnt
+            """
+        rows = await self.client.execute_query(query, parameters={"entity_id": entity_id})
+        return int(rows[0]["cnt"]) if rows else 0
+
+    async def _get_person_entity_relationships(self, entity_id: str) -> dict[str, Any]:
+        if not self.client:
+            return {
+                "parentEntity": None, "childEntities": [], "relationshipTypes": [],
+                "connectedRecordCount": 0, "connectedEntities": [],
+                "connectedRecords": [],
+            }
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        rel_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        query = f"""
+            MATCH (from)-[r:{rel_type}]->(to:{user_label} {{id: $entity_id}})
+            RETURN r.edgeType AS edgeType, count(r) AS cnt
+        """
+        try:
+            rows = await self.client.execute_query(query, parameters={"entity_id": entity_id}) or []
+        except Exception as exc:
+            self.logger.warning("get_entity_relationships (person) failed: %s", exc)
+            rows = []
+        return {
+            "parentEntity": None,
+            "childEntities": [],
+            "relationshipTypes": sorted({r["edgeType"] for r in rows if r.get("edgeType")}),
+            "connectedRecordCount": sum(int(r.get("cnt") or 0) for r in rows),
+            "connectedEntities": [],
+            "connectedRecords": [],
+        }
+
+    _CATEGORY_HIERARCHY_TYPES: frozenset[str] = frozenset({
+        KnowledgeGraphEntityType.CATEGORY.value, KnowledgeGraphEntityType.SUBCATEGORY.value,
+    })
+
+    async def get_entity_pair_relationships(
+        self,
+        org_id: str,
+        source_entity_id: str,
+        source_entity_type: str,
+        target_entity_id: str,
+        target_entity_type: str,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.get_entity_pair_relationships`."""
+        empty: dict[str, Any] = {
+            "directEdges": [], "sharedRecordCount": 0, "sharedRecords": [],
+        }
+        source_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(source_entity_type)
+        target_collection = self._ENTITY_TYPE_TO_NODE_COLLECTION.get(target_entity_type)
+        if (
+            not self.client or not org_id or not source_entity_id or not target_entity_id
+            or not source_collection or not target_collection
+        ):
+            return empty
+
+        direct_edges = await self._get_direct_entity_edges(
+            source_entity_id, source_entity_type, source_collection,
+            target_entity_id, target_entity_type, target_collection,
+        )
+
+        source_group = self._ENTITY_TYPE_TO_TAXONOMY_GROUP.get(source_entity_type)
+        target_group = self._ENTITY_TYPE_TO_TAXONOMY_GROUP.get(target_entity_type)
+        shared_count = 0
+        shared_records: list[dict[str, Any]] = []
+        if source_group and target_group:
+            source_belongs_to, _ = self._TAXONOMY_EDGE_GROUPS[source_group]
+            target_belongs_to, _ = self._TAXONOMY_EDGE_GROUPS[target_group]
+            shared_count, shared_records = await self._get_shared_records(
+                source_entity_id, source_collection, source_belongs_to,
+                target_entity_id, target_collection, target_belongs_to,
+            )
+
+        return {
+            "directEdges": direct_edges,
+            "sharedRecordCount": shared_count,
+            "sharedRecords": shared_records,
+        }
+
+    async def _get_direct_entity_edges(
+        self,
+        source_id: str, source_type: str, source_collection: str,
+        target_id: str, target_type: str, target_collection: str,
+    ) -> list[dict[str, Any]]:
+        """Only category<->subcategory has a direct edge in today's graph."""
+        if (
+            source_type not in self._CATEGORY_HIERARCHY_TYPES
+            or target_type not in self._CATEGORY_HIERARCHY_TYPES
+        ):
+            return []
+        source_label = collection_to_label(source_collection)
+        target_label = collection_to_label(target_collection)
+        rel_type = edge_collection_to_relationship(CollectionNames.INTER_CATEGORY_RELATIONS.value)
+        query = f"""
+            MATCH (a:{source_label} {{id: $source_id}})-[:{rel_type}]->(b:{target_label} {{id: $target_id}})
+            RETURN 'outbound' AS direction
+            UNION
+            MATCH (b:{target_label} {{id: $target_id}})-[:{rel_type}]->(a:{source_label} {{id: $source_id}})
+            RETURN 'inbound' AS direction
+        """
+        try:
+            rows = await self.client.execute_query(
+                query, parameters={"source_id": source_id, "target_id": target_id},
+            )
+        except Exception as exc:
+            self.logger.warning("get_entity_pair_relationships: hierarchy edge check failed: %s", exc)
+            return []
+        return [
+            {
+                "edgeType": "CATEGORY_HIERARCHY",
+                "edgeCollection": CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                "direction": row["direction"],
+            }
+            for row in (rows or []) if row.get("direction")
+        ]
+
+    async def _get_shared_records(
+        self,
+        source_id: str, source_collection: str, source_edge: str,
+        target_id: str, target_collection: str, target_edge: str,
+        limit: int = 5, record_cap: int = 500,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Records connected to both entities via their respective
+        ``belongsTo*`` edges (set intersection)."""
+        source_label = collection_to_label(source_collection)
+        target_label = collection_to_label(target_collection)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        source_rel = edge_collection_to_relationship(source_edge)
+        target_rel = edge_collection_to_relationship(target_edge)
+        query = f"""
+            MATCH (r:{record_label})-[:{source_rel}]->(:{source_label} {{id: $source_id}})
+            WITH r LIMIT $record_cap
+            MATCH (r)-[:{target_rel}]->(:{target_label} {{id: $target_id}})
+            RETURN r.id AS recordId, r.recordName AS name, r.recordType AS recordType
+            LIMIT $limit
+        """
+        count_query = f"""
+            MATCH (r:{record_label})-[:{source_rel}]->(:{source_label} {{id: $source_id}})
+            WITH r LIMIT $record_cap
+            MATCH (r)-[:{target_rel}]->(:{target_label} {{id: $target_id}})
+            RETURN count(r) AS cnt
+        """
+        try:
+            sample_rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "source_id": source_id, "target_id": target_id,
+                    "record_cap": record_cap, "limit": max(1, limit),
+                },
+            ) or []
+            count_rows = await self.client.execute_query(
+                count_query,
+                parameters={
+                    "source_id": source_id, "target_id": target_id, "record_cap": record_cap,
+                },
+            ) or []
+        except Exception as exc:
+            self.logger.warning("get_entity_pair_relationships: shared records query failed: %s", exc)
+            return 0, []
+        count = int(count_rows[0]["cnt"]) if count_rows else 0
+        samples = [
+            {"recordId": r["recordId"], "name": r.get("name"), "recordType": r.get("recordType")}
+            for r in sample_rows if r.get("recordId")
+        ]
+        return count, samples
+
+    # ------------------------------------------------------------------
+    # Bi-temporal canonical edges + cross-app hard-key linking (Phase 6)
+    # ------------------------------------------------------------------
+    # Mirrors ArangoHTTPProvider's: a single fixed relationship type (from
+    # ENTITY_RELATIONS) carries an `edgeType` property for the sub-type
+    # (e.g. SAME_AS), same as `batch_create_entity_relations` above — but
+    # these methods never MERGE-in-place; see
+    # IGraphDBProvider.upsert_bitemporal_edge for the write semantics.
+
+    async def upsert_bitemporal_edge(
+        self,
+        org_id: str,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        edge_type: str,
+        attributes: dict[str, Any] | None = None,
+        valid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """See :meth:`IGraphDBProvider.upsert_bitemporal_edge`."""
+        if not self.client:
+            return {}
+        now = get_epoch_timestamp_in_ms()
+        valid_at = valid_at if valid_at is not None else now
+        attributes = attributes or {}
+        relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        from_label = collection_to_label(from_collection)
+        to_label = collection_to_label(to_collection)
+
+        find_query = f"""
+            MATCH (from:{from_label} {{id: $from_id}})-[r:{relationship_type} {{edgeType: $edge_type}}]->(to:{to_label} {{id: $to_id}})
+            WHERE r.orgId = $org_id AND r.invalidAtTimestamp IS NULL AND r.expiredAtTimestamp IS NULL
+            RETURN properties(r) AS r
+            ORDER BY r.validAtTimestamp DESC
+            LIMIT 1
+        """
+        try:
+            rows = await self.client.execute_query(
+                find_query,
+                parameters={"from_id": from_id, "to_id": to_id, "edge_type": edge_type, "org_id": org_id},
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            self.logger.warning("upsert_bitemporal_edge: current-edge lookup failed: %s", exc)
+            rows = []
+
+        existing = rows[0].get("r") if rows and isinstance(rows[0].get("r"), dict) else None
+        if existing is not None and (existing.get("attributes") or {}) == attributes:
+            return existing
+
+        if existing is not None:
+            await self._invalidate_edge_relationship(
+                from_id, from_label, to_id, to_label, edge_type, org_id, valid_at, now, transaction,
+            )
+
+        new_props = {
+            # Denormalized so properties(r) alone is a self-describing edge —
+            # a Neo4j relationship has no way to expose its endpoints'
+            # collection/label the way ArangoDB's _from/_to do implicitly
+            # (see the ArangoDB implementation above). Needed by callers like
+            # EntityMergeService that redirect edges without a DB-specific
+            # endpoint-parsing step (Phase 7).
+            "fromId": from_id,
+            "fromCollection": from_collection,
+            "toId": to_id,
+            "toCollection": to_collection,
+            "edgeType": edge_type,
+            "orgId": org_id,
+            "attributes": attributes,
+            "validAtTimestamp": valid_at,
+            "invalidAtTimestamp": None,
+            "createdAtTimestamp": now,
+            "expiredAtTimestamp": None,
+        }
+        write_query = f"""
+            MATCH (from:{from_label} {{id: $from_id}})
+            MATCH (to:{to_label} {{id: $to_id}})
+            CREATE (from)-[r:{relationship_type}]->(to)
+            SET r = $props
+            RETURN properties(r) AS r
+        """
+        try:
+            rows = await self.client.execute_query(
+                write_query, parameters={"from_id": from_id, "to_id": to_id, "props": new_props},
+                txn_id=transaction,
+            )
+            return rows[0]["r"] if rows and isinstance(rows[0].get("r"), dict) else new_props
+        except Exception as exc:
+            self.logger.error("upsert_bitemporal_edge failed: %s", exc)
+            raise
+
+    async def _invalidate_edge_relationship(
+        self,
+        from_id: str, from_label: str, to_id: str, to_label: str,
+        edge_type: str, org_id: str, invalid_at: int, expired_at: int,
+        transaction: str | None,
+    ) -> None:
+        relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        query = f"""
+            MATCH (from:{from_label} {{id: $from_id}})-[r:{relationship_type} {{edgeType: $edge_type}}]->(to:{to_label} {{id: $to_id}})
+            WHERE r.orgId = $org_id AND r.invalidAtTimestamp IS NULL AND r.expiredAtTimestamp IS NULL
+            SET r.invalidAtTimestamp = $invalid_at, r.expiredAtTimestamp = $expired_at
+        """
+        await self.client.execute_query(
+            query,
+            parameters={
+                "from_id": from_id, "to_id": to_id, "edge_type": edge_type, "org_id": org_id,
+                "invalid_at": invalid_at, "expired_at": expired_at,
+            },
+            txn_id=transaction,
+        )
+
+    async def invalidate_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        invalid_at: int | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.invalidate_bitemporal_edges`."""
+        if not self.client or (not from_id and not to_id):
+            self.logger.warning(
+                "invalidate_bitemporal_edges: refusing org-wide invalidate with no from_id/to_id filter"
+            )
+            return 0
+
+        now = get_epoch_timestamp_in_ms()
+        invalid_at = invalid_at if invalid_at is not None else now
+        relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+
+        from_match = f"(from:{collection_to_label(from_collection)} {{id: $from_id}})" if from_id else "(from)"
+        to_match = f"(to:{collection_to_label(to_collection)} {{id: $to_id}})" if to_id else "(to)"
+        rel_match = f"[r:{relationship_type}" + (" {edgeType: $edge_type}" if edge_type else "") + "]"
+
+        parameters: dict[str, Any] = {
+            "org_id": org_id, "invalid_at": invalid_at, "expired_at": now,
+        }
+        if from_id:
+            parameters["from_id"] = from_id
+        if to_id:
+            parameters["to_id"] = to_id
+        if edge_type:
+            parameters["edge_type"] = edge_type
+
+        query = f"""
+            MATCH {from_match}-{rel_match}->{to_match}
+            WHERE r.orgId = $org_id AND r.invalidAtTimestamp IS NULL AND r.expiredAtTimestamp IS NULL
+            SET r.invalidAtTimestamp = $invalid_at, r.expiredAtTimestamp = $expired_at
+            RETURN count(r) AS updated
+        """
+        try:
+            rows = await self.client.execute_query(query, parameters=parameters, txn_id=transaction)
+            return rows[0]["updated"] if rows else 0
+        except Exception as exc:
+            self.logger.error("invalidate_bitemporal_edges failed: %s", exc)
+            return 0
+
+    async def get_bitemporal_edges(
+        self,
+        org_id: str,
+        from_id: str | None = None,
+        from_collection: str | None = None,
+        to_id: str | None = None,
+        to_collection: str | None = None,
+        edge_type: str | None = None,
+        as_of: int | None = None,
+        include_history: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_bitemporal_edges`."""
+        if not self.client:
+            return []
+        relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        from_match = f"(from:{collection_to_label(from_collection)} {{id: $from_id}})" if from_id else "(from)"
+        to_match = f"(to:{collection_to_label(to_collection)} {{id: $to_id}})" if to_id else "(to)"
+        rel_match = f"[r:{relationship_type}" + (" {edgeType: $edge_type}" if edge_type else "") + "]"
+
+        where_clauses = ["r.orgId = $org_id"]
+        parameters: dict[str, Any] = {
+            "org_id": org_id, "offset": max(0, offset), "limit": max(1, limit),
+        }
+        if from_id:
+            parameters["from_id"] = from_id
+        if to_id:
+            parameters["to_id"] = to_id
+        if edge_type:
+            parameters["edge_type"] = edge_type
+
+        if as_of is not None:
+            parameters["as_of"] = as_of
+            where_clauses.append("r.validAtTimestamp <= $as_of")
+            where_clauses.append("r.createdAtTimestamp <= $as_of")
+            where_clauses.append("(r.invalidAtTimestamp IS NULL OR r.invalidAtTimestamp > $as_of)")
+            where_clauses.append("(r.expiredAtTimestamp IS NULL OR r.expiredAtTimestamp > $as_of)")
+        elif not include_history:
+            where_clauses.append("r.invalidAtTimestamp IS NULL")
+            where_clauses.append("r.expiredAtTimestamp IS NULL")
+
+        query = f"""
+            MATCH {from_match}-{rel_match}->{to_match}
+            WHERE {" AND ".join(where_clauses)}
+            RETURN properties(r) AS r
+            ORDER BY r.validAtTimestamp DESC
+            SKIP $offset LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(query, parameters=parameters)
+            return [row["r"] for row in (rows or []) if isinstance(row.get("r"), dict)]
+        except Exception as exc:
+            self.logger.warning("get_bitemporal_edges failed: %s", exc)
+            return []
+
+    _HARD_KEY_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+    async def find_nodes_by_hard_key(
+        self,
+        org_id: str,
+        collections: list[str],
+        field: str,
+        value: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_nodes_by_hard_key`."""
+        if not self.client or not collections or not field or not value:
+            return []
+        if not self._HARD_KEY_FIELD_RE.match(field):
+            self.logger.warning("find_nodes_by_hard_key: rejecting unsafe field name %r", field)
+            return []
+
+        results: list[dict[str, Any]] = []
+        remaining = max(1, limit)
+        for collection in collections:
+            if remaining <= 0:
+                break
+            label = collection_to_label(collection)
+            query = f"""
+                MATCH (n:{label} {{orgId: $org_id}})
+                WHERE n.{field} = $value
+                RETURN properties(n) AS n
+                LIMIT $limit
+            """
+            try:
+                rows = await self.client.execute_query(
+                    query, parameters={"org_id": org_id, "value": value, "limit": remaining},
+                )
+            except Exception as exc:
+                self.logger.warning("find_nodes_by_hard_key: lookup in %s failed: %s", collection, exc)
+                continue
+            for row in rows or []:
+                node = row.get("n")
+                if isinstance(node, dict):
+                    node = dict(node)
+                    node["_collection"] = collection
+                    results.append(node)
+            remaining = limit - len(results)
+        return results[:limit]
 
     async def get_user_app_ids(
         self,

@@ -14,12 +14,11 @@ import importlib
 import sys
 import types
 from abc import ABC
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -242,6 +241,15 @@ class TestAbstractMethodInventory:
         "get_record_group_by_external_id",
         "get_record_group_by_id",
         "get_file_record_by_id",
+        # Knowledge-graph entity sync (KG Clean Rebuild plan, Phase 1)
+        "get_entities_for_sync",
+        "get_entity_relationships",
+        "get_entity_pair_relationships",
+        # Bi-temporal canonical edges + cross-app hard-key linking (Phase 6)
+        "upsert_bitemporal_edge",
+        "invalidate_bitemporal_edges",
+        "get_bitemporal_edges",
+        "find_nodes_by_hard_key",
         # User operations
         "get_user_by_email",
         "get_user_by_source_id",
@@ -483,7 +491,6 @@ class TestConcreteMethodCalls:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_people(self):
-        from app.models.entities import Person
         ConcreteProvider = _make_concrete_class()
         instance = ConcreteProvider()
         instance.batch_upsert_people.return_value = None

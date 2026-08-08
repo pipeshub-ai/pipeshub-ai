@@ -233,6 +233,25 @@ class EventService:
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
             self._store_connector(connector_id, connector)
+
+            # Best-effort cross-app hard-key bridging (KG Clean Rebuild Phase
+            # 6, Part H "hard-key bridges on connector enable"). Idempotent
+            # and org-user-count-bounded — see CrossAppEntityLinker.link_org_users.
+            # Never blocks or fails connector init on error.
+            try:
+                from app.modules.knowledge_graph.indexing.cross_app_linking import (
+                    CrossAppEntityLinker,
+                )
+                linked = await CrossAppEntityLinker(self.graph_provider, self.logger).link_org_users(org_id)
+                if linked:
+                    self.logger.info(
+                        f"✅ Cross-app hard-key linking: {linked} link(s) refreshed for org {org_id}"
+                    )
+            except Exception as link_err:
+                self.logger.warning(
+                    f"Cross-app hard-key linking skipped for org {org_id}: {link_err}"
+                )
+
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -680,6 +699,29 @@ class EventService:
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
                 )
+
+            # Remove connector-scoped entities from the entity vector store.
+            # This is a single filtered delete on (orgId, connectorId) — entities
+            # not scoped to a specific connector (e.g. cross-connector taxonomy
+            # entities) are untouched. The graph DB remains the source of truth;
+            # a subsequent entity-sync/trigger will restore anything still valid.
+            if hasattr(self.app_container, "entity_vector_store"):
+                try:
+                    entity_vector_store = await self.app_container.entity_vector_store()
+                    if entity_vector_store is not None:
+                        await entity_vector_store.delete_entities_by_connector(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                        )
+                        self.logger.info(
+                            f"✅ Entity vector store entries removed for connector {connector_id}"
+                        )
+                except Exception as evt_err:
+                    self.logger.error(
+                        f"❌ Failed to remove entity vector store entries for "
+                        f"connector {connector_id}: {evt_err}. "
+                        f"Orphaned entity vectors may remain — use entity-sync/trigger to repair."
+                    )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True

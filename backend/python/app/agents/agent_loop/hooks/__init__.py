@@ -26,9 +26,20 @@ from app.agents.agent_loop.hooks.citations import (
     ensure_fetch_full_record_available,
 )
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
+from app.agents.agent_loop.hooks.entity_filter import entity_filter_resolution
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
+)
+from app.agents.agent_loop.hooks.mention_binding import (
+    mention_binding,
+    remember_entity_mentions,
+)
+from app.agents.agent_loop.hooks.progressive_tools import (
+    PROGRESSIVE_ENTITY_TOOL_NAME,
+    PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+    PROGRESSIVE_TOOL_NAMES,
+    progressive_entity_tools,
 )
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
@@ -39,6 +50,9 @@ from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
 
 __all__ = [
     "CitationCollector",
+    "PROGRESSIVE_ENTITY_TOOL_NAME",
+    "PROGRESSIVE_FIND_RECORDS_TOOL_NAME",
+    "PROGRESSIVE_TOOL_NAMES",
     "ToolErrorTracker",
     "artifact_context_reminder",
     "ask_user_question_sse",
@@ -47,6 +61,10 @@ __all__ = [
     "ensure_fetch_full_record_available",
     "completion_gate",
     "conversation_enrichment",
+    "entity_filter_resolution",
+    "mention_binding",
+    "progressive_entity_tools",
+    "remember_entity_mentions",
     "seed_visible_tools_from_history",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",

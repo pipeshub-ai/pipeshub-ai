@@ -323,6 +323,50 @@ class TestHandleInit:
             result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is False
 
+    @pytest.mark.asyncio
+    async def test_success_triggers_cross_app_hard_key_linking(self, service):
+        """KG Clean Rebuild Phase 6, Part H: connector init best-effort
+        triggers CrossAppEntityLinker.link_org_users for the org."""
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch.object(service, "_store_connector"), \
+             patch(
+                 "app.modules.knowledge_graph.indexing.cross_app_linking.CrossAppEntityLinker"
+             ) as mock_linker_cls:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            mock_linker = AsyncMock()
+            mock_linker.link_org_users = AsyncMock(return_value=2)
+            mock_linker_cls.return_value = mock_linker
+
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+            assert result is True
+            mock_linker_cls.assert_called_once_with(service.graph_provider, service.logger)
+            mock_linker.link_org_users.assert_awaited_once_with("org1")
+
+    @pytest.mark.asyncio
+    async def test_success_survives_cross_app_linking_failure(self, service):
+        """Cross-app hard-key linking is best-effort — a failure there must
+        never fail connector init itself."""
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch.object(service, "_store_connector"), \
+             patch(
+                 "app.modules.knowledge_graph.indexing.cross_app_linking.CrossAppEntityLinker",
+                 side_effect=RuntimeError("boom"),
+             ):
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+            assert result is True
+
 
 # ===========================================================================
 # _handle_start_sync

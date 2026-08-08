@@ -20,16 +20,16 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.agents.registry.toolset_registry import ToolsetRegistry
+from app.api.middlewares.admin import check_user_is_admin
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, OAuthScopes
+from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
@@ -448,53 +448,11 @@ async def _check_user_is_admin(
     request: Request,
     config_service: ConfigurationService,
 ) -> bool:
+    """Thin delegate to the shared admin check (see
+    ``app.api.middlewares.admin.check_user_is_admin``) — kept as a
+    module-local name since it's called from many sites below.
     """
-    Check if the current user is an admin by calling the Node.js CM backend.
-
-    Calls GET /api/v1/users/{userId}/adminCheck with the user's auth token.
-    Returns True if 200 (admin), False if 400/403 (not admin) or on error.
-
-    Args:
-        user_id: The user's MongoDB ObjectId string
-        request: The incoming FastAPI request (to forward auth headers)
-        config_service: ConfigurationService for reading the Node.js endpoint URL
-
-    Returns:
-        bool: True if the user is an admin, False otherwise
-    """
-    try:
-        # Resolve Node.js CM backend URL from etcd config
-        try:
-            endpoints = await config_service.get_config(
-                "/services/endpoints", use_cache=False
-            )
-            nodejs_url = (
-                endpoints.get("nodejs", {}).get("endpoint")
-                if isinstance(endpoints, dict)
-                else None
-            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
-        except Exception:
-            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
-
-        # Forward the auth headers from the original request
-        auth_headers: dict[str, str] = {}
-        for header_name in ("authorization", "x-organization-id", "cookie"):
-            val = request.headers.get(header_name)
-            if val:
-                auth_headers[header_name] = val
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
-                headers=auth_headers,
-            )
-            return resp.status_code == HttpStatusCode.OK.value
-
-    except Exception as e:
-        logger.warning(
-            f"Admin check via REST API failed for user {user_id}: {e}. Defaulting to non-admin."
-        )
-        return False
+    return await check_user_is_admin(user_id, request, config_service)
 
 
 def _get_registry(request: Request) -> ToolsetRegistry:

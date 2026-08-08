@@ -719,6 +719,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
 
         request = MagicMock()
@@ -760,6 +761,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -801,6 +803,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -839,6 +842,7 @@ class TestChatStreamWithPlaceholder:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "my-agent",
@@ -991,6 +995,7 @@ class TestReasoningModelValidation:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -1039,6 +1044,7 @@ class TestKBFilterHandling:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -1079,6 +1085,7 @@ class TestKBFilterHandling:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
 
         request = MagicMock()

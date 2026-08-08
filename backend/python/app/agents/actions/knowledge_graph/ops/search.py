@@ -15,6 +15,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.entity_filters import merge_filter_groups
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -42,6 +43,56 @@ _RETRIEVED_COUNT_RE_LEGACY = re.compile(
 )
 
 
+# State keys populated by the two entity-filter paths — see
+# ``hooks/entity_filter.py`` (deterministic, PRE_TOOL_USE) and
+# ``knowledge_graph.py``'s ``resolve_entity_filters`` tool (probabilistic,
+# agent-initiated). Both funnel into the same ``filter_groups`` shape here.
+_QUERY_ENTITY_FILTER_CACHE_KEY = "_kg_query_entity_filters"
+_ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
+
+
+def resolve_entity_filter_groups(
+    state: "ChatState",
+    *,
+    query: str | None,
+    entity_ids: list[str] | None,
+) -> dict[str, list[str]]:
+    """Merge the deterministic (hook) and explicit (tool) entity-filter
+    signals for this call into one ``filter_groups``-shaped dict.
+
+    Deterministic: ``entity_filter_resolution`` (PRE_TOOL_USE) pre-computed
+    filters for this exact query text and cached them keyed by query — read
+    (not popped) so multiple search() calls with the same query text in the
+    same turn (e.g. a fan-out or a retry) all still get the filter, rather
+    than only the first consumer.
+
+    Explicit: ``entity_ids`` are IDs the agent got back from
+    ``resolve_entity_filters`` and is now passing to narrow this search;
+    each is resolved to its filter key AND its graph-matchable name via the
+    cache that tool populated — the graph queries filter on entity name
+    properties, never on entityId (see entity_filters.py's
+    group_entities_into_filters docstring). IDs with no cache entry
+    (hallucinated, stale, or from a different session) are silently dropped
+    rather than erroring.
+    """
+    query_cache: dict[str, dict[str, list[str]]] = state.get(_QUERY_ENTITY_FILTER_CACHE_KEY) or {}
+    hook_filters = query_cache.get(query, {}) if query else {}
+
+    explicit_filters: dict[str, list[str]] = {}
+    if entity_ids:
+        id_to_key: dict[str, tuple[str, str]] = state.get(_ENTITY_ID_FILTER_KEY_CACHE_KEY) or {}
+        for entity_id in entity_ids:
+            cached = id_to_key.get(entity_id)
+            if not cached:
+                continue
+            filter_key, entity_name = cached
+            bucket = explicit_filters.setdefault(filter_key, [])
+            if entity_name not in bucket:
+                bucket.append(entity_name)
+
+    return merge_filter_groups(hook_filters, explicit_filters)
+
+
 def normalize_source_ids(value: Any) -> list[str] | None:
     """Normalize source_ids parameter (a string or list of strings)."""
     if value is None:
@@ -64,6 +115,7 @@ async def execute_search(
     created_before: str | None = None,
     modified_after: str | None = None,
     modified_before: str | None = None,
+    entity_ids: list[str] | None = None,
 ) -> str:
     """Run semantic search over the agent's knowledge scope.
 
@@ -75,6 +127,15 @@ async def execute_search(
     that narrow results to records whose source creation/last-modified
     timestamp falls in the given window. Applied as a hard pre-filter at the
     graph permission-scoping step, before vector search ever runs.
+
+    ``entity_ids`` narrows results to records connected to specific
+    departments/categories/subcategories/topics/languages — the *explicit*,
+    agent-initiated counterpart to the automatic ``entity_filter_resolution``
+    PRE_TOOL_USE hook (see ``hooks/entity_filter.py``). IDs are expected to
+    come from a prior ``resolve_entity_filters`` call; unresolvable/unknown
+    IDs are dropped rather than erroring (query = Filter (graph) + Search
+    (vector); a filter with nothing to bind to just means "no extra
+    filter", never a hard failure).
 
     Returns a plain-text string suitable for LLM consumption (same format as
     the legacy retrieval tool).
@@ -149,84 +210,117 @@ async def execute_search(
         resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
         resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
+        entity_filter_groups = resolve_entity_filter_groups(
+            state, query=query, entity_ids=entity_ids,
+        )
+
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
-        per_source_fan_out = False
+        per_source_fan_out = fan_out_sources
 
-        async def _search_one(fg: dict[str, list[str]]) -> dict[str, Any] | None:
+        async def _search_one(fg: dict[str, list[str]], entity_fg: dict[str, list[str]]) -> dict[str, Any] | None:
             return await retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=adjusted_limit,
-                filter_groups=fg,
+                filter_groups=merge_filter_groups(fg, entity_fg),
                 time_range=time_range,
             )
 
-        if fan_out_sources:
-            per_source_fan_out = True
-            tasks: list[Any] = []
-            for app_id in resolved_apps:
-                tasks.append(_search_one(
-                    resolved_scope.to_filter_groups_for_source(
-                        app_id=app_id, placeholder_agent=is_placeholder_agent,
-                    )
-                ))
-            for kb_id in resolved_kbs:
-                tasks.append(_search_one(
-                    resolved_scope.to_filter_groups_for_source(
-                        kb_id=kb_id, placeholder_agent=is_placeholder_agent,
-                    )
-                ))
+        async def _attempt(
+            entity_fg: dict[str, list[str]],
+        ) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+            """Run one full search attempt (fan-out or single) with *entity_fg*
+            as the entity filter to apply. Returns ``(search_results,
+            virtual_to_record_map, error_json)`` — *error_json* is set only for
+            a genuine service error; an empty-but-successful result returns
+            ``([], {}, None)`` so the caller can decide whether to retry.
+            """
+            if fan_out_sources:
+                tasks: list[Any] = []
+                for app_id in resolved_apps:
+                    tasks.append(_search_one(
+                        resolved_scope.to_filter_groups_for_source(
+                            app_id=app_id, placeholder_agent=is_placeholder_agent,
+                        ),
+                        entity_fg,
+                    ))
+                for kb_id in resolved_kbs:
+                    tasks.append(_search_one(
+                        resolved_scope.to_filter_groups_for_source(
+                            kb_id=kb_id, placeholder_agent=is_placeholder_agent,
+                        ),
+                        entity_fg,
+                    ))
 
-            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-            search_results: list[dict[str, Any]] = []
-            virtual_to_record_map: dict[str, Any] = {}
-            any_success = False
-            error_status: int | None = None
-            error_message = "Retrieval service unavailable"
+                raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+                attempt_results: list[dict[str, Any]] = []
+                attempt_map: dict[str, Any] = {}
+                any_success = False
+                error_status: int | None = None
+                error_message = "Retrieval service unavailable"
 
-            for raw in raw_results:
-                if isinstance(raw, Exception):
-                    logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
-                    continue
-                if raw is None:
-                    continue
-                status_code = raw.get("status_code", 200)
-                if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                    error_status = error_status or status_code
-                    error_message = raw.get("message", error_message)
-                    continue
-                any_success = True
-                search_results.extend(raw.get("searchResults", []))
-                virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
+                for raw in raw_results:
+                    if isinstance(raw, Exception):
+                        logger_instance.warning("Per-source search failed: %s", raw, exc_info=raw)
+                        continue
+                    if raw is None:
+                        continue
+                    status_code = raw.get("status_code", 200)
+                    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                        error_status = error_status or status_code
+                        error_message = raw.get("message", error_message)
+                        continue
+                    any_success = True
+                    attempt_results.extend(raw.get("searchResults", []))
+                    attempt_map.update(raw.get("virtual_to_record_map", {}))
 
-            if not any_success:
-                if error_status is not None:
-                    return json.dumps({
-                        "status": "error",
-                        "status_code": error_status,
-                        "message": error_message,
-                    })
-                return json.dumps({
-                    "status": "success",
-                    "message": "No results found",
-                    "results": [],
-                    "result_count": 0,
-                })
-        else:
-            results = await _search_one(filter_groups)
+                if not any_success:
+                    if error_status is not None:
+                        return [], {}, json.dumps({
+                            "status": "error",
+                            "status_code": error_status,
+                            "message": error_message,
+                        })
+                    return [], {}, None
+                return attempt_results, attempt_map, None
+
+            results = await _search_one(filter_groups, entity_fg)
             if results is None:
-                return json.dumps({"status": "error", "message": "Retrieval service returned no results"})
+                return [], {}, json.dumps({"status": "error", "message": "Retrieval service returned no results"})
             status_code = results.get("status_code", 200)
             if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
-                return json.dumps({
+                return [], {}, json.dumps({
                     "status": "error",
                     "status_code": status_code,
                     "message": results.get("message", "Retrieval service unavailable"),
                 })
-            search_results = results.get("searchResults", [])
-            virtual_to_record_map = results.get("virtual_to_record_map", {})
+            return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
+
+        search_results, virtual_to_record_map, error_json = await _attempt(entity_filter_groups)
+        if error_json is not None:
+            return error_json
+
+        # Entity filters (auto-detected by hooks/entity_filter.py, or explicit
+        # via entity_ids) are a hard AND constraint at the graph layer — if the
+        # graph has no belongsTo* edge linking any accessible record to the
+        # matched entity (e.g. extraction/linking gap), the permission-scoped
+        # candidate set is empty and Qdrant is never even queried, even though
+        # content-matching documents exist. Retrying once without entity
+        # filters trades a little precision for not silently returning "no
+        # results" when the entity filter is the actual cause.
+        if not search_results and entity_filter_groups:
+            logger_instance.info(
+                "knowledgegraph__search: entity-filtered search returned zero "
+                "results for query=%r filters=%r — retrying without entity filters",
+                query[:100], entity_filter_groups,
+            )
+            fallback_results, fallback_map, fallback_error = await _attempt({})
+            if fallback_error is not None:
+                return fallback_error
+            if fallback_results:
+                search_results, virtual_to_record_map = fallback_results, fallback_map
 
         if not search_results:
             return json.dumps({

@@ -207,6 +207,29 @@ class SourceCatalog:
         # decide which tool to use for what kind of question.
         lookup = granted("knowledgegraph.lookup_record", _tool_names)
         fetch = granted("knowledgegraph.fetch_record", _tool_names)
+        # search_entities is essential (turn 0); find_records_by_entity,
+        # expand_neighbors, and get_relationships are progressive (unlocked
+        # after first KG use) but the prompt must always mention them so the
+        # LLM knows to call them at the right moment — e.g. once entity
+        # results show connectedRecordCount > 0. The tools WILL be available
+        # by then because the hook fires on any KG tool call including
+        # search_entities itself.
+        search_entities = (
+            granted("knowledgegraph.search_entities", _tool_names)
+            or "knowledgegraph__search_entities"
+        )
+        find_records_by_entity = (
+            granted("knowledgegraph.find_records_by_entity", _tool_names)
+            or "knowledgegraph__find_records_by_entity"
+        )
+        expand_neighbors = (
+            granted("knowledgegraph.expand_neighbors", _tool_names)
+            or "knowledgegraph__expand_neighbors"
+        )
+        get_relationships = (
+            granted("knowledgegraph.get_relationships", _tool_names)
+            or "knowledgegraph__get_relationships"
+        )
         if not lookup:
             lookup = "knowledgegraph__lookup_record"
         lines.extend([
@@ -232,6 +255,25 @@ class SourceCatalog:
             "children, linked records, and the group's total count. For a question that must be "
             "exhaustive (\"all\", \"how many\", \"every\"), do not count search results: navigate "
             "the record group or scope list_files to one source, then read what matters.",
+            "",
+            "**Entities.** Records link to departments, categories, topics, languages, and "
+            "people. Whenever the user's query contains a term that could be one of these — a "
+            "team name, a project topic, a category, a person — call "
+            f"`{search_entities}(query=...)` alongside your content search. It costs one extra "
+            "call but returns rich context: connectedRecords (document previews), "
+            "connectedEntities (co-occurring departments/topics/categories on the same "
+            "records), and connectedRecordCount — often answering the question directly or "
+            "revealing structure that content search alone misses. Entity names inside "
+            f"`{retrieval}` queries are also auto-filtered, but explicit entity lookup always "
+            "gives richer context.\n"
+            f"From an entityId, go deeper as needed: `{expand_neighbors}(entity_id=..., "
+            "entity_type=...)` re-inspects its full neighborhood (hierarchy, co-occurring "
+            f"entities, record preview); `{find_records_by_entity}(entity_id=..., "
+            "entity_type=...)` lists EVERY record connected to it (permission-filtered, "
+            f"paginated) — do this whenever connectedRecordCount > 0 and the user wants the full "
+            f"list; `{get_relationships}(source_entity_id=..., source_entity_type=..., "
+            "target_entity_id=..., target_entity_type=...)` checks how two specific entities "
+            "are connected (direct edge or shared records).",
             "",
         ])
         # ID-specific header — only when connector IDs are actionable (agent route).
