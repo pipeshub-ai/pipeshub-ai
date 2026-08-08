@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
-from jinja2 import Template
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
 )
@@ -24,6 +23,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.utils.jinja_templates import compiled_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
@@ -525,7 +525,7 @@ class FileRecord(Record):
                                     })
 
                             if child_results:
-                                template = Template(agent_block_group_prompt)
+                                template = compiled_template(agent_block_group_prompt)
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     label=GroupType.TABLE.value,
@@ -540,7 +540,7 @@ class FileRecord(Record):
                     block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
                     if block_group_id in seen_block_groups:
                         continue
-                    template = Template(agent_block_group_prompt)
+                    template = compiled_template(agent_block_group_prompt)
                     if parent_index >= len(block_groups):
                         continue
                     block_group = block_groups[parent_index]

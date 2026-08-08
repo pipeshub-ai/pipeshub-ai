@@ -1,11 +1,10 @@
 """Knowledge graph fetch_record operation.
 
-Extracted from hooks/citations.py ``_FetchFullRecordTool`` so the execution
-logic lives in one place and both the new ``knowledgegraph__fetch_record``
-tool and the legacy dynamic tool name can call it.
-
-The dynamic-grant gating mechanism in ``citations.py`` is preserved
-unchanged; only the *name* of the registered tool changes.
+The execution body for ``knowledgegraph__fetch_record``. The tool itself is
+``_FetchFullRecordTool`` in ``hooks/citations.py``, which owns registration,
+the dynamic grant, and where the returned ref mapper gets stashed; this module
+owns what a fetch actually does. Keeping the two apart is what lets the tool be
+built fresh per call from live ``tool_state`` without duplicating the body.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.agent_loop_lib.agent.spec import AgentSpec
+    from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
 
 logger = logging.getLogger(__name__)
@@ -23,9 +22,15 @@ _DEFAULT_FULL_RECORD_MAX_BLOCKS = 200
 
 FETCH_RECORD_TOOL_NAME = "knowledgegraph__fetch_record"
 
+DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
+
 
 def resolve_block_cap(model_name: str, requested_max: int | None) -> int:
-    """Resolve the effective block cap for a fetch."""
+    """Resolve the effective block cap for a fetch.
+
+    Deliberately not widened from the model's context window: that reports 128k
+    for unknown/local models, far too optimistic for a small LLM.
+    """
     env_raw = os.getenv("PIPESHUB_FULL_RECORD_MAX_BLOCKS", "")
     try:
         env_cap = int(env_raw) if env_raw.strip() else _DEFAULT_FULL_RECORD_MAX_BLOCKS
@@ -48,18 +53,18 @@ async def execute_fetch_record(
     virtual_records: dict[str, Any],
     citation_ref_mapper: Any,
     record_ids: list[str] | str,
-    reason: str = "Fetching full record content for comprehensive answer",
+    reason: str = DEFAULT_FETCH_REASON,
     start_block: int = 0,
     max_blocks: int | None = None,
-) -> dict[str, Any]:
+) -> tuple["ToolOutput", Any]:
     """Fetch one or more records end-to-end.
 
-    Returns a dict with keys:
-    - ``success``: bool
-    - ``text``: formatted text for the LLM (when success=True)
-    - ``error``: error string (when success=False)
-    - ``updated_ref_mapper``: updated CitationRefMapper (caller must stash)
+    Returns ``(output, ref_mapper)``. The mapper comes back rather than being
+    stashed here, and is the SAME object passed in unless a record was actually
+    rendered -- that identity is how the caller tells an update from a no-op.
     """
+    from app.agent_loop_lib.tools.base import ToolOutput
+    from app.agents.agent_loop.tool_adapter import _to_tool_output
     from app.utils.chat_helpers import record_to_message_content
     from app.utils.fetch_full_record import create_fetch_full_record_tool
 
@@ -80,6 +85,11 @@ async def execute_fetch_record(
     if record_id_shortener is not None:
         record_ids = [record_id_shortener.resolve(rid) for rid in record_ids]
 
+    # Intra-call only. Do NOT extend this to skip records fetched by an earlier
+    # call: `shape_tool_result_clearing` drops stale fetch results and tells the
+    # model to re-call with the same arguments, which such a guard would refuse.
+    # After resolve so a short label and its full id collapse to one entry.
+    record_ids = list(dict.fromkeys(record_ids))
     block_cap = resolve_block_cap(context.model_name, max_blocks)
 
     structured_tool = create_fetch_full_record_tool(
@@ -91,7 +101,7 @@ async def execute_fetch_record(
     try:
         result = await structured_tool.coroutine(record_ids=record_ids, reason=reason)
     except Exception as exc:
-        return {"success": False, "error": str(exc), "updated_ref_mapper": citation_ref_mapper}
+        return ToolOutput(success=False, error=str(exc)), citation_ref_mapper
 
     if isinstance(result, dict) and result.get("ok") and result.get("records"):
         parts: list[str] = []
@@ -121,8 +131,9 @@ async def execute_fetch_record(
         not_available = result.get("not_available_ids", [])
         if not_available:
             if record_id_shortener is not None:
+                # shorten_if_known: do not mint labels for ids the model never saw.
                 not_available = [
-                    record_id_shortener.get_or_create_short_id(rid) for rid in not_available
+                    record_id_shortener.shorten_if_known(rid) for rid in not_available
                 ]
             ids_str = ", ".join(f"'{rid}'" for rid in not_available)
             text += f"\n\nNote: The following record(s) are not available: {ids_str}"
@@ -133,13 +144,6 @@ async def execute_fetch_record(
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
 
-        return {"success": True, "text": text, "updated_ref_mapper": ref_mapper}
+        return ToolOutput(success=True, data=text), ref_mapper
 
-    from app.agents.agent_loop.tool_adapter import _to_tool_output
-    out = _to_tool_output(result)
-    return {
-        "success": out.success,
-        "text": out.data if out.success else None,
-        "error": out.error if not out.success else None,
-        "updated_ref_mapper": citation_ref_mapper,
-    }
+    return _to_tool_output(result), citation_ref_mapper
