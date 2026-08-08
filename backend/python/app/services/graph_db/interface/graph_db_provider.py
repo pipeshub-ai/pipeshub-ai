@@ -1470,6 +1470,66 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def list_record_groups(
+        self,
+        org_id: str,
+        connector_id: str,
+        group_types: list[str] | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        List record groups for one connector — the filter-vocabulary listing
+        `get_record_group_by_external_id`/`get_record_group_by_id` cannot serve
+        since both are single-record lookups.
+
+        Args:
+            org_id: Organization ID
+            connector_id: Connector ID
+            group_types: Optional RecordGroupType values to restrict to (e.g.
+                ``["PROJECT"]``); omit for all types.
+            query: Optional case-insensitive substring match on group name or
+                short name.
+            limit: Max rows to return.
+            transaction: Optional transaction context
+
+        Returns:
+            List of raw record-group dicts (camelCase, as stored) — callers
+            needing the typed `RecordGroup` model should use
+            `get_record_group_by_external_id`/`get_record_group_by_id`
+            instead; this method intentionally returns the raw shape so
+            `FilterVocabularyService` can read `shortName`/`externalGroupId`
+            directly, including from stub groups with a null `shortName`.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_external_ids(
+        self,
+        connector_id: str,
+        external_ids: list[str],
+        transaction: str | None = None,
+    ) -> list['Record']:
+        """
+        Batch-resolve external record IDs to `Record`s in ONE query — the
+        join step `FilteredRetrievalBridge` needs after a native filter
+        search returns a list of external IDs. Avoids N+1 round trips to the
+        graph for what could be dozens of hits from one native query.
+
+        Args:
+            connector_id: Connector ID the external IDs belong to
+            external_ids: External record IDs to resolve
+            transaction: Optional transaction context
+
+        Returns:
+            List[Record]: Matching records (silently omits IDs with no match
+                — callers should treat len(result) < len(external_ids) as a
+                partial-coverage signal, not an error).
+        """
+        pass
+
+    @abstractmethod
     async def get_file_record_by_id(
         self,
         record_id: str,
@@ -2037,6 +2097,31 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of user groups
+        """
+        pass
+
+    @abstractmethod
+    async def list_roles(
+        self,
+        org_id: str,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        List roles for one connector — mirrors `get_user_groups` but for the
+        ROLES collection. Connectors that don't track roles for a given app
+        (e.g. Confluence Cloud) should return an empty list here; the
+        distinction between "not tracked for this connector type" and "no
+        roles configured" is made by the caller
+        (`FilterVocabularyService.roles`), not by this method.
+
+        Args:
+            org_id: Organization ID
+            connector_id: Connector ID
+            transaction: Optional transaction context
+
+        Returns:
+            List of raw role dicts (camelCase, as stored).
         """
         pass
 

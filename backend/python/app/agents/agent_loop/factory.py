@@ -93,6 +93,8 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
+    filter_value_resolution,
+    filtered_retrieval,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -102,6 +104,8 @@ from app.agents.agent_loop.hooks import (
     stash_tool_call_metadata,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
+from app.agents.actions.filtered_search.prompt_preload import preload_native_filter_search
+from app.agents.actions.filtered_search.tools import FILTERED_SEARCH_TOOL_PATHS
 from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
@@ -382,6 +386,13 @@ class PipesHubAgentFactory:
         # (called from attachment_resolver outside _build_hooks) and the
         # fetch-tool block cap can both reach it without the TransportRegistry.
         context.model_name = model_name
+
+        # Renders the "Native Filter Search" prompt section (one line per
+        # connector: name, id, tool) for whichever enabled connectors have a
+        # registered `FilterAdapter` — async graph reads, so it must run
+        # here rather than inside the (synchronous) `PipesHubPromptBuilder`.
+        # Failure-tolerant: never raises, just omits the section.
+        await preload_native_filter_search(context)
 
         if not clarifying_questions:
             attachment_text, image_blocks = await resolve_attachments_for_goal(
@@ -789,6 +800,18 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+
+        # Hybrid native-filter + PipesHub-retrieval search: substitute the
+        # asking user's identity for a self-reference token deterministically
+        # before the call, then run content search (if requested)
+        # deterministically after it. Scoped to exactly the three
+        # native-query search tool paths (not `describe_filter_schema`) so
+        # every other tool call pays nothing for either. `*` in a glob
+        # pattern only matches one whole path segment (see `routing.py`), so
+        # this uses an explicit membership predicate rather than a glob.
+        _is_filtered_search_tool = lambda ctx: ctx.tool_path in FILTERED_SEARCH_TOOL_PATHS  # noqa: E731
+        hooks.on(HookEvent.PRE_TOOL_USE).use(_is_filtered_search_tool, filter_value_resolution(context))
+        hooks.on(HookEvent.POST_TOOL_USE).use(_is_filtered_search_tool, filtered_retrieval(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 

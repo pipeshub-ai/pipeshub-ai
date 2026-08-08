@@ -26,6 +26,8 @@ from app.agents.agent_loop.hooks.citations import (
     ensure_fetch_full_record_available,
 )
 from app.agents.agent_loop.hooks.completion_gate import completion_gate
+from app.agents.agent_loop.hooks.filter_value_resolution import filter_value_resolution
+from app.agents.agent_loop.hooks.filtered_retrieval import filtered_retrieval
 from app.agents.agent_loop.hooks.memory import (
     conversation_enrichment,
     seed_visible_tools_from_history,
@@ -47,6 +49,8 @@ __all__ = [
     "ensure_fetch_full_record_available",
     "completion_gate",
     "conversation_enrichment",
+    "filter_value_resolution",
+    "filtered_retrieval",
     "seed_visible_tools_from_history",
     "resolve_attachments_for_goal",
     "resolve_history_attachments",
