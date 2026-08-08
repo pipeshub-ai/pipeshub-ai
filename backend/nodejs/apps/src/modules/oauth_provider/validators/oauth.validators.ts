@@ -81,7 +81,7 @@ export const introspectSchema = z.object({
 
 // Developer Apps Validators
 
-const mongoIdRegex = /^[a-fA-F0-9]{24}$/
+export const mongoIdRegex = /^[a-fA-F0-9]{24}$/
 
 export const appIdParamsSchema = z.object({
   params: z.object({
