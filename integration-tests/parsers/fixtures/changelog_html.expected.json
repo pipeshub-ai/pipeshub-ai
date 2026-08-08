@@ -39,8 +39,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 1,
-            "end": 6
+            "start": 2,
+            "end": 7
           }
         ],
         "block_group_ranges": []
@@ -83,8 +83,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 9,
-            "end": 10
+            "start": 10,
+            "end": 11
           }
         ],
         "block_group_ranges": []
@@ -119,8 +119,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 12,
-            "end": 12
+            "start": 13,
+            "end": 13
           }
         ],
         "block_group_ranges": []
@@ -155,8 +155,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 15,
-            "end": 17
+            "start": 16,
+            "end": 18
           }
         ],
         "block_group_ranges": []
@@ -191,8 +191,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 19,
-            "end": 20
+            "start": 20,
+            "end": 21
           }
         ],
         "block_group_ranges": []
@@ -227,8 +227,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 22,
-            "end": 23
+            "start": 23,
+            "end": 24
           }
         ],
         "block_group_ranges": []
@@ -263,8 +263,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 25,
-            "end": 25
+            "start": 26,
+            "end": 26
           }
         ],
         "block_group_ranges": []
@@ -299,8 +299,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 28,
-            "end": 29
+            "start": 29,
+            "end": 30
           }
         ],
         "block_group_ranges": []
@@ -335,8 +335,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 32,
-            "end": 34
+            "start": 33,
+            "end": 35
           }
         ],
         "block_group_ranges": []
@@ -371,8 +371,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 36,
-            "end": 36
+            "start": 37,
+            "end": 37
           }
         ],
         "block_group_ranges": []
@@ -407,8 +407,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 38,
-            "end": 38
+            "start": 39,
+            "end": 39
           }
         ],
         "block_group_ranges": []
@@ -443,8 +443,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 41,
-            "end": 44
+            "start": 42,
+            "end": 45
           }
         ],
         "block_group_ranges": []
@@ -459,6 +459,38 @@
   "blocks": [
     {
       "index": 0,
+      "parent_index": null,
+      "parent_block_index": null,
+      "type": "text",
+      "sub_type": "heading",
+      "name": null,
+      "format": "markdown",
+      "comments": [],
+      "source_creation_date": null,
+      "source_update_date": null,
+      "source_id": null,
+      "source_name": null,
+      "source_type": null,
+      "data": "Changelog — PipesHub",
+      "links": null,
+      "weburl": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "citation_metadata": null,
+      "list_metadata": null,
+      "table_row_metadata": null,
+      "table_cell_metadata": null,
+      "code_metadata": null,
+      "media_metadata": null,
+      "file_metadata": null,
+      "link_metadata": null,
+      "image_metadata": null,
+      "semantic_metadata": null,
+      "children_records": null,
+      "content_hash": null
+    },
+    {
+      "index": 1,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -490,7 +522,7 @@
       "content_hash": null
     },
     {
-      "index": 1,
+      "index": 2,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -531,7 +563,7 @@
       "content_hash": null
     },
     {
-      "index": 2,
+      "index": 3,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -572,7 +604,7 @@
       "content_hash": null
     },
     {
-      "index": 3,
+      "index": 4,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -613,7 +645,7 @@
       "content_hash": null
     },
     {
-      "index": 4,
+      "index": 5,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -654,7 +686,7 @@
       "content_hash": null
     },
     {
-      "index": 5,
+      "index": 6,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -695,7 +727,7 @@
       "content_hash": null
     },
     {
-      "index": 6,
+      "index": 7,
       "parent_index": 0,
       "parent_block_index": null,
       "type": "table_row",
@@ -736,7 +768,7 @@
       "content_hash": null
     },
     {
-      "index": 7,
+      "index": 8,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -768,7 +800,7 @@
       "content_hash": null
     },
     {
-      "index": 8,
+      "index": 9,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -782,38 +814,6 @@
       "source_name": null,
       "source_type": null,
       "data": "Added",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 9,
-      "parent_index": 1,
-      "parent_block_index": null,
-      "type": "text",
-      "sub_type": "list_item",
-      "name": null,
-      "format": "markdown",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "Dark mode support across all dashboard views",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -845,7 +845,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Export to CSV for analytics reports",
+      "data": "Dark mode support across all dashboard views",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -865,6 +865,38 @@
     },
     {
       "index": 11,
+      "parent_index": 1,
+      "parent_block_index": null,
+      "type": "text",
+      "sub_type": "list_item",
+      "name": null,
+      "format": "markdown",
+      "comments": [],
+      "source_creation_date": null,
+      "source_update_date": null,
+      "source_id": null,
+      "source_name": null,
+      "source_type": null,
+      "data": "Export to CSV for analytics reports",
+      "links": null,
+      "weburl": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "citation_metadata": null,
+      "list_metadata": null,
+      "table_row_metadata": null,
+      "table_cell_metadata": null,
+      "code_metadata": null,
+      "media_metadata": null,
+      "file_metadata": null,
+      "link_metadata": null,
+      "image_metadata": null,
+      "semantic_metadata": null,
+      "children_records": null,
+      "content_hash": null
+    },
+    {
+      "index": 12,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -896,7 +928,7 @@
       "content_hash": null
     },
     {
-      "index": 12,
+      "index": 13,
       "parent_index": 2,
       "parent_block_index": null,
       "type": "text",
@@ -928,7 +960,7 @@
       "content_hash": null
     },
     {
-      "index": 13,
+      "index": 14,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -960,7 +992,7 @@
       "content_hash": null
     },
     {
-      "index": 14,
+      "index": 15,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -974,38 +1006,6 @@
       "source_name": null,
       "source_type": null,
       "data": "Added",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 15,
-      "parent_index": 3,
-      "parent_block_index": null,
-      "type": "text",
-      "sub_type": "list_item",
-      "name": null,
-      "format": "markdown",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "Webhook retry queue with exponential backoff (max 5 attempts)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1037,7 +1037,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "`GET /v1/connectors/:id/status` endpoint for health polling",
+      "data": "Webhook retry queue with exponential backoff (max 5 attempts)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1069,7 +1069,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Support for multi-tenant Slack app routing via shared signing secrets",
+      "data": "`GET /v1/connectors/:id/status` endpoint for health polling",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1089,10 +1089,10 @@
     },
     {
       "index": 18,
-      "parent_index": null,
+      "parent_index": 3,
       "parent_block_index": null,
       "type": "text",
-      "sub_type": "paragraph",
+      "sub_type": "list_item",
       "name": null,
       "format": "markdown",
       "comments": [],
@@ -1101,7 +1101,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Changed",
+      "data": "Support for multi-tenant Slack app routing via shared signing secrets",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1121,10 +1121,10 @@
     },
     {
       "index": 19,
-      "parent_index": 4,
+      "parent_index": null,
       "parent_block_index": null,
       "type": "text",
-      "sub_type": "list_item",
+      "sub_type": "paragraph",
       "name": null,
       "format": "markdown",
       "comments": [],
@@ -1133,7 +1133,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "`POST /v1/agents/run` now accepts optional `timeout_ms` (default: `30000`)",
+      "data": "Changed",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1165,7 +1165,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Python async service layer upgraded from Python 3.10 → 3.12",
+      "data": "`POST /v1/agents/run` now accepts optional `timeout_ms` (default: `30000`)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1185,10 +1185,10 @@
     },
     {
       "index": 21,
-      "parent_index": null,
+      "parent_index": 4,
       "parent_block_index": null,
       "type": "text",
-      "sub_type": "paragraph",
+      "sub_type": "list_item",
       "name": null,
       "format": "markdown",
       "comments": [],
@@ -1197,7 +1197,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Fixed",
+      "data": "Python async service layer upgraded from Python 3.10 → 3.12",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1217,10 +1217,10 @@
     },
     {
       "index": 22,
-      "parent_index": 5,
+      "parent_index": null,
       "parent_block_index": null,
       "type": "text",
-      "sub_type": "list_item",
+      "sub_type": "paragraph",
       "name": null,
       "format": "markdown",
       "comments": [],
@@ -1229,7 +1229,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "`SignatureDoesNotMatch` 403 from Content-Type mismatch in S3 presigned URL uploads [#412](#)",
+      "data": "Fixed",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1261,7 +1261,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "OneDrive `sharedWithMe` pagination silently dropping items beyond page 2 [#398](#)",
+      "data": "`SignatureDoesNotMatch` 403 from Content-Type mismatch in S3 presigned URL uploads [#412](#)",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1281,6 +1281,38 @@
     },
     {
       "index": 24,
+      "parent_index": 5,
+      "parent_block_index": null,
+      "type": "text",
+      "sub_type": "list_item",
+      "name": null,
+      "format": "markdown",
+      "comments": [],
+      "source_creation_date": null,
+      "source_update_date": null,
+      "source_id": null,
+      "source_name": null,
+      "source_type": null,
+      "data": "OneDrive `sharedWithMe` pagination silently dropping items beyond page 2 [#398](#)",
+      "links": null,
+      "weburl": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "citation_metadata": null,
+      "list_metadata": null,
+      "table_row_metadata": null,
+      "table_cell_metadata": null,
+      "code_metadata": null,
+      "media_metadata": null,
+      "file_metadata": null,
+      "link_metadata": null,
+      "image_metadata": null,
+      "semantic_metadata": null,
+      "children_records": null,
+      "content_hash": null
+    },
+    {
+      "index": 25,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1312,7 +1344,7 @@
       "content_hash": null
     },
     {
-      "index": 25,
+      "index": 26,
       "parent_index": 6,
       "parent_block_index": null,
       "type": "text",
@@ -1344,7 +1376,7 @@
       "content_hash": null
     },
     {
-      "index": 26,
+      "index": 27,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1376,7 +1408,7 @@
       "content_hash": null
     },
     {
-      "index": 27,
+      "index": 28,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1408,7 +1440,7 @@
       "content_hash": null
     },
     {
-      "index": 28,
+      "index": 29,
       "parent_index": 7,
       "parent_block_index": null,
       "type": "text",
@@ -1440,7 +1472,7 @@
       "content_hash": null
     },
     {
-      "index": 29,
+      "index": 30,
       "parent_index": 7,
       "parent_block_index": null,
       "type": "text",
@@ -1472,7 +1504,7 @@
       "content_hash": null
     },
     {
-      "index": 30,
+      "index": 31,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1504,7 +1536,7 @@
       "content_hash": null
     },
     {
-      "index": 31,
+      "index": 32,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1518,38 +1550,6 @@
       "source_name": null,
       "source_type": null,
       "data": "Added",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 32,
-      "parent_index": 8,
-      "parent_block_index": null,
-      "type": "text",
-      "sub_type": "list_item",
-      "name": null,
-      "format": "markdown",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "Salesforce connector: Lead conversion via `convertLead` invocable action with Tooling API fallback",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1581,7 +1581,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Zoom Docs toolset: create, read, update, delete operations",
+      "data": "Salesforce connector: Lead conversion via `convertLead` invocable action with Tooling API fallback",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1613,7 +1613,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "`isExternal` field filtering in ArangoDB and Neo4j queries for legacy document compatibility",
+      "data": "Zoom Docs toolset: create, read, update, delete operations",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1633,6 +1633,38 @@
     },
     {
       "index": 35,
+      "parent_index": 8,
+      "parent_block_index": null,
+      "type": "text",
+      "sub_type": "list_item",
+      "name": null,
+      "format": "markdown",
+      "comments": [],
+      "source_creation_date": null,
+      "source_update_date": null,
+      "source_id": null,
+      "source_name": null,
+      "source_type": null,
+      "data": "`isExternal` field filtering in ArangoDB and Neo4j queries for legacy document compatibility",
+      "links": null,
+      "weburl": null,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "citation_metadata": null,
+      "list_metadata": null,
+      "table_row_metadata": null,
+      "table_cell_metadata": null,
+      "code_metadata": null,
+      "media_metadata": null,
+      "file_metadata": null,
+      "link_metadata": null,
+      "image_metadata": null,
+      "semantic_metadata": null,
+      "children_records": null,
+      "content_hash": null
+    },
+    {
+      "index": 36,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1664,7 +1696,7 @@
       "content_hash": null
     },
     {
-      "index": 36,
+      "index": 37,
       "parent_index": 9,
       "parent_block_index": null,
       "type": "text",
@@ -1696,7 +1728,7 @@
       "content_hash": null
     },
     {
-      "index": 37,
+      "index": 38,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1728,7 +1760,7 @@
       "content_hash": null
     },
     {
-      "index": 38,
+      "index": 39,
       "parent_index": 10,
       "parent_block_index": null,
       "type": "text",
@@ -1760,7 +1792,7 @@
       "content_hash": null
     },
     {
-      "index": 39,
+      "index": 40,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1792,7 +1824,7 @@
       "content_hash": null
     },
     {
-      "index": 40,
+      "index": 41,
       "parent_index": null,
       "parent_block_index": null,
       "type": "text",
@@ -1824,7 +1856,7 @@
       "content_hash": null
     },
     {
-      "index": 41,
+      "index": 42,
       "parent_index": 11,
       "parent_block_index": null,
       "type": "text",
@@ -1856,7 +1888,7 @@
       "content_hash": null
     },
     {
-      "index": 42,
+      "index": 43,
       "parent_index": 11,
       "parent_block_index": null,
       "type": "text",
@@ -1888,7 +1920,7 @@
       "content_hash": null
     },
     {
-      "index": 43,
+      "index": 44,
       "parent_index": 11,
       "parent_block_index": null,
       "type": "text",
@@ -1920,7 +1952,7 @@
       "content_hash": null
     },
     {
-      "index": 44,
+      "index": 45,
       "parent_index": 11,
       "parent_block_index": null,
       "type": "text",
