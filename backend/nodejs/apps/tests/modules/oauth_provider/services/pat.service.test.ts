@@ -118,7 +118,7 @@ describe('PatService', () => {
 
       const result = await service.createToken(orgId, userId, 'Test User', { name: 'my token' })
 
-      expect(result.accessToken).to.equal('raw-token')
+      expect(result.accessToken).to.equal('phpat_raw-token')
       expect(findOneStub.callCount).to.equal(2)
     })
 
@@ -139,7 +139,7 @@ describe('PatService', () => {
       [90, 90 * SECONDS_PER_DAY],
       [365, 365 * SECONDS_PER_DAY],
       ['never', 365 * 100 * SECONDS_PER_DAY],
-      [undefined, 90 * SECONDS_PER_DAY],
+      [undefined, 30 * SECONDS_PER_DAY],
     ]
     for (const [expiryDays, expectedSeconds] of expiryCases) {
       it(`resolves expiryDays=${expiryDays} to a ${expectedSeconds}s lifetime`, async () => {
@@ -177,8 +177,17 @@ describe('PatService', () => {
       const result = await service.createToken(orgId, userId, 'Test User', { name: 'my token' })
 
       expect(result.id).to.equal(accessTokenId)
-      expect(result.accessToken).to.equal('raw-token-2')
+      expect(result.accessToken).to.equal('phpat_raw-token-2')
       expect(result.name).to.equal('my token')
+    })
+
+    it('prefixes the returned access token with phpat_', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(existingApp)
+
+      const result = await service.createToken(orgId, userId, 'Test User', { name: 'my token' })
+
+      expect(result.accessToken).to.equal('phpat_raw-token')
+      expect(result.accessToken.startsWith('phpat_')).to.be.true
     })
   })
 

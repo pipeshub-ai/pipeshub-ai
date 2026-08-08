@@ -13,9 +13,14 @@ import {
 } from '../schema/oauth.app.schema'
 import { NotFoundError } from '../../../libs/errors/http.errors'
 import { CreatePatRequest, PatListItem, PatWithSecret } from '../types/oauth.types'
+import { PAT_TOKEN_PREFIX } from '../constants/constants'
 
 const CLIENT_SECRET_BYTES = 32
 const SECONDS_PER_DAY = 86400
+// Short-lived by default: a token minted without an explicit expiryDays
+// (e.g. a direct API call rather than the UI) should not silently get the
+// longest lifetime.
+const DEFAULT_EXPIRY_DAYS = 30
 // OAuthAccessToken.expiresAt is required and TTL-indexed, so there's no
 // real "never expires" value to store — a 100-year lifetime is the
 // practical stand-in for the UI's "never" expiry option.
@@ -130,7 +135,7 @@ export class PatService {
 
     const app = await this.getOrCreatePatApp(orgId, userId)
     const lifetimeSeconds = this.resolveLifetimeSeconds(
-      request.expiryDays ?? 90,
+      request.expiryDays ?? DEFAULT_EXPIRY_DAYS,
     )
 
     const tokens = await this.oauthTokenService.generateTokens(
@@ -152,7 +157,7 @@ export class PatService {
       userId,
       name: request.name,
       scopes,
-      expiryDays: request.expiryDays ?? 90,
+      expiryDays: request.expiryDays ?? DEFAULT_EXPIRY_DAYS,
     })
 
     return {
@@ -161,7 +166,10 @@ export class PatService {
       scopes,
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + lifetimeSeconds * 1000),
-      accessToken: tokens.accessToken,
+      // Prefixed so the raw token is grep-able / recognizable to secret
+      // scanners, unlike a bare JWT. verifyAccessToken strips this back
+      // off before hashing/verifying, so it's display-only.
+      accessToken: `${PAT_TOKEN_PREFIX}${tokens.accessToken}`,
     }
   }
 

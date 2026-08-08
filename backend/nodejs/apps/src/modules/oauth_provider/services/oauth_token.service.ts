@@ -22,6 +22,7 @@ import {
   TokenListItem,
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
+import { PAT_TOKEN_PREFIX } from '../constants/constants'
 
 @injectable()
 export class OAuthTokenService {
@@ -164,7 +165,15 @@ export class OAuthTokenService {
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.verifyKey, {
+      // Personal access tokens carry a display-only phpat_ prefix ahead of
+      // the underlying JWT (see PAT_TOKEN_PREFIX) so they're grep-able in
+      // logs/files. Strip it before verifying/hashing — every other token
+      // type never has this prefix, so this is a no-op for them.
+      const rawToken = token.startsWith(PAT_TOKEN_PREFIX)
+        ? token.slice(PAT_TOKEN_PREFIX.length)
+        : token
+
+      const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
@@ -173,7 +182,7 @@ export class OAuthTokenService {
       }
 
       // Check if token is revoked
-      const tokenHash = this.hashToken(token)
+      const tokenHash = this.hashToken(rawToken)
       const storedToken = await OAuthAccessToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },

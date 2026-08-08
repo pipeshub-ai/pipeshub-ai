@@ -143,6 +143,34 @@ describe('OAuthTokenService', () => {
       expect(result.client_id).to.equal('client-1')
     })
 
+    it('should verify a personal access token carrying the phpat_ prefix', async () => {
+      const payload = {
+        userId: 'user-1',
+        orgId: 'org-1',
+        iss: testIssuer,
+        scope: 'org:read',
+        client_id: 'client-1',
+        tokenType: 'oauth',
+        jti: 'jti-1',
+      }
+      const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
+
+      const findOneStub = sinon
+        .stub(OAuthAccessToken, 'findOne')
+        .resolves({ isRevoked: false } as any)
+
+      const result = await service.verifyAccessToken(`phpat_${token}`)
+      expect(result.userId).to.equal('user-1')
+
+      // The prefix must never leak into the hash lookup — a phpat_-prefixed
+      // token has to resolve to the same stored hash as its bare JWT.
+      const bareResult = await service.verifyAccessToken(token)
+      expect(findOneStub.firstCall.args[0].tokenHash).to.deep.equal(
+        findOneStub.secondCall.args[0].tokenHash,
+      )
+      expect(bareResult.userId).to.equal('user-1')
+    })
+
     it('should throw InvalidTokenError for refresh token used as access token', async () => {
       const payload = {
         userId: 'user-1',

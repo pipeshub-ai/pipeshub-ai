@@ -22,6 +22,10 @@ const EXPIRY_OPTIONS: { value: PatExpiryOption; labelKey: string }[] = [
   { value: 'never', labelKey: 'workspace.personalAccessTokens.create.expiryNever' },
 ];
 
+// Shortest option, not the longest — a token minted without a second
+// thought shouldn't default to the widest blast radius.
+const DEFAULT_EXPIRY_DAYS: PatExpiryOption = 30;
+
 const CARD_STYLE: React.CSSProperties = {
   backgroundColor: 'var(--olive-2)',
   border: '1px solid var(--olive-3)',
@@ -53,7 +57,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
 
   const [name, setName] = useState('');
   const [nameError, setNameError] = useState<string | undefined>(undefined);
-  const [expiryDays, setExpiryDays] = useState<PatExpiryOption>(90);
+  const [expiryDays, setExpiryDays] = useState<PatExpiryOption>(DEFAULT_EXPIRY_DAYS);
 
   const [scopes, setScopes] = useState<PatScopeItem[] | null>(null);
   const [scopesLoading, setScopesLoading] = useState(false);
@@ -102,7 +106,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     if (!open) {
       setName('');
       setNameError(undefined);
-      setExpiryDays(90);
+      setExpiryDays(DEFAULT_EXPIRY_DAYS);
       setScopes(null);
       setScopesErrorKey(null);
       setSelectedScopes(new Set());
