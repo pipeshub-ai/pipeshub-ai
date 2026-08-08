@@ -221,10 +221,20 @@ export function ContainerRollupIndicator({
       // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
       return (
         <Tooltip content={detail} side="top" delayDuration={200}>
-          <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+          <Flex align="center" gap="1" style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
             <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
             {detail ? (
-              <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+              <Text
+                size="1"
+                weight="medium"
+                style={{
+                  color: 'var(--amber-11)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  minWidth: 0,
+                }}
+              >
                 {detail}
               </Text>
             ) : null}
@@ -235,7 +245,7 @@ export function ContainerRollupIndicator({
     const activeColor = 'var(--blue-9)';
     const activeText = 'var(--blue-11)';
     return (
-      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+      <Flex align="center" gap="2" style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
           {t('kb.indexingProgress.indexingPercent', {
             defaultValue: 'Indexing {{percent}}%',
@@ -260,7 +270,16 @@ export function ContainerRollupIndicator({
             }}
           />
         </Box>
-        <Text size="1" style={{ color: 'var(--slate-10)', whiteSpace: 'nowrap' }}>
+        <Text
+          size="1"
+          style={{
+            color: 'var(--slate-10)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            minWidth: 0,
+          }}
+        >
           {label}
         </Text>
       </Flex>
@@ -281,10 +300,20 @@ export function ContainerRollupIndicator({
     // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
     return (
       <Tooltip content={detail} side="top" delayDuration={200}>
-        <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+        <Flex align="center" gap="1" style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
           <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
           {detail ? (
-            <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+            <Text
+              size="1"
+              weight="medium"
+              style={{
+                color: 'var(--amber-11)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
               {detail}
             </Text>
           ) : null}
@@ -298,12 +327,31 @@ export function ContainerRollupIndicator({
   const barBackground = `linear-gradient(90deg, ${activeColor} 0%, ${activeColor} 35%, var(--blue-7) 50%, ${activeColor} 65%, ${activeColor} 100%)`;
 
   return (
-    <Flex direction="column" gap="1" style={{ minWidth: compact ? 160 : 200, maxWidth: compact ? 220 : 300 }}>
-      <Flex align="center" justify="between" gap="2">
-        <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
+    <Flex
+      direction="column"
+      gap="1"
+      style={{
+        minWidth: 0,
+        width: '100%',
+        maxWidth: compact ? 220 : 300,
+        overflow: 'hidden',
+      }}
+    >
+      <Flex align="center" justify="between" gap="2" style={{ minWidth: 0 }}>
+        <Text
+          size="1"
+          weight="medium"
+          style={{
+            color: activeText,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            minWidth: 0,
+          }}
+        >
           {label}
         </Text>
-        <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
+        <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap', flexShrink: 0 }}>
           {view.percent}%
         </Text>
       </Flex>
@@ -326,7 +374,16 @@ export function ContainerRollupIndicator({
         />
       </Box>
       {detail ? (
-        <Text size="1" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+        <Text
+          size="1"
+          style={{
+            color: 'var(--amber-11)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            minWidth: 0,
+          }}
+        >
           {detail}
         </Text>
       ) : null}

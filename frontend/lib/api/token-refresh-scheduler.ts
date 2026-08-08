@@ -21,11 +21,10 @@
  */
 
 import {
-  useAuthStore,
   ACCESS_TOKEN_STORAGE_KEY,
   REFRESH_TOKEN_STORAGE_KEY,
-  logoutAndRedirect,
 } from '@/lib/store/auth-store';
+import { useAuthStore, logoutAndRedirect } from '@/config';
 import {
   refreshAccessToken,
   isTokenExpired,

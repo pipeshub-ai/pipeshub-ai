@@ -539,7 +539,17 @@ function TableRow({
       </Flex>
 
       {/* Status — active indexing shows full progression; terminal statuses stay compact. */}
-      <Flex align="center" justify="center" style={{ width: 'clamp(96px, 22vw, 220px)', padding: '0 var(--space-2)' }}>
+      <Flex
+        align="center"
+        justify="center"
+        style={{
+          width: 'clamp(96px, 22vw, 220px)',
+          maxWidth: 'clamp(96px, 22vw, 220px)',
+          padding: '0 var(--space-2)',
+          minWidth: 0,
+          overflow: 'hidden',
+        }}
+      >
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -552,7 +562,12 @@ function TableRow({
           // rolled up from their subtree.
           if (containerRollup || isSyncing) {
             return (
-              <Flex direction="column" align="center" gap="1">
+              <Flex
+                direction="column"
+                align="center"
+                gap="1"
+                style={{ minWidth: 0, maxWidth: '100%', width: '100%', overflow: 'hidden' }}
+              >
                 {isSyncing && <ConnectorSyncBadge syncStatus={syncStatus} variant="pill" />}
                 {containerRollup && <ContainerRollupIndicator rollup={containerRollup} compact />}
               </Flex>
