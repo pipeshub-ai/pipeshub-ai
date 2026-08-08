@@ -11,7 +11,7 @@ import PasswordResetFailure from '../components/password-reset-failure';
 import ChangePassword from '../forms/change-password';
 import { decodeJwtUser } from '@/lib/utils/auth-helpers';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import {
   PASSWORD_RESET_FAILURE_VARIANT,
   INVITE_VS_RESET_LIFETIME_CUTOFF_SECONDS,

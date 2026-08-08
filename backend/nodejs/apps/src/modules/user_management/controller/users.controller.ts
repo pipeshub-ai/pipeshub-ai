@@ -80,14 +80,14 @@ interface InviteResult {
 @injectable()
 export class UserController {
   constructor(
-    @inject('AppConfig') private config: AppConfig,
-    @inject('MailService') private mailService: MailService,
-    @inject('AuthService') private authService: AuthService,
-    @inject('Logger') private logger: Logger,
+    @inject('AppConfig') protected config: AppConfig,
+    @inject('MailService') protected mailService: MailService,
+    @inject('AuthService') protected authService: AuthService,
+    @inject('Logger') protected logger: Logger,
     @inject('EntitiesEventProducer')
-    private eventService: EntitiesEventProducer,
+    protected eventService: EntitiesEventProducer,
     @inject('NotificationProducer')
-    private notificationProducer: NotificationProducer,
+    protected notificationProducer: NotificationProducer,
   ) { }
 
   async getAllUsers(
@@ -1112,7 +1112,7 @@ export class UserController {
   /**
    * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
    */
-  private async softDeleteOAuthAppsForUser(
+  protected async softDeleteOAuthAppsForUser(
     orgId: unknown,
     createdByUserId: unknown,
     actorUser: Record<string, unknown>,

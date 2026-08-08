@@ -1,5 +1,4 @@
-import { Org } from '../schema/org.schema';
-import { Users } from '../schema/users.schema';
+import { Org, Users } from '../../../config';
 import { OrgAuthConfig } from '../../auth/schema/orgAuthConfiguration.schema';
 import {
   setOrgsTotal,

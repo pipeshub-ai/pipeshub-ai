@@ -11,7 +11,7 @@ import { Router } from 'express';
 import { Container } from 'inversify';
 import { z } from 'zod';
 
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AppConfig } from '../config/config';
 import {

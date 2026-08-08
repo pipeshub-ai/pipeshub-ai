@@ -4,6 +4,7 @@ import { MailController } from '../controller/mail.controller';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import type { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 
 const loggerConfig = {
   service: 'Mail Service',
@@ -11,7 +12,10 @@ const loggerConfig = {
 export class MailServiceContainer {
   private static instance: Container;
   private static logger: Logger = Logger.getInstance(loggerConfig);
-  static async initialize(appConfig: AppConfig): Promise<Container> {
+  static async initialize(
+    appConfig: AppConfig,
+    _configManagerConfig?: ConfigurationManagerConfig,
+  ): Promise<Container> {
     const container = new Container();
     container.bind<Logger>('Logger').toConstantValue(this.logger);
     container

@@ -13,7 +13,7 @@ import {
   resumeCrawlingJob,
   getQueueStats,
 } from '../controller/cm_controller';
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthMiddleware } from '../../../config';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
