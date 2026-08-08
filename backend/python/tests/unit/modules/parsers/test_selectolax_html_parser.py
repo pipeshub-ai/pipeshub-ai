@@ -232,6 +232,47 @@ class TestHeadingMergesIntoParagraph:
         ]
 
 
+class TestDocumentTitle:
+    """Unit tests for ``<title>`` → leading HEADING via HtmlToBlocksConverter."""
+
+    def test_title_emitted_as_leading_heading(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<html><head><title>  Doc Title  </title></head>"
+            "<body><p>Body text.</p></body></html>"
+        )
+        assert len(container.blocks) >= 2
+        assert container.blocks[0].sub_type == BlockSubType.HEADING
+        assert container.blocks[0].data == "Doc Title"
+        assert container.blocks[0].format == DataFormat.MARKDOWN
+        assert container.blocks[0].type == BlockType.TEXT
+
+    def test_title_precedes_body_heading(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<html><head><title>Page Title</title></head>"
+            "<body><h1>Section</h1><ul><li>item</li></ul></body></html>"
+        )
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert [b.data for b in headings] == ["Page Title", "Section"]
+        assert container.blocks[0].data == "Page Title"
+
+    def test_empty_title_not_emitted(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert(
+            "<html><head><title>   </title></head><body><p>Body.</p></body></html>"
+        )
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert headings == []
+        assert any(b.data == "Body." for b in container.blocks)
+
+    def test_missing_title_unchanged(self, converter: HtmlToBlocksConverter) -> None:
+        container = converter.convert("<html><body><p>Only body.</p></body></html>")
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert headings == []
+
+
 class TestHeadings:
     def test_heading_produces_text_block(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert("<h1>Title</h1><h2>Subtitle</h2>")
