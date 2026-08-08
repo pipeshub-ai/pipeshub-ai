@@ -148,7 +148,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            _ , config = await get_llm_for_role(self.config_service, "indexing")
+            _ , config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
@@ -1298,7 +1298,7 @@ class Processor:
 
         try:
             self.logger.debug("📊 Processing Excel content")
-            llm, _ = await get_llm_for_role(self.config_service, "indexing")
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             parser = self.parsers[ExtensionTypes.XLSX.value]
             if not excel_binary:
                 self.logger.info(f"No Excel binary found for record: {recordName}")
@@ -1400,7 +1400,7 @@ class Processor:
             else:
                 parser = self.parsers[extension]
 
-            llm, _ = await get_llm_for_role(self.config_service, "indexing")
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
