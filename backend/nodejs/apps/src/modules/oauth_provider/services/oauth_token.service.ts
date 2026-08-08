@@ -185,7 +185,7 @@ export class OAuthTokenService {
 
       // Best-effort recency tracking for the token list UI — never blocks
       // or fails the request it's riding on.
-      this.touchLastUsed(storedToken).catch((err) => {
+      this.touchLastUsed(storedToken).catch((err: unknown) => {
         this.logger.warn('Failed to update token lastUsedAt', {
           error: err instanceof Error ? err.message : 'Unknown error',
         })
@@ -542,6 +542,12 @@ export class OAuthTokenService {
     revokedBy: string,
     reason?: string,
   ): Promise<boolean> {
+    // A malformed id (not a 24-char hex string) would otherwise throw a
+    // BSONError out of `new Types.ObjectId(id)` — treat it the same as
+    // "not found" rather than letting that leak as an unhandled 500.
+    if (!Types.ObjectId.isValid(id)) {
+      return false
+    }
     const result = await OAuthAccessToken.updateOne(
       {
         _id: { $eq: new Types.ObjectId(id) },

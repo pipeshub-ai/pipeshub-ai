@@ -142,7 +142,6 @@ export class OAuthProviderContainer {
         .bind<OAuthAuthMiddleware>('OAuthAuthMiddleware')
         .toConstantValue(oauthAuthMiddleware)
 
-      // Initialize Personal Access Token service
       const configService = container.get<ConfigService>('ConfigService')
       const patService = new PatService(
         logger,

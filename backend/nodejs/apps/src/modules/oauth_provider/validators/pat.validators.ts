@@ -1,8 +1,6 @@
 import { z } from 'zod'
 import { mongoIdRegex } from './oauth.validators'
 
-// Personal Access Token Validators
-
 export const createPatTokenSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(100),

@@ -12,20 +12,18 @@ import { PatApi } from './api';
 import type { PatListItem } from './types';
 import { CreatePatPanel } from './components/create-pat-panel';
 
-function formatDate(value: string): string {
-  try {
-    return new Date(value).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
-  } catch {
-    return value;
-  }
+function formatDate(value: string, locale?: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
 function PersonalAccessTokensPageContent() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
 
@@ -199,6 +197,9 @@ function PersonalAccessTokensPageContent() {
                   {t('workspace.personalAccessTokens.columnCreated')}
                 </Text>
                 <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
+                  {t('workspace.personalAccessTokens.columnExpires')}
+                </Text>
+                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
                   {t('workspace.personalAccessTokens.columnLastUsed')}
                 </Text>
                 <Text
@@ -230,11 +231,14 @@ function PersonalAccessTokensPageContent() {
                         })}
                   </Text>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
-                    {formatDate(token.createdAt)}
+                    {formatDate(token.createdAt, i18n.language)}
+                  </Text>
+                  <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
+                    {formatDate(token.expiresAt, i18n.language)}
                   </Text>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
                     {token.lastUsedAt
-                      ? formatDate(token.lastUsedAt)
+                      ? formatDate(token.lastUsedAt, i18n.language)
                       : t('workspace.personalAccessTokens.neverUsed')}
                   </Text>
                   <Flex style={{ width: 40, justifyContent: 'flex-end' }}>

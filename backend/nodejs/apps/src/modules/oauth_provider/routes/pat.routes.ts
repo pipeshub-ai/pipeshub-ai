@@ -26,32 +26,16 @@ export function createPatRouter(container: Container): Router {
   router.use(authMiddleware.authenticate.bind(authMiddleware))
   router.use(patRateLimiter)
 
-  /**
-   * GET /personal-access-tokens
-   * List the calling user's own personal access tokens
-   */
   router.get('/', (req, res, next) => controller.listTokens(req, res, next))
 
-  /**
-   * POST /personal-access-tokens
-   * Create a new personal access token
-   */
   router.post(
     '/',
     ValidationMiddleware.validate(createPatTokenSchema),
     (req, res, next) => controller.createToken(req, res, next),
   )
 
-  /**
-   * GET /personal-access-tokens/scopes
-   * List the scopes available to a new personal access token
-   */
   router.get('/scopes', (req, res, next) => controller.listScopes(req, res, next))
 
-  /**
-   * DELETE /personal-access-tokens/:tokenId
-   * Revoke one of the calling user's own personal access tokens
-   */
   router.delete(
     '/:tokenId',
     ValidationMiddleware.validate(tokenIdParamsSchema),

@@ -542,6 +542,20 @@ describe('OAuthTokenService', () => {
 
       expect(result).to.be.false
     })
+
+    it('returns false for a malformed id without touching the database', async () => {
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne')
+
+      const result = await service.revokeAccessTokenById(
+        'not-a-valid-object-id',
+        'client-1',
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+      expect(updateStub.called).to.be.false
+    })
   })
 
   describe('touchLastUsed via verifyAccessToken', () => {

@@ -57,7 +57,11 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
 
   const [scopes, setScopes] = useState<PatScopeItem[] | null>(null);
   const [scopesLoading, setScopesLoading] = useState(false);
-  const [scopesError, setScopesError] = useState<string | null>(null);
+  // Stored as a translation key, not the translated string — `t`'s
+  // identity changes on a language switch, and depending on `t` in
+  // loadScopes below would re-run it while the panel is open, resetting
+  // selectedScopes to every scope and discarding the user's picks.
+  const [scopesErrorKey, setScopesErrorKey] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(() => new Set());
 
   const [isCreating, setIsCreating] = useState(false);
@@ -80,7 +84,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
 
   const loadScopes = useCallback(async () => {
     setScopesLoading(true);
-    setScopesError(null);
+    setScopesErrorKey(null);
     try {
       const data = await PatApi.getScopes();
       setScopes(data.scopes ?? []);
@@ -88,11 +92,11 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
       // when no scopes are supplied.
       setSelectedScopes(new Set((data.scopes ?? []).map((s) => s.name)));
     } catch {
-      setScopesError(t('workspace.personalAccessTokens.create.scopesLoadError'));
+      setScopesErrorKey('workspace.personalAccessTokens.create.scopesLoadError');
     } finally {
       setScopesLoading(false);
     }
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     if (!open) {
@@ -100,7 +104,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
       setNameError(undefined);
       setExpiryDays(90);
       setScopes(null);
-      setScopesError(null);
+      setScopesErrorKey(null);
       setSelectedScopes(new Set());
       setIsCreating(false);
       setShowToken(false);
@@ -409,10 +413,10 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
             </Text>
           )}
 
-          {scopesError && !scopesLoading && (
+          {scopesErrorKey && !scopesLoading && (
             <Flex direction="column" gap="2" align="start">
               <Text size="2" style={{ color: 'var(--red-11)' }}>
-                {scopesError}
+                {t(scopesErrorKey)}
               </Text>
               <Button size="2" variant="soft" onClick={() => void loadScopes()}>
                 {t('workspace.personalAccessTokens.create.scopesRetry')}
@@ -421,7 +425,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
           )}
 
           {!scopesLoading &&
-            !scopesError &&
+            !scopesErrorKey &&
             sortedScopesByCategory.map(([category, items]) => {
               const selectedInCat = items.filter((i) => selectedScopes.has(i.name)).length;
               const totalInCat = items.length;

@@ -506,7 +506,6 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
-    // Personal Access Token routes (user-issued long-lived tokens for MCP/API access)
     this.app.use(
       '/api/v1/personal-access-tokens',
       createPatRouter(this.oauthProviderContainer),

@@ -1184,6 +1184,7 @@
       "columnName": "Name",
       "columnScopes": "Scopes",
       "columnCreated": "Created",
+      "columnExpires": "Expires",
       "columnLastUsed": "Last used",
       "scopeCount": "{{count}} scopes",
       "neverUsed": "Never",
