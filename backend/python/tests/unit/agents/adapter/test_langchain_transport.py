@@ -886,3 +886,57 @@ class TestReasoningMandatoryFallbackStream:
 
         assert transport._llm is model
         assert store.recorded == []
+class TestBindToolsCaching:
+    """Binding re-derives a JSON schema per tool through pydantic — 5.5% of
+    query-service CPU under load — for output that is identical whenever the
+    tool set is. It is cached per transport (built per request, so never shared
+    across users) and keyed on the tool names."""
+
+    @staticmethod
+    def _schema(name: str) -> ToolSchema:
+        return ToolSchema(name=name, description="d", input_schema={"type": "object", "properties": {}})
+
+    class _CountingModel(_FakeModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bind_calls = 0
+
+        def bind_tools(self, tools: list[Any]) -> "_FakeModel":
+            self.bind_calls += 1
+            return super().bind_tools(tools)
+
+    async def test_same_tool_set_binds_once_across_calls(self) -> None:
+        model = self._CountingModel()
+        transport = LangChainTransport(model)
+        tools = [self._schema("a"), self._schema("b")]
+
+        for _ in range(5):
+            # Fresh ToolSchema objects each turn, as registry.schemas() produces.
+            await transport.complete(
+                [UserMessage(content="hi")],
+                tools=[self._schema(t.name) for t in tools],
+            )
+
+        assert model.bind_calls == 1
+
+    async def test_growing_tool_set_rebinds(self) -> None:
+        """`fetch_tools` granting another tool must reach the model."""
+        model = self._CountingModel()
+        transport = LangChainTransport(model)
+
+        await transport.complete([UserMessage(content="hi")], tools=[self._schema("a")])
+        await transport.complete(
+            [UserMessage(content="hi")], tools=[self._schema("a"), self._schema("b")],
+        )
+
+        assert model.bind_calls == 2
+        assert [t.name for t in model.bind_tools_called_with] == ["a", "b"]
+
+    async def test_cache_is_per_transport_instance(self) -> None:
+        model_a, model_b = self._CountingModel(), self._CountingModel()
+        tools = [self._schema("a")]
+
+        await LangChainTransport(model_a).complete([UserMessage(content="hi")], tools=tools)
+        await LangChainTransport(model_b).complete([UserMessage(content="hi")], tools=tools)
+
+        assert model_a.bind_calls == 1 and model_b.bind_calls == 1

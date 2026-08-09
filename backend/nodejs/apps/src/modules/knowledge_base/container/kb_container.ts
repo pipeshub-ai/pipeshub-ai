@@ -18,8 +18,8 @@ const loggerConfig = {
 };
 
 export class KnowledgeBaseContainer {
-  private static instance: Container;
-  private static logger: Logger = Logger.getInstance(loggerConfig);
+  protected static instance: Container;
+  protected static logger: Logger = Logger.getInstance(loggerConfig);
 
   static async initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
@@ -42,7 +42,7 @@ export class KnowledgeBaseContainer {
     return container;
   }
 
-  private static async initializeServices(
+  protected static async initializeServices(
     container: Container,
     appConfig: AppConfig,
   ): Promise<void> {

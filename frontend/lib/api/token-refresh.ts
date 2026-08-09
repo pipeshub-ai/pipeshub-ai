@@ -13,9 +13,10 @@
  */
 
 import {
-  useAuthStore,
   REFRESH_TOKEN_STORAGE_KEY,
 } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
+
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
 /** Endpoint that issues a new access token from a valid refresh token. */

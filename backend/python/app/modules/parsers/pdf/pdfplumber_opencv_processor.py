@@ -153,7 +153,7 @@ class PDFPlumberOpenCVProcessor:
         table_enrichments: dict[int, TableEnrichmentResult] = {}
         if table_regions:
             with track_indexing_enrichment(self.logger, label="pdfplumber"):
-                llm, _ = await get_llm_for_role(self.config, "indexing")
+                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
                 results = await enrich_tables(
                     llm,
                     [region.table_grid for region in table_regions],
@@ -283,7 +283,7 @@ class PDFPlumberOpenCVProcessor:
                 # regions; a miss means they drifted apart. Enrich inline so
                 # correctness never depends on the two walks staying in sync.
                 self.logger.warning("Table missed pre-enrichment; enriching inline")
-                llm, _ = await get_llm_for_role(self.config, "indexing")
+                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
                 enrichment = await enrich_table_grid(llm, grid, logger=self.logger)
 
             table_summary = enrichment.summary

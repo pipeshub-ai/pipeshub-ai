@@ -1,4 +1,4 @@
-import { Document, Schema, Types } from 'mongoose';
+import { Document, Schema, Types, Model } from 'mongoose';
 import mongoose from 'mongoose';
 import { jurisdictions } from '../../../libs/utils/juridiction.utils';
 
@@ -64,4 +64,6 @@ userSchema.pre<User>('save', async function (next) {
   }
 });
 
-export const Users = mongoose.model<User>('users', userSchema, 'users');
+export const Users: Model<User> =
+  (mongoose.models['users'] as Model<User>) ||
+  mongoose.model<User>('users', userSchema, 'users');

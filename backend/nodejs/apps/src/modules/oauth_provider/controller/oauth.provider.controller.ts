@@ -20,8 +20,7 @@ import {
   ConsentData,
   OAuthErrorResponse,
 } from '../types/oauth.types'
-import { Users } from '../../user_management/schema/users.schema'
-import { Org } from '../../user_management/schema/org.schema'
+import { Users, Org } from '../../../config'
 
 interface AuthenticatedRequest extends Request {
   user?: {

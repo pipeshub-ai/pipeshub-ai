@@ -5,7 +5,7 @@ import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import { HEADER_ELEMENT_SIZE, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import { WorkspaceMenu } from '@/app/components/workspace-menu';
+import { WorkspaceMenu } from '@/config';
 import type { OrgInfo } from '@/app/components/workspace-menu';
 import { fetchOrgWithLogo } from '@/chat/api';
 

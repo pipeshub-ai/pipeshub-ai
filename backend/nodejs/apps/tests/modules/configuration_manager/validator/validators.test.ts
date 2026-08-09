@@ -8,6 +8,7 @@ import {
   providerType,
   addProviderRequestSchema,
   configurationSchema,
+  githubAuthConfigSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -253,6 +254,46 @@ describe('configuration_manager/validator/validators', () => {
         expect(result.data.location).to.equal('us-central1')
         expect(result.data.serviceAccountJson).to.equal('{"type":"service_account"}')
       }
+    })
+  })
+
+  describe('githubAuthConfigSchema', () => {
+    it('should accept valid GitHub auth config', () => {
+      const result = githubAuthConfigSchema.safeParse({
+        body: {
+          clientId: 'github-client-id',
+          clientSecret: 'github-client-secret',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing clientId', () => {
+      const result = githubAuthConfigSchema.safeParse({
+        body: {
+          clientSecret: 'github-client-secret',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject missing clientSecret', () => {
+      const result = githubAuthConfigSchema.safeParse({
+        body: {
+          clientId: 'github-client-id',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject empty clientId', () => {
+      const result = githubAuthConfigSchema.safeParse({
+        body: {
+          clientId: '',
+          clientSecret: 'github-client-secret',
+        },
+      })
+      expect(result.success).to.be.false
     })
   })
 })

@@ -330,7 +330,7 @@ class DoclingDocToBlocksConverter():
                 self.logger.warning(f"Table {ref_path} missed pre-enrichment; enriching inline")
                 fallback_llm = llm
                 if fallback_llm is None:
-                    fallback_llm, _ = await get_llm_for_role(self.config, "indexing")
+                    fallback_llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
                 enrichment = await enrich_table_grid(
                     fallback_llm,
                     table_grid,
@@ -482,7 +482,7 @@ class DoclingDocToBlocksConverter():
                 valid_refs.append(ref_path)
 
             if grids:
-                llm, _ = await get_llm_for_role(self.config, "indexing")
+                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
                 results = await enrich_tables(
                     llm,
                     grids,

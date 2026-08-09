@@ -18,7 +18,7 @@
 
 import { useCallback, useRef } from 'react';
 import { ProfileApi } from '@/app/(main)/workspace/profile/api';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { apiClient } from '@/lib/api';
 import { getUserIdFromToken } from '@/lib/utils/jwt';

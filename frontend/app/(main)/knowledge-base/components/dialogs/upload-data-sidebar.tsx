@@ -53,9 +53,14 @@ interface DropZoneProps {
   type: 'file' | 'folder';
   onDrop: (items: UploadFileItem[]) => void;
   isEmpty: boolean;
+  /**
+   * Compact green "+ New" trigger for headers once items are already selected.
+   * Hides the large dashed drop area so lists can use the vertical space.
+   */
+  compact?: boolean;
 }
 
-function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
+function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -209,6 +214,42 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
       ? { webkitdirectory: '', directory: '', multiple: true }
       : { multiple: true };
 
+  const hiddenInput = (
+    <input
+      ref={inputRef}
+      type="file"
+      data-testid={`upload-input-${type}${compact ? '-compact' : ''}`}
+      style={{ display: 'none' }}
+      onChange={handleInputChange}
+      {...inputProps}
+    />
+  );
+
+  if (compact) {
+    return (
+      <>
+        {hiddenInput}
+        <Button
+          variant="solid"
+          size="1"
+          onClick={handleClick}
+          aria-label={type === 'file' ? 'Add files' : 'Add a folder'}
+          data-testid={`upload-add-${type}-compact`}
+          style={{
+            cursor: 'pointer',
+            backgroundColor: 'var(--emerald-9)',
+            color: 'white',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+            padding: '0 var(--space-2)',
+          }}
+        >
+          <MaterialIcon name="add" size={16} color="white" />
+        </Button>
+      </>
+    );
+  }
+
   return (
      <Flex
         style={{
@@ -240,14 +281,7 @@ function DropZone({ type, onDrop, isEmpty }: DropZoneProps) {
         flex: 1,
       }}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        data-testid={`upload-input-${type}`}
-        style={{ display: 'none' }}
-        onChange={handleInputChange}
-        {...inputProps}
-      />
+      {hiddenInput}
       <Flex direction="column" align="center" gap="1">
         <MaterialIcon
           name="add"
@@ -394,6 +428,8 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
     <Flex
       align="center"
       justify="between"
+      data-testid="upload-selected-file-row"
+      data-name={item.name}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
@@ -447,11 +483,234 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
         color="gray"
         size="1"
         onClick={() => onRemove(item.id)}
+        data-testid="upload-selected-file-remove"
+        aria-label={`Remove ${item.name}`}
         style={{ opacity: isHovered ? 1 : 0.5 }}
       >
         <MaterialIcon name="close" size={16} color="var(--slate-11)" />
       </IconButton>
     </Flex>
+  );
+}
+
+/** Tree node built from a folder upload's relative paths. */
+interface FolderTreeNode {
+  name: string;
+  /** Path relative to the root folder contents (`''` for the root itself). */
+  path: string;
+  kind: 'folder' | 'file';
+  size?: number;
+  children: FolderTreeNode[];
+}
+
+function buildFolderTree(rootName: string, filesWithPaths: FileWithPath[]): FolderTreeNode {
+  const root: FolderTreeNode = {
+    name: rootName,
+    path: '',
+    kind: 'folder',
+    children: [],
+  };
+
+  const folderIndex = new Map<string, FolderTreeNode>([['', root]]);
+
+  const ensureFolder = (folderPath: string): FolderTreeNode => {
+    const existing = folderIndex.get(folderPath);
+    if (existing) return existing;
+
+    const parts = folderPath.split('/').filter(Boolean);
+    const parentPath = parts.slice(0, -1).join('/');
+    const parent = ensureFolder(parentPath);
+    const node: FolderTreeNode = {
+      name: parts[parts.length - 1] ?? folderPath,
+      path: folderPath,
+      kind: 'folder',
+      children: [],
+    };
+    parent.children.push(node);
+    folderIndex.set(folderPath, node);
+    return node;
+  };
+
+  for (const { file, relativePath } of filesWithPaths) {
+    const parts = relativePath.split('/').filter(Boolean);
+    if (parts.length === 0) continue;
+
+    const fileName = parts[parts.length - 1];
+    const parentPath = parts.slice(0, -1).join('/');
+    const parent = ensureFolder(parentPath);
+    parent.children.push({
+      name: fileName,
+      path: relativePath,
+      kind: 'file',
+      size: file.size,
+      children: [],
+    });
+  }
+
+  const sortNodes = (nodes: FolderTreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((n) => {
+      if (n.children.length > 0) sortNodes(n.children);
+    });
+  };
+  sortNodes(root.children);
+
+  return root;
+}
+
+interface FolderTreeRowProps {
+  node: FolderTreeNode;
+  depth: number;
+  onRemovePath: (path: string) => void;
+}
+
+function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
+  const isFolder = node.kind === 'folder';
+  const hasChildren = node.children.length > 0;
+
+  return (
+    <>
+      <Flex
+        align="center"
+        justify="between"
+        data-testid="upload-folder-tree-row"
+        data-kind={node.kind}
+        data-path={node.path}
+        data-name={node.name}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        style={{
+          padding: 'var(--space-1) var(--space-2)',
+          paddingLeft: `calc(var(--space-2) + ${depth * 16}px)`,
+          borderRadius: 'var(--radius-1)',
+          background: isHovered ? 'var(--olive-4)' : 'transparent',
+          gap: 'var(--space-1)',
+        }}
+      >
+        <Flex align="center" gap="1" style={{ minWidth: 0, flex: 1 }}>
+          {isFolder ? (
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="1"
+              disabled={!hasChildren}
+              onClick={() => hasChildren && setIsExpanded((v) => !v)}
+              style={{
+                width: 20,
+                height: 20,
+                opacity: hasChildren ? 1 : 0,
+                pointerEvents: hasChildren ? 'auto' : 'none',
+                flexShrink: 0,
+              }}
+              aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
+            >
+              <MaterialIcon
+                name={isExpanded ? 'expand_more' : 'chevron_right'}
+                size={16}
+                color="var(--slate-11)"
+              />
+            </IconButton>
+          ) : (
+            <Box style={{ width: 20, flexShrink: 0 }} />
+          )}
+          {isFolder ? (
+            <MaterialIcon name="folder" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+          ) : (
+            <FileIcon filename={node.name} size={16} />
+          )}
+          <Text
+            size="2"
+            style={{
+              color: 'var(--slate-12)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={node.name}
+          >
+            {node.name}
+          </Text>
+          {!isFolder && node.size != null && (
+            <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+              {formatBytes(node.size)}
+            </Text>
+          )}
+        </Flex>
+        <IconButton
+          variant="ghost"
+          color="gray"
+          size="1"
+          onClick={() => onRemovePath(node.path)}
+          data-testid="upload-folder-tree-remove"
+          style={{ opacity: isHovered ? 1 : 0.45, flexShrink: 0 }}
+          aria-label={`Remove ${node.name}`}
+        >
+          <MaterialIcon name="close" size={16} color="var(--slate-11)" />
+        </IconButton>
+      </Flex>
+      {isFolder && isExpanded &&
+        node.children.map((child) => (
+          <FolderTreeRow
+            key={`${child.kind}:${child.path}`}
+            node={child}
+            depth={depth + 1}
+            onRemovePath={onRemovePath}
+          />
+        ))}
+    </>
+  );
+}
+
+interface UploadedFolderItemProps {
+  item: UploadFileItem;
+  onRemoveFolder: (id: string) => void;
+  onRemovePath: (folderId: string, path: string) => void;
+}
+
+function UploadedFolderItem({ item, onRemoveFolder, onRemovePath }: UploadedFolderItemProps) {
+  const tree = buildFolderTree(item.name, item.filesWithPaths ?? []);
+  const fileCount = item.filesWithPaths?.length ?? 0;
+
+  return (
+    <Box
+      data-testid="upload-folder-tree"
+      data-folder-name={item.name}
+      style={{
+        background: 'var(--olive-3)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--olive-4)',
+        padding: 'var(--space-1) 0',
+        overflow: 'hidden',
+      }}
+    >
+      <Flex
+        align="center"
+        justify="between"
+        style={{
+          padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-2)',
+        }}
+      >
+        <Text size="1" style={{ color: 'var(--slate-9)', paddingLeft: 'var(--space-2)' }}>
+          {fileCount} {fileCount === 1 ? 'file' : 'files'} · {formatBytes(item.size)}
+        </Text>
+      </Flex>
+      <FolderTreeRow
+        node={tree}
+        depth={0}
+        onRemovePath={(path) => {
+          if (path === '') {
+            onRemoveFolder(item.id);
+          } else {
+            onRemovePath(item.id, path);
+          }
+        }}
+      />
+    </Box>
   );
 }
 
@@ -492,6 +751,29 @@ export function UploadDataSidebar({
 
   const handleRemoveFolder = useCallback((id: string) => {
     setFolderItems((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  /** Remove a file or nested folder path from a selected folder upload. */
+  const handleRemoveFolderPath = useCallback((folderId: string, path: string) => {
+    setFolderItems((prev) =>
+      prev
+        .map((item) => {
+          if (item.id !== folderId) return item;
+          const remaining = (item.filesWithPaths ?? []).filter((f) => {
+            if (f.relativePath === path) return false;
+            // Nested folder: drop every file under this path prefix.
+            if (f.relativePath.startsWith(`${path}/`)) return false;
+            return true;
+          });
+          if (remaining.length === 0) return null;
+          return {
+            ...item,
+            filesWithPaths: remaining,
+            size: remaining.reduce((sum, f) => sum + f.file.size, 0),
+          };
+        })
+        .filter((item): item is UploadFileItem => item != null),
+    );
   }, []);
 
   const handleSave = useCallback(() => {
@@ -619,19 +901,22 @@ export function UploadDataSidebar({
                 </Text>
               </Flex>
               {fileItems.length > 0 && (
-                <Text
-                  size="1"
-                  weight="medium"
-                  style={{
-                    color: 'var(--slate-12)',
-                    backgroundColor: 'var(--olive-4)',
-                    padding: '2px 8px',
-                    borderRadius: '999px',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {fileItems.length} {fileItems.length === 1 ? 'file' : 'files'}
-                </Text>
+                <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+                  <DropZone type="file" onDrop={handleAddFiles} isEmpty={false} compact />
+                  <Text
+                    size="1"
+                    weight="medium"
+                    style={{
+                      color: 'var(--slate-12)',
+                      backgroundColor: 'var(--olive-4)',
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {fileItems.length} {fileItems.length === 1 ? 'file' : 'files'}
+                  </Text>
+                </Flex>
               )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
@@ -646,9 +931,11 @@ export function UploadDataSidebar({
               </ScrollableList>
             )}
 
-            <Box style={{ ...(fileItems.length === 0 ? { flex: 1 } : {}), ...(fileItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="file" onDrop={handleAddFiles} isEmpty={fileItems.length === 0} />
-            </Box>
+            {fileItems.length === 0 && (
+              <Box style={{ flex: 1 }}>
+                <DropZone type="file" onDrop={handleAddFiles} isEmpty />
+              </Box>
+            )}
           </Flex>
 
           <Flex align="center" gap="3">
@@ -682,19 +969,22 @@ export function UploadDataSidebar({
                 </Text>
               </Flex>
               {folderItems.length > 0 && (
-                <Text
-                  size="1"
-                  weight="medium"
-                  style={{
-                    color: 'var(--slate-12)',
-                    backgroundColor: 'var(--olive-4)',
-                    padding: '2px 8px',
-                    borderRadius: '999px',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {folderItems.length} {folderItems.length === 1 ? 'folder' : 'folders'}
-                </Text>
+                <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+                  <DropZone type="folder" onDrop={handleAddFolders} isEmpty={false} compact />
+                  <Text
+                    size="1"
+                    weight="medium"
+                    style={{
+                      color: 'var(--slate-12)',
+                      backgroundColor: 'var(--olive-4)',
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {folderItems.length} {folderItems.length === 1 ? 'folder' : 'folders'}
+                  </Text>
+                </Flex>
               )}
             </Flex>
             <Box style={{ height: '1px', background: 'var(--olive-3)' }} />
@@ -703,15 +993,22 @@ export function UploadDataSidebar({
               <ScrollableList>
                 <Flex direction="column" gap="2" style={{ paddingBottom: '4px' }}>
                   {folderItems.map((item) => (
-                    <UploadedItem key={item.id} item={item} onRemove={handleRemoveFolder} />
+                    <UploadedFolderItem
+                      key={item.id}
+                      item={item}
+                      onRemoveFolder={handleRemoveFolder}
+                      onRemovePath={handleRemoveFolderPath}
+                    />
                   ))}
                 </Flex>
               </ScrollableList>
             )}
 
-            <Box style={{ ...(folderItems.length === 0 ? { flex: 1 } : {}), ...(folderItems.length > 0 ? { minHeight: '88px' } : {}) }}>
-              <DropZone type="folder" onDrop={handleAddFolders} isEmpty={folderItems.length === 0} />
-            </Box>
+            {folderItems.length === 0 && (
+              <Box style={{ flex: 1 }}>
+                <DropZone type="folder" onDrop={handleAddFolders} isEmpty />
+              </Box>
+            )}
           </Flex>
         </Box>
 
@@ -726,12 +1023,19 @@ export function UploadDataSidebar({
             backgroundColor: 'var(--effects-translucent)',
           }}
         >
-          <Button variant="soft" color="gray" size="2" onClick={() => handleOpenChange(false)}>
+          <Button
+            variant="soft"
+            color="gray"
+            size="2"
+            data-testid="upload-sidebar-cancel"
+            onClick={() => handleOpenChange(false)}
+          >
             Cancel
           </Button>
           <LoadingButton
             variant="solid"
             size="2"
+            data-testid="upload-sidebar-save"
             onClick={handleSave}
             disabled={!hasItems}
             loading={isSaving}

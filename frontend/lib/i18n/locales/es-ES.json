@@ -163,7 +163,9 @@
       "usernameLabel": "Usuario",
       "usernamePlaceholder": "ej: user@gmail.com",
       "passwordLabel": "Contraseña",
-      "passwordPlaceholder": "Ingresa la contraseña"
+      "passwordPlaceholder": "Ingresa la contraseña",
+      "saveSuccessFallback": "Configuración SMTP guardada.",
+      "saveErrorFallback": "No se pudo guardar la configuración SMTP."
     },
     "nav": {
       "prev": "Anterior",
@@ -357,7 +359,6 @@
       "subtitleExisting": "Confirma o actualiza la URL de tu servidor PipesHub.",
       "label": "URL del servidor",
       "submit": "Conectar",
-      "changeServer": "Cambiar servidor",
       "errors": {
         "empty": "Introduce una URL del servidor.",
         "invalid": "Introduce una URL válida (p. ej. http://localhost:3000).",
@@ -765,7 +766,8 @@
     "dark": "Oscuro",
     "documentation": "Documentación",
     "darkMode": "Modo oscuro",
-    "lightMode": "Modo claro"
+    "lightMode": "Modo claro",
+    "organisations": "Organizaciones"
   },
   "workspace": {
     "users": {
@@ -1328,7 +1330,10 @@
         "users": "Usuarios",
         "groups": "Grupos",
         "teams": "Equipos",
-        "webSearch": "Búsqueda Web"
+        "webSearch": "Búsqueda Web",
+        "tenants": "Inquilinos",
+        "superOrgs": "Organizaciones",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1610,7 +1615,8 @@
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
         "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "oauth": "Configure OAuth 2.0",
+        "github": "Configurar la autenticación de GitHub"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -2265,6 +2271,179 @@
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
       }
+    },
+    "tenants": {
+      "title": "Inquilinos",
+      "subtitle": "Crear y gestionar organizaciones inquilinas dentro del espacio de trabajo",
+      "createTenant": "Crear inquilino",
+      "searchPlaceholder": "Buscar inquilinos...",
+      "emptyTitle": "Aún no hay inquilinos creados",
+      "emptyDescription": "Los inquilinos son organizaciones separadas que gestionas en esta plataforma.",
+      "noFilterResults": "Ningún inquilino coincide con los filtros aplicados",
+      "noFilterResultsHint": "Intenta ajustar o borrar los filtros de arriba",
+      "noSearchResults": "Ningún inquilino coincide con su búsqueda",
+      "listDeleteDescription": "Esto eliminará permanentemente el inquilino y todos sus usuarios.",
+      "columns": {
+        "name": "Nombre",
+        "domain": "Dominio",
+        "contactEmail": "Correo de contacto",
+        "accountType": "Tipo de cuenta",
+        "createdOn": "Creado el"
+      },
+      "actions": {
+        "tenantDetails": "Detalles",
+        "viewUsers": "Ver usuarios",
+        "viewUserGroups": "Grupos de usuarios",
+        "delete": "Eliminar",
+        "deleteError": "Error al eliminar el inquilino",
+        "deleteSuccess": "Inquilino eliminado",
+        "deleteSystemTooltip": "Este inquilino no puede eliminarse"
+      },
+      "groups": {
+        "title": "Grupos de usuarios",
+        "subtitle": "Gestionar grupos de usuarios para este inquilino",
+        "backToTenants": "Volver a inquilinos",
+        "emptyTitle": "Aún no hay grupos de usuarios",
+        "emptyDescription": "Cree un grupo de usuarios para empezar.",
+        "noSearchResults": "Ningún grupo coincide con su búsqueda",
+        "noSearchResultsHint": "Intenta ajustar o borrar la búsqueda de arriba"
+      },
+      "create": {
+        "title": "Crear inquilino",
+        "accountTypeLabel": "Tipo de cuenta",
+        "registeredNameLabel": "Nombre registrado",
+        "registeredNamePlaceholder": "ej. Acme S.A.",
+        "shortNameLabel": "Nombre corto",
+        "shortNamePlaceholder": "ej. Acme",
+        "contactEmailLabel": "Correo de contacto",
+        "contactEmailPlaceholder": "ej. admin@acme.com",
+        "submit": "Crear inquilino",
+        "cancel": "Cancelar",
+        "successTitle": "¡Inquilino creado!",
+        "successDescription": "El inquilino ha sido creado exitosamente",
+        "errorGeneric": "Error al crear el inquilino",
+        "inheritanceTitle": "Herencia de configuración",
+        "inheritanceDescription": "Activa para heredar la configuración de tu organización. Desactiva para que el inquilino gestione la suya propia.",
+        "inheritance": {
+          "aiModels": "Modelos de IA",
+          "aiModelsHintOn": "El inquilino estará listo de inmediato (sin configuración de IA requerida)",
+          "aiModelsHintOff": "El inquilino debe configurar sus propios modelos de IA",
+          "smtp": "Correo (SMTP)",
+          "authentication": "Autenticación",
+          "prompts": "Prompts del sistema",
+          "platformSettings": "Configuración de plataforma",
+          "connectors": "Conectores",
+          "toolsets": "Conjuntos de herramientas"
+        }
+      },
+      "invite": {
+        "title": "Invitar usuario(s)",
+        "send": "Enviar invitación",
+        "cancel": "Cancelar",
+        "tenantLabel": "Inquilino",
+        "emailLabel": "Invitar a",
+        "emailPlaceholder": "Introduce una o más direcciones de correo",
+        "groupLabel": "Añadir a un grupo de usuarios",
+        "groupPlaceholder": "Buscar o seleccionar grupo(s) de usuarios",
+        "successTitle": "¡Invitación enviada!",
+        "successDescription": "{{email}} ha sido invitado",
+        "errorGeneric": "Error al enviar la invitación"
+      },
+      "detail": {
+        "registeredNameLabel": "Nombre registrado",
+        "shortNameLabel": "Nombre corto",
+        "contactEmailLabel": "Correo de contacto",
+        "domainLabel": "Dominio",
+        "accountTypeLabel": "Tipo de cuenta",
+        "inheritanceTitle": "Herencia de configuración",
+        "inheritanceDescription": "Cuando está activado, el inquilino usa la configuración de tu organización en lugar de la suya."
+      },
+      "edit": {
+        "edit": "Editar inquilino",
+        "save": "Guardar cambios",
+        "cancel": "Cancelar",
+        "deleteButton": "Eliminar inquilino",
+        "deleteTitle": "Eliminar inquilino '{{name}}'",
+        "deleteDescription": "¿Está seguro de que desea eliminar este inquilino?",
+        "deleteConfirmInputLabel": "Escribe \"{{name}}\" para confirmar",
+        "deleteSuccess": "Inquilino eliminado",
+        "deleteSuccessDescription": "El inquilino ha sido eliminado",
+        "deleteError": "Error al eliminar el inquilino",
+        "deleting": "Eliminando...",
+        "saveSuccess": "¡Inquilino actualizado!",
+        "saveSuccessDescription": "Inquilino actualizado exitosamente",
+        "saveError": "Error al actualizar el inquilino"
+      }
+    },
+    "oauthApps": {
+      "title": "Apps OAuth",
+      "subtitle": "Gestione las credenciales OAuth para conectores y acciones. Las apps marcadas como \u00abPredeterminada\u00bb se usan automáticamente para nuevas conexiones, salvo que se sobrescriban.",
+      "addButton": "Agregar app OAuth",
+      "tabs": {
+        "connectors": "Conectores",
+        "toolsets": "Acciones"
+      },
+      "typeSelector": {
+        "connectorLabel": "Tipo de conector",
+        "toolsetLabel": "Tipo de acción",
+        "loading": "Cargando\u2026"
+      },
+      "scope": {
+        "team": "Equipo",
+        "personal": "Personal"
+      },
+      "loading": "Cargando\u2026",
+      "search": {
+        "placeholder": "Buscar apps\u2026"
+      },
+      "empty": {
+        "title": "No hay apps OAuth para {{typeLabel}}",
+        "connectorDescription": "Agregue una app OAuth para que los conectores de este tipo se autentiquen con sus credenciales.",
+        "connectorDescriptionPersonal": "Agregue una app OAuth para que este tipo de conector se autentique en su nombre.",
+        "toolsetDescription": "Agregue una app OAuth para que las acciones de este tipo se autentiquen con sus credenciales.",
+        "noSearchResults": "Ninguna app OAuth coincide con su búsqueda.",
+        "addButton": "Agregar app OAuth"
+      },
+      "form": {
+        "titleCreate": "Agregar app OAuth para {{typeName}}",
+        "titleEdit": "Editar app OAuth",
+        "redirectUriTitle": "URL de redirección / callback",
+        "redirectUriDescription": "Registre esta URL en la configuración de la app OAuth de su proveedor de identidad.",
+        "copied": "¡Copiado!",
+        "copy": "Copiar",
+        "nameLabel": "Nombre",
+        "namePlaceholder": "p. ej. {{typeName}} Producción",
+        "nameRequired": "El nombre es obligatorio.",
+        "credentialsTitle": "Credenciales",
+        "fieldRequired": "{{fieldName}} es obligatorio.",
+        "settingsTitle": "Configuración",
+        "isDefaultLabel": "Establecer como predeterminada",
+        "isDefaultDescription": "Usar esta app por defecto para nuevas conexiones de este tipo.",
+        "allowChildOverrideLabel": "Permitir sobrescritura secundaria",
+        "allowChildOverrideDescription": "Permitir a las organizaciones secundarias configurar su propia app OAuth para este tipo.",
+        "cancelButton": "Cancelar",
+        "createButton": "Crear",
+        "saveButton": "Guardar cambios",
+        "savingLabel": "Guardando\u2026",
+        "schemaError": "No se pudo cargar el esquema para este tipo.",
+        "genericError": "Se produjo un error. Inténtelo de nuevo."
+      },
+      "delete": {
+        "title": "¿Eliminar \u00ab{{name}}\u00bb?",
+        "message": "Esta app OAuth se eliminará permanentemente. Es posible que las instancias de conectores que la utilicen dejen de funcionar.",
+        "confirmLabel": "Eliminar",
+        "forceDeleteButton": "Forzar eliminación",
+        "forceTitle": "¿Forzar eliminación de \u00ab{{name}}\u00bb?",
+        "forceMessage": "Esta app OAuth está en uso. Forzar su eliminación la quitará y puede interrumpir las conexiones de conectores existentes que dependan de ella. Esta acción no se puede deshacer.",
+        "forceConfirmLabel": "Forzar eliminación",
+        "successMessage": "App OAuth \u00ab{{name}}\u00bb eliminada."
+      },
+      "errors": {
+        "loadTypes": "No se pudieron cargar los tipos de app OAuth disponibles.",
+        "loadConnectors": "No se pudieron cargar las apps OAuth de los conectores.",
+        "loadToolsets": "No se pudieron cargar las apps OAuth de las acciones.",
+        "deleteGeneric": "No se pudo eliminar la app OAuth."
+      }
     }
   },
   "filePreview": {
@@ -2710,6 +2889,16 @@
       "savingToastDescription": "Esto tomará unos segundos",
       "successToast": "¡Cuenta creada exitosamente!",
       "failToast": "Error al registrarse. Por favor, inténtalo de nuevo.",
+      "createWorkspaceTitle": "Crear un nuevo espacio de trabajo",
+      "createWorkspaceSubtitle": "Configura un nuevo espacio de trabajo para tu organización.",
+      "fullNameLabel": "Nombre completo*",
+      "fullNamePlaceholder": "Ingresa tu nombre completo",
+      "verificationSentToast": "Revisa tu bandeja de entrada",
+      "verificationSentDescription": "Se ha enviado un enlace de verificación a tu correo. Haz clic en él para activar tu organización.",
+      "accountCreatedToast": "Cuenta creada",
+      "accountCreatedDescription": "Tu organización está lista. Puedes iniciar sesión ahora.",
+      "emailFailedToast": "Organización creada",
+      "emailFailedDescription": "No pudimos enviar el correo de verificación. Por favor, contacta con el soporte.",
       "errors": {
         "firstNameRequired": "El nombre es obligatorio.",
         "lastNameRequired": "El apellido es obligatorio.",
@@ -2719,7 +2908,8 @@
         "passwordRequired": "La contraseña es obligatoria.",
         "confirmPasswordRequired": "Por favor confirma tu contraseña.",
         "passwordsMismatch": "Las contraseñas no coinciden.",
-        "emailAlreadyExists": "Ya existe una cuenta con este correo electrónico."
+        "emailAlreadyExists": "Ya existe una cuenta con este correo electrónico.",
+        "fullNameRequired": "El nombre completo es obligatorio."
       },
       "confirmDialog": {
         "title": "Cómo PipesHub asigna permisos",
@@ -2729,7 +2919,9 @@
         "emailNotePre": "Asegúrate de que el correo con el que te registraste —",
         "emailNotePost": "— sea el mismo que usas en las aplicaciones de tu organización para que tus permisos se reconozcan correctamente.",
         "cancelButton": "Cancelar",
-        "signUpButton": "Registrarse"
+        "signUpButton": "Registrarse",
+        "verificationNoteTitle": "Verificación requerida",
+        "verificationNoteBody": "Se enviará un enlace de verificación al correo indicado. Tu organización solo será accesible tras verificarlo."
       }
     },
     "login": {
@@ -2739,7 +2931,11 @@
       "emailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado.",
       "samlErrorTitle": "Error al iniciar sesión con SAML",
       "samlSignInFailedTitle": "Error al iniciar sesión",
-      "samlSignInFailedDescription": "SAML SSO no pudo completarse. Por favor, inténtalo de nuevo."
+      "samlSignInFailedDescription": "SAML SSO no pudo completarse. Por favor, inténtalo de nuevo.",
+      "orgEmailVerifiedTitle": "Organización verificada",
+      "orgEmailVerifiedDescription": "Tu organización ya está activa. Inicia sesión para continuar.",
+      "orgEmailVerifyFailedTitle": "Verificación fallida",
+      "orgEmailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado. Por favor, regístrate nuevamente."
     },
     "common": {
       "signIn": "Iniciar sesión",

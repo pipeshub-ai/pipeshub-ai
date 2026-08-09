@@ -335,6 +335,10 @@ class TestNeo4jAppChildrenCypher:
         cypher = neo4j_provider._get_app_children_cypher()
         _assert_neo4j_kb_conditional(cypher, var="rg")
 
+    def test_kb_app_children_projects_reason(self, neo4j_provider):
+        cypher = neo4j_provider._get_app_children_cypher()
+        assert "reason: record.reason" in cypher
+
 
 class TestNeo4jRecordGroupChildrenCypher:
     """_get_record_group_children_cypher emits node.* projection with the KB
