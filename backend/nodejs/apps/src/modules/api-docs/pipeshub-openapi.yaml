@@ -4144,7 +4144,9 @@ components:
           type: string
         node_type:
           type: string
-          description: One of `app`, `recordGroup`, `folder`, `record`.
+          description: >-
+            One of `recordGroup`, `folder`, `record`. Listings never contain
+            `app` nodes.
         sub_type:
           type: string
           nullable: true
@@ -4161,9 +4163,10 @@ components:
           type: string
           nullable: true
           description: >-
-            Link to the record in its source system. Records that carry a
-            relative URL (uploaded/KB records) resolve against a default
-            frontend host and may not be absolute for your deployment.
+            Link to the record in its source system. Known issue: records that
+            carry a relative URL (uploaded/KB records) are resolved against a
+            hardcoded `http://localhost:3000` rather than your deployment's
+            frontend host, so those values are not usable as links.
         indexing_status:
           type: string
           nullable: true
@@ -30048,14 +30051,17 @@ paths:
         Open a node in the knowledge graph and see what is inside it — a file
         explorer across every connected source.
 
-        Call it with no `nodeId` to list the connected apps (Jira, Drive,
-        Confluence, Slack, …). Pass a node's `id` to descend: apps contain
-        record groups, record groups contain records and folders, and a record
-        contains its own children — comments, attachments, sub-tasks — plus a
-        `related` section of cross-referenced records, such as the Confluence
-        page linked from a Jira ticket. `nodeId` is tolerant: a URL or an issue
-        key such as `PA-1787` is resolved to its record before navigating, so a
-        link can be pasted straight in without a separate lookup call.
+        Call it with no `nodeId` for a flat listing of every record group and
+        record the caller can reach, newest first. This is a starting point to
+        pick a node from, not a roster of connected apps — app nodes are never
+        returned in a listing, though an app's `id` is accepted as a `nodeId`
+        and lists that app's record groups. Pass a node's `id` to descend:
+        record groups contain records and folders, and a record contains its
+        own children — comments, attachments, sub-tasks — plus a `related`
+        section of cross-referenced records, such as the Confluence page linked
+        from a Jira ticket. `nodeId` is tolerant: a URL or an issue key such as
+        `PA-1787` is resolved to its record before navigating, so a link can be
+        pasted straight in without a separate lookup call.
 
         The response carries a rendered `text` view — breadcrumbs, the current
         node, the children listing, `Related:`, and a closing `Next:` line
@@ -30073,9 +30079,9 @@ paths:
         - `GET /connectors/record/lookup` is the way in when you hold a URL or
           an issue key rather than a position in the tree.
 
-        **Typical flow:** call with no `nodeId` to see the apps → pass an app's
-        `id` to list its record groups → pass a group's `id` to list its
-        records → take a row whose `is_record` is true and call
+        **Typical flow:** call with no `nodeId` to see what is reachable → pass
+        a record group's `id` to list its records → take a row whose
+        `is_record` is true and call
         `GET /connectors/record/{recordId}/content` to read it.
 
         **Paging and depth:** results are paginated; `pagination.has_next`
@@ -30083,15 +30089,23 @@ paths:
         all descendants down to that level as one flat list, each row carrying
         its own `level`, instead of only direct children.
 
-        **Scope:** the root listing covers the connectors the caller can
-        access. Knowledge Base collections are not listed among them.
+        **Scope:** everything the caller can read, across both connectors and
+        Knowledge Base collections. No connector-level filter is applied — the
+        listing is bounded by per-node permissions alone.
 
         **Permission scoping:**
 
-        Only nodes the caller can see are listed, and the opened node itself is
-        access-checked before any of its details are returned. A node that does
-        not exist and a node the caller cannot access are deliberately
-        indistinguishable — both return an empty view rather than an error.
+        `rows` and `related` carry only nodes the caller can see, and the
+        opened node itself is access-checked before any of its details are
+        returned. A node that does not exist and a node the caller cannot
+        access are deliberately indistinguishable — both return an empty view
+        rather than an error.
+
+        `breadcrumbs` is the exception: the ancestor trail is resolved by id
+        alone, without a permission check. For a record shared directly with
+        the caller, it can therefore name ancestors the caller cannot open.
+        Treat breadcrumb entries as labels, not as nodes guaranteed to be
+        navigable.
       operationId: navigateKnowledgeGraph
       x-pipeshub-sdk: true
       security:
@@ -30103,11 +30117,13 @@ paths:
           required: false
           description: >-
             The node to open. Take it from an `id` in a previous navigate or
-            lookup response. Omit it entirely to list the connected apps — the
-            usual starting point. A URL or an issue key such as `PA-1787` also
-            works: it is resolved to its record automatically.
+            lookup response. Omit it entirely for the flat listing of
+            everything reachable — the usual starting point. A URL or an issue
+            key such as `PA-1787` also works: it is resolved to its record
+            automatically.
           schema:
             type: string
+            minLength: 1
             maxLength: 2048
         - name: page
           in: query
@@ -30191,8 +30207,10 @@ paths:
                 $ref: '#/components/schemas/NavigateKnowledgeGraphResponseSchema'
         '400':
           description: |
-            A date parameter is not valid ISO 8601, carries no timezone offset,
-            forms an inverted range, or `createdAfter` is in the future.
+            A parameter failed validation: `page` below 1, `limit` outside
+            50-200, `depth` outside 1-3, an empty `nodeId`, or a date that is
+            not valid ISO 8601, carries no timezone offset, forms an inverted
+            range, or has `createdAfter` in the future.
           content:
             application/json:
               schema:
@@ -30213,14 +30231,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: The authenticated user could not be resolved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          description: >-
-            A numeric parameter is out of range — `page` below 1, `limit`
-            outside 50-200, or `depth` outside 1-3.
           content:
             application/json:
               schema:

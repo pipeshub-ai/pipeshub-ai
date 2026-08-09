@@ -1726,7 +1726,7 @@ async def knowledge_graph_navigate(
             name_filter=None,
             page=page,
             limit=limit,
-            connector_ids=connector_ids or None,
+            connector_ids=None,
             record_group_ids=None,
             depth=depth,
             created_at=created_at,
