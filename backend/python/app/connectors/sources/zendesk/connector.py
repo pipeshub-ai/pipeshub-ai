@@ -1016,6 +1016,8 @@ class ZendeskConnector(BaseConnector):
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.list_groups(page=1, per_page=1)
+            if not response.success:
+                self.logger.error(f"Zendesk connection test failed: {response.error}")
             return bool(response.success)
         except Exception as e:
             self.logger.error(f"Zendesk connection test failed: {e}", exc_info=True)
