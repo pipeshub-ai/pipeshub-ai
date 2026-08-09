@@ -199,8 +199,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 39 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(39);
+    it('should have exactly 45 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(45);
     });
 
     it('should contain only the expected keys', () => {
@@ -240,6 +240,14 @@ describe('OAuthScopeNames', () => {
         // Agent Skills
         'SKILL_READ',
         'SKILL_WRITE',
+        // Scheduled Tasks
+        'TASK_READ',
+        'TASK_WRITE',
+        // Workflows
+        'WORKFLOW_READ',
+        'WORKFLOW_WRITE',
+        'WORKFLOW_EXECUTE',
+        'WORKFLOW_APPROVE',
         // Connectors
         'CONNECTOR_READ',
         'CONNECTOR_WRITE',

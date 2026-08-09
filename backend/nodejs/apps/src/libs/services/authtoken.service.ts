@@ -48,6 +48,10 @@ export class AuthTokenService {
   }
 
   generateScopedToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '1h'): string {
+    // TODO Phase 5: Add jti + revocation (Redis) and aud=run_id here.
+    // For now Python mints run tokens with full jti+aud+revocation.
+    // The Node generateScopedToken is used only for internal service calls,
+    // not for workflow run tokens (those are minted by run_token.py).
     return jwt.sign(payload, this.scopedJwtSecret, { expiresIn } as SignOptions);
   }
 }

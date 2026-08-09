@@ -207,6 +207,8 @@ export interface IConversation {
   }>;
   // Additional metadata for useful information
   metadata?: Map<string, any>;
+  /** Workflow IDs created from this conversation (bidirectional link). */
+  connectedWorkflowIds?: string[];
 }
 
 export interface IAgentConversation extends IConversation {

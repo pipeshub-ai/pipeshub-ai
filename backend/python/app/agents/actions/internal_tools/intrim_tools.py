@@ -1,10 +1,15 @@
 import json
 import uuid
-
 from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
+from app.agent_loop_lib.core.types import ToolCall
+from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.builtin.planning.task_complete import (
+    TaskCompletionOutcome,
+)
 from app.agent_loop_lib.tools.decorators import tool
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_UI_ONLY
 from app.connectors.core.registry.auth_builder import AuthBuilder
@@ -15,6 +20,37 @@ from app.connectors.core.registry.tool_builder import (
 
 # Max option labels when coercing pipe-separated planner shorthand (matches options max_length).
 _ASK_USER_QUESTION_MAX_OPTIONS = 7
+
+
+def _ask_user_question_outcome(
+    tr: CoreToolResult, call: ToolCall, fallback_text: str
+) -> TaskCompletionOutcome:
+    """`@tool(outcome_extractor=...)` for `ask_user_question` (task engine
+    plan Part D, Phase 5).
+
+    This tool's job is to hand a UI question payload to a human, not to
+    produce the run's final answer — but it IS `TAG_LIFECYCLE_TERMINAL`
+    (it must stop the turn so the human gets a turn to respond). Without
+    this override, `_default_terminal_outcome` would set `task_done=True`
+    with `needs_input=None`, which is indistinguishable from an ordinary
+    successful completion to a headless caller (`TaskExecutor`): the run
+    would be marked SUCCEEDED and the question would go unanswered
+    forever instead of the run being parked as AWAITING_INPUT (see
+    `app/services/tasks/runtime/executor.py`). `final_output` still
+    carries the raw JSON payload so interactive/chat callers keep
+    rendering the question card exactly as before.
+    """
+    content = tr.content
+    user_intent = ""
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            user_intent = str(parsed.get("userIntent") or "")
+    needs_input = user_intent or "The user must answer a pending question before this task can continue."
+    return TaskCompletionOutcome(task_done=True, final_output=content, needs_input=needs_input)
 
 
 class AskUserQuestionOptionInput(BaseModel):
@@ -273,6 +309,7 @@ class InternalTools:
             TAG_UI_ONLY,
             TAG_LIFECYCLE_TERMINAL,
         ],
+        outcome_extractor=_ask_user_question_outcome,
     )
     async def ask_user_question(self, user_intent: str, questions: list[AskUserQuestionItemInput]) -> str:
         """Return structured interactive questions with a wrapper message."""

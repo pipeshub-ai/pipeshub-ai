@@ -441,6 +441,80 @@ def _search_tools_result(args: dict[str, Any], result: "ToolResult") -> str | No
 
 
 # ---------------------------------------------------------------------------
+# task_manage / workflow_manage — action-dispatch tools whose interesting
+# argument (title, trigger schedule, ...) lives several keys deep, so the
+# generic string-key scan below never finds anything and would otherwise
+# render as just the bare tool name ("Task Manage").
+# ---------------------------------------------------------------------------
+
+
+def _describe_trigger(spec: dict[str, Any]) -> str:
+    kind = spec.get("kind")
+    if kind == "one_time":
+        return f"one-time at {spec.get('fire_at')}" if spec.get("fire_at") else "one-time"
+    if kind == "cron":
+        return f"cron {spec.get('cron_expression')}" if spec.get("cron_expression") else "cron"
+    if kind == "interval":
+        return f"every {spec.get('interval_seconds')}s" if spec.get("interval_seconds") else "interval"
+    if kind == "event":
+        event_filter = spec.get("event_filter")
+        event_type = event_filter.get("event_type") if isinstance(event_filter, dict) else None
+        return f"on event {event_type}" if event_type else "on event"
+    if kind == "webhook":
+        return "via webhook"
+    return "unscheduled"
+
+
+def _task_or_workflow_manage_args(args: dict[str, Any], noun: str) -> str | None:
+    action = args.get("action")
+    if not isinstance(action, str) or not action.strip():
+        return None
+    id_key = "task_id" if noun == "task" else "workflow_id"
+    entity_id = args.get(id_key)
+
+    if action == "create":
+        title = args.get("title")
+        label = f'Creating {noun}: "{title.strip()}"' if isinstance(title, str) and title.strip() else f"Creating {noun}"
+        triggers = args.get("triggers")
+        if isinstance(triggers, list) and triggers:
+            schedules = [_describe_trigger(t) for t in triggers if isinstance(t, dict)]
+            if schedules:
+                return f"{label} ({', '.join(schedules)})"
+        return label
+
+    if action == "update":
+        return f"Updating {noun} {entity_id}" if entity_id else f"Updating {noun}"
+    if action == "pause":
+        return f"Pausing {noun} {entity_id}" if entity_id else f"Pausing {noun}"
+    if action == "resume":
+        return f"Resuming {noun} {entity_id}" if entity_id else f"Resuming {noun}"
+    if action in ("cancel", "delete"):
+        return f"Deleting {noun} {entity_id}" if entity_id else f"Deleting {noun}"
+    if action == "run_now":
+        return f"Running {noun} {entity_id} now" if entity_id else f"Running {noun} now"
+    if action == "answer":
+        return f"Answering {noun} {entity_id}" if entity_id else f"Answering {noun}"
+    if action == "promote_to_agent":
+        return f"Promoting {noun} {entity_id} to an agent" if entity_id else f"Promoting {noun} to an agent"
+    if action == "subscribe":
+        event_type = args.get("event_type")
+        return f'Subscribing {noun} {entity_id} to "{event_type}"' if event_type else f"Subscribing {noun} {entity_id}"
+    if action == "unsubscribe":
+        return f"Unsubscribing {noun} {entity_id}" if entity_id else f"Unsubscribing {noun}"
+    return f"{_humanize_tool_name(action)} {noun} {entity_id}" if entity_id else None
+
+
+@register_args("task_manage", "tasks_task_manage")
+def _task_manage_args(args: dict[str, Any]) -> str | None:
+    return _task_or_workflow_manage_args(args, "task")
+
+
+@register_args("workflow_manage", "tasks_workflow_manage")
+def _workflow_manage_args(args: dict[str, Any]) -> str | None:
+    return _task_or_workflow_manage_args(args, "workflow")
+
+
+# ---------------------------------------------------------------------------
 # Generic fallback — every connector tool (`{app}__{method}`) without a
 # dedicated formatter above lands here.
 # ---------------------------------------------------------------------------

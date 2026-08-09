@@ -86,6 +86,13 @@ class TestLegacyFormatter:
             "data": {"tool": "jira_search", "toolset": "jira", "reason": "not_authenticated", "message": "Connect Jira"},
         }]
 
+    def test_scheduled_task(self) -> None:
+        task_data = {"name": "scheduled_task", "taskId": "task-1", "title": "Weekly digest"}
+
+        frames = self.formatter.scheduled_task(self.context, task_data=task_data)
+
+        assert frames == [{"event": "scheduled_task", "data": task_data}]
+
     def test_error(self) -> None:
         frames = self.formatter.error(self.context, message="Rate limited", code="rate_limit")
 
@@ -173,6 +180,16 @@ class TestAGUIFormatter:
         assert frames[0]["data"]["value"] == {
             "tool": "jira_search", "toolset": "jira", "reason": "not_authenticated", "message": "Connect Jira",
         }
+
+    def test_scheduled_task_wraps_in_custom_event(self) -> None:
+        task_data = {"name": "scheduled_task", "taskId": "task-1", "title": "Weekly digest"}
+
+        frames = self.formatter.scheduled_task(self.context, task_data=task_data)
+
+        assert frames[0]["event"] == "CUSTOM"
+        assert frames[0]["data"]["name"] == "scheduled_task"
+        assert frames[0]["data"]["value"] == task_data
+        assert frames[0]["data"]["runId"] == "run-1"
 
     def test_error_emits_run_error(self) -> None:
         frames = self.formatter.error(self.context, message="Rate limited", code="rate_limit")

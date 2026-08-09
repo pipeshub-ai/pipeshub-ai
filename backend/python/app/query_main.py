@@ -2,7 +2,7 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -24,12 +24,16 @@ from app.api.routes.ai_models_registry import router as ai_models_registry_route
 from app.api.routes.speech import router as speech_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.api.routes.workflows import router as workflows_router
+from app.services.workflows.tool_authoring.api import router as tool_authoring_router
+from app.services.workflows.migration.api import router as migration_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
 from app.services.messaging.config import MessageBrokerType, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.tasks.runtime.container_wiring import start_task_engine, stop_task_engine
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -143,6 +147,28 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
                 container.kafka_consumers = []
     return None
 
+def _make_workflow_llm_caller(
+    app_container: QueryAppContainer, logger: logging.Logger
+) -> Callable[[str, str], Awaitable[str]]:
+    """`(prompt, system_prompt) -> str` for the REST workflow-edit code
+    generator. Resolves the model per call rather than at startup, so the
+    edit endpoint works after an org configures its LLM without a restart."""
+
+    async def _call(prompt: str, system_prompt: str) -> str:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        retrieval_service = await app_container.retrieval_service()
+        llm = await retrieval_service.get_llm_instance()
+        if llm is None:
+            raise RuntimeError("No LLM is configured for this deployment")
+        response = await llm.ainvoke(
+            [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
+        )
+        return response.content if hasattr(response, "content") else str(response)
+
+    return _call
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
@@ -176,6 +202,93 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
+
+    # Start the task engine's scheduler loop + executor (Phase 9). Best-
+    # effort by design (see `start_task_engine`'s own docstring) -- a
+    # broken/unreachable task-engine Redis must not take down search/chat.
+    app.state.task_engine_runtime = await start_task_engine(
+        app_container, graph_provider=graph_provider, logger=logger,
+    )
+
+    # Build a shared TaskEngine + WorkflowService for the workflow REST API.
+    # Best-effort: a broken Redis must not prevent startup. The workflow router
+    # returns 503 when workflow_service is None (see _get_workflow_service).
+    try:
+        from app.agents.agent_loop.tasks_wiring import (
+            shared_task_producer,
+            shared_task_redis_client,
+            tasks_enabled,
+        )
+        from app.services.tasks.adapters.config.webhook_secret_store import (
+            ConfigServiceWebhookSecretStore,
+        )
+        from app.services.tasks.adapters.graph.task_store import GraphTaskStore
+        from app.services.tasks.application.engine import TaskEngine
+        from app.services.tasks.application.prerequisites import PrerequisiteValidator
+        from app.services.tasks.task_store_provider_factory import TaskScheduleStoreFactory
+        from app.services.workflows.adapters.graph import (
+            GraphWorkflowCodeStore,
+            GraphWorkflowVersionStore,
+        )
+        from app.services.workflows.adapters.graph.schema import (
+            ensure_workflow_collections,
+        )
+        from app.services.workflows.adapters.redis.journal import RedisExecutionJournal
+        from app.services.workflows.adapters.node.conversation_writer import (
+            build_node_conversation_writer,
+        )
+        from app.services.workflows.factory import build_workflow_service
+
+        if tasks_enabled():
+            _config_service = app_container.config_service()
+            _redis_client = await shared_task_redis_client(_config_service)
+            _redis_config = await _config_service.get_redis_config()
+            _trigger_store = await TaskScheduleStoreFactory.create_trigger_store(
+                logger, _redis_config, redis_client=_redis_client,
+            )
+            _run_store = await TaskScheduleStoreFactory.create_run_store(
+                logger, _redis_config, redis_client=_redis_client, graph_provider=graph_provider,
+            )
+            _producer = await shared_task_producer(_config_service)
+            app.state.task_engine = TaskEngine(
+                task_store=GraphTaskStore(graph_provider),
+                trigger_store=_trigger_store,
+                run_store=_run_store,
+                producer=_producer,
+                prerequisite_validator=PrerequisiteValidator(),
+                webhook_secret_store=ConfigServiceWebhookSecretStore(_config_service),
+                logger=logger,
+            )
+            # The connectors service also ensures these, but a query-only
+            # restart against a fresh database would otherwise fail on the
+            # first version write.
+            await ensure_workflow_collections(graph_provider, logger=logger)
+
+            _version_store = GraphWorkflowVersionStore(graph_provider)
+            _code_store = GraphWorkflowCodeStore(graph_provider)
+            _journal = RedisExecutionJournal(_redis_client)
+            # Only used to read a conversation's explicit workflow links, which
+            # live in Mongo and so cannot be answered from the task store.
+            _conversation_writer = await build_node_conversation_writer(_config_service)
+            if _conversation_writer is None:
+                logger.warning(
+                    "workflows: no scopedJwtSecret -- workflows linked to (not created "
+                    "from) a conversation will not appear in its panel",
+                )
+            app.state.workflow_service = build_workflow_service(
+                task_engine=app.state.task_engine,
+                version_store=_version_store,
+                code_store=_code_store,
+                journal=_journal,
+                llm_caller=_make_workflow_llm_caller(app_container, logger),
+                graph_provider=graph_provider,
+                conversation_writer=_conversation_writer,
+            )
+            logger.info("✅ WorkflowService initialized (version_store + code_store + journal wired)")
+        else:
+            logger.info("tasks: PIPESHUB_ENABLE_TASKS=false -- WorkflowService not started")
+    except Exception:
+        logger.exception("workflows: failed to build WorkflowService -- workflow routes disabled")
 
     # Get all organizations
     orgs = await graph_provider.get_all_orgs()
@@ -262,6 +375,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await warmup_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    # Stop the task engine's scheduler loop + executor
+    await stop_task_engine(getattr(app.state, "task_engine_runtime", None), logger=logger)
 
     # Stop all message consumers
     try:
@@ -384,6 +500,9 @@ app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
+app.include_router(workflows_router)
+app.include_router(tool_authoring_router)
+app.include_router(migration_router)
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")

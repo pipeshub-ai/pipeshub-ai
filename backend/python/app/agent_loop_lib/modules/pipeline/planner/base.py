@@ -65,9 +65,28 @@ class Plan(BaseModel):
     confidence: Confidence | None = None
 
 
+def _plan_to_json(plan: "Plan | None") -> dict | None:
+    return plan.model_dump(mode="json") if plan is not None else None
+
+
+def _plan_from_json(raw: object) -> "Plan | None":
+    return Plan.model_validate(raw) if raw is not None else None
+
+
 STRUCTURED_PLAN_SLOT: StateSlot[Plan | None] = StateSlot(
     key="planner.structured_plan",
     default_factory=lambda: None,
+    # `persist=True` (task engine plan Part C2/Phase 6): a crashed run whose
+    # structured plan was already validated (critique_plan passed) must not
+    # re-plan from scratch on resume — `OrchestratorLoop` reads this slot at
+    # the top of Phase 2 dispatch to decide whether to skip straight to
+    # programmatic dispatch. `to_json`/`from_json` round-trip the `Plan`
+    # Pydantic model through `AgentCheckpoint.extensions` (a `dict[str,
+    # Any]`), which does not itself reconstruct nested Pydantic types on
+    # load — see `StateSlot`'s own docstring.
+    persist=True,
+    to_json=_plan_to_json,
+    from_json=_plan_from_json,
 )
 
 

@@ -7,6 +7,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# Task engine plan Part D2 ("TTL on pending questions"): every built-in
+# `wait_for_response()` caller (`handle_clarify`, `handle_tool_approval`,
+# `ApprovalHook.check()`, `RequestReviewTool`) previously waited with
+# `timeout=None` — an unanswered question would suspend that coroutine
+# forever. This is the shared default they now all pass instead, bounding
+# the wait; each caller's own already-documented fallback semantics decide
+# what a timeout resolves to (e.g. `ApprovalHook` denies, `request_review`
+# proceeds — see each call site's own timeout handling).
+DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS: float = 24 * 60 * 60
+
 
 class HILRequestType(str, Enum):
     CLARIFICATION  = "clarification"

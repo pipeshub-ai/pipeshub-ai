@@ -2,16 +2,18 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import type { ThreadMessageLike } from '@assistant-ui/react';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
 import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { AgentChatHeader } from './components/agent-chat-header';
+import { WorkflowPanel } from './components/workflow-panel';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import {
   applyConversationModelInfoToStore,
   findModelInfoInConversationLists,
   pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
-import { ChatSuggestion } from '@/chat/types';
+import { ChatSuggestion, type RunResultCardPayload } from '@/chat/types';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -50,6 +52,7 @@ import {
   chatContentColumnStyle,
 } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useWorkflowRunUpdates, type WorkflowRunUpdate } from '@/lib/hooks/use-workflow-run-updates';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -712,7 +715,8 @@ function ChatContent() {
           store.setCollectionMetaCache(metaCache);
         }
 
-        const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
+        const { messages: formattedMessages, unansweredAskUserQuestion, uiCards } = loadHistoricalMessages(messages);
+        const existingSlot = useChatStore.getState().slots[activeSlotId];
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
           isInitialized: true,
@@ -726,6 +730,9 @@ function ChatContent() {
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
           ...(unansweredAskUserQuestion
             ? { pendingAskUserQuestion: unansweredAskUserQuestion }
+            : {}),
+          ...(Object.keys(uiCards).length > 0
+            ? { uiCards: { ...(existingSlot?.uiCards ?? {}), ...uiCards } }
             : {}),
         });
       } catch (error) {
@@ -889,6 +896,66 @@ function ChatContent() {
     });
   }, [conversationId, threadRuntime, activeSlotId, agentId]);
 
+  // When a workflow run reaches a terminal state and is linked to this
+  // conversation, inject a RunResultCard into the active slot immediately —
+  // so the result is visible without a page refresh.  The card was already
+  // written to MongoDB by NodeConversationWriter; we surface it in real-time
+  // using the socket payload's outputSummary (included since the notifier fix).
+  const TERMINAL_RUN_STATUSES = useMemo(() => new Set(['succeeded', 'failed', 'dlq']), []);
+  const handleWorkflowRunComplete = useCallback(
+    (update: WorkflowRunUpdate) => {
+      if (!TERMINAL_RUN_STATUSES.has(update.status)) return;
+      if (!update.conversationId || update.conversationId !== activeSlotConvId) return;
+      if (!activeSlotId) return;
+
+      const store = useChatStore.getState();
+      const slot = store.slots[activeSlotId];
+      if (!slot) return;
+
+      // The same run produces both this live row and a persisted row on the
+      // next conversation load, so dedup by runId across both the current
+      // (`workflowRun`) and pre-existing (`persistedRunResult`) shapes.
+      const alreadyPresent = slot.messages.some((m) => {
+        const custom = m.metadata?.custom as Record<string, unknown> | undefined;
+        if (!custom) return false;
+        const existing =
+          (custom.workflowRun as RunResultCardPayload | undefined) ??
+          (custom.persistedRunResult as RunResultCardPayload | undefined);
+        return existing?.runId === update.runId;
+      });
+      if (alreadyPresent) return;
+
+      const runResultPayload: RunResultCardPayload = {
+        workflowId: update.workflowId,
+        runId: update.runId,
+        status: update.status,
+        outputSummary: update.outputSummary ?? null,
+        redirectLink: update.redirectLink ?? null,
+        workflowName: update.workflowName ?? null,
+        triggerKind: update.triggerKind ?? null,
+      };
+
+      const newMsg: ThreadMessageLike = {
+        id: `run-result-${update.runId}`,
+        role: 'assistant',
+        // Same shape the persisted row loads with, so the live row renders
+        // through the identical markdown/tabs/actions path.
+        content: [{ type: 'text', text: update.outputSummary ?? '' }],
+        metadata: {
+          custom: {
+            workflowRun: runResultPayload,
+          },
+        },
+      };
+
+      store.updateSlot(activeSlotId, {
+        messages: [...slot.messages, newMsg],
+      });
+    },
+    [TERMINAL_RUN_STATUSES, activeSlotConvId, activeSlotId],
+  );
+  useWorkflowRunUpdates(handleWorkflowRunComplete);
+
   const isMobile = useIsMobile();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
@@ -950,6 +1017,8 @@ function ChatContent() {
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
+  // Workflow panel state
+  const [isWorkflowPanelOpen, setIsWorkflowPanelOpen] = useState(false);
 
   const chatShareAdapter = useMemo(() => {
     if (!conversationId) return null;
@@ -1231,6 +1300,30 @@ function ChatContent() {
         </Box>
       )}
 
+      {/* Workflow panel toggle — shown when a conversation is open */}
+      {conversationId && !isMobile && (
+        <Box
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: showConversationShare ? 200 : 52,
+            zIndex: 20,
+          }}
+        >
+          <Tooltip content="Workflows connected to this chat" side="bottom">
+            <IconButton
+              variant={isWorkflowPanelOpen ? 'solid' : 'ghost'}
+              color="violet"
+              size="2"
+              aria-label="Toggle workflow panel"
+              onClick={() => setIsWorkflowPanelOpen((v) => !v)}
+            >
+              <MaterialIcon name="account_tree" size={18} />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+
       {/* Share header group — owners only */}
       {showConversationShare && (
         <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
@@ -1500,6 +1593,14 @@ function ChatContent() {
           defaultTab="preview"
           onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}
+        />
+      )}
+
+      {/* Workflow Panel — slide-out listing workflows linked to this conversation */}
+      {isWorkflowPanelOpen && conversationId && (
+        <WorkflowPanel
+          conversationId={conversationId}
+          onClose={() => setIsWorkflowPanelOpen(false)}
         />
       )}
 

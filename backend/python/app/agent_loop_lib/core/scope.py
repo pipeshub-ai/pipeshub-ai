@@ -83,13 +83,31 @@ class StateSlot(Generic[T]):
             spawned via `AgentRuntime.run_child()` with a `parent_scope`.
         persist: If True, this slot's value is included in
             `RunScope.snapshot_extensions()` and therefore saved into
-            `AgentCheckpoint.extensions` — the value must be JSON-safe.
+            `AgentCheckpoint.extensions` — the value must be JSON-safe
+            (directly, or via `to_json`/`from_json` below).
+        to_json: For a `persist=True` slot whose live value is NOT already
+            JSON-safe (e.g. holds a Pydantic model, or a dict of dataclasses
+            wrapping one) — converts the live value to a JSON-safe shape at
+            checkpoint time. `None` (the default) means the value is used
+            as-is, which is only correct for slots holding plain
+            dicts/lists/primitives.
+        from_json: The inverse of `to_json`, applied on
+            `RunScope.restore_extensions()` to rebuild the slot's real
+            runtime type from the JSON-safe checkpoint value. `None` means
+            the raw checkpoint value is stored as-is — correct only when
+            `to_json` is also `None`. A slot that sets one of `to_json`/
+            `from_json` without the other would silently hand consumers a
+            plain dict instead of its declared type after a resume, so both
+            travel together in practice even though nothing enforces that
+            structurally.
     """
 
     key: str
     default_factory: Callable[[], T]
     inherit: bool = False
     persist: bool = False
+    to_json: "Callable[[T], Any] | None" = None
+    from_json: "Callable[[Any], T] | None" = None
 
     def __post_init__(self) -> None:
         if self.persist:
@@ -172,11 +190,16 @@ class RunScope:
     def snapshot_extensions(self) -> dict[str, Any]:
         """`persist=True` slot values, keyed by `slot.key` — embedded into
         `AgentCheckpoint.extensions` by `observability.save_checkpoint()`.
-        Values must be JSON-safe; a non-serializable value in a
-        `persist=True` slot is a programming error that surfaces (loudly,
-        via the checkpoint store's own serialization) at checkpoint time
-        rather than silently on resume."""
-        return {slot.key: value for slot, value in self._extensions.items() if slot.persist}
+        Run through `slot.to_json` first when the slot declares one (see
+        `StateSlot`); the result must be JSON-safe either way — a
+        non-serializable value in a `persist=True` slot is a programming
+        error that surfaces (loudly, via the checkpoint store's own
+        serialization) at checkpoint time rather than silently on resume."""
+        return {
+            slot.key: (slot.to_json(value) if slot.to_json is not None else value)
+            for slot, value in self._extensions.items()
+            if slot.persist
+        }
 
     def restore_extensions(
         self, snapshot: dict[str, Any], known_slots: "Iterable[StateSlot[Any]]" = ()
@@ -185,12 +208,15 @@ class RunScope:
         be `known_persisted_slots()` (or a caller-filtered subset) — values
         for keys that don't match any known, currently-declared
         `persist=True` slot are dropped, the same "unknown field" policy
-        applied to any other checkpoint schema drift."""
+        applied to any other checkpoint schema drift. Run through
+        `slot.from_json` when declared, so a slot holding a Pydantic model
+        (or similar) gets its real runtime type back, not the raw JSON dict
+        `snapshot_extensions()` wrote."""
         by_key = {slot.key: slot for slot in known_slots if slot.persist}
         for key, value in snapshot.items():
             slot = by_key.get(key)
             if slot is not None:
-                self._extensions[slot] = value
+                self._extensions[slot] = slot.from_json(value) if slot.from_json is not None else value
 
     def _inherit_from(self, parent: "RunScope") -> None:
         """Copy `inherit=True` slots from a parent scope, BY REFERENCE.

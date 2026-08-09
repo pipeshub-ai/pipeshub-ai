@@ -15,6 +15,7 @@ import pytest
 
 from app.agent_loop_lib.agent.observability import handle_tool_approval
 from app.agent_loop_lib.core.types import Goal, ToolCall
+from app.agent_loop_lib.modules.stores.hil import base as hil_base
 from app.agent_loop_lib.modules.stores.hil.base import HILResponse
 from app.agent_loop_lib.modules.stores.hil.in_memory import InMemoryHILStore
 
@@ -105,3 +106,20 @@ class TestHandleToolApproval:
             handle_tool_approval(agent, call, "risky", _goal(), [], 0),
             _respond_once_submitted(),
         )
+
+    @pytest.mark.asyncio
+    async def test_unanswered_request_denies_after_timeout_instead_of_hanging_forever(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Task engine plan Part D2 ("TTL on pending questions"): a request
+        nobody ever answers must not suspend this coroutine forever."""
+        monkeypatch.setattr(hil_base, "DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS", 0.05)
+        hil_store = InMemoryHILStore()
+        agent = _fake_agent(hil_store=hil_store)
+        call = ToolCall(id="c1", name="delete_everything", arguments={})
+
+        approved = await asyncio.wait_for(
+            handle_tool_approval(agent, call, "risky", _goal(), [], 0), timeout=2
+        )
+
+        assert approved is False

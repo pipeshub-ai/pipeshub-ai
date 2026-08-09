@@ -89,6 +89,9 @@ import { ToolsetsContainer } from './modules/toolsets/container/toolsets.contain
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
+import { WorkflowsContainer } from './modules/workflows/container/workflows.container';
+import { createWorkflowsRouter } from './modules/workflows/routes/workflows.routes';
+import { createWorkflowsInternalRouter } from './modules/workflows/routes/workflows-internal.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 
 const loggerConfig = {
@@ -114,6 +117,7 @@ export class Application {
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
   private skillsContainer!: Container;
+  private workflowsContainer!: Container;
   private oauthAppsContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
@@ -203,6 +207,10 @@ export class Application {
       );
 
       this.skillsContainer = await SkillsContainer.initialize(
+        configurationManagerConfig,
+      );
+
+      this.workflowsContainer = await WorkflowsContainer.initialize(
         configurationManagerConfig,
       );
 
@@ -506,6 +514,18 @@ export class Application {
     this.app.use(
       '/api/v1/skills',
       createSkillsRouter(this.skillsContainer)
+    );
+
+    // workflow internal routes — own JWT check, must be mounted before public router
+    this.app.use(
+      '/api/v1/workflows/internal',
+      createWorkflowsInternalRouter(this.workflowsContainer),
+    );
+
+    // workflows routes (Workflows dashboard -> Python query service)
+    this.app.use(
+      '/api/v1/workflows',
+      createWorkflowsRouter(this.workflowsContainer),
     );
 
     // oauth-apps routes — thin proxy to Python connector service

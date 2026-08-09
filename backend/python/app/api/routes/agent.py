@@ -47,6 +47,11 @@ from app.utils.attachment_utils import (
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.web_search_config import (
+    SUPPORTED_WEB_SEARCH_PROVIDERS,
+    resolve_default_web_search_config,
+    resolve_web_search_config_for_provider,
+)
 
 # `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
 # `BlobStorage`/`resolve_attachments` moved to `app.modules.agents.qna.router`
@@ -490,7 +495,7 @@ def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
     return value
 
 
-_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
+_SUPPORTED_WEB_SEARCH_PROVIDERS = SUPPORTED_WEB_SEARCH_PROVIDERS
 
 
 def _parse_web_search(raw_web_search: Any) -> str | None:
@@ -559,47 +564,7 @@ async def _resolve_default_web_search_config(
     explicit webSearch attachment but should still offer the tool when the
     org has a provider configured.
     """
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning("Failed to load web search configuration for auto-detect: %s", e)
-        return None
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    default_provider = next(
-        (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
-        None,
-    )
-
-    # Whenever no provider carries isDefault=true -- whether the org has never
-    # configured any provider (empty/absent `providers`) or has configured one
-    # without marking it default -- the Node.js layer treats DuckDuckGo as the
-    # active default (it clears all isDefault flags rather than inserting a
-    # DuckDuckGo entry into the array; see `cm_controller.ts::getWebSearchProviders`).
-    if not default_provider:
-        logger.debug("No explicit default web search provider; falling back to duckduckgo")
-        return {"provider": "duckduckgo", "configuration": {}}
-
-    provider = str(default_provider.get("provider", "")).strip().lower()
-    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
-        return None
-
-    configuration = default_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
+    return await resolve_default_web_search_config(config_service, logger)
 
 
 async def _resolve_web_search_tool_config(
@@ -608,49 +573,7 @@ async def _resolve_web_search_tool_config(
     logger: Logger,
 ) -> dict[str, Any] | None:
     """Resolve provider-specific config for the web_search tool at runtime."""
-    if not provider:
-        return None
-
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to load web search configuration for provider '%s': %s",
-            provider,
-            str(e),
-        )
-        return {"provider": provider, "configuration": {}}
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    selected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and str(entry.get("provider", "")).strip().lower() == provider
-        ),
-        None,
-    )
-
-    if not selected_provider:
-        return {"provider": provider, "configuration": {}}
-
-    configuration = selected_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
+    return await resolve_web_search_config_for_provider(provider, config_service, logger)
 
 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:

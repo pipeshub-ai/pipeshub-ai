@@ -58,9 +58,9 @@ from app.agents.chat_modes.policy import (
     resolve_chat_mode_policy,
 )
 from app.agents.chat_modes.prefetch import prefetch_retrieval
-from app.config.constants.service import config_node_constants
 from app.utils.chat_helpers import CitationRefMapper, get_message_content
 from app.utils.streaming import create_sse_event, handle_simple_mode
+from app.utils.web_search_config import resolve_default_web_search_config
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -112,34 +112,8 @@ def _with_mode_instructions(base_instructions: str | None, policy: ChatModePolic
 
 
 async def _resolve_web_search_config(config_service: Any, logger: logging.Logger) -> dict[str, Any] | None:
-    """Mirrors `_generate_web_search_stream()`'s provider lookup: the org's
-    default web-search provider, falling back to DuckDuckGo when none is
-    explicitly configured.
-
-    The Node.js config API (`cm_controller.ts::getWebSearchProviders`) never
-    persists a DuckDuckGo entry into the stored config -- it treats
-    DuckDuckGo as the implicit default whenever no stored provider carries
-    `isDefault: true` (including a brand-new org with an empty/absent
-    `providers` list). Reading the raw stored config here without the same
-    fallback would silently disable `web_search`/`fetch_url` for every org
-    that hasn't explicitly configured a paid provider, even though the UI
-    tells the user DuckDuckGo is already active (see the identical fallback
-    in `agent.py::_resolve_default_web_search_config`)."""
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value, default={}, use_cache=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_chat_stream: failed to load web search config: %s", exc)
-        return None
-    providers = (web_search_config or {}).get("providers") or []
-    default_provider = next((p for p in providers if p.get("isDefault")), None)
-    if not default_provider:
-        return {"provider": "duckduckgo", "configuration": {}}
-    return {
-        "provider": default_provider.get("provider"),
-        "configuration": default_provider.get("configuration", {}),
-    }
+    """The org's default web-search provider for this chat-mode run."""
+    return await resolve_default_web_search_config(config_service, logger)
 
 
 async def _prefetch_available_connectors(

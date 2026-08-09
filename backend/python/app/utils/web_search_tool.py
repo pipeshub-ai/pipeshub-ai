@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from typing import Any
 
 import httpx
@@ -10,6 +11,9 @@ from app.utils.logger import create_logger
 
 MAX_RETRIES = 2
 INITIAL_BACKOFF_SECONDS = 2
+
+_DDG_SEMAPHORE = threading.Semaphore(2)
+_DDG_FETCH_RETRIES = 1
 
 logger = create_logger(__name__)
 
@@ -45,7 +49,12 @@ def _extract_ddg_url(href: str) -> str:
 
 
 def _search_with_duckduckgo_sync(query: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Search using DuckDuckGo HTML endpoint with robust anti-bot evasion (sync I/O)."""
+    """Search using DuckDuckGo HTML endpoint with robust anti-bot evasion (sync I/O).
+
+    A process-wide semaphore limits concurrent requests to avoid tripping
+    DuckDuckGo's rate limiter when the agent fires multiple parallel
+    web_search calls (common for research-style tasks).
+    """
     from urllib.parse import urlencode
 
     from bs4 import BeautifulSoup
@@ -54,15 +63,16 @@ def _search_with_duckduckgo_sync(query: str, config: dict[str, Any]) -> list[dic
 
     search_url = f"https://html.duckduckgo.com/html/?{urlencode({'q': query, 'kl': 'wt-wt'})}"
 
-    try:
-        response = fetch_url(search_url, timeout=15)
-    except FetchError as e:
-        logger.error(f"DuckDuckGo fetch failed: {e}")
-        return []
-   
+    with _DDG_SEMAPHORE:
+        try:
+            response = fetch_url(search_url, timeout=15, max_retries=_DDG_FETCH_RETRIES)
+        except FetchError as e:
+            logger.error("DuckDuckGo fetch failed: %s", e)
+            return []
+
     status_code = response.status_code
     if status_code != 200:
-        logger.error(f"DuckDuckGo fetch failed: {status_code}")
+        logger.error("DuckDuckGo fetch failed: %s", status_code)
         return []
 
     soup = BeautifulSoup(response.text, "html.parser")

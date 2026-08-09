@@ -62,6 +62,29 @@ function severityIcon(severity: NotificationSeverity): string {
   }
 }
 
+const WORKFLOW_NOTIFICATION_TYPES = new Set([
+  'WORKFLOW_RUN_STARTED',
+  'WORKFLOW_RUN_SUCCEEDED',
+  'WORKFLOW_RUN_FAILED',
+  'WORKFLOW_AWAITING_APPROVAL',
+]);
+
+const TASK_NOTIFICATION_TYPES = new Set([
+  'TASK_RUN_STARTED',
+  'TASK_RUN_SUCCEEDED',
+  'TASK_RUN_FAILED',
+]);
+
+/**
+ * Returns an icon name override for notification types that warrant a specific
+ * icon regardless of severity (e.g. workflow and task events).
+ */
+function notificationTypeIcon(type: string): string | null {
+  if (WORKFLOW_NOTIFICATION_TYPES.has(type)) return 'account_tree';
+  if (TASK_NOTIFICATION_TYPES.has(type)) return 'schedule';
+  return null;
+}
+
 function severityColor(severity: NotificationSeverity): string {
   switch (severity) {
     case 'info':
@@ -223,6 +246,7 @@ export function NotificationRow({
   const title = n.title ?? '';
   const message = n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
+  const typeIconOverride = notificationTypeIcon(n.type ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
@@ -280,7 +304,7 @@ export function NotificationRow({
           }}
         >
           <MaterialIcon
-            name={severityIcon(severity)}
+            name={typeIconOverride ?? severityIcon(severity)}
             size={16}
             color={severityColor(severity)}
           />

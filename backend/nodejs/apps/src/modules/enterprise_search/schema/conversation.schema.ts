@@ -265,6 +265,8 @@ const conversationSchema = new Schema<IConversation>(
       type: Map,
       of: Schema.Types.Mixed,
     },
+    // Workflow IDs created from this conversation (bidirectional link for quick reverse lookup).
+    connectedWorkflowIds: [{ type: String }],
   },
   { timestamps: true },
 );

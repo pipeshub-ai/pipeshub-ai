@@ -19,6 +19,9 @@ import {
   type AgentCapabilities,
   SSEArtifactEvent,
   SSEAskUserQuestionEvent,
+  ScheduledTaskPayload,
+  WorkflowCardPayload,
+  UiCardPayload,
   MessagePart,
   AvailableLlmModel,
   SearchRequest,
@@ -47,6 +50,10 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /** Emitted once a task or workflow is created via a chat tool call. */
+  onScheduledTask?: (data: ScheduledTaskPayload | WorkflowCardPayload) => void;
+  /** Emitted for any generic `ui_card` CUSTOM event. */
+  onUiCard?: (data: UiCardPayload) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us

@@ -29,6 +29,11 @@ class Topic(str, Enum):
     SYNC_EVENTS = "sync-events"
     HEALTH_CHECK = "health-check"
     NOTIFICATION = "notification"
+    TASK_EVENTS = "task-events"
+    """Task engine dispatch stream: `SchedulerLoop` (producer) -> `TaskExecutor`
+    (consumer, Phase 4). One event per dispatched `TaskRun`."""
+    APP_EVENTS = "app_events"
+    """Cross-service app-event fan-out: workflow event-trigger routing."""
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]

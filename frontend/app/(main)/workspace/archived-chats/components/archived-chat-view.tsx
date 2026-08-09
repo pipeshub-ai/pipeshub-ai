@@ -5,7 +5,7 @@ import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse, emptyCitationMaps } from '@/chat/components';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
-import type { ConversationMessage } from '../types';
+import type { ConversationMessage, RunResultCardPayload } from '@/chat/types';
 
 // Stable empty citation maps — avoids creating new objects per render.
 const EMPTY_CITATION_MAPS = emptyCitationMaps();
@@ -14,17 +14,41 @@ interface MessagePair {
   key: string;
   question: string;
   answer: string;
+  workflowRun?: RunResultCardPayload;
+}
+
+function workflowRunPayload(msg: ConversationMessage): RunResultCardPayload | undefined {
+  const tool = msg.tools?.find((entry) => entry.toolName === 'workflow_run_result');
+  return tool?.toolResult as unknown as RunResultCardPayload | undefined;
 }
 
 /**
  * Group raw ConversationMessage[] into user→bot pairs.
  * A user_query without a following bot_response is kept with an empty answer.
+ *
+ * A workflow run appends a `bot_response` with no user turn before it, so
+ * anchoring purely on `user_query` (the original behaviour) dropped every
+ * workflow result from the archived transcript.
  */
 function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
   const pairs: MessagePair[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
+
+    if (msg.messageType === 'bot_response') {
+      const runResult = workflowRunPayload(msg);
+      if (runResult) {
+        pairs.push({
+          key: msg._id,
+          question: '',
+          answer: msg.content,
+          workflowRun: runResult,
+        });
+      }
+      continue;
+    }
+
     if (msg.messageType !== 'user_query') continue;
 
     const next = messages[i + 1];
@@ -150,6 +174,7 @@ export function ArchivedChatView({
                 citationMaps={EMPTY_CITATION_MAPS}
                 isStreaming={false}
                 isLastMessage={false}
+                workflowRun={pair.workflowRun}
               />
             ))}
           </Flex>

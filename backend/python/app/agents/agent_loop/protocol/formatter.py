@@ -87,6 +87,15 @@ class ProtocolFormatter(ABC):
     def artifact(self, context: "AgentContext", *, artifact_data: ArtifactSSEPayload) -> list[dict[str, Any]]: ...
 
     @abstractmethod
+    def scheduled_task(self, context: "AgentContext", *, task_data: dict[str, Any]) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    def ui_card(
+        self, context: "AgentContext", *, card_type: str, card_id: str,
+        payload: dict[str, Any], actions: list[Any] | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
     def tool_unavailable(
         self, context: "AgentContext", *, tool: str | None, toolset: str | None,
         reason: str | None, message: str | None,
@@ -114,6 +123,12 @@ class LegacyFormatter(ProtocolFormatter):
 
     def artifact(self, context, *, artifact_data):
         return [{"event": "artifact", "data": artifact_data.to_wire_dict()}]
+
+    def scheduled_task(self, context, *, task_data):
+        return [{"event": "scheduled_task", "data": task_data}]
+
+    def ui_card(self, context, *, card_type, card_id, payload, actions=None):
+        return [{"event": "ui_card", "data": {"cardType": card_type, "cardId": card_id, "payload": payload, "actions": actions or []}}]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [{
@@ -175,6 +190,37 @@ class AGUIFormatter(ProtocolFormatter):
             AGUIEventType.STATE_DELTA,
             runId=context.run_id,
             delta=[{"op": "add", "path": "/artifacts/-", "value": artifact_data.to_wire_dict()}],
+        )]
+
+    def scheduled_task(self, context, *, task_data):
+        """`CUSTOM` (not `STATE_DELTA`, unlike `artifact`): a scheduled-task
+        card is a one-off confirmation tied to the turn that created it, not
+        accumulating list state a reload needs to replay -- same reasoning
+        as `ask_user_question` above.
+
+        The CUSTOM frame's own `name` mirrors `task_data["name"]` (e.g.
+        `"workflow_created"`) rather than being hardcoded, since
+        `agui-event-handler.ts` dispatches on the frame name and the
+        payload's own `name` field must agree with it for the frontend's
+        `WorkflowCardPayload`/`ScheduledTaskPayload` discriminated union to
+        stay consistent.
+        """
+        return [frame(
+            AGUIEventType.CUSTOM, name=task_data.get("name", "workflow_created"), value=task_data,
+            runId=context.run_id,
+        )]
+
+    def ui_card(self, context, *, card_type: str, card_id: str, payload: dict, actions=None):
+        """Generic card envelope: `CUSTOM{name: "ui_card", value: {cardType, cardId, payload, actions}}`.
+
+        Node persists every `ui_card` event, so all card types survive reload.
+        The frontend routes by `cardType` through its card registry.
+        Keep `scheduled_task()` for backward compat with older persisted conversations.
+        """
+        return [frame(
+            AGUIEventType.CUSTOM, name="ui_card",
+            value={"cardType": card_type, "cardId": card_id, "payload": payload, "actions": actions or []},
+            runId=context.run_id,
         )]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):

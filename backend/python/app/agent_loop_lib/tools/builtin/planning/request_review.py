@@ -61,7 +61,10 @@ class RequestReviewTool(Tool):
         ]
 
     async def handle(self, call: ToolCall, ctx: RouteContext) -> CoreToolResult:
+        import asyncio
+
         from app.agent_loop_lib.modules.stores.hil.base import (
+            DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS,
             HILRequest,
             HILRequestType,
         )
@@ -95,7 +98,23 @@ class RequestReviewTool(Tool):
             pending_tool_call_id=call.id,
         )
 
-        hil_response = await runtime.hil_store.wait_for_response(request_id)
+        # Bounded wait (task engine plan Part D2 "TTL on pending questions").
+        # On timeout, mirrors this tool's own no-hil_store fallback above —
+        # "proceeds automatically" when escalation isn't actually available
+        # within a reasonable time, same as when it's not configured at all.
+        try:
+            hil_response = await runtime.hil_store.wait_for_response(
+                request_id, timeout=DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            return CoreToolResult(
+                tool_call_id=call.id, name=call.name,
+                content={
+                    "approved": True,
+                    "reason": "review request timed out with no response — proceeding",
+                },
+                is_error=False,
+            )
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
             content={"approved": hil_response.approved, "reason": hil_response.answer or ""},

@@ -30,6 +30,18 @@ class NotificationType(str, Enum):
     CONNECTOR_SUCCESS = "CONNECTOR_SUCCESS"
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
+    # Task Scheduling Engine (app.services.tasks) — see
+    # app/services/tasks/adapters/messaging/notifier.py.
+    TASK_RUN_FAILED = "TASK_RUN_FAILED"
+    TASK_RUN_SUCCEEDED = "TASK_RUN_SUCCEEDED"
+    TASK_AWAITING_INPUT = "TASK_AWAITING_INPUT"
+    TASK_PREREQUISITE_MISSING = "TASK_PREREQUISITE_MISSING"
+    TASK_AUTO_DISABLED = "TASK_AUTO_DISABLED"
+    TASK_DLQ = "TASK_DLQ"
+    WORKFLOW_RUN_STARTED = "WORKFLOW_RUN_STARTED"
+    WORKFLOW_RUN_SUCCEEDED = "WORKFLOW_RUN_SUCCEEDED"
+    WORKFLOW_RUN_FAILED = "WORKFLOW_RUN_FAILED"
+    WORKFLOW_AWAITING_APPROVAL = "WORKFLOW_AWAITING_APPROVAL"
 
 class NotificationStatus(str, Enum):
     UNREAD = "unread"

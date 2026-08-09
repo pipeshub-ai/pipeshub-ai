@@ -245,6 +245,7 @@ class IGraphDBProvider(ABC):
         limit: int = 50,
         filters: dict[str, Any] | None = None,
         sort_field: str | None = None,
+        sort_desc: bool = False,
         transaction: str | None = None,
         raise_on_error: bool = False,
     ) -> list[dict]:
@@ -259,9 +260,12 @@ class IGraphDBProvider(ABC):
             limit:        Maximum number of documents to return.
             filters:      Optional equality filters applied as AND conditions.
                           Keys are field names, values are the expected values.
-            sort_field:   Optional field to sort by (ascending). When None the
-                          database's natural order is used (stable per query but
-                          not guaranteed across restarts).
+            sort_field:   Optional field to sort by. When None the database's
+                          natural order is used (stable per query but not
+                          guaranteed across restarts).
+            sort_desc:    Sort descending instead of ascending. Must be applied
+                          in the database: sorting the returned page in memory
+                          reorders only the slice that was already selected.
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.

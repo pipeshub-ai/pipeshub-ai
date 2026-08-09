@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 
-from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
+from app.services.messaging.config import (
+    MessageHandler,
+    StreamMessage,
+    compute_retry_backoff_seconds,
+    messaging_env,
+)
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -19,13 +24,18 @@ from app.utils.request_context import (
 if TYPE_CHECKING:
     from app.services.messaging.retry_manager import RetryManager
 
+# The shared schedule reaches 240s, but this consumer processes sequentially,
+# so a full wait would stall every partition it is assigned. Capped to keep a
+# single failing message from holding up the topic.
+_MAX_REDELIVERY_BACKOFF_SECONDS = 30.0
+
 
 class KafkaMessagingConsumer(IMessagingConsumer):
     """Kafka implementation of messaging consumer.
 
     Uses Redis-based RetryManager for persistent retry tracking across restarts.
-    Messages are processed sequentially; failed messages are not committed and
-    will be redelivered by Kafka when no new messages arrive (idle-based retry).
+    Messages are processed sequentially; a failed message is not committed and
+    the partition is rewound to its offset so the next poll redelivers it.
     """
 
     def __init__(
@@ -230,9 +240,11 @@ class KafkaMessagingConsumer(IMessagingConsumer):
     async def __consume_loop(self) -> None:
         """Main consumption loop with Redis-based retry tracking.
 
-        New messages are processed first. When getmany() returns empty (idle),
-        Kafka will redeliver uncommitted messages on the next poll, enabling
-        retry of failed messages without blocking new ones.
+        A handler returning False (or raising a transient error) rewinds the
+        partition to that offset and pauses for a backoff window, so the
+        message is redelivered on the next poll rather than skipped. Retries
+        are bounded by `messaging_env.max_delivery_attempts`, after which the
+        message is dead-lettered and the offset committed.
         """
         try:
             self.logger.info("Starting Kafka consumer loop")
@@ -261,6 +273,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                 success, exc = await self.__process_message(message)
 
                                 should_commit = False
+                                retry_backoff_seconds = 0.0
                                 if success:
                                     should_commit = True
                                     self.logger.info(f"Message {message_id} processed successfully")
@@ -294,9 +307,14 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                             )
                                             await self.retry_manager.clear(message_id)
                                         else:
+                                            retry_backoff_seconds = min(
+                                                compute_retry_backoff_seconds(count),
+                                                _MAX_REDELIVERY_BACKOFF_SECONDS,
+                                            )
                                             self.logger.warning(
                                                 f"Message {message_id} failed (attempt {count}/"
-                                                f"{messaging_env.max_delivery_attempts}), will retry"
+                                                f"{messaging_env.max_delivery_attempts}), retrying in "
+                                                f"{retry_backoff_seconds:.0f}s"
                                             )
                                     else:
                                         # No retry manager: always commit to avoid infinite loop
@@ -316,12 +334,29 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                                     # Mark as processed only when we commit (prevents skipped retries)
                                     self.__mark_message_processed(message_id)
                                 else:
-                                    # Transient failure - stop processing this partition to prevent cumulative commits
+                                    # Transient failure - stop processing this partition to prevent cumulative commits.
+                                    # Declining to commit is not enough on its own: getmany() has already advanced this
+                                    # consumer's in-memory fetch position past the message, so without an explicit seek
+                                    # the next poll reads the *following* offset and the failure is never retried until
+                                    # a rebalance or restart. Rewinding makes a handler returning False mean "redeliver
+                                    # me", matching the Redis Streams consumer's PEL behaviour.
+                                    try:
+                                        self.consumer.seek(topic_partition, message.offset)
+                                    except Exception as seek_error:
+                                        self.logger.error(
+                                            f"Failed to rewind {topic_partition} to offset {message.offset}; "
+                                            f"the message will not be retried until rebalance: {seek_error}"
+                                        )
                                     self.logger.warning(
                                         f"Partition {message.topic}-{message.partition} processing "
                                         f"stopped at offset {message.offset} due to retryable failure. "
-                                        f"Subsequent messages in this batch will be retried."
+                                        f"Rewound to that offset; it will be redelivered on the next poll."
                                     )
+                                    if retry_backoff_seconds > 0:
+                                        # Without this the rewound message comes straight back, so every
+                                        # attempt is spent within milliseconds and a transient outage
+                                        # dead-letters instead of recovering.
+                                        await asyncio.sleep(retry_backoff_seconds)
                                     break  # Exit inner loop for this partition, prevent cumulative commit
 
                             except Exception as e:

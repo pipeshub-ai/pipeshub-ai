@@ -13,6 +13,12 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard } from './ask-user-question-card';
+import { WorkflowCard } from './workflow-card';
+import { WorkflowRunHeader } from './workflow-run-header';
+import { PrereqCheckCard } from './prereq-check-card';
+import type { PrereqCheckCardPayload } from './prereq-check-card';
+import { WorkflowUpdatedCard } from './workflow-updated-card';
+import type { WorkflowUpdatedPayload } from '../../types';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
@@ -21,7 +27,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
+import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart, RunResultCardPayload, UiCardPayload } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -43,6 +49,30 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
+const EMPTY_UI_CARDS: UiCardPayload[] = [];
+
+/**
+ * Renderer per `ui_card.cardType`. Adding a card type means adding an entry
+ * here; unknown types render nothing rather than breaking the turn.
+ */
+const UI_CARD_RENDERERS: Record<string, (card: UiCardPayload) => React.ReactNode> = {
+  prerequisite_check_result: (card) => (
+    <PrereqCheckCard payload={card.payload as unknown as PrereqCheckCardPayload} />
+  ),
+  workflow_dry_run_started: (card) => (
+    <WorkflowRunHeader
+      payload={{
+        workflowId: String(card.payload.workflowId ?? ''),
+        runId: String(card.payload.runId ?? ''),
+        status: String(card.payload.status ?? 'pending'),
+        isDryRun: true,
+      }}
+    />
+  ),
+  workflow_updated: (card) => (
+    <WorkflowUpdatedCard payload={card.payload as unknown as WorkflowUpdatedPayload} />
+  ),
+};
 
 function formatMessageTime(isoString: string): string {
   const date = new Date(isoString);
@@ -118,6 +148,12 @@ interface ChatResponseProps {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /**
+   * Workflow run metadata. Present on an assistant message produced by a
+   * workflow run: renders a header strip where the user query would go, and
+   * leaves the answer/tabs/actions path untouched.
+   */
+  workflowRun?: RunResultCardPayload;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -144,6 +180,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   createdAt,
   persistedAskUserQuestion,
   feedbackInfo,
+  workflowRun,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
@@ -167,6 +204,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
     streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
+    workflowRun,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -362,6 +400,20 @@ export const ChatResponse = React.memo(function ChatResponse({
       citationMessageRowKey &&
       pendingAskUserQuestion.assistantMessageId === citationMessageRowKey
     );
+
+  // Scheduled-task confirmation card for this row, if `task_manage(action=
+  // "create")` scheduled a task during this turn. Unlike `pendingAskUserQuestion`
+  // this never gates/hides the answer content — it's purely additive.
+  const scheduledTaskCard = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : null;
+    return citationMessageRowKey ? slot?.scheduledTaskCards?.[citationMessageRowKey] ?? null : null;
+  });
+
+  // Generic ui_cards for this row (e.g. prerequisite_check_result).
+  const uiCards: UiCardPayload[] = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : null;
+    return (citationMessageRowKey ? slot?.uiCards?.[citationMessageRowKey] : undefined) ?? EMPTY_UI_CARDS;
+  });
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -615,6 +667,31 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
+            {/* Scheduled-task / workflow confirmation card — additive, never
+                suppressed by the ask_user_question gating above. */}
+            {/* Workflow is the only user-facing noun: legacy `scheduled_task`
+                payloads (from conversations persisted before the workflow/task
+                unification) are rendered through the same WorkflowCard by
+                mapping `taskId` -> `workflowId`, rather than a separate
+                "Task" branded component. */}
+            {scheduledTaskCard
+              ? <WorkflowCard
+                  payload={
+                    scheduledTaskCard.name === 'workflow_created'
+                      ? scheduledTaskCard
+                      : { ...scheduledTaskCard, name: 'workflow_created', workflowId: scheduledTaskCard.taskId }
+                  }
+                />
+              : null}
+
+            {/* Generic ui_cards for this turn, in the order the agent emitted
+                them. A turn can produce several (prerequisite check, dry run,
+                workflow updated), so all of them render. */}
+            {uiCards.map((card) => {
+              const render = UI_CARD_RENDERERS[card.cardType];
+              return render ? <React.Fragment key={card.cardId}>{render(card)}</React.Fragment> : null;
+            })}
+
             {/* Persisted ask_user_question from historical tool_call — read-only display */}
             {persistedAskUserQuestion && !askQuestionMatchesRow ? (
               <AskUserQuestionCard
@@ -687,6 +764,9 @@ export const ChatResponse = React.memo(function ChatResponse({
 
   const shell = (
     <Box style={{ width: '100%' }}>
+      {/* A workflow run has no user turn of its own, so the run header takes
+          the place the query would occupy — the answer below it then renders
+          through the same path as any other assistant message. */}
       <Box
         style={{
           marginBottom:
@@ -697,24 +777,30 @@ export const ChatResponse = React.memo(function ChatResponse({
               : 'var(--space-4)',
         }}
       >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={handleEditQuery}
-        />
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
+        {workflowRun ? (
+          <WorkflowRunHeader payload={workflowRun} />
+        ) : (
+          <>
+            <ExpandableUserQuery
+              question={question}
+              isMobile={isMobile}
+              messageId={messageId}
+              isStreaming={isStreaming}
+              onEdit={handleEditQuery}
+            />
+            {createdAt && (
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-9)',
+                  marginTop: 'var(--space-1)',
+                  display: 'block',
+                }}
+              >
+                {formatMessageTime(createdAt)}
+              </Text>
+            )}
+          </>
         )}
       </Box>
 
@@ -784,18 +870,12 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
-      {/* Tabs */}
-      {/* Tabs — hide Sources/Citations counts when the ask_user_question card
-          (streaming or persisted) owns this row; those tabs reflect answer
-          chunks that are suppressed. */}
       <ResponseTabs
         activeTab={activeTab}
         onTabChange={setActiveTab}
         sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
         citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
       />
-
-      {/* Tab Content */}
       {renderTabContent()}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}

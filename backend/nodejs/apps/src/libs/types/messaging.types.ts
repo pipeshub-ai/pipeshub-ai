@@ -14,6 +14,11 @@ export enum BrokerTopic {
   HEALTH_CHECK = 'health-check',
   TOKEN_EVENTS = 'token-events',
   NOTIFICATION = 'notification',
+  // Produced and consumed only by the Python services, but declared here
+  // because this enum drives KafkaAdminService topic creation, which is the
+  // only thing that creates topics on clusters with auto-create disabled.
+  TASK_EVENTS = 'task-events',
+  APP_EVENTS = 'app_events',
 }
 
 /**
@@ -30,6 +35,8 @@ export interface BrokerTopicPayloadMap {
   [BrokerTopic.HEALTH_CHECK]: { type: string; timestamp: number };
   [BrokerTopic.TOKEN_EVENTS]: Record<string, unknown>;
   [BrokerTopic.NOTIFICATION]: Record<string, unknown>;
+  [BrokerTopic.TASK_EVENTS]: Record<string, unknown>;
+  [BrokerTopic.APP_EVENTS]: Record<string, unknown>;
 }
 
 export interface MessageBrokerConfig {

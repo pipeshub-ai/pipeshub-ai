@@ -10,10 +10,21 @@ from app.agent_loop_lib.core.messages import (
     MALFORMED_TOOL_CALL_ERROR_KEY,
 )
 from app.agent_loop_lib.core.scope import ToolScope
-from app.agent_loop_lib.core.types import Artifact, Confidence, Goal, Message, ToolCall, ToolResult
+from app.agent_loop_lib.core.types import (
+    Artifact,
+    Confidence,
+    Goal,
+    Message,
+    ToolCall,
+    ToolResult,
+)
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
-from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
+from app.agent_loop_lib.tools.tags import (
+    TAG_DEDUP_EXACT,
+    TAG_LIFECYCLE_TERMINAL,
+    TAG_UI_ONLY,
+)
 
 # Internal tools whose execution should not produce frontend-visible events.
 # The tool still runs and its result enters the conversation; only the
@@ -25,7 +36,9 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import TurnScope
     from app.agent_loop_lib.core.tool_schema import ToolSchema
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
-    from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompletionOutcome
+    from app.agent_loop_lib.tools.builtin.planning.task_complete import (
+        TaskCompletionOutcome,
+    )
     from app.agent_loop_lib.tools.registry import ToolRegistry
 
 
@@ -81,6 +94,37 @@ def compute_duplicate_flags(
         is_dedupable = TAG_DEDUP_EXACT in registry.tags_for_name(call.name)
         flags[call.id] = call_sig in seen_tool_calls and is_dedupable
         seen_tool_calls.add(call_sig)
+    return flags
+
+
+def compute_extra_question_flags(
+    calls: list[ToolCall], registry: "ToolRegistry"
+) -> dict[str, bool]:
+    """Synchronous pre-pass, run the same way as `compute_duplicate_flags()`
+    (task engine plan Part D2: "reject second terminal `ask_user_question`
+    per turn"): flags every call AFTER THE FIRST, in this wave, to a tool
+    tagged both `TAG_LIFECYCLE_TERMINAL` and `TAG_UI_ONLY` — today, only
+    `ask_user_question` (`intrim_tools.py`) carries both tags, but this
+    dispatches on the tag pair rather than the tool name so any future
+    UI-interactive terminal tool is covered automatically.
+
+    Without this, a model that calls `ask_user_question` twice in the same
+    parallel-tool wave would run both: two question-card UI events fire,
+    and whichever call's outcome `Agent.step()` happens to apply last (its
+    loop iterates `tool_calls` in order, plain assignment, no "first
+    wins" rule) silently becomes the run's one `needs_input`/checkpoint —
+    the other was shown to the user but can never actually be answered
+    (the single pending-question-slot problem, Part D1). Rejecting every
+    call past the first here means only one ever executes at all.
+    """
+    flags: dict[str, bool] = {}
+    seen_interactive_terminal = False
+    for call in calls:
+        tags = registry.tags_for_name(call.name)
+        is_interactive_terminal = TAG_LIFECYCLE_TERMINAL in tags and TAG_UI_ONLY in tags
+        flags[call.id] = is_interactive_terminal and seen_interactive_terminal
+        if is_interactive_terminal:
+            seen_interactive_terminal = True
     return flags
 
 
@@ -235,6 +279,7 @@ async def execute_tool_call(
     is_duplicate: bool,
     response_msg: Message,
     turn_scope: "TurnScope",
+    is_extra_question: bool = False,
 ) -> ToolCallOutcome:
     """Handles exactly one `ToolCall`. `turn_scope` (created once per
     `Agent.step()` call) is used to build this call's `ToolScope` — carrying
@@ -249,7 +294,9 @@ async def execute_tool_call(
     `is_duplicate` is computed by `compute_duplicate_flags()` in a
     synchronous pre-pass over the whole wave, BEFORE any call in the wave
     starts running — see that function's docstring for why the check can't
-    safely live in here, after this coroutine's own `await` points."""
+    safely live in here, after this coroutine's own `await` points.
+    `is_extra_question` is the same kind of pre-pass flag, from
+    `compute_extra_question_flags()` (task engine plan Part D2)."""
     _silent = call.name in _NO_EMIT_TOOLS
     tool_obj = _resolve_quietly(agent, call.name)
     if not _silent:
@@ -298,6 +345,31 @@ async def execute_tool_call(
             content=(
                 "[Duplicate call skipped — you already ran this exact search/scrape. "
                 "Use the results you already have or call task_complete to finish.]"
+            ),
+            is_error=False,
+        )
+        if not _silent:
+            await agent.emit(EventType.TOOL_RESULT, {
+                "tool": tr.name, "is_error": tr.is_error,
+                "content": str(tr.content)[:200], "tool_call_id": call.id,
+                "result_summary": _result_summary(agent, runtime, call, tr),
+                "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+            })
+        return ToolCallOutcome(result=tr)
+
+    # A second (or later) `ask_user_question`-shaped call in the SAME wave
+    # was already detected by `compute_extra_question_flags()`, same
+    # synchronous-pre-pass reasoning as `is_duplicate` above — never
+    # actually execute it (never show a second question card the user
+    # has no way to answer), just tell the model to consolidate.
+    if is_extra_question:
+        tr = ToolResult(
+            tool_call_id=call.id, name=call.name,
+            content=(
+                "[Rejected — only one question can be asked per turn. You "
+                "already asked a question earlier in this same turn; put "
+                "every question you need into that single call instead of "
+                "calling this tool again.]"
             ),
             is_error=False,
         )

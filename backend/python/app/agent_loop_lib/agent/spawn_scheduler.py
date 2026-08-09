@@ -56,7 +56,9 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.core.types import AgentResult, Artifact, Goal, ToolCall
-from app.agent_loop_lib.tools.builtin.coordination.graph_utils import find_cycle as _shared_find_cycle
+from app.agent_loop_lib.tools.builtin.coordination.graph_utils import (
+    find_cycle as _shared_find_cycle,
+)
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import stage_input_files
 
 if TYPE_CHECKING:
@@ -64,10 +66,12 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
 
 __all__ = [
+    "MAX_SPAWN_FANOUT",
     "SPAWN_RESULTS_SLOT",
     "SpawnBatchPlan",
     "SpawnDependencyError",
     "cancel_pending_spawn_tasks",
+    "completed_spawn_results",
     "raw_task_id",
     "record_completed_spawn",
     "schedule_spawn_batch",
@@ -82,6 +86,22 @@ logger = logging.getLogger(__name__)
 # the dependent child's context window well under pressure (system prompt
 # + tools + this data + its own work budget).
 _DEPENDENCY_RESULT_CHAR_CAP = 24_000
+
+# Cap on how many `spawn_agent` calls one batch (one turn's worth, or one
+# task engine DAG dispatch — see task engine plan Phase 6) may actually
+# launch. Distinct from `MAX_SPAWN_DEPTH` (`runtime/runtime.py`), which
+# bounds how deep a spawn TREE may nest — this bounds how WIDE a single
+# batch may fan out. Without it, a single turn (an LLM emitting N
+# `spawn_agent` calls at once, or a task's structured `steps` DAG) has no
+# ceiling on concurrent child agents, each with its own LLM calls/tool
+# budget/checkpoint writes — a single misbehaving plan could exhaust
+# executor concurrency or an org's LLM rate limit in one shot. 12 is
+# generous for any real decomposition seen in practice (orchestrator plans
+# top out around 5 steps; this leaves headroom) while still being a real
+# ceiling. Calls beyond the cap are rejected the same way any other invalid
+# call is (see `validate_spawn_batch`) — a corrective error, not a silent
+# drop or a crash.
+MAX_SPAWN_FANOUT = 12
 
 
 class SpawnDependencyError(Exception):
@@ -101,6 +121,27 @@ class _CompletedSpawn:
     result: AgentResult
 
 
+def _spawn_results_to_json(value: dict[str, "_CompletedSpawn"]) -> dict[str, dict[str, Any]]:
+    return {
+        task_id: {"task_id": completed.task_id, "result": completed.result.model_dump(mode="json")}
+        for task_id, completed in value.items()
+    }
+
+
+def _spawn_results_from_json(raw: object) -> dict[str, "_CompletedSpawn"]:
+    if not isinstance(raw, dict):
+        return {}
+    restored: dict[str, _CompletedSpawn] = {}
+    for task_id, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        restored[task_id] = _CompletedSpawn(
+            task_id=entry.get("task_id", task_id),
+            result=AgentResult.model_validate(entry["result"]),
+        )
+    return restored
+
+
 # Keyed by task_id, one entry per `spawn_agent` call that has FINISHED
 # (successfully or not) so far THIS RUN — including calls from earlier
 # turns, which is what lets a `depends_on` reference reach across turns,
@@ -109,9 +150,28 @@ class _CompletedSpawn:
 # empty registry, matching `run_child()`'s existing "child gets an
 # isolated scope" contract — only the dispatching agent's own spawn
 # batches feed this slot.
+#
+# `persist=True` (task engine plan Part C2/Phase 6 "DAG resume"): a crashed
+# multi-step run (task engine `TaskDagLoop`, or an interrupted orchestrator
+# Phase 2 dispatch) must not re-run children that already completed —
+# `known_task_ids` in `schedule_spawn_batch`/`validate_spawn_batch` is
+# read straight off this slot, so restoring it on resume is what makes
+# "skip 1-2, resume at 3-4" actually work rather than re-executing
+# everything (including side-effecting steps) from scratch.
 SPAWN_RESULTS_SLOT: StateSlot[dict[str, _CompletedSpawn]] = StateSlot(
     key="spawn_scheduler.completed_by_task_id", default_factory=dict,
+    persist=True, to_json=_spawn_results_to_json, from_json=_spawn_results_from_json,
 )
+
+
+def completed_spawn_results(run_scope: "RunScope") -> dict[str, AgentResult]:
+    """Public, read-only view of `SPAWN_RESULTS_SLOT` for callers outside
+    this module that need each completed spawn's `AgentResult` without
+    reaching into the private `_CompletedSpawn` wrapper — e.g. the task
+    engine's DAG dispatch (`app.services.tasks.runtime.spec_assembler`),
+    which needs this to classify each `TaskStep` as completed/failed after
+    a batch finishes."""
+    return {task_id: completed.result for task_id, completed in run_scope.get(SPAWN_RESULTS_SLOT).items()}
 
 
 @dataclass
@@ -249,9 +309,26 @@ def validate_spawn_batch(
     errors: dict[str, str] = {}
     call_id_by_task_id: dict[str, str] = {}
 
+    # Fan-out cap applies to the FIRST `MAX_SPAWN_FANOUT` calls, by batch
+    # order — deterministic (not e.g. "whichever have no depends_on") so
+    # the same batch always rejects the same calls, and simple enough for
+    # the caller to reason about ("the first N are honored"). Checked
+    # before task_id/depends_on validation so a rejected call's task_id
+    # never occupies a slot another call could have used.
+    for call in calls[MAX_SPAWN_FANOUT:]:
+        errors[call.id] = (
+            f"spawn_agent batch exceeds the maximum fan-out of {MAX_SPAWN_FANOUT} calls per batch "
+            f"({len(calls)} requested). This call was rejected; split the work across multiple "
+            "turns/runs instead of scheduling this many children at once."
+        )
+
     for call in calls:
         task_id = _raw_task_id(call)
         task_id_by_call_id[call.id] = task_id
+        if call.id in errors:
+            if task_id not in known_task_ids:
+                call_id_by_task_id.setdefault(task_id, call.id)
+            continue
         if task_id in known_task_ids or task_id in call_id_by_task_id:
             errors[call.id] = (
                 f"task_id '{task_id}' is already used by a completed or sibling spawn_agent "

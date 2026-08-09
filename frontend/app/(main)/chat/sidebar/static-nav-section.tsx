@@ -28,6 +28,7 @@ const MAIN_NAV_ITEMS: NavItem[] = [
   // { icon: 'search', labelKey: 'nav.searchChats', route: '/search' },
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
+  { icon: 'account_tree', labelKey: 'nav.workflows', route: '/workflows/' },
 ];
 
 // ========================================

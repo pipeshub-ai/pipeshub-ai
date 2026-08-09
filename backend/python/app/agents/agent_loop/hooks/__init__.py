@@ -35,7 +35,11 @@ from app.agents.agent_loop.hooks.result_accumulation import (
     stash_tool_call_metadata,
 )
 from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+from app.agents.agent_loop.hooks.prereq_check_card import prereq_check_card_sse
+from app.agents.agent_loop.hooks.task_scheduled_card import task_scheduled_card_sse
 from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
+from app.agents.agent_loop.hooks.workflow_dry_run_card import workflow_dry_run_card_sse
+from app.agents.agent_loop.hooks.workflow_updated_card import workflow_updated_card_sse
 
 __all__ = [
     "CitationCollector",
@@ -54,4 +58,8 @@ __all__ = [
     "result_accumulation",
     "retry_with_status",
     "stash_tool_call_metadata",
+    "prereq_check_card_sse",
+    "task_scheduled_card_sse",
+    "workflow_dry_run_card_sse",
+    "workflow_updated_card_sse",
 ]

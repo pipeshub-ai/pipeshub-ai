@@ -16,6 +16,10 @@ import type {
   MessagePart,
   SSEAskUserQuestionEvent,
   SSEArtifactEvent,
+  ScheduledTaskPayload,
+  WorkflowCardPayload,
+  WorkflowUpdatedPayload,
+  UiCardPayload,
   SSEChunkCitation,
   SSEConnectedEvent,
 } from './types';
@@ -517,6 +521,17 @@ export function createAGUIEventHandler(
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
         } else if (name === 'artifact') {
           callbacks.onArtifact?.(value as SSEArtifactEvent);
+        } else if (name === 'ui_card') {
+          callbacks.onUiCard?.(value as UiCardPayload);
+          // Also route to onScheduledTask for backward compat if it's a workflow_created card.
+          const cardPayload = (value as UiCardPayload)?.payload;
+          if (cardPayload && typeof cardPayload === 'object' && 'workflowId' in cardPayload) {
+            callbacks.onScheduledTask?.(cardPayload as unknown as WorkflowCardPayload);
+          }
+        } else if (name === 'scheduled_task') {
+          callbacks.onScheduledTask?.(value as ScheduledTaskPayload);
+        } else if (name === 'workflow_created') {
+          callbacks.onScheduledTask?.(value as WorkflowCardPayload);
         }
         break;
       }

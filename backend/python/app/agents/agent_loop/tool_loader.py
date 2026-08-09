@@ -175,30 +175,48 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 state_logger.warning("Failed to add Slack context tools: %s", e)
 
     web_search_config = state.get("web_search_config")
-    if web_search_config:
-        ref_mapper = state.get("citation_ref_mapper")
-        if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper
-            ref_mapper = CitationRefMapper()
-            state["citation_ref_mapper"] = ref_mapper
+    if not web_search_config:
+        # The loader's summary line only reports "0 dynamic tool(s)", which
+        # reads identically whether the org configured no provider or the
+        # caller never resolved one -- the latter is how a scheduled research
+        # task ran with no web access and answered from model memory instead.
+        if state_logger:
+            state_logger.info(
+                "web_search/fetch_url not built: no web_search_config on this context "
+                "(org=%s, conversation=%s)",
+                state.get("org_id"), state.get("conversation_id"),
+            )
+        return tools
 
-        try:
-            from app.utils.web_search_tool import create_web_search_tool
-            ws_tool = create_web_search_tool(config=web_search_config)
-            a, t = split_original_tool_name(ws_tool)
-            tools.append(WebToolAdapter(ws_tool, a, t, context))
-        except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to create web_search tool: %s", e)
+    if state_logger:
+        state_logger.info(
+            "Building web_search/fetch_url tools (provider=%s)",
+            web_search_config.get("provider") if isinstance(web_search_config, dict) else "unknown",
+        )
 
-        try:
-            from app.utils.fetch_url_tool import create_fetch_url_tool
-            fu_tool = create_fetch_url_tool(ref_mapper=ref_mapper)
-            a, t = split_original_tool_name(fu_tool)
-            tools.append(WebToolAdapter(fu_tool, a, t, context))
-        except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to create fetch_url tool: %s", e)
+    ref_mapper = state.get("citation_ref_mapper")
+    if ref_mapper is None:
+        from app.utils.chat_helpers import CitationRefMapper
+        ref_mapper = CitationRefMapper()
+        state["citation_ref_mapper"] = ref_mapper
+
+    try:
+        from app.utils.web_search_tool import create_web_search_tool
+        ws_tool = create_web_search_tool(config=web_search_config)
+        a, t = split_original_tool_name(ws_tool)
+        tools.append(WebToolAdapter(ws_tool, a, t, context))
+    except Exception as e:
+        if state_logger:
+            state_logger.warning("Failed to create web_search tool: %s", e)
+
+    try:
+        from app.utils.fetch_url_tool import create_fetch_url_tool
+        fu_tool = create_fetch_url_tool(ref_mapper=ref_mapper)
+        a, t = split_original_tool_name(fu_tool)
+        tools.append(WebToolAdapter(fu_tool, a, t, context))
+    except Exception as e:
+        if state_logger:
+            state_logger.warning("Failed to create fetch_url tool: %s", e)
 
     return tools
 

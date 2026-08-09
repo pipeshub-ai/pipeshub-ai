@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import Tag, Tool, ToolOutput, ToolParameter
@@ -61,7 +62,19 @@ __all__ = [
     "BoundMethodTool",
     "ToolMeta",
     "TOOL_META_ATTR",
+    "OutcomeExtractor",
 ]
+
+# Only ever consulted by the turn loop for a tool tagged `TAG_LIFECYCLE_TERMINAL`
+# (see `agent/tool_loop.py`'s `TerminalTool` protocol) — lets a `@tool`-defined
+# terminal tool other than `task_complete`/`TaskCompleteTool` (which implements
+# `extract_outcome` directly, no decorator involved) opt into the same
+# `TaskCompletionOutcome` post-processing without needing its own `Tool`
+# subclass just for that one method. `ask_user_question` (`intrim_tools.py`)
+# is the motivating case: its default outcome would leave `needs_input` unset,
+# which is indistinguishable from an ordinary successful completion to a
+# headless caller (see the task engine plan's Part D / `TaskExecutor`).
+OutcomeExtractor = Callable[["CoreToolResult", "ToolCall", str], "TaskCompletionOutcome"]
 
 
 def _default_terminal_outcome(
@@ -152,6 +165,7 @@ class FunctionTool(Tool):
         result_summary: ResultFormatter | None = None,
         result_schema: dict[str, Any] | None = None,
         display_name: str | None = None,
+        outcome_extractor: "OutcomeExtractor | None" = None,
     ) -> None:
         if not inspect.iscoroutinefunction(func):
             raise TypeError(
@@ -170,6 +184,7 @@ class FunctionTool(Tool):
         self._result_summary = result_summary
         self._result_schema = result_schema
         self._display_name = display_name
+        self._outcome_extractor = outcome_extractor
 
         self.__name__ = getattr(func, "__name__", self._name)
         self.__doc__ = func.__doc__
@@ -227,7 +242,10 @@ class FunctionTool(Tool):
     ) -> "TaskCompletionOutcome":
         """See `_default_terminal_outcome` — only ever consulted by the
         turn loop when `TAG_LIFECYCLE_TERMINAL` is among this tool's own
-        `tags` (set via `@tool(tags=[...])`)."""
+        `tags` (set via `@tool(tags=[...])`). Delegates to the
+        `outcome_extractor` passed to `@tool(...)`, if any."""
+        if self._outcome_extractor is not None:
+            return self._outcome_extractor(tr, call, fallback_text)
         return _default_terminal_outcome(tr, call, fallback_text)
 
 
@@ -259,6 +277,7 @@ class ToolMeta:
     result_summary: ResultFormatter | None = None
     result_schema: dict[str, Any] | None = None
     display_name: str | None = None
+    outcome_extractor: "OutcomeExtractor | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +380,10 @@ class BoundMethodTool(Tool):
     ) -> "TaskCompletionOutcome":
         """See `_default_terminal_outcome` — only ever consulted by the
         turn loop when `TAG_LIFECYCLE_TERMINAL` is among this tool's own
-        `tags` (set via `@tool(tags=[...])` on the wrapped method)."""
+        `tags` (set via `@tool(tags=[...])` on the wrapped method).
+        Delegates to the `outcome_extractor` passed to `@tool(...)`, if any."""
+        if self._meta.outcome_extractor is not None:
+            return self._meta.outcome_extractor(tr, call, fallback_text)
         return _default_terminal_outcome(tr, call, fallback_text)
 
 
@@ -381,6 +403,7 @@ def tool(
     result_summary: ResultFormatter | None = None,
     result_schema: dict[str, Any] | None = None,
     display_name: str | None = None,
+    outcome_extractor: "OutcomeExtractor | None" = None,
 ) -> Callable:
     """Decorator factory for both standalone async functions and class methods.
 
@@ -409,6 +432,12 @@ def tool(
         )
         async def search_issues(self, jql: str) -> tuple[bool, str]:
             ...
+
+    ``outcome_extractor`` only matters for a tool also tagged
+    `TAG_LIFECYCLE_TERMINAL` — it overrides the shared `_default_terminal_outcome`
+    (final text only) with custom `TaskCompletionOutcome` post-processing, e.g.
+    to populate `needs_input` (see `app.agents.actions.internal_tools.intrim_tools`'s
+    `ask_user_question`).
     """
 
     def decorator(func: Callable) -> Callable:
@@ -429,6 +458,7 @@ def tool(
                 result_summary=result_summary,
                 result_schema=result_schema,
                 display_name=display_name,
+                outcome_extractor=outcome_extractor,
             )
             setattr(func, TOOL_META_ATTR, meta)
             return func
@@ -444,6 +474,7 @@ def tool(
             result_summary=result_summary,
             result_schema=result_schema,
             display_name=display_name,
+            outcome_extractor=outcome_extractor,
         )
 
     return decorator

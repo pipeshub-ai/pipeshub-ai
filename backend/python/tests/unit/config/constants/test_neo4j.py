@@ -102,8 +102,16 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_VERSIONS.value == "AgentSkillVersions"
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
+    def test_task_and_workflow_labels(self) -> None:
+        assert Neo4jLabel.TASKS.value == "Task"
+        assert Neo4jLabel.TASK_RUNS.value == "TaskRun"
+        assert Neo4jLabel.WORKFLOW_VERSIONS.value == "WorkflowVersion"
+        assert Neo4jLabel.WORKFLOW_SOURCES.value == "WorkflowSource"
+        assert Neo4jLabel.AGENT_CHECKPOINTS.value == "AgentCheckpoint"
+        assert Neo4jLabel.AGENT_TIMELINE_ENTRIES.value == "AgentTimelineEntry"
+
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 47
+        assert len(Neo4jLabel) == 53
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +208,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 45
+        assert len(COLLECTION_TO_LABEL) == 51
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():

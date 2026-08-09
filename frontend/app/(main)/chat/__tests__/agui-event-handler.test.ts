@@ -18,6 +18,7 @@ function makeCallbacks(): {
     onComplete: vi.fn(),
     onArtifact: vi.fn(),
     onAskUserQuestion: vi.fn(),
+    onScheduledTask: vi.fn(),
     onAnswerFinal: vi.fn(),
     onReasoning: vi.fn(),
     onParts: vi.fn(),
@@ -174,11 +175,11 @@ describe('createAGUIEventHandler', () => {
       );
     }
 
-    expect(spies.onChunk).toHaveBeenLastCalledWith({
-      chunk: '',
-      accumulated: body,
-      citations: [],
-    });
+    expect(spies.onChunk).toHaveBeenLastCalledWith(
+      // The parsed confidence rides along on the same chunk; what this asserts
+      // is that the trailer never reaches `accumulated`.
+      expect.objectContaining({ chunk: '', accumulated: body, citations: [] }),
+    );
   });
 
   it('keeps adopting normalizedAnswer after citation resolution lengthens the text', () => {
@@ -379,6 +380,22 @@ describe('createAGUIEventHandler', () => {
     expect(spies.onAskUserQuestion).toHaveBeenCalledWith({ status: 'success', toolData });
   });
 
+  it('routes CUSTOM scheduled_task to onScheduledTask with the flat payload (not toolData-wrapped)', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const taskData = {
+      name: 'scheduled_task',
+      taskId: 'task-1',
+      title: 'Weekly digest',
+      status: 'active',
+      triggers: [{ triggerId: 'trig-1', kind: 'cron', nextRunAt: '2026-01-01T00:00:00Z' }],
+    };
+
+    handle(frame('CUSTOM', { name: 'scheduled_task', value: taskData }));
+
+    expect(spies.onScheduledTask).toHaveBeenCalledWith(taskData);
+  });
+
   it('routes CUSTOM artifact to onArtifact', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
@@ -398,6 +415,7 @@ describe('createAGUIEventHandler', () => {
     expect(spies.onConnected).not.toHaveBeenCalled();
     expect(spies.onAskUserQuestion).not.toHaveBeenCalled();
     expect(spies.onArtifact).not.toHaveBeenCalled();
+    expect(spies.onScheduledTask).not.toHaveBeenCalled();
   });
 
   it('calls onComplete and flips tracking.receivedComplete on a root RUN_FINISHED', () => {

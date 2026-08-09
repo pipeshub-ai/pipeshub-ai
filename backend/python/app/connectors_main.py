@@ -22,7 +22,16 @@ from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
+from app.connectors.api.app_events_registration_router import (
+    router as app_events_registration_router,
+)
+from app.connectors.api.app_events_router import APP_EVENTS_PATH_PREFIX
+from app.connectors.api.app_events_router import router as app_events_router
 from app.connectors.api.router import router
+from app.connectors.api.task_webhook_router import (
+    WEBHOOK_PATH_PREFIX as TASK_WEBHOOK_PATH_PREFIX,
+)
+from app.connectors.api.task_webhook_router import router as task_webhook_router
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -40,6 +49,7 @@ from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
 )
+from app.services.events.factory import build_app_event_ingress
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -465,6 +475,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
+    try:
+        app.state.app_event_ingress = await build_app_event_ingress(app_container)
+        logger.info("✅ App event ingress initialized")
+    except Exception as e:
+        # Provider webhooks 503 until this succeeds; the rest of the connectors
+        # service is unaffected, so this must not abort startup.
+        app.state.app_event_ingress = None
+        logger.error(f"❌ Failed to initialize app event ingress: {str(e)}", exc_info=True)
+
     # Resume sync services and start Kafka consumers off the startup critical
     # path. Both steps make blocking calls (per-connector init, Kafka group
     # join) that can take tens of seconds; running them here would keep the
@@ -537,6 +556,17 @@ EXCLUDE_PATHS = [
     "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
 ]
 
+# Prefix-based exclusions, for paths carrying a variable segment (an exact
+# EXCLUDE_PATHS entry can't match `/api/v1/tasks/webhooks/{webhook_id}` for
+# every possible webhook_id). Own auth: `WebhookDispatchService`'s
+# HMAC + timestamp + nonce verification (Phase 8 of the task engine plan).
+EXCLUDE_PATH_PREFIXES = [
+    TASK_WEBHOOK_PATH_PREFIX,
+    # Provider webhooks (Slack/GitHub/Jira). Own auth: per-provider HMAC in
+    # `app/services/events/verifiers/`, keyed by an opaque endpoint id.
+    APP_EVENTS_PATH_PREFIX,
+]
+
 @app.middleware("http")
 async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     """
@@ -554,6 +584,11 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     if request_path in EXCLUDE_PATHS:
         should_exclude = True
         logger.debug(f"Excluding exact path match: {request_path}")
+
+    # Check prefix matches for paths with variable segments (e.g. task webhooks)
+    if any(request_path.startswith(prefix) for prefix in EXCLUDE_PATH_PREFIXES):
+        should_exclude = True
+        logger.debug(f"Excluding prefix path match: {request_path}")
 
     # Check for OAuth callback paths (pattern-based exclusion)
     # if "/oauth/callback" in request_path:
@@ -792,6 +827,9 @@ app.include_router(entity_router)
 app.include_router(toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
+app.include_router(task_webhook_router)
+app.include_router(app_events_router)
+app.include_router(app_events_registration_router)
 app.include_router(router)
 
 

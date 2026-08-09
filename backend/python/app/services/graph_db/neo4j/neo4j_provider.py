@@ -755,6 +755,7 @@ class Neo4jProvider(IGraphDBProvider):
         limit: int = 50,
         filters: dict | None = None,
         sort_field: str | None = None,
+        sort_desc: bool = False,
         transaction: str | None = None,
         raise_on_error: bool = False,
     ) -> list[dict]:
@@ -778,8 +779,9 @@ class Neo4jProvider(IGraphDBProvider):
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
             )
             neo4j_sort_field = "id" if sort_field == "_key" else sort_field
+            sort_direction = "DESC" if sort_desc else "ASC"
             order_cypher = (
-                f"ORDER BY n.{neo4j_sort_field} ASC"
+                f"ORDER BY n.{neo4j_sort_field} {sort_direction}"
                 if neo4j_sort_field
                 else ""
             )

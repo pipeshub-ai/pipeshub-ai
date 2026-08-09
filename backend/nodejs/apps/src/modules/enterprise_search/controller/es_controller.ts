@@ -1107,6 +1107,24 @@ export const streamChat =
                       error: saveErr?.message,
                     });
                   });
+                } else if (eventData?.name === 'ui_card' && eventData.value) {
+                  const uiCardMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{ toolName: 'ui_card', toolResult: eventData.value }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: uiCardMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ui_card tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
                 }
               } catch (parseErr: any) {
                 logger.warn('Failed to parse CUSTOM event data', {
@@ -2362,6 +2380,24 @@ export const addMessageStream =
                     { $push: { messages: toolCallMessage } },
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                } else if (eventData?.name === 'ui_card' && eventData.value) {
+                  const uiCardMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{ toolName: 'ui_card', toolResult: eventData.value }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void Conversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: uiCardMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ui_card tool_call message', {
                       requestId,
                       conversationId: existingConversation?._id,
                       error: saveErr?.message,
@@ -5995,6 +6031,24 @@ export const deleteAgent =
                       error: saveErr?.message,
                     });
                   });
+                } else if (eventData?.name === 'ui_card' && eventData.value) {
+                  const uiCardMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{ toolName: 'ui_card', toolResult: eventData.value }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    savedConversation._id,
+                    { $push: { messages: uiCardMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ui_card tool_call message', {
+                      requestId,
+                      conversationId: savedConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
                 }
               } catch (parseErr: any) {
                 logger.warn('Failed to parse CUSTOM event data', {
@@ -7158,6 +7212,24 @@ export const addMessageStreamToAgentConversation =
                     { $push: { messages: toolCallMessage } },
                   ).catch((saveErr: any) => {
                     logger.error('Failed to persist ask_user_question tool_call message', {
+                      requestId,
+                      conversationId: existingConversation?._id,
+                      error: saveErr?.message,
+                    });
+                  });
+                } else if (eventData?.name === 'ui_card' && eventData.value) {
+                  const uiCardMessage = {
+                    messageType: 'tool_call' as const,
+                    content: '',
+                    tools: [{ toolName: 'ui_card', toolResult: eventData.value }],
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                  };
+                  void AgentConversation.findByIdAndUpdate(
+                    existingConversation._id,
+                    { $push: { messages: uiCardMessage } },
+                  ).catch((saveErr: any) => {
+                    logger.error('Failed to persist ui_card tool_call message', {
                       requestId,
                       conversationId: existingConversation?._id,
                       error: saveErr?.message,

@@ -1884,6 +1884,26 @@ export const handleRegenerationStreamData = (
                 );
               });
             }
+          } else if (eventData?.name === 'ui_card' && eventData.value) {
+            const uiCardMessage = {
+              messageType: 'tool_call' as const,
+              content: '',
+              tools: [{ toolName: 'ui_card', toolResult: eventData.value }],
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            if ('agentKey' in existingConversation) {
+              void AgentConversation.findByIdAndUpdate(
+                existingConversation._id,
+                { $push: { messages: uiCardMessage } },
+              ).catch((saveErr: any) => {
+                logger.error('Failed to persist ui_card tool_call message during regenerate', {
+                  requestId,
+                  conversationId: existingConversation._id,
+                  error: saveErr?.message,
+                });
+              });
+            }
           }
         } catch (parseErr: any) {
           logger.warn('Failed to parse CUSTOM event data during regenerate', {

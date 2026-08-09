@@ -70,9 +70,18 @@ class ApprovalHook:
                 if cached is not None:
                     return cached  # reuse existing decision
 
-        # ASK_EACH_TIME or ASK_ONCE with no cached decision → ask HIL
+        # ASK_EACH_TIME or ASK_ONCE with no cached decision → ask HIL and
+        # actually wait for the human's answer before deciding (task engine
+        # plan Part D1/D2: the previous version submitted the HIL request
+        # then immediately recorded+returned `approved=False` without ever
+        # calling `wait_for_response` — a "submit-then-deny" bug that
+        # silently denied every ask-required tool call, indistinguishable
+        # from a real human rejection).
         if self._hil_store is not None:
+            import asyncio
+
             from app.agent_loop_lib.modules.stores.hil.base import (
+                DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS,
                 HILRequest,
                 HILRequestType,
             )
@@ -83,17 +92,36 @@ class ApprovalHook:
                 question=f"Approve tool call '{call.name}'?",
                 context={"arguments": call.arguments, "risk_level": risk.value},
             )
-            await self._hil_store.submit(req)
-            # For now, submit and return a pending-approval decision
-            # (Agent.resume() will pick up the HIL response later)
-            decision = await self._record(
-                call.name, session_id, risk, policy, False,
-                reason=f"hil_request_id={req.request_id}",
+            request_id = await self._hil_store.submit(req)
+            try:
+                hil_response = await self._hil_store.wait_for_response(
+                    request_id, timeout=DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                # Task engine plan Part D2 ("TTL on pending questions"): fail
+                # closed on a genuine timeout, same as an explicit human
+                # denial would — distinct from the submit-then-deny bug this
+                # replaced, since a real (bounded) wait for an answer DID
+                # happen here.
+                return await self._record(
+                    call.name, session_id, risk, policy, False,
+                    reason=f"hil_request_id={request_id} timed out waiting for approval",
+                )
+            return await self._record(
+                call.name, session_id, risk, policy, hil_response.approved,
+                reason=f"hil_request_id={request_id}",
             )
-            return decision
 
-        # No HIL store → auto-approve as fallback
-        return await self._record(call.name, session_id, risk, policy, True)
+        # No HIL store configured — this policy genuinely cannot be
+        # resolved. Silently falling back to either outcome would hide a
+        # real misconfiguration (e.g. a CRITICAL-risk tool call proceeding
+        # with no human ever asked); fail loudly instead so the caller
+        # notices `ApprovalHook` was wired without a `hil_store`.
+        raise RuntimeError(
+            f"ApprovalHook: tool call {call.name!r} requires human approval "
+            f"(policy={policy.value}, risk={risk.value}) but no hil_store is "
+            "configured to ask one."
+        )
 
     async def _record(
         self,

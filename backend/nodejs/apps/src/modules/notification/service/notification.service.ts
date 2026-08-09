@@ -300,6 +300,21 @@ export class NotificationService {
     }
   }
 
+  emitWorkflowRunUpdate(payload: {
+    workflowId: string;
+    runId: string;
+    status: string;
+    redirectLink?: string;
+    conversationId?: string;
+    outputSummary?: string;
+    triggerKind?: string;
+    workflowName?: string;
+    userId: string;
+    orgId: string;
+  }): void {
+    this.sendToUser(payload.userId, 'workflowRunUpdate', payload);
+  }
+
   // Method to send a message to all users in an organization
   sendToOrg(orgId: string, event: string, data: any): boolean {
     if (this.io) {
@@ -340,8 +355,10 @@ export class NotificationService {
   }
 
   private extractToken(token: string): string | null {
-    const authHeader = token || 'hfgh';
-    const [bearer, tokenSanitized] = authHeader.split(' ');
+    if (!token) {
+      return null;
+    }
+    const [bearer, tokenSanitized] = token.split(' ');
     return bearer === 'Bearer' && tokenSanitized ? tokenSanitized : null;
   }
 }

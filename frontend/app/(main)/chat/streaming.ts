@@ -35,6 +35,9 @@ import {
   type SSEArtifactEvent,
   type SSEAskUserQuestionEvent,
   type PendingAskUserQuestion,
+  type ScheduledTaskPayload,
+  type WorkflowCardPayload,
+  type UiCardPayload,
   type MessagePart,
   DEFAULT_REASONING_EFFORT,
 } from './types';
@@ -74,6 +77,37 @@ function applyAskUserQuestionSse(
       answers: {},
       status: 'pending',
     },
+  });
+}
+
+function applyUiCardSse(slotId: string, data: UiCardPayload, assistantRowId: string): void {
+  const slot = useChatStore.getState().slots[slotId];
+  if (!slot) return;
+  const existing = slot.uiCards[assistantRowId] ?? [];
+  // A card re-sent with the same id replaces the earlier one (e.g. a dry-run
+  // card transitioning from "running" to its result) instead of stacking.
+  const next = existing.some((c) => c.cardId === data.cardId)
+    ? existing.map((c) => (c.cardId === data.cardId ? data : c))
+    : [...existing, data];
+  useChatStore.getState().updateSlot(slotId, {
+    uiCards: { ...slot.uiCards, [assistantRowId]: next },
+  });
+}
+
+function applyScheduledTaskSse(
+  slotId: string,
+  data: ScheduledTaskPayload | WorkflowCardPayload,
+  assistantRowId: string
+): void {
+  const isScheduledTask = data?.name === 'scheduled_task' && Boolean((data as ScheduledTaskPayload).taskId);
+  const isWorkflowCreated = data?.name === 'workflow_created' && Boolean((data as WorkflowCardPayload).workflowId);
+  if (!isScheduledTask && !isWorkflowCreated) {
+    return;
+  }
+  const slot = useChatStore.getState().slots[slotId];
+  if (!slot) return;
+  useChatStore.getState().updateSlot(slotId, {
+    scheduledTaskCards: { ...slot.scheduledTaskCards, [assistantRowId]: data },
   });
 }
 
@@ -547,6 +581,18 @@ export async function streamMessageForSlot(
         applyAskUserQuestionSse(slotId, data, rowId);
       },
 
+      onScheduledTask: (data: ScheduledTaskPayload | WorkflowCardPayload) => {
+        const slotSnap = useChatStore.getState().slots[slotId];
+        const rowId = slotSnap?.regenerateMessageId ?? pendingAssistantId;
+        applyScheduledTaskSse(slotId, data, rowId);
+      },
+
+      onUiCard: (data: UiCardPayload) => {
+        const slotSnap = useChatStore.getState().slots[slotId];
+        const rowId = slotSnap?.regenerateMessageId ?? pendingAssistantId;
+        applyUiCardSse(slotId, data, rowId);
+      },
+
       onAnswerFinal: () => {
         stopIdleStatus();
       },
@@ -572,6 +618,19 @@ export async function streamMessageForSlot(
           const newId = typeof lastAsst?.id === 'string' ? lastAsst.id : undefined;
           if (newId) {
             remappedPending = { ...pendingBefore, assistantMessageId: newId };
+          }
+        }
+
+        // Same placeholder → persisted id remap, for any `scheduled_task`
+        // cards recorded against the placeholder during this turn.
+        const scheduledBefore = useChatStore.getState().slots[slotId]?.scheduledTaskCards;
+        let remappedScheduled: Record<string, ScheduledTaskPayload | WorkflowCardPayload> | undefined;
+        if (scheduledBefore && pendingAssistantId in scheduledBefore) {
+          const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
+          const newId = typeof lastAsst?.id === 'string' ? lastAsst.id : undefined;
+          if (newId && newId !== pendingAssistantId) {
+            const { [pendingAssistantId]: card, ...rest } = scheduledBefore;
+            remappedScheduled = { ...rest, [newId]: card };
           }
         }
 
@@ -620,6 +679,7 @@ export async function streamMessageForSlot(
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
             ...(remappedPending ? { pendingAskUserQuestion: remappedPending } : {}),
+            ...(remappedScheduled ? { scheduledTaskCards: remappedScheduled } : {}),
           });
         });
 
@@ -925,6 +985,14 @@ export async function streamRegenerateForSlot(
       // The run is parked on the user, not working — no progress indicator.
       stopIdleStatus();
       applyAskUserQuestionSse(slotId, data, messageId);
+    },
+
+    onScheduledTask: (data: ScheduledTaskPayload | WorkflowCardPayload) => {
+      applyScheduledTaskSse(slotId, data, messageId);
+    },
+
+    onUiCard: (data: UiCardPayload) => {
+      applyUiCardSse(slotId, data, messageId);
     },
 
     onAnswerFinal: () => {

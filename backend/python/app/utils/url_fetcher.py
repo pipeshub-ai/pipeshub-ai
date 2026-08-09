@@ -438,7 +438,8 @@ def fetch_url(
             logger.debug("%s exhausted", name)
 
     raise FetchError(
-        errors[0] if errors else "No error details."
+        errors[0] if errors
+        else f"All fetch strategies returned non-200 for {url}"
     )
 
 

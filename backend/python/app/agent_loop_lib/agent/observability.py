@@ -212,12 +212,23 @@ async def handle_tool_approval(
     tool) whenever there's no `hil_store` configured — same "nothing to ask,
     so don't allow it" fallback `ToolExecutor.call_tool()` already used
     before this existed, just no longer hardcoded into the executor itself.
+    Also `False` if `DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS` elapses with no
+    answer (task engine plan Part D2) — the checkpoint saved just before
+    waiting still lets a later `Agent.resume(hil_responses=...)` honor a
+    late answer; this bound only prevents THIS coroutine from suspending
+    forever with nothing watching it.
     """
+    import asyncio
+
     runtime = agent.runtime
     if runtime.hil_store is None:
         return False
 
-    from app.agent_loop_lib.modules.stores.hil.base import HILRequest, HILRequestType
+    from app.agent_loop_lib.modules.stores.hil.base import (
+        DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS,
+        HILRequest,
+        HILRequestType,
+    )
 
     hil_request = HILRequest(
         request_type=HILRequestType.TOOL_APPROVAL,
@@ -243,7 +254,16 @@ async def handle_tool_approval(
         "awaiting_approval": True, "reason": reason,
     })
 
-    hil_response = await runtime.hil_store.wait_for_response(request_id)
+    try:
+        hil_response = await runtime.hil_store.wait_for_response(
+            request_id, timeout=DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        await agent.emit(EventType.TOOL_CALL, {
+            "tool": call.name, "hil_request_id": request_id, "tool_call_id": call.id,
+            "approval_expired": True,
+        })
+        return False
     return hil_response.approved
 
 
@@ -266,7 +286,13 @@ async def handle_clarify(
             is_error=True,
         )
 
-    from app.agent_loop_lib.modules.stores.hil.base import HILRequest, HILRequestType
+    import asyncio
+
+    from app.agent_loop_lib.modules.stores.hil.base import (
+        DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS,
+        HILRequest,
+        HILRequestType,
+    )
 
     hil_request = HILRequest(
         request_type=HILRequestType.CLARIFICATION,
@@ -289,8 +315,23 @@ async def handle_clarify(
 
     await agent.emit(EventType.TOOL_CALL, {"tool": "clarify", "hil_request_id": request_id, "tool_call_id": call.id})
 
-    # Block until a human (or test) responds
-    hil_response = await runtime.hil_store.wait_for_response(request_id)
+    # Block until a human (or test) responds, but bounded (task engine plan
+    # Part D2 "TTL on pending questions") — the checkpoint above still lets
+    # a later `Agent.resume(hil_responses=...)` honor a late answer even
+    # after this particular wait gives up.
+    try:
+        hil_response = await runtime.hil_store.wait_for_response(
+            request_id, timeout=DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, asyncio.TimeoutError):
+        return ToolResult(
+            tool_call_id=call.id, name=call.name,
+            content=(
+                "Clarification request expired waiting for a human response "
+                f"(no answer within {DEFAULT_HIL_RESPONSE_TIMEOUT_SECONDS / 3600:.0f}h)."
+            ),
+            is_error=True,
+        )
     answer = hil_response.answer or ("approved" if hil_response.approved else "denied")
 
     return ToolResult(

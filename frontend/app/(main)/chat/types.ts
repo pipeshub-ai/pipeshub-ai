@@ -497,6 +497,113 @@ export interface PendingAskUserQuestion {
   status: 'pending' | 'submitted' | 'persisted';
 }
 
+/** One schedule attached to a workflow, as summarized for `WorkflowCard` (and the legacy `TaskCard`). */
+export interface WorkflowTriggerSummary {
+  triggerId: string;
+  /** 'one_time' | 'cron' | 'interval' | 'event' | 'webhook' */
+  kind: string;
+  nextRunAt?: string | null;
+}
+
+/** @deprecated Use {@link WorkflowTriggerSummary} — kept as an alias for legacy persisted `scheduled_task` payloads. */
+export type ScheduledTaskTriggerSummary = WorkflowTriggerSummary;
+
+/**
+ * Legacy `scheduled_task` CUSTOM event payload, superseded by
+ * {@link WorkflowCardPayload}'s `workflow_created` event. Only produced when
+ * replaying conversations persisted before the workflow/task unification;
+ * the server never emits this event name for new tool calls (see
+ * `task_scheduled_card.py`). Purely informational: unlike
+ * `AskUserQuestionPayload` this never blocks the conversation or expects an
+ * answer back.
+ */
+export interface ScheduledTaskPayload {
+  name: 'scheduled_task';
+  taskId: string;
+  title?: string;
+  status?: string;
+  triggers: WorkflowTriggerSummary[];
+}
+
+/**
+ * `workflow_created` CUSTOM event payload — emitted when a workflow is
+ * created (code-first workflow engine). Purely informational — links out to
+ * the Workflows dashboard.
+ */
+export interface WorkflowCardPayload {
+  name: 'workflow_created';
+  workflowId: string;
+  taskId?: string;
+  title?: string;
+  status?: string;
+  kind?: string;
+  executionKind?: string;
+  toolNames?: string[];
+  connectorIds?: string[];
+  collectionIds?: string[];
+  triggers?: WorkflowTriggerSummary[];
+  /**
+   * Set when code generation failed and the workflow fell back to agent mode.
+   * Without surfacing it the degradation is invisible — the workflow still
+   * "works", just by re-interpreting its instructions with an LLM each run.
+   */
+  codegenNote?: string | null;
+}
+
+/**
+ * `workflow_updated` ui_card payload — emitted when a workflow's code is
+ * regenerated via `workflow_manage(action="update")`. Surfaces a link to
+ * the workflow detail view so the user can review the new version.
+ */
+export interface WorkflowUpdatedPayload {
+  name: 'workflow_updated';
+  workflowId: string;
+  title?: string;
+  versionId?: string;
+  previousVersionId?: string;
+  changesSummary?: string;
+  /** False when the update landed but code regeneration failed. */
+  regenerated?: boolean;
+}
+
+/**
+ * Run metadata for an assistant message produced by a workflow run.
+ * Stored as `workflow_run_result` in the `bot_response`'s `tools` array and
+ * loaded in `runtime.loadHistoricalMessages` as `workflowRun`, which drives
+ * the `WorkflowRunHeader` strip above the answer.
+ */
+export interface RunResultCardPayload {
+  workflowId: string;
+  runId: string;
+  status: string;
+  outputSummary?: string | null;
+  redirectLink?: string | null;
+  workflowName?: string | null;
+  error?: string | null;
+  isDryRun?: boolean;
+  triggerKind?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  /**
+   * `approval` or `wait_for_event`, present only while `status` is
+   * `awaiting_input`. Only an approval is answerable from chat; a run waiting
+   * on an external event has nothing for the user to click.
+   */
+  suspensionKind?: string | null;
+}
+
+/**
+ * Generic `ui_card` envelope — emitted as `CUSTOM{name:"ui_card"}` and
+ * persisted as `tool_call{toolName:"ui_card"}` so cards survive reload.
+ * The frontend routes by `cardType` through `CARD_REGISTRY`.
+ */
+export interface UiCardPayload {
+  cardType: string;
+  cardId: string;
+  payload: Record<string, unknown>;
+  actions: Array<{ label: string; href?: string; action?: string }>;
+}
+
 /** Artifact produced by a sandbox tool (coding/database). */
 export interface SSEArtifactEvent {
   artifactId?: string;
@@ -981,6 +1088,29 @@ export interface ChatSlot {
    * Cleared when the user submits answers or starts another stream that replaces messages.
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
+
+  /**
+   * `scheduled_task` / `workflow_created` cards from SSE, keyed by the
+   * assistant message id whose turn produced them. Unlike
+   * `pendingAskUserQuestion` this is a map (a single turn could in principle
+   * schedule more than one task/workflow) and is never "answered" — entries
+   * persist for the rest of the session once added, remapped from the
+   * placeholder id to the persisted message id on `onComplete` exactly like
+   * `pendingAskUserQuestion` is.
+   */
+  scheduledTaskCards: Record<string, ScheduledTaskPayload | WorkflowCardPayload>;
+
+  /**
+   * Generic `ui_card` envelope cards, indexed by `assistantMessageId` (same as
+   * `scheduledTaskCards`) so the renderer can find the cards for the correct
+   * turn. Populated from live `CUSTOM{name:"ui_card"}` SSE events and from
+   * `tool_call{toolName:"ui_card"}` messages on conversation load.
+   *
+   * A list per turn, because one turn routinely emits several cards — a
+   * prerequisite check, then a dry-run result, then a workflow-updated card —
+   * and keying a single card per turn silently dropped all but the last.
+   */
+  uiCards: Record<string, UiCardPayload[]>;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;

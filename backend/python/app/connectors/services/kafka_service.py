@@ -45,7 +45,17 @@ class KafkaService:
         """Publish a Mongo notification-shaped document to the notification topic/stream."""
         try:
             await self._ensure_producer()
-            key = f"{notification.get('type')}-{get_epoch_timestamp_in_ms()}"
+            # Use a run-derived key when available so Kafka consumer
+            # redeliveries produce at-most-one Mongo document per run event
+            # rather than duplicating.  Fall back to a timestamp key for
+            # notifications that have no associated run (e.g. connector
+            # errors, indexing alerts).
+            payload = notification.get("payload") or {}
+            run_id = payload.get("runId") if isinstance(payload, dict) else None
+            if run_id:
+                key = f"{notification.get('type')}-run-{run_id}"
+            else:
+                key = f"{notification.get('type')}-{get_epoch_timestamp_in_ms()}"
             return await self._producer.send_message(  # type: ignore
                 topic=Topic.NOTIFICATION.value,
                 message=notification,

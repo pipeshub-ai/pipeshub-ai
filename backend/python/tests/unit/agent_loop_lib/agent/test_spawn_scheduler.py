@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from app.agent_loop_lib.agent.spawn_scheduler import (
+    MAX_SPAWN_FANOUT,
     SPAWN_RESULTS_SLOT,
     SpawnDependencyError,
     schedule_spawn_batch,
@@ -33,7 +34,9 @@ from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.core.scope import RunScope
 from app.agent_loop_lib.core.types import AgentResult, Artifact, Goal
-from app.agent_loop_lib.tools.builtin.sandbox.input_staging import peek_staged_input_files
+from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
+    peek_staged_input_files,
+)
 
 
 def _call(call_id: str, *, role: str = "worker", goal: str = "do work", task_id: str | None = None,
@@ -120,6 +123,42 @@ class TestValidateSpawnBatch:
         assert "c2" not in plan.errors_by_call_id
 
 
+class TestFanOutCap:
+    """Task engine plan Phase 6 "fan-out cap": a batch may not launch more
+    than `MAX_SPAWN_FANOUT` children at once, regardless of whether it came
+    from an LLM's parallel tool calls or a task's structured `steps` DAG."""
+
+    def test_batch_at_the_cap_has_no_errors(self) -> None:
+        calls = [_call(f"c{i}", task_id=f"t{i}") for i in range(MAX_SPAWN_FANOUT)]
+        plan = validate_spawn_batch(calls, known_task_ids=set())
+        assert plan.errors_by_call_id == {}
+
+    def test_batch_over_the_cap_rejects_only_the_excess_calls_in_order(self) -> None:
+        calls = [_call(f"c{i}", task_id=f"t{i}") for i in range(MAX_SPAWN_FANOUT + 3)]
+        plan = validate_spawn_batch(calls, known_task_ids=set())
+
+        kept = [c.id for c in calls if c.id not in plan.errors_by_call_id]
+        rejected = [c.id for c in calls if c.id in plan.errors_by_call_id]
+        assert kept == [f"c{i}" for i in range(MAX_SPAWN_FANOUT)]
+        assert rejected == [f"c{i}" for i in range(MAX_SPAWN_FANOUT, MAX_SPAWN_FANOUT + 3)]
+        assert "maximum fan-out" in plan.errors_by_call_id[rejected[0]]
+
+    def test_call_depending_on_a_capped_out_call_is_also_rejected(self) -> None:
+        # 11 filler calls + `c_dependent` fill the cap exactly (12 calls
+        # kept); `c_over` is the 13th call and is capped out. `c_dependent`
+        # itself is within the cap, but depends on a task_id only `c_over`
+        # (already-rejected) defines.
+        calls = [_call(f"c{i}", task_id=f"t{i}") for i in range(MAX_SPAWN_FANOUT - 1)]
+        calls.append(_call("c_dependent", task_id="t_dependent", depends_on=["t_over"]))
+        calls.append(_call("c_over", task_id="t_over"))
+
+        plan = validate_spawn_batch(calls, known_task_ids=set())
+        assert "c_over" in plan.errors_by_call_id
+        assert "maximum fan-out" in plan.errors_by_call_id["c_over"]
+        assert "c_dependent" in plan.errors_by_call_id
+        assert "itself invalid" in plan.errors_by_call_id["c_dependent"]
+
+
 class _RunChildRecorder:
     """Fake `AgentRuntime.run_child` — returns a canned `AgentResult` per
     role and records call order/goals for assertions, without needing a
@@ -189,6 +228,91 @@ def _run_scope(runtime: _FakeRuntime) -> RunScope:
         runtime=runtime,
         goal=Goal(description="top-level goal"),
     )
+
+
+class TestSpawnResultsSlotSurvivesCheckpointRoundTrip:
+    """Task engine plan Phase 6 "DAG resume": `SPAWN_RESULTS_SLOT` is now
+    `persist=True` (see that slot's own docstring) so a crashed multi-step
+    run doesn't re-execute already-completed steps. This is the resume
+    contract in isolation — no real `Agent`/checkpoint store, just the
+    `RunScope` snapshot/restore round trip `agent/resume.py` actually
+    drives, followed by proof that a NEW batch sees the restored
+    completions as already-known task_ids."""
+
+    async def test_completed_spawns_survive_snapshot_and_restore(self) -> None:
+        from app.agent_loop_lib.agent.spawn_scheduler import completed_spawn_results
+        from app.agent_loop_lib.core.scope import known_persisted_slots
+
+        recorder = _RunChildRecorder({
+            "jira": AgentResult(goal=Goal(description="x"), output="Found 3 tickets", success=True),
+            "pdf": AgentResult(goal=Goal(description="x"), output="PDF created", success=True),
+        })
+        runtime = _FakeRuntime(recorder)
+        scope = _run_scope(runtime)
+        agent = _FakeAgent(runtime, scope)
+
+        calls = [
+            _call("c1", role="jira", task_id="jira"),
+            _call("c2", role="pdf", task_id="pdf", depends_on=["jira"]),
+        ]
+        tasks = await schedule_spawn_batch(
+            agent, runtime, calls, scope, goal=Goal(description="top"), turn_index=0, started_at="t0",
+        )
+        await tasks["c1"]
+        await tasks["c2"]
+
+        snapshot = scope.snapshot_extensions()
+
+        # A fresh RunScope, as `Agent.run(_resume_extensions=...)` builds on
+        # resume — never the SAME scope object a real resume would use.
+        restored_scope = _run_scope(runtime)
+        restored_scope.restore_extensions(snapshot, known_persisted_slots())
+
+        restored = completed_spawn_results(restored_scope)
+        assert set(restored.keys()) == {"jira", "pdf"}
+        assert restored["jira"].output == "Found 3 tickets"
+        assert restored["jira"].success is True
+        assert restored["pdf"].output == "PDF created"
+
+    async def test_restored_completions_prevent_re_running_on_a_new_batch(self) -> None:
+        """The actual DAG-resume payoff: a step that already completed
+        before the crash must be treated as `known_task_ids` by a
+        POST-resume batch, not re-validated/re-run as if it never
+        happened."""
+        from app.agent_loop_lib.core.scope import known_persisted_slots
+
+        recorder = _RunChildRecorder({
+            "jira": AgentResult(goal=Goal(description="x"), output="Found 3 tickets", success=True),
+        })
+        runtime = _FakeRuntime(recorder)
+        scope = _run_scope(runtime)
+        agent = _FakeAgent(runtime, scope)
+
+        tasks = await schedule_spawn_batch(
+            agent, runtime, [_call("c1", role="jira", task_id="jira")],
+            scope, goal=Goal(description="top"), turn_index=0, started_at="t0",
+        )
+        await tasks["c1"]
+        snapshot = scope.snapshot_extensions()
+
+        restored_scope = _run_scope(runtime)
+        restored_scope.restore_extensions(snapshot, known_persisted_slots())
+        known_task_ids = set(restored_scope.get(SPAWN_RESULTS_SLOT).keys())
+
+        # A post-resume dependent referencing "jira" must validate cleanly
+        # against the RESTORED scope's known_task_ids — this is exactly
+        # what `schedule_spawn_batch` does internally on every call.
+        pdf_call = _call("c2", role="pdf", task_id="pdf", depends_on=["jira"])
+        plan = validate_spawn_batch([pdf_call], known_task_ids)
+        assert plan.errors_by_call_id == {}
+
+        # And "jira" itself must be rejected as a DUPLICATE task_id if the
+        # resumed run's plan tried to schedule it again — proving it reads
+        # as genuinely completed, not merely "known but re-runnable".
+        replay_jira = _call("c3", role="jira", task_id="jira")
+        replay_plan = validate_spawn_batch([replay_jira], known_task_ids)
+        assert "c3" in replay_plan.errors_by_call_id
+        assert "already used" in replay_plan.errors_by_call_id["c3"]
 
 
 class TestScheduleSpawnBatch:

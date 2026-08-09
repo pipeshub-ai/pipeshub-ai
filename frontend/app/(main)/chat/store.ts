@@ -260,6 +260,8 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     pendingCollections: [],
     artifacts: [],
     pendingAskUserQuestion: null,
+    scheduledTaskCards: {},
+    uiCards: {},
     abortController: null,
     messagePagination: null,
     lastAccessedAt: Date.now(),

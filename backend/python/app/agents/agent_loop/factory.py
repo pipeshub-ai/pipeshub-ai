@@ -57,33 +57,55 @@ from app.agent_loop_lib.core.messages import (
     ToolMessageMeta,
     UserMessage,
 )
+from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import shape_artifact_compaction
-from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
-    shape_artifact_registration,
-)
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     shape_tool_pairing_repair,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
+    shape_artifact_compaction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
+    shape_artifact_registration,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
     make_llm_summarizer,
     shape_auto_compact,
 )
-from app.agents.agent_loop.artifact_store import build_artifact_store
-from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import shape_budget_reduction
-from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import shape_deterministic_compact
-from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import shape_loop_compaction
-from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import shape_sliding_window
-from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import shape_synthesis_guard
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    shape_budget_reduction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
+    shape_deterministic_compact,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
+    shape_loop_compaction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
+    shape_sliding_window,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
+    shape_synthesis_guard,
+)
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     shape_tool_result_clearing,
 )
-from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import RetrieveArtifactContentTool
-from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
-from app.agent_loop_lib.transport.opik_tracing import resolve_opik_gate, traced_transport_factory
+from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+    RetrieveArtifactContentTool,
+)
+from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
+from app.agent_loop_lib.transport.opik_tracing import (
+    resolve_opik_gate,
+    traced_transport_factory,
+)
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.agent_loop.artifact_store import build_artifact_store
+from app.agents.agent_loop.domain_agents import (
+    plan_domain_agents,
+    register_domain_agents,
+)
 from app.agents.agent_loop.hooks import (
     CitationCollector,
     ToolErrorTracker,
@@ -100,9 +122,11 @@ from app.agents.agent_loop.hooks import (
     seed_visible_tools_from_history,
     shape_image_injection,
     stash_tool_call_metadata,
+    prereq_check_card_sse,
+    task_scheduled_card_sse,
+    workflow_dry_run_card_sse,
+    workflow_updated_card_sse,
 )
-from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
-from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
@@ -119,8 +143,13 @@ from app.agents.agent_loop.loops.orchestrator import (
     install_phase_gate,
     register_coordination_tools,
 )
-from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.loops.plan_execute import (
+    PLANNING_TOOL_NAMES,
+    register_planning_tools,
+)
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
     build_coding_sandbox_manager,
@@ -136,9 +165,12 @@ from app.agents.agent_loop.skills_wiring import (
     register_skill_tools,
     skills_enabled,
 )
-from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
-from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
+from app.agents.agent_loop.tasks_wiring import (
+    build_task_engine,
+    register_task_tools,
+    tasks_enabled,
+)
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 
@@ -329,11 +361,22 @@ class PipesHubAgentFactory:
                     "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
                 )
 
+        # Task engine (env-gated — see tasks_wiring.py). Registered BEFORE
+        # `plan_domain_agents()` so `workflow_find`/`workflow_manage` land
+        # in the registered-tool snapshot and fall into the residual grant.
+        task_engine = None
+        if tasks_enabled():
+            task_engine = await build_task_engine(context)
+            if task_engine is not None:
+                register_task_tools(tool_registry, task_engine, context)
+                logger.info("PipesHubAgentFactory.create: task engine enabled (org_id=%s)", context.org_id)
+
         artifact_store = build_artifact_store(context)
         hooks = self._build_hooks(
             context, sandbox_manager, allow_network=network_enabled,
             artifact_store=artifact_store, tool_registry=tool_registry,
             transport_registry=transport_registry, model_name=model_name,
+            task_engine_enabled=task_engine is not None,
         )
         tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
         _register_final_answer_if_enabled(tool_registry)
@@ -516,6 +559,12 @@ class PipesHubAgentFactory:
         essential_toolset_names = list(context.essential_toolset_names)
         if skill_manager is not None:
             essential_toolset_names = ["skills", *essential_toolset_names]
+        if task_engine is not None:
+            # Part A3: "Task tools must be pinned into essential_toolset_names
+            # so they are always visible above the 20-tool lazy threshold" --
+            # otherwise a user's "pause my daily report task" can land after
+            # lazy disclosure has already grouped workflow_find/workflow_manage away.
+            essential_toolset_names = ["tasks", *essential_toolset_names]
 
         run_code_delegated_to_coding_agent = False
         if composition_plan is not None and mode.compose_domain_agents:
@@ -693,6 +742,7 @@ class PipesHubAgentFactory:
         context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
         artifact_store: Any = None, tool_registry: Any = None,
         transport_registry: Any = None, model_name: str = "",
+        task_engine_enabled: bool = False,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
@@ -791,6 +841,11 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
+        if task_engine_enabled:
+            hooks.on(HookEvent.POST_TOOL_USE).use(task_scheduled_card_sse(context))
+            hooks.on(HookEvent.POST_TOOL_USE).use(prereq_check_card_sse(context))
+            hooks.on(HookEvent.POST_TOOL_USE).use(workflow_dry_run_card_sse(context))
+            hooks.on(HookEvent.POST_TOOL_USE).use(workflow_updated_card_sse(context))
 
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
@@ -838,7 +893,7 @@ class PipesHubAgentFactory:
         state = context.tool_state
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            from app.utils.chat_helpers import CitationRefMapper
             ref_mapper = CitationRefMapper()
             state["citation_ref_mapper"] = ref_mapper
 
@@ -896,8 +951,8 @@ def _inject_images_into_message(
     image_blocks: list[dict[str, Any]],
 ) -> None:
     """Convert ``image_url`` dicts to ``ImagePart`` and set multipart content."""
-    from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
-    from app.agents.agent_loop.hooks.attachment_resolver import (  # noqa: PLC0415
+    from app.agent_loop_lib.core.messages import TextPart
+    from app.agents.agent_loop.hooks.attachment_resolver import (
         _langchain_image_to_part,
     )
 

@@ -5,11 +5,14 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from app.agent_loop_lib.core.types import ToolCall
+from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agents.actions.internal_tools.intrim_tools import (
     AskUserQuestionInput,
     AskUserQuestionItemInput,
     AskUserQuestionOptionInput,
     InternalTools,
+    _ask_user_question_outcome,
 )
 
 
@@ -105,7 +108,7 @@ async def test_ask_user_question_returns_structured_json_for_ui() -> None:
     question = payload["questions"][0]
     assert question["question"] == "Which channel?"
     assert question["multiSelect"] is False
-    assert "uuid" in question and question["uuid"]
+    assert question.get("uuid")
 
     options = question["options"]
     assert len(options) == 3
@@ -113,3 +116,35 @@ async def test_ask_user_question_returns_structured_json_for_ui() -> None:
     assert options[0]["isUserInput"] is False
     assert options[0]["id"] == "opt_#general"
     assert options[2]["isUserInput"] is True
+
+
+class TestAskUserQuestionOutcomeExtractor:
+    """`_ask_user_question_outcome` (task engine plan Part D, Phase 5) —
+    a headless caller (`TaskExecutor`) must be able to tell this terminal
+    tool's result apart from an ordinary successful completion, or a
+    pending question is silently dropped and the run is marked SUCCEEDED
+    instead of AWAITING_INPUT."""
+
+    def test_sets_needs_input_from_user_intent(self) -> None:
+        payload = json.dumps({
+            "name": "ask_user_question",
+            "userIntent": "Which Slack channel should I post to?",
+            "questions": [],
+        })
+        tr = CoreToolResult(tool_call_id="c1", name="ask_user_question", content=payload)
+        call = ToolCall(id="c1", name="ask_user_question", arguments={})
+
+        outcome = _ask_user_question_outcome(tr, call, fallback_text="")
+
+        assert outcome.task_done is True
+        assert outcome.needs_input == "Which Slack channel should I post to?"
+        assert outcome.final_output == payload
+
+    def test_falls_back_to_generic_needs_input_on_malformed_content(self) -> None:
+        tr = CoreToolResult(tool_call_id="c1", name="ask_user_question", content="not json")
+        call = ToolCall(id="c1", name="ask_user_question", arguments={})
+
+        outcome = _ask_user_question_outcome(tr, call, fallback_text="")
+
+        assert outcome.task_done is True
+        assert outcome.needs_input

@@ -84,6 +84,14 @@ class Neo4jLabel(Enum):
     # Artifacts
     ARTIFACTS = "Artifact"
 
+    # Task scheduling and code-first workflow engines
+    TASKS = "Task"
+    TASK_RUNS = "TaskRun"
+    WORKFLOW_VERSIONS = "WorkflowVersion"
+    WORKFLOW_SOURCES = "WorkflowSource"
+    AGENT_CHECKPOINTS = "AgentCheckpoint"
+    AGENT_TIMELINE_ENTRIES = "AgentTimelineEntry"
+
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
@@ -172,6 +180,13 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.AGENT_SKILLS.value: Neo4jLabel.AGENT_SKILLS.value,
     CollectionNames.AGENT_SKILL_VERSIONS.value: Neo4jLabel.AGENT_SKILL_VERSIONS.value,
     CollectionNames.AGENT_SKILL_CANDIDATES.value: Neo4jLabel.AGENT_SKILL_CANDIDATES.value,
+    # Task scheduling and code-first workflow engines
+    CollectionNames.TASKS.value: Neo4jLabel.TASKS.value,
+    CollectionNames.TASK_RUNS.value: Neo4jLabel.TASK_RUNS.value,
+    CollectionNames.WORKFLOW_VERSIONS.value: Neo4jLabel.WORKFLOW_VERSIONS.value,
+    CollectionNames.WORKFLOW_SOURCES.value: Neo4jLabel.WORKFLOW_SOURCES.value,
+    CollectionNames.AGENT_CHECKPOINTS.value: Neo4jLabel.AGENT_CHECKPOINTS.value,
+    CollectionNames.AGENT_TIMELINE_ENTRIES.value: Neo4jLabel.AGENT_TIMELINE_ENTRIES.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types

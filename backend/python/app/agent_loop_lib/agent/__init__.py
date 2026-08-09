@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel as _PydanticBaseModel
 
 from app.agent_loop_lib.agent import hook_dispatch as hooks
 from app.agent_loop_lib.agent import observability as obs
@@ -14,6 +17,7 @@ from app.agent_loop_lib.agent.prompt import build_system_prompt
 from app.agent_loop_lib.agent.tool_loop import (
     ToolCallOutcome,
     compute_duplicate_flags,
+    compute_extra_question_flags,
     execute_tool_call,
     tool_schemas_for_turn,
 )
@@ -45,7 +49,6 @@ from app.agent_loop_lib.events.base import AgentEvent, EventType
 from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import install_turn_guards
 from app.agent_loop_lib.tools.executor import ToolExecutor
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_SPAWN_BATCH
-from pydantic import BaseModel as _PydanticBaseModel
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -408,6 +411,8 @@ class Agent:
         confidence: Confidence | None = None,
         record_ids: list[str] | None = None,
         needs_input: str | None = None,
+        hil_request_id: str | None = None,
+        pending_tool_call_id: str | None = None,
     ) -> AgentResult:
         """Build and persist a successful `AgentResult` from this run's
         recorded turns. The one, shared tail for every "run finished
@@ -418,7 +423,17 @@ class Agent:
         `confidence`/`record_ids`/`needs_input` are the optional typed
         sub-agent output contract (see `AgentResult`, `core/types.py`) —
         `None`/`[]` when the terminal tool call didn't set them, same as
-        every other caller of this method before this contract existed."""
+        every other caller of this method before this contract existed.
+
+        `hil_request_id`/`pending_tool_call_id`: when `needs_input` is set,
+        the caller (`Agent.step()`) passes the SAME correlation pair it
+        already stamped on the "post_tool" checkpoint for this turn — this
+        method's own `save_checkpoint("agent_complete", ...)` call below
+        supersedes that one as the run's `latest()` checkpoint, so it must
+        carry the identical pair or `Agent.resume(hil_responses=...)` would
+        find a `latest()` checkpoint with no `hil_request_id` to key off
+        and silently drop the human's answer (see
+        `tests/unit/agent_loop_lib/agent/test_needs_input_resume_round_trip.py`)."""
         turns = self._scope.turns if self._scope is not None else []
         result = AgentResult(
             goal=goal, output=output, artifacts=artifacts or [], turns=list(turns),
@@ -429,7 +444,10 @@ class Agent:
         await obs.write_state(self, goal, "completed", turn_index=len(turns), started_at=self.started_at or _now())
         await obs.append_timeline(self, event, summary, "completed", detail or {})
         messages = await self._context.messages() if self._context else []
-        await obs.save_checkpoint(self, "agent_complete", goal, messages, len(turns))
+        await obs.save_checkpoint(
+            self, "agent_complete", goal, messages, len(turns),
+            hil_request_id=hil_request_id, pending_tool_call_id=pending_tool_call_id,
+        )
         await self._post_agent(result)
         return result
 
@@ -471,7 +489,9 @@ class Agent:
         from app.agent_loop_lib.agent.feasibility import FeasibilityChecker
         from app.agent_loop_lib.agent.goal import GoalBuilder
         from app.agent_loop_lib.agent.intent import IntentParser
-        from app.agent_loop_lib.agent.single_shot_runner import build_task_complete_runtime
+        from app.agent_loop_lib.agent.single_shot_runner import (
+            build_task_complete_runtime,
+        )
 
         if self._model is None:
             self._resolve_model()
@@ -688,10 +708,13 @@ class Agent:
                     if idx not in _fa_extractors:
                         # First delta for this index — decide whether it is final_answer.
                         from app.agent_loop_lib.tools.builtin.planning.final_answer import (
-                            FinalAnswerTool, final_answer_enabled,
+                            FinalAnswerTool,
+                            final_answer_enabled,
                         )
                         if final_answer_enabled() and event.name == FinalAnswerTool().name:
-                            from app.agent_loop_lib.core.json_stream import StreamingJsonStringExtractor
+                            from app.agent_loop_lib.core.json_stream import (
+                                StreamingJsonStringExtractor,
+                            )
                             _fa_extractors[idx] = StreamingJsonStringExtractor("answer_markdown")
                         else:
                             _fa_extractors[idx] = None  # not a final_answer call
@@ -834,6 +857,12 @@ class Agent:
         final_confidence: Confidence | None = None
         final_record_ids: list[str] = []
         final_needs_input: str | None = None
+        # The terminal call's OWN tool_use id, captured alongside
+        # `final_needs_input` -- `save_checkpoint` below needs it as
+        # `pending_tool_call_id` so a later `Agent.resume(hil_responses=...)`
+        # can address the injected answer to the right tool_use block. See
+        # `tests/unit/agent_loop_lib/agent/test_needs_input_resume_round_trip.py`.
+        final_terminal_call_id: str | None = None
 
         seen_tool_calls = turn_scope.seen_tool_calls
 
@@ -874,7 +903,9 @@ class Agent:
         # turn is independent by construction and runs concurrently.
         pre_call_messages = await context.messages()
 
-        async def _run_one_tool_call(call: ToolCall, *, is_duplicate: bool) -> ToolCallOutcome:
+        async def _run_one_tool_call(
+            call: ToolCall, *, is_duplicate: bool, is_extra_question: bool = False
+        ) -> ToolCallOutcome:
             if runtime.cancellation_token is not None and runtime.cancellation_token.is_cancelled:
                 return ToolCallOutcome(result=ToolResult(
                     tool_call_id=call.id, name=call.name,
@@ -883,6 +914,7 @@ class Agent:
             return await execute_tool_call(
                 self, call, spec, runtime, goal, pre_call_messages, turn_index,
                 self.started_at, is_duplicate, response_msg, turn_scope,
+                is_extra_question=is_extra_question,
             )
 
         # Everything from here through the spawn-await loop below can raise
@@ -915,9 +947,16 @@ class Agent:
             # why the check-then-add can't safely happen inside each call's
             # own (interleavable) coroutine.
             duplicate_flags = compute_duplicate_flags(parallel_calls, seen_tool_calls, runtime.tool_registry)
+            extra_question_flags = compute_extra_question_flags(parallel_calls, runtime.tool_registry)
             if parallel_calls:
                 results = await asyncio.gather(
-                    *(_run_one_tool_call(c, is_duplicate=duplicate_flags[c.id]) for c in parallel_calls)
+                    *(
+                        _run_one_tool_call(
+                            c, is_duplicate=duplicate_flags[c.id],
+                            is_extra_question=extra_question_flags[c.id],
+                        )
+                        for c in parallel_calls
+                    )
                 )
                 outcomes_by_id.update(zip((c.id for c in parallel_calls), results))
             for c in tool_calls:
@@ -934,6 +973,7 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+                    final_terminal_call_id = call.id
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision
@@ -969,12 +1009,35 @@ class Agent:
             turn.tool_results = tool_results
             self._scope.turns.append(turn)
 
-            await obs.save_checkpoint(self, "post_tool", goal, await context.messages(), turn_index)
+            # A turn that ends via `needs_input` (whichever terminal tool
+            # set it -- `task_complete(needs_input=...)`, `ask_user_question`,
+            # any future one) needs the SAME correlation metadata the
+            # library's own `clarify` special-route already gets from
+            # `handle_clarify` (see `agent/observability.py`), or
+            # `Agent.resume(checkpoint_id, hil_responses={...})` has no
+            # `hil_request_id` to key its lookup by and no
+            # `pending_tool_call_id` to address the injected answer to --
+            # the answer is silently dropped instead of resuming the run.
+            # Synthesized fresh here (not sourced from an actual `HILStore`
+            # submission — none is involved on this path) purely as a
+            # stable token baked into the checkpoint for that later lookup.
+            awaiting_input_request_id = (
+                str(uuid.uuid4()) if task_done and final_needs_input else None
+            )
+            await obs.save_checkpoint(
+                self, "post_tool", goal, await context.messages(), turn_index,
+                hil_request_id=awaiting_input_request_id,
+                pending_tool_call_id=(
+                    final_terminal_call_id if awaiting_input_request_id else None
+                ),
+            )
             await hooks.dispatch_post_turn(self._hooks, turn_index, turn, scope=turn_scope)
             await obs.write_turn_memory(self, turn, turn_index)
             await self.emit(EventType.TURN_COMPLETE, {"turn_index": turn_index})
         finally:
-            from app.agent_loop_lib.agent.spawn_scheduler import cancel_pending_spawn_tasks
+            from app.agent_loop_lib.agent.spawn_scheduler import (
+                cancel_pending_spawn_tasks,
+            )
             await cancel_pending_spawn_tasks(self._pending_spawn_tasks)
 
         if task_done:
@@ -986,6 +1049,10 @@ class Agent:
                 confidence=final_confidence,
                 record_ids=final_record_ids,
                 needs_input=final_needs_input,
+                hil_request_id=awaiting_input_request_id,
+                pending_tool_call_id=(
+                    final_terminal_call_id if awaiting_input_request_id else None
+                ),
             )
             return StepOutcome("stop", result=result)
 

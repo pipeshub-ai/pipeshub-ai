@@ -28,6 +28,8 @@ import {
   type ConversationMessage,
   type PendingAskUserQuestion,
   type StreamChatRequest,
+  type UiCardPayload,
+  type RunResultCardPayload,
   DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
@@ -300,6 +302,8 @@ export function buildStreamChatRequestForSlot(
 export interface LoadHistoricalResult {
   messages: ThreadMessageLike[];
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
+  /** `ui_card` tool_call messages keyed by the following assistant message id. */
+  uiCards: Record<string, UiCardPayload[]>;
 }
 
 /**
@@ -322,6 +326,11 @@ export function loadHistoricalMessages(
   let toolPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAssistantId: string | null = null;
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
+  const uiCards: Record<string, UiCardPayload[]> = {};
+  // Track pending ui_card payloads (tool_call messages arrive before the
+  // bot_response they belong to — we store them temporarily and attach to
+  // the next assistant message id once we encounter it).
+  let pendingUiCards: UiCardPayload[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -333,6 +342,35 @@ export function loadHistoricalMessages(
         if (tr.name === 'ask_user_question' && Array.isArray(tr.questions)) {
           toolPayload = tr as unknown as AskUserQuestionPayload;
         }
+      }
+      const uiCardTool = msg.tools?.find(t => t.toolName === 'ui_card');
+      if (uiCardTool?.toolResult) {
+        const payload = uiCardTool.toolResult as unknown as UiCardPayload;
+        if (payload.cardType && payload.cardId) {
+          pendingUiCards.push(payload);
+        }
+      }
+      // Legacy shape: runs finished before workflow results became
+      // `bot_response` messages were stored as a bare `tool_call` with empty
+      // content. Normalise them onto the same `workflowRun` metadata key and
+      // recover the answer text from the payload so old conversations render
+      // markdown like new ones.
+      const legacyRunResult = msg.tools?.find(t => t.toolName === 'workflow_run_result');
+      if (legacyRunResult?.toolResult) {
+        const payload = legacyRunResult.toolResult as unknown as RunResultCardPayload;
+        result.push({
+          id: msg._id,
+          role: 'assistant' as const,
+          content: [{ type: 'text' as const, text: payload.outputSummary || payload.error || '' }],
+          metadata: {
+            custom: {
+              messageId: msg._id,
+              citationMaps: buildCitationMapsFromApi([]),
+              workflowRun: payload,
+            },
+          },
+        });
+        continue;
       }
       continue;
     }
@@ -355,6 +393,11 @@ export function loadHistoricalMessages(
     if (msg.messageType === 'bot_response') {
       const capturedPayload = toolPayload;
       toolPayload = null;
+      // Flush any pending ui_card payloads onto this assistant message id.
+      if (pendingUiCards.length > 0) {
+        uiCards[msg._id] = [...(uiCards[msg._id] ?? []), ...pendingUiCards];
+        pendingUiCards = [];
+      }
 
       let isAnswered = false;
       if (capturedPayload) {
@@ -377,6 +420,10 @@ export function loadHistoricalMessages(
           : undefined;
 
       const answerText = extractFinalAnswer(msg.parts, msg.content);
+      // A workflow run result is an ordinary assistant answer carrying run
+      // metadata, so it goes through the same markdown/tabs/actions path as
+      // any other answer; the payload only drives the header strip above it.
+      const runResult = msg.tools?.find(t => t.toolName === 'workflow_run_result');
       result.push({
         id: msg._id,
         role: 'assistant' as const,
@@ -387,6 +434,9 @@ export function loadHistoricalMessages(
             citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
+            ...(runResult?.toolResult
+              ? { workflowRun: runResult.toolResult as unknown as RunResultCardPayload }
+              : {}),
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(capturedPayload && isAnswered
               ? { persistedAskUserQuestion: capturedPayload }
@@ -428,7 +478,7 @@ export function loadHistoricalMessages(
     };
   }
 
-  return { messages: result, unansweredAskUserQuestion: unanswered };
+  return { messages: result, unansweredAskUserQuestion: unanswered, uiCards };
 }
 
 /** Attachment refs attached on send (see chat input metadata). */

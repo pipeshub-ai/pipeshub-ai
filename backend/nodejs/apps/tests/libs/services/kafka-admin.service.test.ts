@@ -37,6 +37,16 @@ describe('KafkaAdminService', () => {
       expect(topicNames).to.include('health-check');
     });
 
+    // These two are produced and consumed only by the Python services, which
+    // have no Kafka admin client of their own. If they fall out of this list
+    // nothing creates them, and on a cluster with auto-create disabled the
+    // scheduler's dispatches and every event-triggered workflow go nowhere.
+    it('should include the topics only the Python services use', () => {
+      const topicNames = REQUIRED_KAFKA_TOPICS.map((t) => t.topic);
+      expect(topicNames).to.include('task-events');
+      expect(topicNames).to.include('app_events');
+    });
+
     it('should have partition and replication config', () => {
       for (const topic of REQUIRED_KAFKA_TOPICS) {
         expect(topic.numPartitions).to.equal(1);

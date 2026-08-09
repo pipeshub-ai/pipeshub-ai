@@ -297,6 +297,7 @@ function ActionCard({
 export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>('actions');
+  const [pendingIndex, setPendingIndex] = useState<number | null>(null);
 
   const visibleActions = actions.filter(Boolean) as RowAction[];
   if (visibleActions.length === 0) return null;
@@ -304,6 +305,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
   const subMenuAction = visibleActions.find((a) => a.subMenu);
 
   const handleOpenChange = (isOpen: boolean) => {
+    if (pendingIndex !== null) return;
     setOpen(isOpen);
     if (!isOpen) setView('actions');
   };
@@ -352,39 +354,50 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
             {visibleActions.map((action, i) => {
               const isDanger = action.variant === 'danger';
               const isDisabled = action.disabled === true;
+              const isPending = pendingIndex === i || action.isLoading === true;
+              const anyPending = pendingIndex !== null;
+              const iconColor = isDanger ? 'var(--red-10)' : 'var(--slate-11)';
+
+              const executeAction = (e: { stopPropagation: () => void }) => {
+                e.stopPropagation();
+                if (isDisabled || isPending || (anyPending && pendingIndex !== i)) return;
+                if (action.subMenu) {
+                  setView('rolePicker');
+                  return;
+                }
+                const maybePromise = action.onClick?.();
+                if (
+                  maybePromise &&
+                  typeof (maybePromise as Promise<void>).then === 'function'
+                ) {
+                  setPendingIndex(i);
+                  (maybePromise as Promise<void>).finally(() => {
+                    setPendingIndex(null);
+                    handleOpenChange(false);
+                  });
+                } else {
+                  handleOpenChange(false);
+                }
+              };
 
               const row = (
                 <Flex
                   role="menuitem"
                   aria-disabled={isDisabled || undefined}
+                  aria-busy={isPending || undefined}
                   tabIndex={isDisabled ? -1 : 0}
                   align="center"
                   gap="1"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (isDisabled) return;
-                    if (action.subMenu) {
-                      setView('rolePicker');
-                    } else {
-                      action.onClick?.();
-                      handleOpenChange(false);
-                    }
-                  }}
+                  onClick={executeAction}
                   onKeyDown={(e) => {
                     if (isDisabled) return;
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
-                      e.stopPropagation();
-                      if (action.subMenu) {
-                        setView('rolePicker');
-                      } else {
-                        action.onClick?.();
-                        handleOpenChange(false);
-                      }
+                      executeAction(e);
                     }
                   }}
                   onMouseEnter={({ currentTarget }) => {
-                    if (isDisabled) return;
+                    if (isDisabled || isPending) return;
                     (currentTarget as HTMLElement).style.backgroundColor =
                       isDanger ? 'var(--red-a3)' : 'var(--slate-a3)';
                   }}
@@ -396,15 +409,25 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                     height: 24,
                     padding: '0 8px',
                     borderRadius: 'var(--radius-1)',
-                    cursor: isDisabled ? 'not-allowed' : 'pointer',
-                    opacity: isDisabled ? 0.45 : 1,
+                    cursor: isPending
+                      ? 'wait'
+                      : anyPending && pendingIndex !== i
+                        ? 'not-allowed'
+                        : isDisabled
+                          ? 'not-allowed'
+                          : 'pointer',
+                    opacity: isDisabled || (anyPending && pendingIndex !== i) ? 0.45 : 1,
                   }}
                 >
-                  <MaterialIcon
-                    name={action.icon}
-                    size={16}
-                    color={isDanger ? 'var(--red-10)' : 'var(--slate-11)'}
-                  />
+                  {isPending ? (
+                    <Spinner size={14} color={iconColor} />
+                  ) : (
+                    <MaterialIcon
+                      name={action.icon}
+                      size={16}
+                      color={iconColor}
+                    />
+                  )}
                   <Text
                     size="1"
                     style={{

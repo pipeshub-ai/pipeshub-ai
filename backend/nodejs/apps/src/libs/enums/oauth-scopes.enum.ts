@@ -43,6 +43,20 @@ export const OAuthScopeNames = Object.freeze({
   SKILL_READ: 'skill:read',
   SKILL_WRITE: 'skill:write',
 
+  // Scheduled Tasks
+  TASK_READ: 'task:read',
+  TASK_WRITE: 'task:write',
+
+  // Workflows
+  WORKFLOW_READ: 'workflow:read',
+  WORKFLOW_WRITE: 'workflow:write',
+  WORKFLOW_EXECUTE: 'workflow:execute',
+  // Gates answering a run paused on human input (workflows.routes.ts's
+  // `POST /:workflowId/runs/:runId/answer`) -- distinct from WORKFLOW_WRITE
+  // (pause/resume/cancel/delete/promote) since answering a HIL question is
+  // closer to an approval action than a config change.
+  WORKFLOW_APPROVE: 'workflow:approve',
+
   // Connectors
   CONNECTOR_READ: 'connector:read',
   CONNECTOR_WRITE: 'connector:write',

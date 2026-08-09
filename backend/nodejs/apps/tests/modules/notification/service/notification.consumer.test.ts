@@ -176,4 +176,160 @@ describe('notification/service/notification.consumer', () => {
       expect(userHandler.calledOnce).to.be.true;
     });
   });
+
+  describe('workflow run notifications', () => {
+    const orgId = new mongoose.Types.ObjectId().toString();
+    const userId = new mongoose.Types.ObjectId().toString();
+
+    const workflowRunEvent = (payload: Record<string, unknown>) => ({
+      value: {
+        orgId,
+        type: 'WORKFLOW_RUN_SUCCEEDED',
+        recipientUserIds: [userId],
+        recipientRoles: [],
+        payload,
+      },
+    });
+
+    const stubRecipients = () =>
+      sinon
+        .stub(RecipientResolver, 'resolveNotificationRecipientUserIds')
+        .resolves([new mongoose.Types.ObjectId(userId)]);
+
+    const deliver = async (event: unknown) => {
+      mockConsumer.isConnected.returns(true);
+      const userHandler = sinon.stub().resolves();
+      await consumer.consume(userHandler);
+      await mockConsumer.consume.firstCall.args[0](event);
+    };
+
+    it('upserts on (type, runId, assignedTo) so a Kafka redelivery cannot duplicate the row', async () => {
+      stubRecipients();
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create');
+      const upsertStub = sinon
+        .stub(NotificationSchema.Notifications, 'findOneAndUpdate')
+        .returns({
+          exec: sinon.stub().resolves({
+            _id: 'nid1',
+            assignedTo: new mongoose.Types.ObjectId(userId),
+            toObject: () => ({ _id: 'nid1' }),
+          }),
+        } as any);
+
+      await deliver(
+        workflowRunEvent({ runId: 'run-1', workflowId: 'wf-1', status: 'succeeded' }),
+      );
+
+      expect(createStub.called).to.be.false;
+      expect(upsertStub.calledOnce).to.be.true;
+      const [filter, , options] = upsertStub.firstCall.args as any[];
+      expect(filter.type).to.equal('WORKFLOW_RUN_SUCCEEDED');
+      expect(filter['payload.runId']).to.equal('run-1');
+      expect(String(filter.assignedTo)).to.equal(userId);
+      expect(options.upsert).to.be.true;
+    });
+
+    it('emits the live run update alongside the persisted notification', async () => {
+      stubRecipients();
+      sinon.stub(NotificationSchema.Notifications, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({
+          _id: 'nid1',
+          assignedTo: new mongoose.Types.ObjectId(userId),
+          toObject: () => ({ _id: 'nid1' }),
+        }),
+      } as any);
+
+      await deliver(
+        workflowRunEvent({ runId: 'run-1', workflowId: 'wf-1', status: 'succeeded' }),
+      );
+
+      const emit = mockNotificationService.emitWorkflowRunUpdate as sinon.SinonStub;
+      expect(emit.calledOnce).to.be.true;
+      expect(emit.firstCall.args[0]).to.include({
+        workflowId: 'wf-1',
+        runId: 'run-1',
+        status: 'succeeded',
+      });
+    });
+
+    it('a dry run updates the chat card live but writes nothing to the inbox', async () => {
+      stubRecipients();
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create');
+      const upsertStub = sinon.stub(NotificationSchema.Notifications, 'findOneAndUpdate');
+
+      await deliver(
+        workflowRunEvent({
+          runId: 'run-dry',
+          workflowId: 'wf-1',
+          status: 'succeeded',
+          isDryRun: true,
+        }),
+      );
+
+      expect(createStub.called).to.be.false;
+      expect(upsertStub.called).to.be.false;
+      expect((mockNotificationService.sendToUser as sinon.SinonStub).called).to.be.false;
+      const emit = mockNotificationService.emitWorkflowRunUpdate as sinon.SinonStub;
+      expect(emit.calledOnce).to.be.true;
+      expect(emit.firstCall.args[0].runId).to.equal('run-dry');
+    });
+
+    it('falls back to the notification type when the payload carries no status', async () => {
+      stubRecipients();
+      sinon.stub(NotificationSchema.Notifications, 'findOneAndUpdate').returns({
+        exec: sinon.stub().resolves({
+          _id: 'nid1',
+          assignedTo: new mongoose.Types.ObjectId(userId),
+          toObject: () => ({ _id: 'nid1' }),
+        }),
+      } as any);
+
+      await deliver(workflowRunEvent({ runId: 'run-1', workflowId: 'wf-1' }));
+
+      const emit = mockNotificationService.emitWorkflowRunUpdate as sinon.SinonStub;
+      expect(emit.firstCall.args[0].status).to.equal('succeeded');
+    });
+
+    it('does not emit a run update when the payload has no workflow/run ids', async () => {
+      stubRecipients();
+      // No runId means no natural key to upsert on, so this falls back to the
+      // plain insert path.
+      sinon.stub(NotificationSchema.Notifications, 'create').resolves([
+        {
+          _id: 'nid1',
+          assignedTo: new mongoose.Types.ObjectId(userId),
+          toObject: () => ({ _id: 'nid1' }),
+        },
+      ] as any);
+
+      await deliver(workflowRunEvent({ status: 'succeeded' }));
+
+      expect((mockNotificationService.emitWorkflowRunUpdate as sinon.SinonStub).called).to.be
+        .false;
+    });
+
+    it('non-workflow notifications still use the plain insert path', async () => {
+      stubRecipients();
+      const createStub = sinon.stub(NotificationSchema.Notifications, 'create').resolves([
+        {
+          _id: 'nid1',
+          assignedTo: new mongoose.Types.ObjectId(userId),
+          toObject: () => ({ _id: 'nid1' }),
+        },
+      ] as any);
+      const upsertStub = sinon.stub(NotificationSchema.Notifications, 'findOneAndUpdate');
+
+      await deliver({
+        value: {
+          orgId,
+          type: 'CONNECTOR_SYNC_ERROR',
+          recipientUserIds: [userId],
+          recipientRoles: [],
+        },
+      });
+
+      expect(createStub.calledOnce).to.be.true;
+      expect(upsertStub.called).to.be.false;
+    });
+  });
 });

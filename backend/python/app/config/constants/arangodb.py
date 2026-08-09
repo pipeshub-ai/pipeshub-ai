@@ -254,6 +254,30 @@ class CollectionNames(Enum):
     # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
     AGENT_HAS_SKILL = "agentHasSkill"
 
+    # Task Scheduling Engine — TaskDefinition storage (see
+    # app/services/tasks/adapters/graph/task_store.py). Triggers and runs
+    # live in Redis, not here — see the task engine plan's storage split.
+    TASKS = "tasks"
+
+    # Durable agent_loop_lib stores (Task Scheduling Engine Phase 2) — a
+    # headless/scheduled run's checkpoints and timeline must survive a
+    # process restart, unlike a chat request's in-memory ones. See
+    # app/agent_loop_lib/modules/stores/checkpoint/graph_store.py and
+    # .../timeline/graph_store.py.
+    AGENT_CHECKPOINTS = "agentCheckpoints"
+    AGENT_TIMELINE_ENTRIES = "agentTimelineEntries"
+
+    # Code-first Workflow Engine stores (Workflow Engine Foundation plan):
+    # WorkflowVersion documents (immutable, one per code generation).
+    WORKFLOW_VERSIONS = "workflowVersions"
+    # Workflow source bundles stored inline; source files are small Python
+    # scripts (< 50 KB) so inline ArangoDB storage avoids blob pipeline overhead.
+    WORKFLOW_SOURCES = "workflowSources"
+    # Terminal TaskRuns, mirrored out of Redis. Redis holds live runs and
+    # expires them; this is the durable history the run list reads from once
+    # they age out.
+    TASK_RUNS = "taskRuns"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

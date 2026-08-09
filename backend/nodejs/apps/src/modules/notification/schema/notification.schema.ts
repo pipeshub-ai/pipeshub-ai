@@ -82,5 +82,11 @@ const notificationSchema = new Schema<INotification>(
 notificationSchema.index({ orgId: 1, status: 1 });
 notificationSchema.index({ assignedTo: 1, isDeleted: 1, status: 1, createdAt: -1, _id: -1 });
 notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: NOTIFICATION_TTL_SECONDS });
+// Backs the workflow-run upsert in NotificationConsumer: Kafka redelivery of
+// the same run event must refresh one row, not append a duplicate.
+notificationSchema.index(
+  { type: 1, assignedTo: 1, "payload.runId": 1 },
+  { unique: true, sparse: true, partialFilterExpression: { "payload.runId": { $exists: true } } },
+);
 
 export const Notifications: Model<INotification> = mongoose.model<INotification>("Notifications", notificationSchema);

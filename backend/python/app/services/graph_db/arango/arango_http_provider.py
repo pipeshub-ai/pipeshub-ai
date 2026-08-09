@@ -765,6 +765,59 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId"],
         )
 
+        # ============ TASK SCHEDULING / WORKFLOW ENGINE INDEXES ============
+        # These collections store Pydantic dumps, so their fields are
+        # snake_case — unlike the camelCase connector collections above.
+
+        # COMPOSITE: org_id + status — GraphTaskStore.list()'s hot path, hit on
+        # every dashboard load and every scheduler sweep over enabled tasks.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.TASKS.value,
+            ["org_id", "status"],
+        )
+
+        # COMPOSITE: org_id + created_from_conversation_id — the chat panel's
+        # "workflows started from this conversation" lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.TASKS.value,
+            ["org_id", "created_from_conversation_id"],
+        )
+
+        # COMPOSITE: task_id + created_at — GraphRunArchive.list_for_task
+        # filters on the first and sorts descending on the second.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.TASK_RUNS.value,
+            ["task_id", "created_at"],
+        )
+
+        # COMPOSITE: workflow_id + org_id + version_number —
+        # GraphWorkflowVersionStore.list_for_workflow filters on the first two
+        # and sorts on the third; get_latest() is that query with limit 1, so
+        # it runs on every code generation.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.WORKFLOW_VERSIONS.value,
+            ["workflow_id", "org_id", "version_number"],
+        )
+
+        # COMPOSITE: orgId + runId — GraphCheckpointStore._docs_for_run, called
+        # once per checkpoint save, so it grows with the length of every
+        # headless agent run.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_CHECKPOINTS.value,
+            ["orgId", "runId"],
+        )
+
+        # COMPOSITE: orgId + traceId and orgId + runId — GraphTimelineStore's
+        # two read paths.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_TIMELINE_ENTRIES.value,
+            ["orgId", "traceId"],
+        )
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_TIMELINE_ENTRIES.value,
+            ["orgId", "runId"],
+        )
+
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
         try:
@@ -5372,6 +5425,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int = 50,
         filters: dict | None = None,
         sort_field: str | None = None,
+        sort_desc: bool = False,
         transaction: str | None = None,
         raise_on_error: bool = False,
     ) -> list[dict]:
@@ -5393,7 +5447,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filter_aql = (
                 "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""
             )
-            sort_aql = f"SORT doc.{sort_field} ASC" if sort_field else ""
+            sort_direction = "DESC" if sort_desc else "ASC"
+            sort_aql = f"SORT doc.{sort_field} {sort_direction}" if sort_field else ""
 
             query = f"""
             FOR doc IN @@collection

@@ -71,6 +71,20 @@ class OAuthScopes(str, Enum):
     SKILL_READ = "skill:read"
     SKILL_WRITE = "skill:write"
 
+    # Scheduled/recurring Tasks
+    TASK_READ = "task:read"
+    TASK_WRITE = "task:write"
+
+    # Workflows -- the user-facing noun fronting the task engine (see
+    # services/workflows/). Mirrors Node's `oauth-scopes.enum.ts`.
+    WORKFLOW_READ = "workflow:read"
+    WORKFLOW_WRITE = "workflow:write"
+    WORKFLOW_EXECUTE = "workflow:execute"
+    # Gates answering a run paused on human input -- distinct from
+    # WORKFLOW_WRITE (pause/resume/cancel/delete/promote) since answering a
+    # HIL question is closer to an approval action than a config change.
+    WORKFLOW_APPROVE = "workflow:approve"
+
     # Knowledge Base
     KB_READ = "kb:read"
     KB_WRITE = "kb:write"
@@ -120,6 +134,11 @@ class Routes(Enum):
     STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
+
+    # Task webhook ingress. Served by the connectors service but also needed by
+    # the query service, which hands the caller the URL to register with the
+    # third party when it creates a webhook trigger.
+    TASK_WEBHOOK_PREFIX = "/api/v1/tasks/webhooks/"
 
 
 class WebhookConfig(Enum):

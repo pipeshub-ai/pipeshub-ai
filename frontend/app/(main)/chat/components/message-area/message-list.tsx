@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
+import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart, RunResultCardPayload } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -83,6 +83,8 @@ interface MessagePair {
   persistedAskUserQuestion?: AskUserQuestionPayload;
   /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
   persistedParts?: MessagePart[];
+  /** Run metadata when this assistant message was produced by a workflow run */
+  workflowRun?: RunResultCardPayload;
 }
 
 export function MessageList() {
@@ -263,6 +265,7 @@ export function MessageList() {
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
           persistedParts?: MessagePart[];
+          workflowRun?: RunResultCardPayload;
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
@@ -271,6 +274,7 @@ export function MessageList() {
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
           persistedParts?: MessagePart[];
+          workflowRun?: RunResultCardPayload;
         } | undefined;
 
         // Find preceding user message
@@ -322,6 +326,7 @@ export function MessageList() {
           attachments: userMessageAttachments,
           persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
           persistedParts: metadata?.persistedParts,
+          workflowRun: metadata?.workflowRun,
         });
       }
     }
@@ -1148,6 +1153,7 @@ export function MessageList() {
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
+                  workflowRun={pair.workflowRun}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

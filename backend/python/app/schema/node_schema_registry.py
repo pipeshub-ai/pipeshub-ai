@@ -114,6 +114,19 @@ NODE_SCHEMA_REGISTRY: dict[str, dict | None] = {
     CollectionNames.TEAMS.value: adapt_schema(team_schema),
     CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: None,  # No schema
     CollectionNames.ARTIFACTS.value: adapt_schema(artifact_record_schema),
+    # Task scheduling and code-first workflow engines. No JSON Schema — these
+    # are written from Pydantic models that already validate on both read and
+    # write — but they are registered here because this registry is also what
+    # drives Neo4j's unique-id constraint generation, and an unconstrained
+    # MERGE on id is not atomic: concurrent writes create duplicate nodes,
+    # which is exactly what GraphTaskStore's read-then-write optimistic
+    # concurrency assumes cannot happen.
+    CollectionNames.TASKS.value: None,
+    CollectionNames.TASK_RUNS.value: None,
+    CollectionNames.WORKFLOW_VERSIONS.value: None,
+    CollectionNames.WORKFLOW_SOURCES.value: None,
+    CollectionNames.AGENT_CHECKPOINTS.value: None,
+    CollectionNames.AGENT_TIMELINE_ENTRIES.value: None,
 }
 
 
