@@ -60,6 +60,12 @@ const PROXY_FORWARD_HEADERS: readonly string[] = [
   'accept-language',
 ];
 
+// Client-controlled values must not be able to forge extra log lines.
+const forLog = (value: unknown, maxLength = 200): string =>
+  String(value ?? '')
+    .replace(/[\r\n]/g, ' ')
+    .slice(0, maxLength);
+
 const buildProxyHeaders = (
   req: AuthenticatedUserRequest,
   isAdmin: boolean,
@@ -2026,7 +2032,7 @@ export const navigateKnowledgeGraph =
       logger.info('Knowledge graph navigated successfully');
     } catch (error: any) {
       logger.error('Error navigating knowledge graph', {
-        nodeId: req.query?.nodeId,
+        nodeId: forLog(req.query?.nodeId),
         error,
       });
       const handleError = handleBackendError(error, 'navigate knowledge graph');

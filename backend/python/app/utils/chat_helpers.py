@@ -816,7 +816,7 @@ async def _fetch_edges_for_record(
     return edges
 
 
-async def _resolve_frontend_url(
+async def resolve_frontend_url(
     config_service: ConfigurationService | None,
 ) -> str | None:
     """Resolve frontend public URL from config service."""
@@ -1055,7 +1055,7 @@ async def enrich_records_with_graph_context(
         doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
         _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
 
-    frontend_url = await _resolve_frontend_url(config_service)
+    frontend_url = await resolve_frontend_url(config_service)
     in_context_ids: set[str] = {
         rec["id"] for rec in virtual_record_id_to_result.values()
         if isinstance(rec, dict) and rec.get("id")

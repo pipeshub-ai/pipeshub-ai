@@ -30,6 +30,7 @@ from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.utils.chat_helpers import resolve_frontend_url
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
@@ -369,6 +370,8 @@ class KnowledgeGraph:
         if not graph_provider:
             return False, "Graph provider not available."
 
+        frontend_url = await resolve_frontend_url(state.get("config_service"))
+
         # Normalize
         node_id = node_id.strip() if node_id else None
         node_types = node_types if node_types else None
@@ -446,7 +449,7 @@ class KnowledgeGraph:
                     user_key=user_key,
                     folder_mime_types=FOLDER_MIME_TYPES,
                     agent_connector_ids=connector_ids,
-                    frontend_url=state.get("frontend_url"),
+                    frontend_url=frontend_url,
                 )
                 result = await resolver.resolve_many([node_id])
                 if result.matches:
@@ -457,7 +460,7 @@ class KnowledgeGraph:
             user_id=user_id,
             user_key=user_key,
             org_id=org_id,
-            frontend_url=state.get("frontend_url"),
+            frontend_url=frontend_url,
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
@@ -595,7 +598,7 @@ class KnowledgeGraph:
             folder_mime_types=FOLDER_MIME_TYPES,
             agent_connector_ids=connector_ids,
             connector_name_hint=connector_name,
-            frontend_url=state.get("frontend_url"),
+            frontend_url=await resolve_frontend_url(state.get("config_service")),
         )
 
         try:

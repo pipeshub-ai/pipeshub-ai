@@ -4163,10 +4163,11 @@ components:
           type: string
           nullable: true
           description: >-
-            Link to the record in its source system. Known issue: records that
-            carry a relative URL (uploaded/KB records) are resolved against a
-            hardcoded `http://localhost:3000` rather than your deployment's
-            frontend host, so those values are not usable as links.
+            Link to the record in its source system. Records that carry a
+            relative URL (uploaded/KB records) are resolved against the
+            configured frontend public URL (see
+            POST /configurationManager/frontendPublicUrl). The value is null
+            when that host is not configured.
         indexing_status:
           type: string
           nullable: true
@@ -30110,7 +30111,8 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:read, connector:read]
+        - oauth2: [kb:read]
+        - oauth2: [connector:read]
       parameters:
         - name: nodeId
           in: query
@@ -30309,7 +30311,8 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:read, connector:read]
+        - oauth2: [kb:read]
+        - oauth2: [connector:read]
       parameters:
         - name: identifiers
           in: query
@@ -30330,11 +30333,12 @@ paths:
           required: false
           description: >-
             Optional hint that prioritises resolution order, e.g. `JIRA`,
-            `CONFLUENCE`, `GOOGLE_DRIVE`, `SLACK`. It cannot widen the search
-            beyond the connectors the caller can already access. Useful on a
-            retry when a lookup came back empty.
+            `CONFLUENCE`, `DRIVE`, `SLACK`. Allowed values are the
+            `ConnectorNameEnum` values. It cannot widen the search beyond the
+            connectors the caller can already access. Useful on a retry when a
+            lookup came back empty.
           schema:
-            type: string
+            $ref: '#/components/schemas/ConnectorNameEnum'
       responses:
         '200':
           description: |

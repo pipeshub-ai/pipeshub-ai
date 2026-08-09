@@ -1719,16 +1719,16 @@ class TestRecordToLlmContextEdgeCases:
         assert "https://app.example.com/path/to/doc" in ctx
 
     def test_to_llm_context_weburl_without_http_no_frontend(self):
-        """Weburl not starting with http without frontend_url falls back to localhost."""
+        """Weburl not starting with http without frontend_url is omitted."""
         rec = Record(**_record_kwargs(weburl="/path/to/doc"))
         ctx = rec.to_llm_context(frontend_url=None)
-        assert "http://localhost:3000/path/to/doc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_relative_weburl_without_frontend_url(self):
-        """Relative weburl like /record/<id> should be prefixed with localhost fallback."""
+        """Relative weburl like /record/<id> is dropped when no frontend host is known."""
         rec = Record(**_record_kwargs(weburl="/record/abc"))
         ctx = rec.to_llm_context()
-        assert "Web URL: http://localhost:3000/record/abc" in ctx
+        assert "Web URL:" not in ctx
 
     def test_to_llm_context_frontend_url_with_trailing_slash(self):
         """Trailing slash on frontend_url should not produce a double slash."""

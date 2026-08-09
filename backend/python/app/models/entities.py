@@ -34,14 +34,17 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     """Normalize a record's weburl into an absolute URL.
 
     Relative paths are prefixed with *frontend_url*; already-absolute URLs
-    pass through unchanged.  Returns ``None`` when *weburl* is falsy.
+    pass through unchanged.  Returns ``None`` when *weburl* is falsy, or when
+    a relative path cannot be resolved — a guessed host would produce a link
+    that does not work in the deployment.
     """
     if not weburl:
         return None
     if weburl.startswith("http"):
         return weburl
-    base = frontend_url or "http://localhost:3000"
-    return f"{base.rstrip('/')}/{weburl.lstrip('/')}"
+    if not frontend_url:
+        return None
+    return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
 
 
 class LlmTextContent(BaseModel):

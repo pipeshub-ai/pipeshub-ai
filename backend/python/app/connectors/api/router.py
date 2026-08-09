@@ -1816,7 +1816,7 @@ async def knowledge_graph_lookup(
     try:
         result = await resolver.resolve_many(idents)
     except Exception as e:
-        logger.error(f"Error resolving identifiers {idents}: {str(e)}", exc_info=True)
+        logger.error(f"Error resolving {len(idents)} identifiers: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to resolve identifiers",
