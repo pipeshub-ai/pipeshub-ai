@@ -210,6 +210,8 @@ class TestZendeskClient:
         )
 
     async def test_build_from_services_oauth(self, logger, mock_config_service):
+        """handle_callback stores the token at the config root; reading it from
+        "auth" yielded an empty Bearer header and every call 401'd."""
         mock_config_service.get_config = AsyncMock(return_value={
             "auth": {
                 "authType": "OAUTH",
@@ -217,15 +219,38 @@ class TestZendeskClient:
                 "clientId": "cid",
                 "clientSecret": "secret",
                 "redirectUri": "https://cb",
-                "credentials": {"access_token": "tok"},
-            }
+            },
+            "credentials": {"access_token": "tok"},
         })
         client = await ZendeskClient.build_from_services(
             logger=logger,
             config_service=mock_config_service,
             connector_instance_id="zd-1",
         )
-        assert isinstance(client.get_client(), ZendeskRESTClientViaOAuth)
+        inner = client.get_client()
+        assert isinstance(inner, ZendeskRESTClientViaOAuth)
+        assert inner.headers["Authorization"] == "Bearer tok"
+
+    async def test_build_from_services_oauth_rejects_missing_token(
+        self, logger, mock_config_service
+    ):
+        """Fail loudly rather than building a client with an empty Bearer header."""
+        mock_config_service.get_config = AsyncMock(return_value={
+            "auth": {
+                "authType": "OAUTH",
+                "subdomain": SUBDOMAIN,
+                "clientId": "cid",
+                "redirectUri": "https://cb",
+                # Wrong nesting — the shape that used to silently pass.
+                "credentials": {"access_token": "tok"},
+            },
+        })
+        with pytest.raises(ValueError, match="OAuth token required"):
+            await ZendeskClient.build_from_services(
+                logger=logger,
+                config_service=mock_config_service,
+                connector_instance_id="zd-1",
+            )
 
     async def test_build_from_services_defaults_to_api_token(self, logger, mock_config_service):
         """authType absent must not raise — the connector's declared auth is API_TOKEN."""
