@@ -423,13 +423,17 @@ class ZendeskClient(IClient):
 
 
             elif auth_type == "OAUTH":
-                credentials_config = auth_config.get("credentials", {})
+                # handle_callback stores the token at the config root, not under "auth".
+                credentials_config = config.get("credentials", {}) or {}
+                access_token = credentials_config.get("access_token", "")
+                if not access_token:
+                    raise ValueError("OAuth token required for oauth auth type")
                 client = ZendeskRESTClientViaOAuth(
                     subdomain=auth_config.get("subdomain", ""),
                     client_id=auth_config.get("clientId", ""),
                     client_secret=auth_config.get("clientSecret", ""),
                     redirect_uri=auth_config.get("redirectUri", ""),
-                    access_token=credentials_config.get("access_token", "" )
+                    access_token=access_token
                 )
 
             else:
