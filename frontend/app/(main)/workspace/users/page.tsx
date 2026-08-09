@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } fr
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';

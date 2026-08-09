@@ -8,8 +8,6 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from uuid import uuid4
 
-from jinja2 import Template
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.config.constants.service import config_node_constants
@@ -42,6 +40,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
 
 valid_group_labels = [
@@ -118,9 +117,10 @@ def is_base64_image(s: str) -> bool:
     if len(b64_data) % 4 != 0:
         return False
 
-    # Try to decode
+    # 272 chars -> 204 bytes: more than the longest magic number (8) and the
+    # SVG sniff's decoded[:200], and a multiple of 4 so the decoder accepts it.
     try:
-        decoded = base64.b64decode(b64_data)
+        decoded = base64.b64decode(b64_data[:272])
     except Exception:
         return False
 
@@ -2851,7 +2851,7 @@ def record_to_message_content(
 
                         if child_results:
                             if not has_row_images:
-                                template = Template(table_prompt)
+                                template = compiled_template(table_prompt)
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     block_group_web_url="",
@@ -2875,7 +2875,7 @@ def record_to_message_content(
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
                 if block_group_id in seen_block_groups:
                     continue
-                template = Template(block_group_prompt)
+                template = compiled_template(block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
@@ -3046,7 +3046,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                                                     child_results.append({"content": _safe_stringify_content(frag_data)})
 
                         if child_results:
-                            template = Template(agent_block_group_prompt)
+                            template = compiled_template(agent_block_group_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
                                 label=GroupType.TABLE.value,
@@ -3058,7 +3058,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
                 if block_group_id in seen_block_groups:
                     continue
-                template = Template(agent_block_group_prompt)
+                template = compiled_template(agent_block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
                 block_group = block_groups[parent_index]
@@ -3173,7 +3173,7 @@ def get_message_content(
                 }
             })
 
-    rendered_form = Template(qna_prompt_simple).render(query=query, chunks=chunks)
+    rendered_form = compiled_template(qna_prompt_simple).render(query=query, chunks=chunks)
     content.append({"type": "text", "text": rendered_form})
     return content, ref_mapper
 
@@ -3239,7 +3239,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
 
-            template = Template(qna_prompt_context)
+            template = compiled_template(qna_prompt_context)
             rendered_form = template.render(
                 context_metadata=record.get("context_metadata", ""),
             )
@@ -3315,7 +3315,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
                 current_record_has_blocks = True
                 if not has_row_images:
-                    template = Template(table_prompt)
+                    template = compiled_template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
                         block_group_web_url="",
@@ -3352,7 +3352,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                     gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
 
                 if not has_images:
-                    template = Template(block_group_prompt)
+                    template = compiled_template(block_group_prompt)
                     rendered_form = template.render(
                         block_group_index=block_group_index,
                         block_group_web_url="",

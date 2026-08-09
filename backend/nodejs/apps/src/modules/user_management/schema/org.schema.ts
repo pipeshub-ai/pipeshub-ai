@@ -1,6 +1,6 @@
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema, Model } from 'mongoose';
 
 // Define the interface for Org Document
 
@@ -80,4 +80,6 @@ orgSchema.pre<IOrg>('save', async function (next) {
   }
 });
 
-export const Org = mongoose.model<IOrg>('org', orgSchema, 'org');
+export const Org: Model<IOrg> =
+  (mongoose.models['org'] as Model<IOrg>) ||
+  mongoose.model<IOrg>('org', orgSchema, 'org');

@@ -8,6 +8,7 @@ import aiohttp  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
     ExtensionTypes,
@@ -36,43 +37,6 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 
-
-SUPPORTED_CODE_FILE_EXTENSIONS = {
-    # C
-    "c", "h",
-    # C++
-    "cpp", "cc", "cxx", "hpp", "hxx",
-    # C#
-    "cs",
-    # Java
-    "java",
-    # Python
-    "py",
-    # JavaScript
-    "js", "jsx", "mjs", "cjs",
-    # TypeScript
-    "ts", "tsx",
-    # Go
-    "go",
-    # Rust
-    "rs",
-    # Ruby
-    "rb",
-    # PHP
-    "php",
-    # Swift
-    "swift",
-    # Kotlin
-    "kt", "kts",
-    # Dart
-    "dart",
-    # Bash
-    "sh", "bash",
-    # HTML
-    "html", "htm",
-    #Markdown
-    "md"
-}
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -373,23 +337,7 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
-            # Gate: CODE_FILE records only index supported programming languages.
-            # Code files typically arrive as text/plain (which passes the general
-            # mime check below), so we need an explicit allowlist here.
-            if doc.get("recordType") == RecordTypes.CODE_FILE.value and (code_file_extension is None or code_file_extension not in SUPPORTED_CODE_FILE_EXTENSIONS):
-                self.logger.info(
-                    f"🔴 CODE_FILE with unsupported language extension '{code_file_extension}' "
-                    f"for record {record_id} — marking FILE_TYPE_NOT_SUPPORTED"
-                )
-                await self.__update_document_status(
-                    record_id=record_id,
-                    indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported code file extension: {code_file_extension}",
-                )
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+            is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -499,19 +447,34 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.HTM.value,
             ]
 
-            if (
-                mime_type not in supported_mime_types
-                and extension not in supported_extensions
-            ):
+            if is_code_file:
+                # A CODE_FILE's mime is not trustworthy — connectors that walk a
+                # git tree default it to text/plain for anything they don't
+                # recognise, which would let archives and media through as text.
+                # Judge it on the filename extension alone: a known language, or
+                # a type the generic pipeline handles (images, json, yaml).
+                judged_extension = code_file_extension
+                is_supported = (
+                    code_file_extension in SUPPORTED_CODE_FILE_EXTENSIONS
+                    or code_file_extension in supported_extensions
+                )
+            else:
+                judged_extension = extension
+                is_supported = (
+                    mime_type in supported_mime_types
+                    or extension in supported_extensions
+                )
+
+            if not is_supported:
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {judged_extension} 🔴🔴🔴"
                 )
 
                 await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported file type: {mime_type} ({extension})",
+                    reason=f"Unsupported file type: {mime_type} ({judged_extension})",
                 )
 
                 # Yield both events for unsupported file types

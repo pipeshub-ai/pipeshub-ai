@@ -164,7 +164,9 @@
       "usernameLabel": "Benutzername",
       "usernamePlaceholder": "z.B.: user@gmail.com",
       "passwordLabel": "Passwort",
-      "passwordPlaceholder": "Passwort eingeben"
+      "passwordPlaceholder": "Passwort eingeben",
+      "saveSuccessFallback": "SMTP-Konfiguration gespeichert.",
+      "saveErrorFallback": "SMTP-Konfiguration konnte nicht gespeichert werden."
     },
     "nav": {
       "prev": "Zurück",
@@ -358,7 +360,6 @@
       "subtitleExisting": "Bestätigen oder aktualisieren Sie Ihre PipesHub-Server-URL.",
       "label": "Server-URL",
       "submit": "Verbinden",
-      "changeServer": "Server ändern",
       "errors": {
         "empty": "Bitte geben Sie eine Server-URL ein.",
         "invalid": "Bitte geben Sie eine gültige URL ein (z. B. http://localhost:3000).",
@@ -763,7 +764,8 @@
     "dark": "Dunkel",
     "documentation": "Dokumentation",
     "darkMode": "Dunkelmodus",
-    "lightMode": "Hellmodus"
+    "lightMode": "Hellmodus",
+    "organisations": "Organisationen"
   },
   "workspace": {
     "users": {
@@ -1331,7 +1333,10 @@
         "users": "Benutzer",
         "groups": "Gruppen",
         "teams": "Teams",
-        "webSearch": "Websuche"
+        "webSearch": "Websuche",
+        "tenants": "Mandanten",
+        "superOrgs": "Organisationen",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1613,7 +1618,8 @@
         "google": "Google-Authentifizierung konfigurieren",
         "microsoft": "Microsoft-Authentifizierung konfigurieren",
         "samlSso": "SAML-SSO konfigurieren",
-        "oauth": "OAuth 2.0 konfigurieren"
+        "oauth": "OAuth 2.0 konfigurieren",
+        "github": "GitHub-Authentifizierung konfigurieren"
       },
       "jit": {
         "title": "Just-In-Time-(JIT)-Bereitstellung aktivieren",
@@ -2268,6 +2274,179 @@
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
       }
+    },
+    "tenants": {
+      "title": "Mandanten",
+      "subtitle": "Mandantenorganisationen im Arbeitsbereich erstellen und verwalten",
+      "createTenant": "Mandanten erstellen",
+      "searchPlaceholder": "Mandanten suchen...",
+      "emptyTitle": "Noch keine Mandanten erstellt",
+      "emptyDescription": "Mandanten sind separate Organisationen, die Sie auf dieser Plattform verwalten.",
+      "noFilterResults": "Keine Mandanten entsprechen den angewendeten Filtern",
+      "noFilterResultsHint": "Versuchen Sie, die Filter oben anzupassen oder zu löschen",
+      "noSearchResults": "Keine Mandanten entsprechen Ihrer Suche",
+      "listDeleteDescription": "Dies entfernt den Mandanten und alle seine Benutzer dauerhaft.",
+      "columns": {
+        "name": "Name",
+        "domain": "Domain",
+        "contactEmail": "Kontakt-E-Mail",
+        "accountType": "Kontotyp",
+        "createdOn": "Erstellt am"
+      },
+      "actions": {
+        "tenantDetails": "Details",
+        "viewUsers": "Benutzer anzeigen",
+        "viewUserGroups": "Benutzergruppen",
+        "delete": "Löschen",
+        "deleteError": "Mandant konnte nicht gelöscht werden",
+        "deleteSuccess": "Mandant gelöscht",
+        "deleteSystemTooltip": "Dieser Mandant kann nicht gelöscht werden"
+      },
+      "groups": {
+        "title": "Benutzergruppen",
+        "subtitle": "Benutzergruppen für diesen Mandanten verwalten",
+        "backToTenants": "Zurück zu Mandanten",
+        "emptyTitle": "Noch keine Benutzergruppen",
+        "emptyDescription": "Erstellen Sie eine Benutzergruppe, um zu beginnen.",
+        "noSearchResults": "Keine Gruppen entsprechen Ihrer Suche",
+        "noSearchResultsHint": "Versuchen Sie, die Suche oben anzupassen oder zu löschen"
+      },
+      "create": {
+        "title": "Mandanten erstellen",
+        "accountTypeLabel": "Kontotyp",
+        "registeredNameLabel": "Registrierter Name",
+        "registeredNamePlaceholder": "z.B. Acme GmbH",
+        "shortNameLabel": "Kurzname",
+        "shortNamePlaceholder": "z.B. Acme",
+        "contactEmailLabel": "Kontakt-E-Mail",
+        "contactEmailPlaceholder": "z.B. admin@acme.com",
+        "submit": "Mandanten erstellen",
+        "cancel": "Abbrechen",
+        "successTitle": "Mandant erstellt!",
+        "successDescription": "Mandant wurde erfolgreich erstellt",
+        "errorGeneric": "Mandant konnte nicht erstellt werden",
+        "inheritanceTitle": "Konfigurationsvererbung",
+        "inheritanceDescription": "Aktivieren, um Einstellungen von Ihrer Organisation zu übernehmen. Deaktivieren, damit der Mandant eigene Einstellungen verwaltet.",
+        "inheritance": {
+          "aiModels": "KI-Modelle",
+          "aiModelsHintOn": "Mandant ist sofort einsatzbereit (keine KI-Einrichtung erforderlich)",
+          "aiModelsHintOff": "Mandant muss eigene KI-Modelle konfigurieren",
+          "smtp": "E-Mail (SMTP)",
+          "authentication": "Authentifizierung",
+          "prompts": "System-Prompts",
+          "platformSettings": "Plattformeinstellungen",
+          "connectors": "Konnektoren",
+          "toolsets": "Toolsets"
+        }
+      },
+      "invite": {
+        "title": "Benutzer einladen",
+        "send": "Einladung senden",
+        "cancel": "Abbrechen",
+        "tenantLabel": "Mandant",
+        "emailLabel": "Einladen an",
+        "emailPlaceholder": "Eine oder mehrere E-Mail-Adressen eingeben",
+        "groupLabel": "Einer Benutzergruppe hinzufügen",
+        "groupPlaceholder": "Benutzergruppe(n) suchen oder auswählen",
+        "successTitle": "Einladung gesendet!",
+        "successDescription": "{{email}} wurde eingeladen",
+        "errorGeneric": "Einladung konnte nicht gesendet werden"
+      },
+      "detail": {
+        "registeredNameLabel": "Registrierter Name",
+        "shortNameLabel": "Kurzname",
+        "contactEmailLabel": "Kontakt-E-Mail",
+        "domainLabel": "Domain",
+        "accountTypeLabel": "Kontotyp",
+        "inheritanceTitle": "Konfigurationsvererbung",
+        "inheritanceDescription": "Wenn aktiviert, verwendet der Mandant die Einstellungen Ihrer Organisation anstatt eigener Einstellungen."
+      },
+      "edit": {
+        "edit": "Mandanten bearbeiten",
+        "save": "Änderungen speichern",
+        "cancel": "Abbrechen",
+        "deleteButton": "Mandanten löschen",
+        "deleteTitle": "Mandant '{{name}}' löschen",
+        "deleteDescription": "Möchten Sie diesen Mandanten wirklich löschen?",
+        "deleteConfirmInputLabel": "Geben Sie \"{{name}}\" zur Bestätigung ein",
+        "deleteSuccess": "Mandant gelöscht",
+        "deleteSuccessDescription": "Mandant wurde gelöscht",
+        "deleteError": "Mandant konnte nicht gelöscht werden",
+        "deleting": "Löschen...",
+        "saveSuccess": "Mandant aktualisiert!",
+        "saveSuccessDescription": "Mandant erfolgreich aktualisiert",
+        "saveError": "Mandant konnte nicht aktualisiert werden"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth-Apps",
+      "subtitle": "Verwalten Sie OAuth-Zugangsdaten für Connectors und Aktionen. Als \u201eStandard\u201c markierte Apps werden automatisch für neue Verbindungen verwendet, sofern nicht überschrieben.",
+      "addButton": "OAuth-App hinzufügen",
+      "tabs": {
+        "connectors": "Connectors",
+        "toolsets": "Aktionen"
+      },
+      "typeSelector": {
+        "connectorLabel": "Connector-Typ",
+        "toolsetLabel": "Aktionstyp",
+        "loading": "Wird geladen…"
+      },
+      "scope": {
+        "team": "Team",
+        "personal": "Persönlich"
+      },
+      "loading": "Wird geladen…",
+      "search": {
+        "placeholder": "Apps suchen…"
+      },
+      "empty": {
+        "title": "Keine OAuth-Apps für {{typeLabel}}",
+        "connectorDescription": "Fügen Sie eine OAuth-App hinzu, damit Connectors dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
+        "connectorDescriptionPersonal": "Fügen Sie eine OAuth-App hinzu, damit sich dieser Connector-Typ in Ihrem Namen authentifizieren kann.",
+        "toolsetDescription": "Fügen Sie eine OAuth-App hinzu, damit Aktionen dieses Typs sich mit Ihren Zugangsdaten authentifizieren können.",
+        "noSearchResults": "Keine OAuth-Apps entsprechen Ihrer Suche.",
+        "addButton": "OAuth-App hinzufügen"
+      },
+      "form": {
+        "titleCreate": "OAuth-App hinzufügen für {{typeName}}",
+        "titleEdit": "OAuth-App bearbeiten",
+        "redirectUriTitle": "Weiterleitungs-/Callback-URL",
+        "redirectUriDescription": "Registrieren Sie diese URL in der OAuth-App-Konfiguration Ihres Identitätsanbieters.",
+        "copied": "Kopiert!",
+        "copy": "Kopieren",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. {{typeName}} Produktion",
+        "nameRequired": "Name ist erforderlich.",
+        "credentialsTitle": "Zugangsdaten",
+        "fieldRequired": "{{fieldName}} ist erforderlich.",
+        "settingsTitle": "Einstellungen",
+        "isDefaultLabel": "Als Standard festlegen",
+        "isDefaultDescription": "Diese App standardmäßig für neue Verbindungen dieses Typs verwenden.",
+        "allowChildOverrideLabel": "Untergeordnete Überschreibung erlauben",
+        "allowChildOverrideDescription": "Untergeordneten Organisationen erlauben, ihre eigene OAuth-App für diesen Typ zu konfigurieren.",
+        "cancelButton": "Abbrechen",
+        "createButton": "Erstellen",
+        "saveButton": "Änderungen speichern",
+        "savingLabel": "Wird gespeichert…",
+        "schemaError": "Schema für diesen Typ konnte nicht geladen werden.",
+        "genericError": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
+      },
+      "delete": {
+        "title": "\u201e{{name}}\u201c l\u00f6schen?",
+        "message": "Diese OAuth-App wird dauerhaft gel\u00f6scht. Connector-Instanzen, die sie derzeit verwenden, funktionieren m\u00f6glicherweise nicht mehr.",
+        "confirmLabel": "L\u00f6schen",
+        "forceDeleteButton": "Erzwungen l\u00f6schen",
+        "forceTitle": "\u201e{{name}}\u201c erzwungen l\u00f6schen?",
+        "forceMessage": "Diese OAuth-App wird derzeit verwendet. Das erzwungene L\u00f6schen entfernt sie und kann bestehende Connector-Verbindungen, die darauf basieren, unterbrechen. Diese Aktion kann nicht r\u00fckg\u00e4ngig gemacht werden.",
+        "forceConfirmLabel": "Erzwungen l\u00f6schen",
+        "successMessage": "OAuth-App \u201e{{name}}\u201c wurde gel\u00f6scht."
+      },
+      "errors": {
+        "loadTypes": "Verfügbare OAuth-App-Typen konnten nicht geladen werden.",
+        "loadConnectors": "Connector-OAuth-Apps konnten nicht geladen werden.",
+        "loadToolsets": "Aktions-OAuth-Apps konnten nicht geladen werden.",
+        "deleteGeneric": "OAuth-App konnte nicht gelöscht werden."
+      }
     }
   },
   "filePreview": {
@@ -2714,6 +2893,16 @@
       "savingToastDescription": "Dies dauert einige Sekunden",
       "successToast": "Konto erfolgreich erstellt!",
       "failToast": "Registrierung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "createWorkspaceTitle": "Neuen Arbeitsbereich erstellen",
+      "createWorkspaceSubtitle": "Richten Sie einen neuen Arbeitsbereich für Ihre Organisation ein.",
+      "fullNameLabel": "Vollständiger Name*",
+      "fullNamePlaceholder": "Vollständigen Namen eingeben",
+      "verificationSentToast": "Posteingang prüfen",
+      "verificationSentDescription": "Ein Verifizierungslink wurde an Ihre E-Mail gesendet. Klicken Sie darauf, um Ihre Organisation zu aktivieren.",
+      "accountCreatedToast": "Konto erstellt",
+      "accountCreatedDescription": "Ihre Organisation ist bereit. Sie können sich jetzt anmelden.",
+      "emailFailedToast": "Organisation erstellt",
+      "emailFailedDescription": "Wir konnten die Verifizierungs-E-Mail nicht senden. Bitte wenden Sie sich an den Support.",
       "errors": {
         "firstNameRequired": "Vorname ist erforderlich.",
         "lastNameRequired": "Nachname ist erforderlich.",
@@ -2723,7 +2912,8 @@
         "passwordRequired": "Passwort ist erforderlich.",
         "confirmPasswordRequired": "Bitte bestätigen Sie Ihr Passwort.",
         "passwordsMismatch": "Passwörter stimmen nicht überein.",
-        "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits."
+        "emailAlreadyExists": "Ein Konto mit dieser E-Mail-Adresse existiert bereits.",
+        "fullNameRequired": "Vollständiger Name ist erforderlich."
       },
       "confirmDialog": {
         "title": "Wie PipesHub Berechtigungen zuweist",
@@ -2733,7 +2923,9 @@
         "emailNotePre": "Stellen Sie sicher, dass die E-Mail, mit der Sie sich registriert haben —",
         "emailNotePost": "— dieselbe ist, die in den Apps Ihrer Organisation verwendet wird, damit Ihre Berechtigungen korrekt erkannt werden.",
         "cancelButton": "Abbrechen",
-        "signUpButton": "Registrieren"
+        "signUpButton": "Registrieren",
+        "verificationNoteTitle": "Verifizierung erforderlich",
+        "verificationNoteBody": "Ein Verifizierungslink wird an die oben angegebene E-Mail gesendet. Ihre Organisation ist erst nach der Verifizierung zugänglich."
       }
     },
     "login": {
@@ -2743,7 +2935,11 @@
       "emailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen.",
       "samlErrorTitle": "Fehler bei der SAML-Anmeldung",
       "samlSignInFailedTitle": "Anmeldung fehlgeschlagen",
-      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut."
+      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
+      "orgEmailVerifiedTitle": "Organisation verifiziert",
+      "orgEmailVerifiedDescription": "Ihre Organisation ist jetzt aktiv. Melden Sie sich an, um fortzufahren.",
+      "orgEmailVerifyFailedTitle": "Verifizierung fehlgeschlagen",
+      "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut."
     },
     "common": {
       "signIn": "Anmelden",

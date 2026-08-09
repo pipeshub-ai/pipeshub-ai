@@ -27,7 +27,7 @@
  * are valuable.
  */
 
-import { useAuthStore, logoutAndRedirect } from '@/lib/store/auth-store';
+import { useAuthStore, logoutAndRedirect } from '@/config';
 import {
   isTokenExpired,
   isRefreshInProgress,

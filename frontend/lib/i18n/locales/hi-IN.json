@@ -164,7 +164,9 @@
       "usernameLabel": "उपयोगकर्ता नाम",
       "usernamePlaceholder": "जैसे: user@gmail.com",
       "passwordLabel": "पासवर्ड",
-      "passwordPlaceholder": "पासवर्ड दर्ज करें"
+      "passwordPlaceholder": "पासवर्ड दर्ज करें",
+      "saveSuccessFallback": "SMTP कॉन्फ़िगरेशन सहेजा गया।",
+      "saveErrorFallback": "SMTP कॉन्फ़िगरेशन सहेजा नहीं जा सका।"
     },
     "nav": {
       "prev": "पिछला",
@@ -358,7 +360,6 @@
       "subtitleExisting": "अपने PipesHub सर्वर URL की पुष्टि करें या उसे अपडेट करें।",
       "label": "सर्वर URL",
       "submit": "कनेक्ट करें",
-      "changeServer": "सर्वर बदलें",
       "errors": {
         "empty": "कृपया एक सर्वर URL दर्ज करें।",
         "invalid": "कृपया एक मान्य URL दर्ज करें (जैसे http://localhost:3000)।",
@@ -766,7 +767,8 @@
     "dark": "डार्क",
     "documentation": "डॉक्यूमेंटेशन",
     "darkMode": "डार्क मोड",
-    "lightMode": "लाइट मोड"
+    "lightMode": "लाइट मोड",
+    "organisations": "संगठन"
   },
   "workspace": {
     "users": {
@@ -1329,7 +1331,10 @@
         "users": "उपयोगकर्ता",
         "groups": "समूह",
         "teams": "टीमें",
-        "webSearch": "वेब खोज"
+        "webSearch": "वेब खोज",
+        "tenants": "किरायेदार",
+        "superOrgs": "संगठन",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1611,7 +1616,8 @@
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
         "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "oauth": "Configure OAuth 2.0",
+        "github": "GitHub प्रमाणीकरण कॉन्फ़िगर करें"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -2266,6 +2272,179 @@
           "description": "LLM-आधारित दस्तावेज़ वर्गीकरण और मेटाडेटा निष्कर्षण"
         }
       }
+    },
+    "tenants": {
+      "title": "किरायेदार",
+      "subtitle": "कार्यस्थान में किरायेदार संगठन बनाएं और प्रबंधित करें",
+      "createTenant": "किरायेदार बनाएं",
+      "searchPlaceholder": "किरायेदार खोजें...",
+      "emptyTitle": "अभी तक कोई किरायेदार नहीं बनाया गया",
+      "emptyDescription": "किरायेदार अलग संगठन हैं जिन्हें आप इस प्लेटफ़ॉर्म पर प्रबंधित करते हैं।",
+      "noFilterResults": "कोई किरायेदार लागू फ़िल्टर से मेल नहीं खाता",
+      "noFilterResultsHint": "ऊपर दिए गए फ़िल्टर समायोजित करने या हटाने का प्रयास करें",
+      "noSearchResults": "कोई किरायेदार आपकी खोज से मेल नहीं खाता",
+      "listDeleteDescription": "यह किरायेदार और उसके सभी उपयोगकर्ताओं को स्थायी रूप से हटा देगा।",
+      "columns": {
+        "name": "नाम",
+        "domain": "डोमेन",
+        "contactEmail": "संपर्क ईमेल",
+        "accountType": "खाता प्रकार",
+        "createdOn": "बनाया गया"
+      },
+      "actions": {
+        "tenantDetails": "विवरण",
+        "viewUsers": "उपयोगकर्ता देखें",
+        "viewUserGroups": "उपयोगकर्ता समूह",
+        "delete": "हटाएं",
+        "deleteError": "किरायेदार हटाने में विफल",
+        "deleteSuccess": "किरायेदार हटाया गया",
+        "deleteSystemTooltip": "यह किरायेदार हटाया नहीं जा सकता"
+      },
+      "groups": {
+        "title": "उपयोगकर्ता समूह",
+        "subtitle": "इस किरायेदार के उपयोगकर्ता समूह प्रबंधित करें",
+        "backToTenants": "किरायेदारों पर वापस जाएं",
+        "emptyTitle": "अभी तक कोई उपयोगकर्ता समूह नहीं",
+        "emptyDescription": "शुरू करने के लिए एक उपयोगकर्ता समूह बनाएं।",
+        "noSearchResults": "कोई समूह आपकी खोज से मेल नहीं खाता",
+        "noSearchResultsHint": "ऊपर दी गई खोज समायोजित करने या हटाने का प्रयास करें"
+      },
+      "create": {
+        "title": "किरायेदार बनाएं",
+        "accountTypeLabel": "खाता प्रकार",
+        "registeredNameLabel": "पंजीकृत नाम",
+        "registeredNamePlaceholder": "जैसे Acme Corporation",
+        "shortNameLabel": "संक्षिप्त नाम",
+        "shortNamePlaceholder": "जैसे Acme",
+        "contactEmailLabel": "संपर्क ईमेल",
+        "contactEmailPlaceholder": "जैसे admin@acme.com",
+        "submit": "किरायेदार बनाएं",
+        "cancel": "रद्द करें",
+        "successTitle": "किरायेदार बनाया गया!",
+        "successDescription": "किरायेदार सफलतापूर्वक बनाया गया है",
+        "errorGeneric": "किरायेदार बनाने में विफल",
+        "inheritanceTitle": "कॉन्फ़िगरेशन इनहेरिटेंस",
+        "inheritanceDescription": "अपने संगठन की सेटिंग्स इनहेरिट करने के लिए सक्षम करें। किरायेदार को अपनी सेटिंग्स प्रबंधित करने देने के लिए अक्षम करें।",
+        "inheritance": {
+          "aiModels": "AI मॉडल",
+          "aiModelsHintOn": "किरायेदार तुरंत तैयार होगा (AI सेटअप की आवश्यकता नहीं)",
+          "aiModelsHintOff": "किरायेदार को अपने AI मॉडल कॉन्फ़िगर करने होंगे",
+          "smtp": "मेल (SMTP)",
+          "authentication": "प्रमाणीकरण",
+          "prompts": "सिस्टम प्रॉम्प्ट",
+          "platformSettings": "प्लेटफ़ॉर्म सेटिंग्स",
+          "connectors": "कनेक्टर",
+          "toolsets": "टूलसेट"
+        }
+      },
+      "invite": {
+        "title": "उपयोगकर्ता आमंत्रित करें",
+        "send": "आमंत्रण भेजें",
+        "cancel": "रद्द करें",
+        "tenantLabel": "किरायेदार",
+        "emailLabel": "आमंत्रित करें",
+        "emailPlaceholder": "एक या अधिक ईमेल पते दर्ज करें",
+        "groupLabel": "उपयोगकर्ता समूह में जोड़ें",
+        "groupPlaceholder": "उपयोगकर्ता समूह खोजें या चुनें",
+        "successTitle": "आमंत्रण भेजा गया!",
+        "successDescription": "{{email}} को आमंत्रित किया गया है",
+        "errorGeneric": "आमंत्रण भेजने में विफल"
+      },
+      "detail": {
+        "registeredNameLabel": "पंजीकृत नाम",
+        "shortNameLabel": "संक्षिप्त नाम",
+        "contactEmailLabel": "संपर्क ईमेल",
+        "domainLabel": "डोमेन",
+        "accountTypeLabel": "खाता प्रकार",
+        "inheritanceTitle": "कॉन्फ़िगरेशन इनहेरिटेंस",
+        "inheritanceDescription": "सक्षम होने पर, किरायेदार अपनी सेटिंग्स के बजाय आपके संगठन की सेटिंग्स का उपयोग करता है।"
+      },
+      "edit": {
+        "edit": "किरायेदार संपादित करें",
+        "save": "संपादन सहेजें",
+        "cancel": "रद्द करें",
+        "deleteButton": "किरायेदार हटाएं",
+        "deleteTitle": "'{{name}}' किरायेदार हटाएं",
+        "deleteDescription": "क्या आप वाकई इस किरायेदार को हटाना चाहते हैं?",
+        "deleteConfirmInputLabel": "पुष्टि करने के लिए \"{{name}}\" टाइप करें",
+        "deleteSuccess": "किरायेदार हटाया गया",
+        "deleteSuccessDescription": "किरायेदार हटा दिया गया है",
+        "deleteError": "किरायेदार हटाने में विफल",
+        "deleting": "हटाया जा रहा है...",
+        "saveSuccess": "किरायेदार अपडेट किया गया!",
+        "saveSuccessDescription": "किरायेदार सफलतापूर्वक अपडेट किया गया",
+        "saveError": "किरायेदार अपडेट करने में विफल"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth ऐप्स",
+      "subtitle": "कनेक्टर्स और एक्शन्स के लिए OAuth क्रेडेंशियल प्रबंधित करें। \u00abडिफ़ॉल्ट\u00bb के रूप में चिह्नित ऐप्स स्वचालित रूप से नए कनेक्शन के लिए उपयोग की जाती हैं, जब तक ओवरराइड न किया जाए।",
+      "addButton": "OAuth ऐप जोड़ें",
+      "tabs": {
+        "connectors": "कनेक्टर्स",
+        "toolsets": "एक्शन्स"
+      },
+      "typeSelector": {
+        "connectorLabel": "कनेक्टर प्रकार",
+        "toolsetLabel": "एक्शन प्रकार",
+        "loading": "लोड हो रहा है\u2026"
+      },
+      "scope": {
+        "team": "टीम",
+        "personal": "व्यक्तिगत"
+      },
+      "loading": "लोड हो रहा है\u2026",
+      "search": {
+        "placeholder": "ऐप्स खोजें\u2026"
+      },
+      "empty": {
+        "title": "{{typeLabel}} के लिए कोई OAuth ऐप नहीं",
+        "connectorDescription": "इस प्रकार के कनेक्टर्स को आपके क्रेडेंशियल से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "connectorDescriptionPersonal": "इस कनेक्टर प्रकार को आपकी ओर से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "toolsetDescription": "इस प्रकार के एक्शन्स को आपके क्रेडेंशियल से प्रमाणित करने के लिए एक OAuth ऐप जोड़ें।",
+        "noSearchResults": "आपकी खोज से मेल खाता कोई OAuth ऐप नहीं है।",
+        "addButton": "OAuth ऐप जोड़ें"
+      },
+      "form": {
+        "titleCreate": "{{typeName}} के लिए OAuth ऐप जोड़ें",
+        "titleEdit": "OAuth ऐप संपादित करें",
+        "redirectUriTitle": "रीडायरेक्ट / कॉलबैक URL",
+        "redirectUriDescription": "इस URL को अपने पहचान प्रदाता की OAuth ऐप कॉन्फ़िगरेशन में दर्ज करें।",
+        "copied": "कॉपी किया गया!",
+        "copy": "कॉपी करें",
+        "nameLabel": "नाम",
+        "namePlaceholder": "जैसे {{typeName}} प्रोडक्शन",
+        "nameRequired": "नाम आवश्यक है।",
+        "credentialsTitle": "क्रेडेंशियल्स",
+        "fieldRequired": "{{fieldName}} आवश्यक है।",
+        "settingsTitle": "सेटिंग्स",
+        "isDefaultLabel": "डिफ़ॉल्ट के रूप में सेट करें",
+        "isDefaultDescription": "इस प्रकार के नए कनेक्शन के लिए इस ऐप को डिफ़ॉल्ट रूप से उपयोग करें।",
+        "allowChildOverrideLabel": "चाइल्ड ओवरराइड अनुमति दें",
+        "allowChildOverrideDescription": "चाइल्ड संगठनों को इस प्रकार के लिए अपनी OAuth ऐप कॉन्फ़िगर करने की अनुमति दें।",
+        "cancelButton": "रद्द करें",
+        "createButton": "बनाएं",
+        "saveButton": "परिवर्तन सहेजें",
+        "savingLabel": "सहेजा जा रहा है\u2026",
+        "schemaError": "इस प्रकार के लिए स्कीमा लोड करने में विफल।",
+        "genericError": "एक त्रुटि हुई। कृपया पुनः प्रयास करें।"
+      },
+      "delete": {
+        "title": "\u00ab{{name}}\u00bb हटाएं?",
+        "message": "यह OAuth ऐप स्थायी रूप से हटा दी जाएगी। इसे वर्तमान में उपयोग करने वाले कनेक्टर इंस्टेंस काम करना बंद कर सकते हैं।",
+        "confirmLabel": "हटाएं",
+        "forceDeleteButton": "जबरन हटाएं",
+        "forceTitle": "\u00ab{{name}}\u00bb को जबरन हटाएं?",
+        "forceMessage": "यह OAuth ऐप अभी उपयोग में है। इसे जबरन हटाने से यह ऐप हट जाएगी और इस पर निर्भर मौजूदा कनेक्टर कनेक्शन टूट सकते हैं। यह क्रिया पूर्ववत नहीं की जा सकती।",
+        "forceConfirmLabel": "जबरन हटाएं",
+        "successMessage": "OAuth ऐप \u00ab{{name}}\u00bb हटा दी गई।"
+      },
+      "errors": {
+        "loadTypes": "उपलब्ध OAuth ऐप प्रकार लोड करने में विफल।",
+        "loadConnectors": "कनेक्टर OAuth ऐप्स लोड करने में विफल।",
+        "loadToolsets": "एक्शन OAuth ऐप्स लोड करने में विफल।",
+        "deleteGeneric": "OAuth ऐप हटाने में विफल।"
+      }
     }
   },
   "filePreview": {
@@ -2711,6 +2890,16 @@
       "savingToastDescription": "इसमें कुछ सेकंड लगेंगे",
       "successToast": "खाता सफलतापूर्वक बनाया गया!",
       "failToast": "साइन अप विफल हुआ। कृपया पुनः प्रयास करें।",
+      "createWorkspaceTitle": "नया कार्यक्षेत्र बनाएं",
+      "createWorkspaceSubtitle": "अपने संगठन के लिए एक नया कार्यक्षेत्र सेट करें।",
+      "fullNameLabel": "पूरा नाम*",
+      "fullNamePlaceholder": "अपना पूरा नाम दर्ज करें",
+      "verificationSentToast": "अपना इनबॉक्स जाँचें",
+      "verificationSentDescription": "आपके ईमेल पर एक सत्यापन लिंक भेजा गया है। अपने संगठन को सक्रिय करने के लिए उस पर क्लिक करें।",
+      "accountCreatedToast": "खाता बनाया गया",
+      "accountCreatedDescription": "आपका संगठन तैयार है। आप अभी साइन इन कर सकते हैं।",
+      "emailFailedToast": "संगठन बनाया गया",
+      "emailFailedDescription": "हम सत्यापन ईमेल नहीं भेज सके। कृपया सहायता से संपर्क करें।",
       "errors": {
         "firstNameRequired": "पहला नाम आवश्यक है।",
         "lastNameRequired": "अंतिम नाम आवश्यक है।",
@@ -2720,7 +2909,8 @@
         "passwordRequired": "पासवर्ड आवश्यक है।",
         "confirmPasswordRequired": "कृपया अपना पासवर्ड पुष्ट करें।",
         "passwordsMismatch": "पासवर्ड मेल नहीं खाते।",
-        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।"
+        "emailAlreadyExists": "इस ईमेल से पहले से एक खाता मौजूद है।",
+        "fullNameRequired": "पूरा नाम आवश्यक है।"
       },
       "confirmDialog": {
         "title": "PipesHub अनुमतियाँ कैसे असाइन करता है",
@@ -2730,7 +2920,9 @@
         "emailNotePre": "सुनिश्चित करें कि जिस ईमेल से आपने पंजीकरण किया —",
         "emailNotePost": "— वही आपके संगठन के ऐप्स में उपयोग की जाती है, ताकि आपकी अनुमतियाँ सही तरीके से पहचानी जा सकें।",
         "cancelButton": "रद्द करें",
-        "signUpButton": "साइन अप करें"
+        "signUpButton": "साइन अप करें",
+        "verificationNoteTitle": "सत्यापन आवश्यक है",
+        "verificationNoteBody": "ऊपर दिए गए ईमेल पर एक सत्यापन लिंक भेजा जाएगा। सत्यापन के बाद ही आपका संगठन सुलभ होगा।"
       }
     },
     "login": {
@@ -2740,7 +2932,11 @@
       "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
       "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
       "samlSignInFailedTitle": "साइन-इन विफल",
-      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।"
+      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।",
+      "orgEmailVerifiedTitle": "संगठन सत्यापित",
+      "orgEmailVerifiedDescription": "आपका संगठन अब सक्रिय है। जारी रखने के लिए साइन इन करें।",
+      "orgEmailVerifyFailedTitle": "सत्यापन विफल",
+      "orgEmailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है। कृपया पुनः साइन अप करें।"
     },
     "common": {
       "signIn": "साइन इन",

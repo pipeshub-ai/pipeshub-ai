@@ -378,7 +378,7 @@ class ExcelParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-            llm, _ = await get_llm_for_role(self.config_service, "indexing")
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
             await asyncio.to_thread(self.load_workbook_from_binary, content)

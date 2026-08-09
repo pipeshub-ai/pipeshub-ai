@@ -77,14 +77,14 @@ const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 @injectable()
 export class UserAccountController {
   constructor(
-    @inject('AppConfig') private config: AppConfig,
-    @inject('IamService') private iamService: IamService,
-    @inject('MailService') private mailService: MailService,
-    @inject('SessionService') private sessionService: SessionService,
+    @inject('AppConfig') protected config: AppConfig,
+    @inject('IamService') protected iamService: IamService,
+    @inject('MailService') protected mailService: MailService,
+    @inject('SessionService') protected sessionService: SessionService,
     @inject('ConfigurationManagerService')
-    private configurationManagerService: ConfigurationManagerService,
-    @inject('Logger') private logger: Logger,
-    @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
+    protected configurationManagerService: ConfigurationManagerService,
+    @inject('Logger') protected logger: Logger,
+    @inject('JitProvisioningService') protected jitProvisioningService: JitProvisioningService,
   ) { }
 
   /**
@@ -92,7 +92,7 @@ export class UserAccountController {
    * that differs from the stored/session email (which may be the UPN), correct it.
    * When a userId is provided the DB record is updated; the in-memory object is always mutated.
    */
-  private async correctEmailFromToken(
+  protected async correctEmailFromToken(
     decodedToken: Record<string, any>,
     target: Record<string, any>,
     context: string,
@@ -139,7 +139,7 @@ export class UserAccountController {
     return { otp, hashedOTP };
   }
 
-  private getBlockedUntilIso(userCredentials: IUserCredentials): string | undefined {
+  protected getBlockedUntilIso(userCredentials: IUserCredentials): string | undefined {
     const blockExpiresAt = userCredentials.blockExpiresAt;
     if (!blockExpiresAt) {
       return undefined;
@@ -153,7 +153,7 @@ export class UserAccountController {
     return blockedUntilDate.toISOString();
   }
 
-  private async ensureBlockStatus(
+  protected async ensureBlockStatus(
     userCredentials: IUserCredentials,
   ): Promise<boolean> {
     if (!userCredentials.isBlocked) {

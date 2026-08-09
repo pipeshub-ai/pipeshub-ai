@@ -78,9 +78,13 @@ def _extract_status_code(exc: Exception) -> Optional[int]:
     if hasattr(exc, "status_code") and exc.status_code is not None:
         return exc.status_code
 
-    # Check for status attribute (some HTTP libraries)
-    if hasattr(exc, "status") and exc.status is not None:
+    # Int status only — Google ClientError uses string reasons like "RESOURCE_EXHAUSTED"
+    if hasattr(exc, "status") and isinstance(exc.status, int):
         return exc.status
+
+    # google.genai ClientError: numeric .code (429) with string .status
+    if hasattr(exc, "code") and isinstance(exc.code, int) and 100 <= exc.code <= 599:
+        return exc.code
 
     # httpx.HTTPStatusError
     if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
@@ -256,6 +260,14 @@ class MessageErrorClassifier:
         15. Other IndexingError = TRANSIENT (may be infra-related)
         16. Unknown errors = TRANSIENT (safe default for retry)
         """
+        try:
+            return MessageErrorClassifier._classify_by_exception_impl(exc)
+        except Exception:
+            # Never raise — consumers must reach capped retry/ACK
+            return MessageErrorType.TRANSIENT
+
+    @staticmethod
+    def _classify_by_exception_impl(exc: Exception) -> str:
         # 0. Walk the exception chain to find the root cause
         # This handles cases where exceptions are wrapped (e.g., `raise Exception(...) from e`)
         root_exc = _get_root_cause(exc)

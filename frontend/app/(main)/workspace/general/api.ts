@@ -39,6 +39,8 @@ export interface OrgResponse {
   updatedAt: string;
   slug: string;
   __v?: number;
+  isTenantOrg?: boolean;
+  parentOrgId?: string | null;
 }
 
 export interface UpdateOrgPayload {

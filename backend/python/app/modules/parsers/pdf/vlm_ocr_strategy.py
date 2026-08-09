@@ -134,7 +134,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         try:
             # 1. Check indexing role assignment first — use it if multimodal
             try:
-                _, role_config = await get_llm_for_role(self.config, "indexing")
+                _, role_config = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
                 if is_multimodal_llm(role_config):
                     self.logger.info(
                         f"✅ Using indexing-role LLM for VLM OCR: {role_config.get('provider')}"

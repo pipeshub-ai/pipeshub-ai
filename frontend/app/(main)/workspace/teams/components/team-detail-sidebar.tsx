@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import {

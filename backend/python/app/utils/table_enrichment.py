@@ -392,7 +392,7 @@ async def enhance_tables_with_llm(
         return TableEnhancementStats()
 
     if llm is None:
-        llm, _ = await get_llm_for_role(config_service, "indexing")
+        llm, _ = await get_llm_for_role(config_service, "indexing", reasoning_effort="low")
 
     logger.info(f"Enhancing {len(table_groups)} tables with LLM summaries")
 

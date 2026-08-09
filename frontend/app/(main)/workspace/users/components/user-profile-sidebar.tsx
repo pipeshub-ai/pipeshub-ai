@@ -3,7 +3,7 @@
 import React from 'react';
 import { Flex, Text, Avatar, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { WorkspaceRightPanel } from '../../components';
 import { useUsersStore } from '../store';
 

@@ -9,6 +9,7 @@ import {
   accountCreation,
   appUserInvite,
   loginWithOTPRequest,
+  orgEmailVerification,
   resetEmail,
   resetPassword,
   suspiciousLoginAttempt,
@@ -74,6 +75,10 @@ export class MailController {
 
       case EmailTemplateType.AppuserInvite:
         emailContent = appUserInvite(templateData);
+        return emailContent;
+
+      case EmailTemplateType.OrgEmailVerification:
+        emailContent = orgEmailVerification(templateData);
         return emailContent;
 
       default:

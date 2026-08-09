@@ -178,19 +178,11 @@ export function logoutAndRedirect(): void {
   window.location.href = '/login';
 }
 
-/**
- * Electron only: clear the server URL ack (keep last URL for pre-fill) and
- * send the user back through ServerUrlGuard's add-URL screen. Shared by the
- * workspace-menu logout and the "Change server" link shown on the pre-auth
- * screens (login/sign-up) so a bad/typo'd URL can be corrected without
- * quitting the app. No-op on web.
- */
 export function requestElectronServerUrlChange(): void {
   if (typeof window === 'undefined' || !isElectron()) return;
   clearElectronLogoutServerState();
   window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
 }
-
 /**
  * Workspace menu logout: web → same as session-expiry logout; Electron → clear
  * server URL ack (keep last URL for pre-fill), then route through ServerUrlGuard's
@@ -200,6 +192,8 @@ export function logoutFromWorkspaceMenu(): void {
   if (typeof window !== 'undefined' && isElectron()) {
     useAuthStore.getState().logout();
     requestElectronServerUrlChange();
+    clearElectronLogoutServerState();
+    window.dispatchEvent(new CustomEvent(ELECTRON_SERVER_URL_NAVIGATION_EVENT));
     return;
   }
   // Web path is identical to the 401 / session-expiry flow — delegate so the
