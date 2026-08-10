@@ -138,7 +138,7 @@ class PoolDemand:
     demand existed even if it had fully drained before the next sample, and
     ``permit_seconds`` gives a true mean occupancy immune to short hold
     times (thousands of millisecond-scale Jira/Confluence block parses would
-    otherwise be invisible to a 5s sampler).
+    otherwise be invisible to a periodic sampler).
     """
 
     permit_seconds: float = 0.0

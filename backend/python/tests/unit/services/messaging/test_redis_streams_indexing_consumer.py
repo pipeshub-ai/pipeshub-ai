@@ -1734,7 +1734,7 @@ class TestDrainPending:
         consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
         consumer.redis.xreadgroup = AsyncMock(return_value=None)
         with consumer._futures_lock:
-            consumer._active_futures.update(Future() for _ in range(39))
+            consumer._gate_waiters = 39
 
         with patch.object(
             type(messaging_env),
@@ -2083,7 +2083,7 @@ class TestConsumeLoop:
 
     @pytest.mark.asyncio
     async def test_backpressure_engages_and_clears(self, consumer):
-        """Backpressure engaged when active tasks >= limit, cleared when below."""
+        """Backpressure engaged when gate waiters >= limit, cleared when below."""
         consumer.running = True
         consumer.redis = AsyncMock()
 
@@ -2110,7 +2110,7 @@ class TestConsumeLoop:
                 return 0
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
-            with patch.object(consumer, "_get_active_task_count", side_effect=mock_get_count):
+            with patch.object(consumer, "_get_gate_waiter_count", side_effect=mock_get_count):
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                     await consumer._consume_loop()
 
@@ -2145,7 +2145,7 @@ class TestConsumeLoop:
                 return 0
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
-            with patch.object(consumer, "_get_active_task_count", side_effect=mock_get_count):
+            with patch.object(consumer, "_get_gate_waiter_count", side_effect=mock_get_count):
                 with patch("asyncio.sleep", new_callable=AsyncMock):
                     await consumer._consume_loop()
 

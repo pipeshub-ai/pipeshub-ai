@@ -15,6 +15,12 @@ from fastapi.responses import JSONResponse
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
+from app.modules.parsers.pdf.docling_processor import (
+    set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    set_resource_governor as set_pdf_rasterizer_governor,
+)
 from app.services.docling.docling_service import (
     DoclingService,
     set_docling_service,
@@ -94,6 +100,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.governor = governor
     set_resource_governor(governor)
+    # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
+    # straight into the governor's fast incident path instead of only the
+    # periodic sampler noticing the pressure it already caused.
+    set_docling_processor_governor(governor)
+    set_pdf_rasterizer_governor(governor)
     governor_task = asyncio.create_task(governor.run())
 
     yield

@@ -115,6 +115,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Track active futures for proper cleanup
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
+        self._gate_waiters = 0
         self._backpressure_logged = False
         self._partition_lock = threading.Lock()
         self._in_flight_partitions: set[TopicPartition] = set()
@@ -303,6 +304,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    def _get_gate_waiter_count(self) -> int:
+        return concurrency.get_gate_waiter_count(self)
+
     @override
     async def cleanup(self) -> None:
         """Stop the Kafka consumer and clean up resources"""
@@ -405,14 +409,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         ``backpressure_coordinator`` — pulling more work in that case would
         just queue up behind the same saturated service.
         """
-        active_count = self._get_active_task_count()
+        waiter_count = self._get_gate_waiter_count()
         pending_ceiling = concurrency.pending_task_ceiling(self)
         downstream_paused = (
             self.backpressure_coordinator is not None
             and self.backpressure_coordinator.is_paused()
         )
 
-        if active_count >= pending_ceiling or downstream_paused:
+        if waiter_count >= pending_ceiling or downstream_paused:
             # Pause partitions that aren't already paused
             assigned = self.consumer.assignment()
             not_paused = assigned - self.consumer.paused()
@@ -428,8 +432,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                 else:
                     self.logger.warning(
-                        f"Backpressure engaged: {active_count} active tasks queued; "
-                        f"pausing Kafka partition reads at cap {pending_ceiling}"
+                        f"Backpressure engaged: {waiter_count} tasks waiting for "
+                        f"indexing admission; pausing Kafka partition reads at cap {pending_ceiling}"
                     )
                 self._backpressure_logged = True
         else:
@@ -443,7 +447,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.consumer.resume(*resumable)
             if self._backpressure_logged:
                 self.logger.info(
-                    f"Backpressure cleared: active tasks back to {active_count}/{pending_ceiling}"
+                    f"Backpressure cleared: waiters back to {waiter_count}/{pending_ceiling}"
                 )
                 self._backpressure_logged = False
 
@@ -499,7 +503,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if (
             self.running
             and not downstream_paused
-            and self._get_active_task_count()
+            and self._get_gate_waiter_count()
             < concurrency.pending_task_ceiling(self)
         ):
             self.consumer.resume(topic_partition)
@@ -515,7 +519,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     available_capacity = max(
                         1,
                         concurrency.pending_task_ceiling(self)
-                        - self._get_active_task_count(),
+                        - self._get_gate_waiter_count(),
                     )
 
                     message_batch = await self.consumer.getmany(
@@ -668,7 +672,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             raise RuntimeError("Consumer is stopping, skipping message processing")
 
         # Submit coroutine to worker thread's event loop and track the future
-        processing_coro = self.__process_message_wrapper(message)
+        waiter_token = concurrency.GateWaiterToken(self)
+        processing_coro = self.__process_message_wrapper(message, waiter_token)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 processing_coro,
@@ -676,6 +681,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
         except BaseException:
             processing_coro.close()
+            waiter_token.release()
             raise
 
         # Track the future for cleanup during shutdown
@@ -684,6 +690,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         # Add callback to remove future from tracking when done
         def on_future_done(f: Future[bool]) -> None:
+            waiter_token.release()
             with self._futures_lock:
                 self._active_futures.discard(f)
 
@@ -926,7 +933,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             remaining -= _DELAY_POLL_INTERVAL_SECONDS
         return True
 
-    async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
+    async def __process_message_wrapper(
+        self,
+        message: ConsumerRecord,
+        waiter_token: "concurrency.GateWaiterToken | None" = None,
+    ) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
         Semaphore lifecycle:
@@ -1008,6 +1019,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             await self.indexing_semaphore.acquire()
             indexing_held = True
+            if waiter_token is not None:
+                waiter_token.admit()
 
             if self.concurrency_manager is not None:
                 if not await self._acquire_distributed_slot(
@@ -1185,6 +1198,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(
                 f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
             )
+            concurrency.report_memory_incident_if_applicable(self, message_id, e)
 
             # Classify the exception to determine if we should retry
             error_type = MessageErrorClassifier.classify_by_exception(e)

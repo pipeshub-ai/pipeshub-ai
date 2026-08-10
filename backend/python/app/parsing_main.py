@@ -38,6 +38,12 @@ from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdown
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    set_resource_governor as set_pdf_rasterizer_governor,
+)
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
@@ -229,6 +235,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     app.state.governor = governor
     governor_task = asyncio.create_task(governor.run())
+    # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
+    # straight into the governor's fast incident path instead of only the
+    # periodic sampler noticing the pressure it already caused.
+    set_docling_processor_governor(governor)
+    set_pdf_rasterizer_governor(governor)
 
     # Size the loop's default executor (used by every asyncio.to_thread
     # offload) to the combined heavy+light ceiling so CPU-bound parsers

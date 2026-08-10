@@ -7,7 +7,9 @@ legacy-semaphore fallback when no governor is configured).
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -87,6 +89,63 @@ class TestPendingTaskCeiling:
         assert concurrency.pending_task_ceiling(host) == max(8, 4) * 4
 
 
+def _waiter_host() -> SimpleNamespace:
+    return SimpleNamespace(_futures_lock=threading.Lock(), _gate_waiters=0)
+
+
+class TestGateWaiterToken:
+    """A task counts toward pending_task_ceiling from spawn until it is
+    admitted through the local indexing gate/semaphore — not for its whole
+    in-flight lifetime."""
+
+    def test_counts_from_construction_until_admit(self) -> None:
+        host = _waiter_host()
+        token = concurrency.GateWaiterToken(host)
+        assert concurrency.get_gate_waiter_count(host) == 1
+        token.admit()
+        assert concurrency.get_gate_waiter_count(host) == 0
+
+    def test_release_after_admit_is_a_noop(self) -> None:
+        host = _waiter_host()
+        token = concurrency.GateWaiterToken(host)
+        token.admit()
+        token.release()
+        assert concurrency.get_gate_waiter_count(host) == 0
+
+    def test_release_without_admit_decrements_once(self) -> None:
+        """A task that errors out (or is cancelled) before ever acquiring
+        the gate must still stop counting as a waiter, and calling
+        release() more than once must not double-decrement."""
+        host = _waiter_host()
+        token = concurrency.GateWaiterToken(host)
+        token.release()
+        token.release()
+        assert concurrency.get_gate_waiter_count(host) == 0
+
+    def test_admitted_tasks_dont_block_new_waiters_at_the_ceiling(self) -> None:
+        """N admitted (in-progress) tasks plus N-1 waiters must still be
+        under a ceiling of N; the Nth waiter is what engages backpressure."""
+        host = _waiter_host()
+        ceiling = 3
+
+        admitted_tokens = [concurrency.GateWaiterToken(host) for _ in range(ceiling)]
+        for token in admitted_tokens:
+            token.admit()
+
+        waiting_tokens = [concurrency.GateWaiterToken(host) for _ in range(ceiling - 1)]
+        assert concurrency.get_gate_waiter_count(host) < ceiling
+
+        extra_waiter = concurrency.GateWaiterToken(host)
+        assert concurrency.get_gate_waiter_count(host) >= ceiling
+
+        for token in waiting_tokens:
+            token.release()
+        extra_waiter.release()
+        for token in admitted_tokens:
+            token.release()
+        assert concurrency.get_gate_waiter_count(host) == 0
+
+
 class TestAcquireReleaseParsingSlot:
     @pytest.mark.asyncio
     async def test_legacy_fallback_uses_semaphore_with_cost_one(self) -> None:
@@ -158,3 +217,28 @@ class TestAcquireReleaseParsingSlot:
     def test_release_is_noop_for_none_admission(self) -> None:
         # Must not raise: called unconditionally from finally blocks.
         concurrency.release_parsing_slot(None)
+
+
+class TestReportMemoryIncidentIfApplicable:
+    def test_memory_error_with_governor_triggers_incident(self) -> None:
+        governor = MagicMock()
+        host = _host(governor=governor)
+
+        concurrency.report_memory_incident_if_applicable(host, "msg-1", MemoryError("oom"))
+
+        governor.report_memory_incident.assert_called_once()
+        assert "msg-1" in governor.report_memory_incident.call_args.args[0]
+
+    def test_non_memory_error_does_not_trigger_incident(self) -> None:
+        governor = MagicMock()
+        host = _host(governor=governor)
+
+        concurrency.report_memory_incident_if_applicable(host, "msg-1", ValueError("boom"))
+
+        governor.report_memory_incident.assert_not_called()
+
+    def test_memory_error_without_governor_is_a_noop(self) -> None:
+        host = _host(governor=None)
+
+        # Must not raise: called unconditionally from the outer except block.
+        concurrency.report_memory_incident_if_applicable(host, "msg-1", MemoryError("oom"))

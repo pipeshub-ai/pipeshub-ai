@@ -55,6 +55,11 @@ class ConcurrencyHost(Protocol):
     # ``asyncio.Semaphore`` pair created alongside it.
     governor: "ResourceGovernor | None"
     parsing_semaphore: Any
+    # Guarded by the same lock as ``_active_futures`` (see GateWaiterToken):
+    # count of tasks spawned but not yet admitted through the local
+    # indexing gate/semaphore.
+    _gate_waiters: int
+    _futures_lock: Any
 
 
 async def bridge_to_main_loop(
@@ -312,10 +317,62 @@ def parse_ceiling(host: ConcurrencyHost) -> int:
     return messaging_env.max_concurrent_parsing
 
 
+class GateWaiterToken:
+    """Tracks whether one spawned task still counts toward
+    ``pending_task_ceiling``'s backpressure check.
+
+    A task counts as a "gate waiter" from the moment it's spawned (added to
+    ``_active_futures``) until it is admitted through the local indexing
+    gate/semaphore — the resource actually contended by every task racing
+    to start, including ones still parked in retry-backoff or waiting on a
+    distributed indexing lease. Once admitted, the task is doing real work
+    and competing for parsing/CPU/etc. instead of queue space, so it must
+    stop counting even though it stays in ``_active_futures`` until it
+    finishes (that set backs shutdown draining and diagnostic logging, not
+    backpressure).
+    """
+
+    __slots__ = ("_host", "_admitted", "_released")
+
+    def __init__(self, host: ConcurrencyHost) -> None:
+        self._host = host
+        self._admitted = False
+        self._released = False
+        with host._futures_lock:
+            host._gate_waiters += 1
+
+    def admit(self) -> None:
+        """Call once the local indexing gate/semaphore has been acquired."""
+        if self._admitted or self._released:
+            return
+        self._admitted = True
+        with self._host._futures_lock:
+            self._host._gate_waiters -= 1
+
+    def release(self) -> None:
+        """Idempotent cleanup for the task's terminal state (call from the
+        future-done callback). A no-op if ``admit()`` already ran — the
+        waiter count was already decremented then."""
+        if self._released:
+            return
+        self._released = True
+        if not self._admitted:
+            with self._host._futures_lock:
+                self._host._gate_waiters -= 1
+
+
+def get_gate_waiter_count(host: ConcurrencyHost) -> int:
+    """Number of spawned tasks not yet admitted through the local indexing
+    gate/semaphore — see ``GateWaiterToken``."""
+    with host._futures_lock:
+        return host._gate_waiters
+
+
 def pending_task_ceiling(host: ConcurrencyHost) -> int:
-    """How many in-flight (queued-or-processing) tasks the consumer allows
-    before pausing partition/stream reads (Phase 6 of the adaptive-
-    concurrency plan).
+    """How many tasks waiting for local indexing-gate admission (retry
+    backoff, distributed lease wait, or the gate/semaphore itself — see
+    ``GateWaiterToken``) the consumer allows before pausing partition/
+    stream reads (Phase 6 of the adaptive-concurrency plan).
 
     An explicit ``MAX_PENDING_INDEXING_TASKS`` always wins. Otherwise, with a
     governor present the cap derives from the *resolved* index/heavy-parse
@@ -379,3 +436,22 @@ def release_parsing_slot(admission: ParsingAdmission | None) -> None:
     if admission is None:
         return
     admission._release()
+
+
+def report_memory_incident_if_applicable(
+    host: ConcurrencyHost, message_id: str, error: BaseException
+) -> None:
+    """Feed a real in-process allocation failure into the governor's fast
+    incident path (``ResourceGovernor.report_memory_incident``) instead of
+    waiting for the next periodic sample to notice the pressure it already
+    caused.
+
+    A cgroup OOM-kill usually SIGKILLs the process outright rather than
+    raising ``MemoryError`` (that's what the ``BrokenProcessPool`` handlers
+    in ``pdf_rasterizer``/``docling_processor`` are for), but some
+    allocations still fail with a catchable ``MemoryError`` first — this is
+    a cheap, unconditional backstop for that case.
+    """
+    if host.governor is None or not isinstance(error, MemoryError):
+        return
+    host.governor.report_memory_incident(f"MemoryError processing {message_id}")

@@ -111,6 +111,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.message_handler: Optional[IndexingMessageHandler] = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
+        self._gate_waiters = 0
         self._backpressure_active = False
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
@@ -331,6 +332,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    def _get_gate_waiter_count(self) -> int:
+        return concurrency.get_gate_waiter_count(self)
+
     def _is_in_flight(self, message_id: str) -> bool:
         with self._in_flight_lock:
             return message_id in self._in_flight_message_ids
@@ -481,13 +485,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Phase 1: claim idle messages from other (possibly crashed) consumers
             start_id = "0-0"
             while self.running:
-                active_count = self._get_active_task_count()
+                waiter_count = self._get_gate_waiter_count()
                 pending_ceiling = concurrency.pending_task_ceiling(self)
-                if active_count >= pending_ceiling:
+                if waiter_count >= pending_ceiling:
                     await asyncio.sleep(0.5)
                     continue
                 try:
-                    available_capacity = pending_ceiling - active_count
+                    available_capacity = pending_ceiling - waiter_count
                     result = await self.redis.xautoclaim(  # type: ignore
                         topic,
                         self.config.group_id,
@@ -505,7 +509,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         if self._is_in_flight(message_id):
                             continue
                         if (
-                            self._get_active_task_count()
+                            self._get_gate_waiter_count()
                             >= concurrency.pending_task_ceiling(self)
                         ):
                             break
@@ -535,13 +539,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # Phase 2: read messages already in THIS consumer's PEL
             last_pending_id = "0"
             while self.running:
-                active_count = self._get_active_task_count()
+                waiter_count = self._get_gate_waiter_count()
                 pending_ceiling = concurrency.pending_task_ceiling(self)
-                if active_count >= pending_ceiling:
+                if waiter_count >= pending_ceiling:
                     await asyncio.sleep(0.5)
                     continue
                 try:
-                    available_capacity = pending_ceiling - active_count
+                    available_capacity = pending_ceiling - waiter_count
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.consumer_name,
@@ -567,7 +571,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 last_pending_id = message_id
                                 continue
                             if (
-                                self._get_active_task_count()
+                                self._get_gate_waiter_count()
                                 >= concurrency.pending_task_ceiling(self)
                             ):
                                 break
@@ -621,13 +625,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             while self.running:
                 try:
                     await self._wait_out_backpressure()
-                    active_count = self._get_active_task_count()
+                    waiter_count = self._get_gate_waiter_count()
                     pending_ceiling = concurrency.pending_task_ceiling(self)
-                    if active_count >= pending_ceiling:
+                    if waiter_count >= pending_ceiling:
                         if not self._backpressure_active:
                             self.logger.warning(
-                                "Backpressure engaged: %d active tasks",
-                                active_count,
+                                "Backpressure engaged: %d tasks waiting for "
+                                "indexing admission",
+                                waiter_count,
                             )
                             self._backpressure_active = True
                         await asyncio.sleep(0.5)
@@ -635,13 +640,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     elif self._backpressure_active:
                         self.logger.info(
                             "Backpressure cleared: %d/%d",
-                            active_count,
+                            waiter_count,
                             pending_ceiling,
                         )
                         self._backpressure_active = False
 
                     streams = dict.fromkeys(self.config.topics, ">")
-                    available_capacity = pending_ceiling - active_count
+                    available_capacity = pending_ceiling - waiter_count
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.consumer_name,
@@ -670,7 +675,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             if not self.running:
                                 break
                             if (
-                                self._get_active_task_count()
+                                self._get_gate_waiter_count()
                                 >= concurrency.pending_task_ceiling(self)
                             ):
                                 break
@@ -744,10 +749,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         self._mark_in_flight(message_id)
+        waiter_token = concurrency.GateWaiterToken(self)
         processing_coro = self._process_message_wrapper(
             stream_name,
             message_id,
             dict(fields),
+            waiter_token,
         )
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -757,12 +764,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         except BaseException:
             processing_coro.close()
             self._unmark_in_flight(message_id)
+            waiter_token.release()
             raise
         with self._futures_lock:
             self._active_futures.add(future)
 
         def on_future_done(f: Future[bool]) -> None:
             self._unmark_in_flight(message_id)
+            waiter_token.release()
             with self._futures_lock:
                 self._active_futures.discard(f)
             try:
@@ -988,7 +997,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         return True
 
     async def _process_message_wrapper(
-        self, stream_name: str, message_id: str, fields: dict[str, str]
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        waiter_token: "concurrency.GateWaiterToken | None" = None,
     ) -> bool:
         """Process a message under bounded pipeline and parsing concurrency.
 
@@ -1085,6 +1098,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             await self.indexing_semaphore.acquire()
             indexing_held = True
+            if waiter_token is not None:
+                waiter_token.admit()
 
             if self.concurrency_manager is not None:
                 if not await self._acquire_distributed_slot(
@@ -1266,6 +1281,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error(
                 "Error in process_message_wrapper for %s:\n%s", message_id, exception_chain
             )
+            concurrency.report_memory_incident_if_applicable(self, message_id, e)
 
             # Classify the exception to determine if we should retry
             error_type = MessageErrorClassifier.classify_by_exception(e)

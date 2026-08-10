@@ -186,11 +186,9 @@ class TestApplyBackpressure:
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
 
-        # Add futures to reach capacity
+        # Simulate reaching capacity via gate waiters
         with consumer._futures_lock:
-            for _ in range(messaging_env.max_pending_indexing_tasks):
-                f = Future()
-                consumer._active_futures.add(f)
+            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()
@@ -1574,9 +1572,7 @@ class TestApplyBackpressureFullCoverage:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        for _ in range(messaging_env.max_pending_indexing_tasks + 1):
-            f = Future()
-            consumer._active_futures.add(f)
+        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True
@@ -1782,7 +1778,7 @@ class TestConsumeLoop:
         mock_consumer.getmany = mock_getmany
         consumer.consumer = mock_consumer
         with consumer._futures_lock:
-            consumer._active_futures.update(Future() for _ in range(39))
+            consumer._gate_waiters = 39
 
         with (
             patch.object(

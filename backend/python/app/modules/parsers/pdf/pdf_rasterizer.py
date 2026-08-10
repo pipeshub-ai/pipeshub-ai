@@ -17,14 +17,31 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
 from PIL import Image
 
+if TYPE_CHECKING:
+    from app.services.resource_governor import ResourceGovernor
+
 _logger = logging.getLogger(__name__)
 _pool_lock = threading.Lock()
+
+# Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
+# docling_main.py) once a ResourceGovernor is constructed for that process.
+# Mirrors the module-level singleton in services/docling/docling_service.py —
+# this module has no DI path back to whichever governor its caller's process
+# owns, since it's a leaf shared by the Parsing, Indexing and Docling
+# services alike.
+_resource_governor: "ResourceGovernor | None" = None
+
+
+def set_resource_governor(governor: "ResourceGovernor | None") -> None:
+    """Wire an initialized ResourceGovernor so a worker OOM-kill can trigger
+    its fast incident path instead of waiting for the next periodic sample."""
+    globals()["_resource_governor"] = governor
 
 
 def _get_pdf_raster_worker_count() -> int:
@@ -165,6 +182,14 @@ def _run_in_pool(fn, *args):
         )
         with _pool_lock:
             _get_pdf_raster_pool.cache_clear()
+        if _resource_governor is not None:
+            # A worker OOM-kill is a hard proof of memory exhaustion the
+            # periodic sampler may not see for several seconds — react now
+            # rather than let admission keep granting new heavy-parse slots
+            # at the limit that just caused this kill.
+            _resource_governor.report_memory_incident(
+                "pdf_rasterizer worker OOM-killed (BrokenProcessPool)"
+            )
         raise
 
 

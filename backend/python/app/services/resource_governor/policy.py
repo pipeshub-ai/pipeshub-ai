@@ -48,7 +48,7 @@ def _env_float(name: str, default: float, *, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-SAMPLE_INTERVAL_SECONDS = 5.0
+SAMPLE_INTERVAL_SECONDS = 15.0
 SAMPLE_JITTER_SECONDS = 1.0
 
 HEAVY_PARSE_WORKING_SET_GB = 1.5

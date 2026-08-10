@@ -32,6 +32,12 @@ from app.services.messaging.backpressure import (
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
 )
+from app.modules.parsers.pdf.docling_processor import (
+    set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    set_resource_governor as set_pdf_rasterizer_governor,
+)
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -779,6 +785,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.governor = governor
     app_container.resource_governor = governor
     governor_task = asyncio.create_task(governor.run())
+    # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
+    # straight into the governor's fast incident path instead of only the
+    # periodic sampler noticing the pressure it already caused.
+    set_docling_processor_governor(governor)
+    set_pdf_rasterizer_governor(governor)
 
     # Start all message consumers centrally
     try:
