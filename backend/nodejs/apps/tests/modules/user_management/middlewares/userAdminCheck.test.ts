@@ -6,9 +6,11 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 
 function stubUserRole(role: 'admin' | 'member' | null) {
+  // null => existing user with unset role (legacy fallback); not a missing user
+  const doc = role === null ? {} : { role };
   return sinon.stub(Users, 'findOne').returns({
     select: sinon.stub().returns({
-      lean: sinon.stub().resolves(role ? { role } : null),
+      lean: sinon.stub().resolves(doc),
     }),
   } as any);
 }

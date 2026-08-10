@@ -67,7 +67,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     // UserGroups stubs still exercise the legacy fallback path.
     sinon.stub(Users, 'findOne').returns({
       select: sinon.stub().returns({
-        lean: sinon.stub().resolves(null),
+        lean: sinon.stub().resolves({}),
       }),
     } as any)
   })
