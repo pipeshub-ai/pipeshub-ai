@@ -1,6 +1,6 @@
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import mongoose, { type ClientSession, type Document } from 'mongoose';
-import { type UserRole } from '../schema/users.schema';
+import mongoose, { type ClientSession } from 'mongoose';
+import { type User, type UserRole } from '../schema/users.schema';
 import { UserAdminRepository } from '../repositories/user-admin.repository';
 
 const LAST_ADMIN_DEMOTION_MESSAGE =
@@ -128,19 +128,13 @@ export const ensureOrgRetainsAdminAfterDemotion = async (
   throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
 };
 
-type SaveableUser = Document & {
-  orgId: { toString(): string } | string;
-  _id: { toString(): string };
-  save: (options?: { session?: ClientSession }) => Promise<unknown>;
-};
-
 /**
  * Persist a user update that may demote an admin.
  * With a replica set: save + admin-count check in one transaction (rollback on zero admins).
  * Without: save then restore+reject if zero admins remain.
  */
 export const saveUserEnsuringOrgRetainsAdmin = async (
-  user: SaveableUser,
+  user: User,
   rsAvailable: boolean,
 ): Promise<void> => {
   const userId = String(user._id);
