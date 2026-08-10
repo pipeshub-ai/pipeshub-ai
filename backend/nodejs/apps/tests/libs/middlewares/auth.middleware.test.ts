@@ -536,7 +536,7 @@ describe('AuthMiddleware', () => {
       expect(req.user.fullName).to.equal('DB Name')
     })
 
-    it('should handle Users.findOne failure during OAuth user email lookup', async () => {
+    it('should reject the request when Users.findOne fails during OAuth user lookup', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -563,11 +563,45 @@ describe('AuthMiddleware', () => {
 
       await authMiddleware.authenticate(req, res, next)
 
-      // Should still authenticate successfully (error is caught and logged)
+      // A lookup failure must fail closed, the same as any other auth
+      // error — an OAuth/PAT token must not authenticate on a hunch that
+      // the user still exists.
       expect(next.calledOnce).to.be.true
-      expect(next.firstCall.args).to.have.length(0)
-      // Logger should have been called with the error
-      expect(logger.error.calledWithMatch('Failed to look up OAuth user email')).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(Error)
+      expect(error.message).to.equal('Users DB error')
+    })
+
+    it('should reject an OAuth/PAT token whose user has been deleted', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'user:read',
+        accountType: 'basic',
+        fullName: 'Payload Name',
+      })
+
+      // Users.findOne(..., isDeleted: false) finds nothing for a removed user
+      const userQuery = createMockQuery(null)
+      sinon.stub(Users, 'findOne').returns(userQuery)
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('User not found, please login again')
     })
 
   })

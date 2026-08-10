@@ -170,24 +170,25 @@ export class AuthMiddleware {
 
     let email: string | undefined;
     if (userId) {
-      try {
-        const user = await Users.findOne({
-          _id: userId,
-          orgId: orgId,
-          isDeleted: false,
-        })
-          .select('email fullName')
-          .lean()
-          .exec();
+      const user = await Users.findOne({
+        _id: userId,
+        orgId: orgId,
+        isDeleted: false,
+      })
+        .select('email fullName')
+        .lean()
+        .exec();
 
-        if (user) {
-          email = user.email;
-          if (!fullName) {
-            fullName = user.fullName;
-          }
-        }
-      } catch (err) {
-        this.logger.error('Failed to look up OAuth user email', err);
+      // Unlike session auth, OAuth/PAT tokens can outlive the user by
+      // months or years — a removed employee's token must stop working
+      // the same way an expired session would, not just lose its email.
+      if (!user) {
+        throw new UnauthorizedError('User not found, please login again');
+      }
+
+      email = user.email;
+      if (!fullName) {
+        fullName = user.fullName;
       }
     }
 
