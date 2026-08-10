@@ -160,6 +160,16 @@ describe('user-admin.service', () => {
         isDeleted: { $ne: true },
       });
     });
+    it('ignores null/non-object group entries during legacy fallback', async () => {
+      stubUsersFindOne(null);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([null, { type: 'everyone' }, { type: 'admin' }]),
+      } as any);
+
+      const result = await isUserOrgAdmin(userId, orgId);
+
+      expect(result).to.equal(true);
+    });
   });
 
   describe('findOrgAdminUserIds', () => {
@@ -270,6 +280,26 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[1]).to.deep.equal({
         $set: { role: 'admin' },
       });
+    });
+
+    it('passes the session through to count and restore when provided', async () => {
+      const session = { id: 'test-session' } as any;
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(0)),
+      } as any);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await ensureOrgRetainsAdminAfterDemotion(userId, orgId, session);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(
+          'Cannot demote the last admin. Promote another user to admin first.',
+        );
+      }
+
+      expect(updateStub.calledOnce).to.equal(true);
+      expect(updateStub.firstCall.args[2]).to.deep.equal({ session });
     });
   });
 
