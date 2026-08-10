@@ -12,8 +12,14 @@ import {
   OAuthAppStatus,
 } from '../schema/oauth.app.schema'
 import { NotFoundError } from '../../../libs/errors/http.errors'
-import { CreatePatRequest, PatListItem, PatWithSecret } from '../types/oauth.types'
-import { PAT_TOKEN_PREFIX } from '../constants/constants'
+import {
+  AdminPatListItem,
+  CreatePatRequest,
+  PatListItem,
+  PatWithSecret,
+} from '../types/oauth.types'
+import { PAT_TOKEN_PREFIX, PAT_APP_CLIENT_ID_PREFIX } from '../constants/constants'
+import { Users } from '../../user_management/schema/users.schema'
 
 const CLIENT_SECRET_BYTES = 32
 const SECONDS_PER_DAY = 86400
@@ -27,7 +33,7 @@ const DEFAULT_EXPIRY_DAYS = 30
 const NEVER_EXPIRES_DAYS = 365 * 100
 
 function patClientId(orgId: string): string {
-  return `pat-system:${orgId}`
+  return `${PAT_APP_CLIENT_ID_PREFIX}${orgId}`
 }
 
 /**
@@ -230,6 +236,85 @@ export class PatService {
     this.logger.info('Personal access token revoked', {
       orgId,
       userId,
+      tokenId,
+    })
+  }
+
+  /**
+   * List every active personal access token in the org, across all
+   * users — for org admins doing incident response (departed employee,
+   * compromised laptop) on a credential only its owner could otherwise
+   * see or revoke. Returns an empty list without creating the org's PAT
+   * app if nobody has minted one yet.
+   */
+  async listAllTokens(orgId: string): Promise<AdminPatListItem[]> {
+    const clientId = patClientId(orgId)
+    const app = await OAuthApp.findOne({ clientId })
+    if (!app) {
+      return []
+    }
+
+    const tokens = (
+      await this.oauthTokenService.listTokensForApp(clientId)
+    ).filter((t) => t.tokenType === 'access' && t.userId)
+
+    const owners = await Users.find({
+      _id: { $in: tokens.map((t) => t.userId) },
+      isDeleted: false,
+    })
+      .select('email fullName')
+      .lean()
+      .exec()
+    const ownersById = new Map(owners.map((u) => [u._id.toString(), u]))
+
+    return tokens.map((t) => {
+      const owner = ownersById.get(t.userId!)
+      return {
+        id: t.id,
+        name: t.name ?? '(unnamed token)',
+        scopes: t.scopes,
+        createdAt: t.createdAt,
+        expiresAt: t.expiresAt,
+        lastUsedAt: t.lastUsedAt,
+        userId: t.userId!,
+        ownerEmail: owner?.email,
+        ownerFullName: owner?.fullName,
+      }
+    })
+  }
+
+  /**
+   * Revoke any user's personal access token in the org by id — the
+   * admin counterpart to {@link revokeToken}, not scoped to a single
+   * owner.
+   * @throws NotFoundError if the org has no PAT app yet, or the token
+   *   doesn't exist in this org / is already revoked.
+   */
+  async adminRevokeToken(
+    orgId: string,
+    adminUserId: string,
+    tokenId: string,
+    reason?: string,
+  ): Promise<void> {
+    const clientId = patClientId(orgId)
+    const app = await OAuthApp.findOne({ clientId })
+    if (!app) {
+      throw new NotFoundError('Personal access token not found')
+    }
+
+    const revoked = await this.oauthTokenService.revokeAccessTokenByIdForClient(
+      tokenId,
+      clientId,
+      adminUserId,
+      reason ?? 'Revoked by org admin',
+    )
+    if (!revoked) {
+      throw new NotFoundError('Personal access token not found')
+    }
+
+    this.logger.info('Personal access token revoked by admin', {
+      orgId,
+      adminUserId,
       tokenId,
     })
   }
