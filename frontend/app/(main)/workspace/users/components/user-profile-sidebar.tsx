@@ -145,13 +145,6 @@ export function UserProfileSidebar() {
           label={t('workspace.users.profile.companyDesignation')}
           value="-"
         />
-        {/* Groups count — hidden for all roles while org admin moves to User.role */}
-        {/*
-        <ProfileField
-          label={t('workspace.users.profile.groupsCount')}
-          value={String(groupsCount)}
-        />
-        */}
         <ProfileField
           label={t('workspace.users.profile.teamsCount')}
           value="-"

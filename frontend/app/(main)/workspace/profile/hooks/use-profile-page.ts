@@ -8,9 +8,7 @@ import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';
 import { isProcessedError } from '@/lib/api';
-import { getUserGroupsForProfile } from '../../users/api';
 import { USER_ROLES } from '../../constants';
-import { GroupType } from '../../groups/types';
 
 // ========================================
 // Hook
@@ -29,7 +27,6 @@ export function useProfilePage() {
   const [emailLoading, setEmailLoading] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
-  const [groups, setGroups] = useState<Array<{ name: string; type: string }>>([]);
   const [role, setRole] = useState<string>(USER_ROLES.MEMBER);
 
   // ── Store ─────────────────────────────────────────────────────
@@ -90,14 +87,6 @@ export function useProfilePage() {
         if (avatarObjectUrl) setAvatarUrl(avatarObjectUrl);
 
         setLoading(false);
-
-        // Groups for badges (best-effort, non-blocking) — role no longer comes from Admin group
-        getUserGroupsForProfile(uid).then((allGroups) => {
-          const displayGroups = allGroups.filter(
-            (g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN
-          );
-          setGroups(displayGroups);
-        });
       } catch {
         addToast({
           variant: 'error',
@@ -270,7 +259,6 @@ export function useProfilePage() {
     avatarUrl,
     avatarUploading,
     avatarInitial,
-    groups,
     role,
     // Store state
     form,

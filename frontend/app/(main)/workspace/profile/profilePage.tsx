@@ -32,7 +32,6 @@ export default function ProfilePage() {
     avatarUrl,
     avatarUploading,
     avatarInitial,
-    groups,
     role,
     form,
     errors,
@@ -110,7 +109,7 @@ export default function ProfilePage() {
 
         {/* ── Roles & Permissions section ── */}
         <Box style={{ marginBottom: 'var(--space-5)' }}>
-          <RolesPermissionsSection role={role} groups={groups} />
+          <RolesPermissionsSection role={role} />
         </Box>
 
         {/* ── Password & Security section ── */}
