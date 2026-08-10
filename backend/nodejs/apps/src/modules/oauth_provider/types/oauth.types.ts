@@ -293,6 +293,17 @@ export interface PatListItem {
   lastUsedAt?: Date
 }
 
+/**
+ * A PAT as seen by an org admin — includes who it belongs to, since an
+ * admin is looking across every member's tokens rather than just their
+ * own (see `PatService.listAllTokens` / `GET /personal-access-tokens/admin`).
+ */
+export interface AdminPatListItem extends PatListItem {
+  userId: string
+  ownerEmail?: string
+  ownerFullName?: string
+}
+
 // Request with OAuth user info
 export interface OAuthAuthenticatedRequest {
   oauthClient?: {

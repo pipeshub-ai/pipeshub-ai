@@ -8,6 +8,7 @@ import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/se
 import { DefaultMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
 import { InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 const SECONDS_PER_DAY = 86400
@@ -44,6 +45,8 @@ describe('PatService', () => {
       }),
       listAccessTokensForUser: sinon.stub().resolves([]),
       revokeAccessTokenById: sinon.stub().resolves(true),
+      listTokensForApp: sinon.stub().resolves([]),
+      revokeAccessTokenByIdForClient: sinon.stub().resolves(true),
     }
     scopeValidatorService = new ScopeValidatorService()
 
@@ -273,6 +276,105 @@ describe('PatService', () => {
         userId,
         userId,
         'no longer needed',
+      ])
+      expect(mockLogger.info.called).to.be.true
+    })
+  })
+
+  describe('listAllTokens', () => {
+    it('returns an empty list without querying tokens when the org has no PAT app yet', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(null)
+
+      const tokens = await service.listAllTokens(orgId)
+
+      expect(tokens).to.deep.equal([])
+      expect(mockOAuthTokenService.listTokensForApp.called).to.be.false
+    })
+
+    it('lists tokens across all users, excludes refresh entries, and attaches owner info', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = new Date()
+      const ownerId = new Types.ObjectId().toString()
+      mockOAuthTokenService.listTokensForApp.resolves([
+        {
+          id: 'tok-1',
+          tokenType: 'access',
+          userId: ownerId,
+          scopes: ['kb:read'],
+          createdAt: now,
+          expiresAt: now,
+          isRevoked: false,
+          name: 'named token',
+          lastUsedAt: now,
+        },
+        {
+          id: 'refresh-1',
+          tokenType: 'refresh',
+          userId: ownerId,
+          scopes: ['kb:read'],
+          createdAt: now,
+          expiresAt: now,
+          isRevoked: false,
+        },
+      ])
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon
+          .stub()
+          .resolves([
+            { _id: new Types.ObjectId(ownerId), email: 'owner@example.com', fullName: 'Owner' },
+          ]),
+      } as any)
+
+      const tokens = await service.listAllTokens(orgId)
+
+      expect(tokens).to.have.lengthOf(1)
+      expect(tokens[0]).to.include({
+        id: 'tok-1',
+        userId: ownerId,
+        ownerEmail: 'owner@example.com',
+        ownerFullName: 'Owner',
+      })
+      expect(mockOAuthTokenService.listTokensForApp.firstCall.args).to.deep.equal([patClientId])
+    })
+  })
+
+  describe('adminRevokeToken', () => {
+    it('throws NotFoundError when the org has no PAT app yet', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(null)
+
+      try {
+        await service.adminRevokeToken(orgId, userId, 'tok-1')
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+    })
+
+    it('throws NotFoundError when revokeAccessTokenByIdForClient finds nothing to revoke', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.revokeAccessTokenByIdForClient.resolves(false)
+
+      try {
+        await service.adminRevokeToken(orgId, userId, 'tok-1')
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+    })
+
+    it('revokes any user\'s token, not just the admin\'s own', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.revokeAccessTokenByIdForClient.resolves(true)
+
+      await service.adminRevokeToken(orgId, userId, 'tok-1', 'departed employee')
+
+      expect(mockOAuthTokenService.revokeAccessTokenByIdForClient.firstCall.args).to.deep.equal([
+        'tok-1',
+        patClientId,
+        userId,
+        'departed employee',
       ])
       expect(mockLogger.info.called).to.be.true
     })

@@ -122,4 +122,56 @@ export class PatController {
       next(error)
     }
   }
+
+  /**
+   * List every active personal access token in the org, across all
+   * users. Route-gated to org admins (see `userAdminCheck` in
+   * `pat.routes.ts`) — for incident response on a credential its owner
+   * didn't revoke themselves (departed employee, compromised laptop).
+   */
+  async adminListTokens(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = req.user!.orgId
+
+      const tokens = await this.patService.listAllTokens(orgId)
+
+      res.json({ tokens })
+    } catch (error) {
+      next(error)
+    }
+  }
+
+  /**
+   * Revoke any user's personal access token in the org by id.
+   * Route-gated to org admins (see `userAdminCheck` in `pat.routes.ts`).
+   */
+  async adminRevokeToken(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = req.user!.orgId
+      const adminUserId = req.user!.userId
+      const tokenId = req.params.tokenId!
+      const reason =
+        typeof req.body?.reason === 'string' ? req.body.reason : undefined
+
+      await this.patService.adminRevokeToken(orgId, adminUserId, tokenId, reason)
+
+      this.logger.info('Personal access token revoked by admin via API', {
+        orgId,
+        adminUserId,
+        tokenId,
+      })
+
+      res.json({ message: 'Personal access token revoked successfully' })
+    } catch (error) {
+      next(error)
+    }
+  }
 }

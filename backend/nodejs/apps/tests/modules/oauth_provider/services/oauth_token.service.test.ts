@@ -586,6 +586,58 @@ describe('OAuthTokenService', () => {
     })
   })
 
+  describe('revokeAccessTokenByIdForClient', () => {
+    it('returns true and scopes the filter by id/clientId only, not userId', async () => {
+      const updateStub = sinon
+        .stub(OAuthAccessToken, 'updateOne')
+        .resolves({ modifiedCount: 1 } as any)
+
+      const id = new Types.ObjectId().toString()
+      const adminId = new Types.ObjectId().toString()
+      const result = await service.revokeAccessTokenByIdForClient(
+        id,
+        'client-1',
+        adminId,
+        'departed employee',
+      )
+
+      expect(result).to.be.true
+      const filter = updateStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.have.property('clientId')
+      expect(filter).to.have.property('isRevoked')
+      // Deliberately not scoped by userId — an admin revoking must be able
+      // to target a token owned by someone else.
+      expect(filter).to.not.have.property('userId')
+      const update = updateStub.firstCall.args[1] as Record<string, unknown>
+      expect(update.revokedBy).to.deep.equal(new Types.ObjectId(adminId))
+    })
+
+    it('returns false when no document matched', async () => {
+      sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 0 } as any)
+
+      const result = await service.revokeAccessTokenByIdForClient(
+        new Types.ObjectId().toString(),
+        'client-1',
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+    })
+
+    it('returns false for a malformed id without touching the database', async () => {
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne')
+
+      const result = await service.revokeAccessTokenByIdForClient(
+        'not-a-valid-object-id',
+        'client-1',
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+      expect(updateStub.called).to.be.false
+    })
+  })
+
   describe('touchLastUsed via verifyAccessToken', () => {
     const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve))
 

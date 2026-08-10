@@ -7,6 +7,7 @@ import { Logger } from '../../../libs/services/logger.service'
 import { PatController } from '../controller/pat.controller'
 import { AppConfig } from '../../tokens_manager/config/config'
 import { createPatTokenSchema, tokenIdParamsSchema } from '../validators/pat.validators'
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 
 export function createPatRouter(container: Container): Router {
   const router = Router()
@@ -40,6 +41,19 @@ export function createPatRouter(container: Container): Router {
     '/:tokenId',
     ValidationMiddleware.validate(tokenIdParamsSchema),
     (req, res, next) => controller.revokeToken(req, res, next),
+  )
+
+  // Admin-only: incident response on any user's token in the org (departed
+  // employee, compromised laptop) — not reachable by regular members.
+  router.get('/admin', userAdminCheck, (req, res, next) =>
+    controller.adminListTokens(req, res, next),
+  )
+
+  router.delete(
+    '/admin/:tokenId',
+    userAdminCheck,
+    ValidationMiddleware.validate(tokenIdParamsSchema),
+    (req, res, next) => controller.adminRevokeToken(req, res, next),
   )
 
   return router

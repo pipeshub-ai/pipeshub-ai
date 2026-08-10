@@ -580,6 +580,46 @@ export class OAuthTokenService {
   }
 
   /**
+   * Revoke a single access token by its document id, scoped only to the
+   * owning client — not a specific user. For admin-initiated revocation
+   * (e.g. a departed employee's personal access token), where the caller
+   * legitimately needs to revoke a token they don't own themselves.
+   */
+  async revokeAccessTokenByIdForClient(
+    id: string,
+    clientId: string,
+    revokedBy: string,
+    reason?: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) {
+      return false
+    }
+    const result = await OAuthAccessToken.updateOne(
+      {
+        _id: { $eq: new Types.ObjectId(id) },
+        clientId: { $eq: clientId },
+        isRevoked: { $eq: false },
+      },
+      {
+        isRevoked: true,
+        revokedAt: new Date(),
+        revokedBy: new Types.ObjectId(revokedBy),
+        revokedReason: reason,
+      },
+    )
+
+    if (result.modifiedCount > 0) {
+      this.logger.info('Access token revoked by id (admin)', {
+        id,
+        clientId,
+        revokedBy,
+      })
+      return true
+    }
+    return false
+  }
+
+  /**
    * Throttled recency update — skips the write if the token was already
    * touched within the last 5 minutes, so a hot token doesn't generate a
    * write on every authenticated request.

@@ -19,6 +19,8 @@ describe('PatController', () => {
       listTokens: sinon.stub(),
       revokeToken: sinon.stub(),
       getDefaultScopes: sinon.stub(),
+      listAllTokens: sinon.stub(),
+      adminRevokeToken: sinon.stub(),
     }
     mockScopeValidatorService = {
       getScopeDefinitions: sinon.stub().returns([]),
@@ -125,6 +127,46 @@ describe('PatController', () => {
     it('calls next on service error', async () => {
       mockPatService.getDefaultScopes.rejects(new Error('fail'))
       await controller.listScopes(mockReq, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('adminListTokens', () => {
+    it('returns every token in the org', async () => {
+      const tokens = [
+        { id: 'tok-1', name: 't', scopes: [], createdAt: new Date(), expiresAt: new Date(), userId: 'user-2' },
+      ]
+      mockPatService.listAllTokens.resolves(tokens)
+
+      await controller.adminListTokens(mockReq, mockRes, mockNext)
+
+      expect(mockPatService.listAllTokens.calledWith('org-1')).to.be.true
+      expect(mockRes.json.calledWith({ tokens })).to.be.true
+    })
+
+    it('calls next on service error', async () => {
+      mockPatService.listAllTokens.rejects(new Error('fail'))
+      await controller.adminListTokens(mockReq, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('adminRevokeToken', () => {
+    it('revokes any user\'s token by id, forwarding an optional reason', async () => {
+      mockPatService.adminRevokeToken.resolves()
+      mockReq.params = { tokenId: 'tok-1' }
+      mockReq.body = { reason: 'departed employee' }
+
+      await controller.adminRevokeToken(mockReq, mockRes, mockNext)
+
+      expect(mockPatService.adminRevokeToken.calledWith('org-1', 'user-1', 'tok-1', 'departed employee')).to.be.true
+      expect(mockRes.json.calledWith({ message: 'Personal access token revoked successfully' })).to.be.true
+    })
+
+    it('calls next on service error (e.g. NotFoundError)', async () => {
+      mockPatService.adminRevokeToken.rejects(new Error('not found'))
+      mockReq.params = { tokenId: 'tok-1' }
+      await controller.adminRevokeToken(mockReq, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
     })
   })
