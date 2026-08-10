@@ -9,6 +9,7 @@ from app.config.constants.arangodb import Connectors, MimeTypes
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
 from app.connectors.sources.zendesk.connector import (
     DEFAULT_INCREMENTAL_START_TIME,
+    MAX_INLINE_IMAGE_BYTES,
     PAGE_SIZE,
     SYNC_POINT_KEY,
     ZendeskConnector,
@@ -604,6 +605,9 @@ def _ready(connector):
 class TestRunSync:
     @staticmethod
     def _stub_stages(connector, user):
+        connector.records_sync_point.read_sync_point = AsyncMock(
+            return_value={"lastEndTime": 1767312000}
+        )
         connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
         connector._fetch_groups = AsyncMock(
             return_value=([("g_rg", [])], [("g_ug", [])], True)
@@ -681,6 +685,7 @@ class TestRunSync:
         self, _filters, zendesk_connector, mock_data_entities_processor
     ):
         _ready(zendesk_connector)
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
         zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
@@ -815,19 +820,55 @@ class TestFetchOrganizations:
         assert user_groups[0][1] == [user]
         assert datasource.incremental_organizations.await_count == 1
 
-    async def test_stops_on_repeated_cursor(self, zendesk_connector):
+    async def test_pages_on_end_time(self, zendesk_connector):
+        """The time-based export has no cursor — the next window starts at end_time."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_organizations = AsyncMock(side_effect=[
+            _make_response(data={
+                "organizations": [{"id": 21, "name": "Acme"}],
+                "end_time": 1767312000,
+                "end_of_stream": False,
+            }),
+            _make_response(data={
+                "organizations": [{"id": 22, "name": "Beta"}],
+                "end_time": 1767398400,
+                "end_of_stream": True,
+            }),
+        ])
+
+        user_groups = await zendesk_connector._fetch_organizations()
+
+        assert datasource.incremental_organizations.await_count == 2
+        assert datasource.incremental_organizations.await_args_list[1].kwargs[
+            "start_time"
+        ] == 1767312000
+        assert [ug.source_user_group_id for ug, _ in user_groups] == ["org_21", "org_22"]
+
+    async def test_stops_on_non_advancing_end_time(self, zendesk_connector):
+        """A repeated end_time would page over the same window forever."""
         datasource = _ready(zendesk_connector)
         datasource.incremental_organizations = AsyncMock(
             return_value=_make_response(data={
                 "organizations": [{"id": 21, "name": "Acme"}],
-                "after_cursor": "stuck",
+                "end_time": DEFAULT_INCREMENTAL_START_TIME,
                 "end_of_stream": False,
             })
         )
 
         await zendesk_connector._fetch_organizations()
 
-        assert datasource.incremental_organizations.await_count == 2
+        assert datasource.incremental_organizations.await_count == 1
+
+    async def test_never_sends_a_cursor(self, zendesk_connector):
+        """Regression: /incremental/organizations/cursor.json 404s as InvalidEndpoint."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_organizations = AsyncMock(
+            return_value=_make_response(data={"organizations": [], "end_of_stream": True})
+        )
+
+        await zendesk_connector._fetch_organizations()
+
+        assert "cursor" not in datasource.incremental_organizations.await_args.kwargs
 
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1531,3 +1572,266 @@ class TestExtractObject:
 
     def test_non_dict_payload_returns_empty(self, zendesk_connector):
         assert zendesk_connector._extract_object([1, 2], "article") == {}
+
+
+# ===========================================================================
+# Inline image embedding
+# ===========================================================================
+
+
+def _img_response(status=200, body=b"\x89PNG\r\n", content_type="image/png"):
+    resp = MagicMock()
+    resp.status = status
+    resp.bytes.return_value = body
+    resp.content_type = content_type
+    return resp
+
+
+class TestInlineImages:
+    @staticmethod
+    def _ds(connector, response=None):
+        datasource = _ready(connector)
+        datasource.http = MagicMock()
+        datasource.http.headers = {"Authorization": "Basic secret"}
+        datasource.http.execute = AsyncMock(return_value=response or _img_response())
+        return datasource
+
+    async def test_tenant_image_becomes_data_uri(self, zendesk_connector):
+        self._ds(zendesk_connector)
+        html = '<p>x</p><img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
+        zendesk_connector.external_client = MagicMock()
+        zendesk_connector.external_client.get_subdomain.return_value = "acme"
+
+        out = await zendesk_connector._inline_images_as_base64(html)
+
+        assert "data:image/png;base64," in out
+        assert "attachments/token" not in out
+
+    async def test_untrusted_host_is_left_alone_and_never_fetched(self, zendesk_connector):
+        """Credentials must never reach a host the API happened to return."""
+        datasource = self._ds(zendesk_connector)
+        html = '<img src="https://zendesk.com.evil.com/steal.png">'
+
+        out = await zendesk_connector._inline_images_as_base64(html)
+
+        assert out == html
+        datasource.http.execute.assert_not_awaited()
+
+    async def test_oversized_image_is_skipped(self, zendesk_connector):
+        big = _img_response(body=b"x" * (MAX_INLINE_IMAGE_BYTES + 1))
+        self._ds(zendesk_connector, big)
+        zendesk_connector.external_client = MagicMock()
+        zendesk_connector.external_client.get_subdomain.return_value = "acme"
+        html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
+
+        assert await zendesk_connector._inline_images_as_base64(html) == html
+
+    async def test_non_image_content_type_is_skipped(self, zendesk_connector):
+        self._ds(zendesk_connector, _img_response(content_type="text/html"))
+        zendesk_connector.external_client = MagicMock()
+        zendesk_connector.external_client.get_subdomain.return_value = "acme"
+        html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
+
+        assert await zendesk_connector._inline_images_as_base64(html) == html
+
+    async def test_fetch_failure_leaves_url_for_the_pipeline(self, zendesk_connector):
+        """A URL we cannot fetch stays put so the unauthenticated pipeline can retry."""
+        self._ds(zendesk_connector, _img_response(status=404))
+        zendesk_connector.external_client = MagicMock()
+        zendesk_connector.external_client.get_subdomain.return_value = "acme"
+        html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
+
+        assert await zendesk_connector._inline_images_as_base64(html) == html
+
+    async def test_repeated_url_fetched_once(self, zendesk_connector):
+        datasource = self._ds(zendesk_connector)
+        zendesk_connector.external_client = MagicMock()
+        zendesk_connector.external_client.get_subdomain.return_value = "acme"
+        url = "https://acme.zendesk.com/attachments/token/a/?name=s.png"
+        html = f'<img src="{url}"><p>y</p><img src="{url}">'
+
+        out = await zendesk_connector._inline_images_as_base64(html)
+
+        assert datasource.http.execute.await_count == 1
+        assert out.count("data:image/png;base64,") == 2
+
+    async def test_no_img_tag_skips_datasource_entirely(self, zendesk_connector):
+        zendesk_connector.data_source = None
+        zendesk_connector.external_client = None
+        assert await zendesk_connector._inline_images_as_base64("<p>text only</p>") == "<p>text only</p>"
+
+    async def test_existing_data_uri_untouched(self, zendesk_connector):
+        datasource = self._ds(zendesk_connector)
+        html = '<img src="data:image/png;base64,AAAA">'
+
+        assert await zendesk_connector._inline_images_as_base64(html) == html
+        datasource.http.execute.assert_not_awaited()
+
+
+# ===========================================================================
+# OAuth token rotation
+# ===========================================================================
+
+
+class TestOAuthTokenRotation:
+    @staticmethod
+    def _oauth_ready(connector, in_use="old-token"):
+        inner = MagicMock()
+        inner.access_token = in_use
+        client = MagicMock()
+        client.get_client.return_value = inner
+        connector.external_client = client
+        connector.data_source = MagicMock()
+        return connector
+
+    async def test_rebuilds_client_when_stored_token_changed(self, zendesk_connector):
+        """Regression: the refresh service rotates the token in config every ~20 min but
+        cannot reach this object, so the cached client kept 401ing."""
+        self._oauth_ready(zendesk_connector, in_use="old-token")
+        zendesk_connector.config_service.get_config = AsyncMock(
+            return_value={"credentials": {"access_token": "new-token"}}
+        )
+        zendesk_connector.init = AsyncMock(return_value=True)
+
+        await zendesk_connector._get_fresh_datasource()
+
+        zendesk_connector.init.assert_awaited_once()
+
+    async def test_does_not_rebuild_when_token_unchanged(self, zendesk_connector):
+        self._oauth_ready(zendesk_connector, in_use="same-token")
+        zendesk_connector.config_service.get_config = AsyncMock(
+            return_value={"credentials": {"access_token": "same-token"}}
+        )
+        zendesk_connector.init = AsyncMock(return_value=True)
+
+        await zendesk_connector._get_fresh_datasource()
+
+        zendesk_connector.init.assert_not_awaited()
+
+    async def test_api_token_auth_never_rebuilds(self, zendesk_connector):
+        """API-token clients carry no access_token, so there is nothing to rotate."""
+        inner = MagicMock(spec=[])  # no access_token attribute
+        client = MagicMock()
+        client.get_client.return_value = inner
+        zendesk_connector.external_client = client
+        zendesk_connector.data_source = MagicMock()
+        zendesk_connector.config_service.get_config = AsyncMock()
+        zendesk_connector.init = AsyncMock()
+
+        await zendesk_connector._get_fresh_datasource()
+
+        zendesk_connector.init.assert_not_awaited()
+        zendesk_connector.config_service.get_config.assert_not_awaited()
+
+    async def test_config_read_failure_keeps_serving_cached_client(self, zendesk_connector):
+        """A config blip must not take the sync down; the cached token may still be valid."""
+        self._oauth_ready(zendesk_connector)
+        zendesk_connector.config_service.get_config = AsyncMock(side_effect=Exception("redis down"))
+        zendesk_connector.init = AsyncMock()
+
+        assert await zendesk_connector._get_fresh_datasource() is zendesk_connector.data_source
+        zendesk_connector.init.assert_not_awaited()
+
+    async def test_raises_when_uninitialised(self, zendesk_connector):
+        zendesk_connector.external_client = None
+        zendesk_connector.data_source = None
+
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await zendesk_connector._get_fresh_datasource()
+
+
+# ===========================================================================
+# Full-sync re-emission
+# ===========================================================================
+
+
+class TestFullSyncReemission:
+    """A full sync deletes the sync point and every BELONGS_TO edge with it. Skipping
+    unchanged records then leaves them orphaned — present but unreachable from the App,
+    which is what made the UI report zero records after every full sync."""
+
+    @staticmethod
+    def _unchanged(mock_tx_store, updated_ms=1767398400000):
+        existing = MagicMock()
+        existing.id = "rec-1"
+        existing.version = 3
+        existing.source_updated_at = updated_ms
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        return existing
+
+    async def test_unchanged_ticket_reemitted_without_sync_point(
+        self, zendesk_connector, mock_tx_store
+    ):
+        self._unchanged(mock_tx_store)
+        zendesk_connector._reemit_unchanged = True
+
+        result = await zendesk_connector._ticket_to_record({
+            "id": 7,
+            "subject": "PIPESHUB TEST - Password Reset",
+            "group_id": 1,
+            "updated_at": "2026-01-03T00:00:00Z",
+        })
+
+        assert result is not None
+
+    async def test_unchanged_ticket_still_skipped_on_incremental(
+        self, zendesk_connector, mock_tx_store
+    ):
+        self._unchanged(mock_tx_store)
+        zendesk_connector._reemit_unchanged = False
+
+        result = await zendesk_connector._ticket_to_record({
+            "id": 7,
+            "subject": "PIPESHUB TEST - Password Reset",
+            "group_id": 1,
+            "updated_at": "2026-01-03T00:00:00Z",
+        })
+
+        assert result is None
+
+    async def test_unchanged_article_reemitted_without_sync_point(
+        self, zendesk_connector, mock_tx_store
+    ):
+        self._unchanged(mock_tx_store)
+        zendesk_connector._reemit_unchanged = True
+
+        result = await zendesk_connector._article_to_record({
+            "id": 55,
+            "title": "How to reset",
+            "section_id": 31,
+            "updated_at": "2026-01-03T00:00:00Z",
+        })
+
+        assert result is not None
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_missing_sync_point_enables_reemission(self, _f, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        assert zendesk_connector._reemit_unchanged is True
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_existing_sync_point_keeps_skip_optimisation(self, _f, zendesk_connector):
+        _ready(zendesk_connector)
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
+            return_value={"lastEndTime": 1767312000}
+        )
+        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+
+        await zendesk_connector.run_sync()
+
+        assert zendesk_connector._reemit_unchanged is False
