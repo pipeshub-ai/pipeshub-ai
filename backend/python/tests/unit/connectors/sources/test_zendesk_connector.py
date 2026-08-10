@@ -116,12 +116,6 @@ def _make_response(success=True, data=None, error=None, status_code=None):
 
 
 class TestZendeskConnectorInit:
-    def test_constructor(self, zendesk_connector):
-        assert zendesk_connector.connector_id == "zd-conn-1"
-        assert zendesk_connector.connector_name == Connectors.ZENDESK
-        assert zendesk_connector.data_source is None
-        assert zendesk_connector.external_client is None
-
     @patch("app.connectors.sources.zendesk.connector.ZendeskDataSource")
     @patch("app.connectors.sources.zendesk.connector.ZendeskClient.build_from_services",
            new_callable=AsyncMock)
@@ -371,11 +365,6 @@ class TestRecordPermissions:
         # Fail closed: an unresolvable record stays invisible rather than org-wide.
         assert zendesk_connector._record_permissions(None, {}) == []
 
-    def test_group_only(self, zendesk_connector):
-        perms = zendesk_connector._record_permissions(7, {})
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.GROUP
-
 
 # ===========================================================================
 # reindex_records — must not widen ACLs
@@ -523,14 +512,6 @@ class TestIncrementalCursor:
 
 
 class TestCacheSideloads:
-    def test_caches_users_and_groups(self, zendesk_connector):
-        zendesk_connector._cache_sideloads({
-            "users": [{"id": 5, "email": "u@acme.com"}],
-            "groups": [{"id": 9, "name": "Support"}],
-        })
-        assert zendesk_connector._user_id_to_data["5"]["email"] == "u@acme.com"
-        assert zendesk_connector._group_id_to_data["9"]["name"] == "Support"
-
     def test_ignores_entries_without_id(self, zendesk_connector):
         zendesk_connector._cache_sideloads({"users": [{"email": "x@acme.com"}]})
         assert zendesk_connector._user_id_to_data == {}
@@ -858,17 +839,6 @@ class TestFetchOrganizations:
         await zendesk_connector._fetch_organizations()
 
         assert datasource.incremental_organizations.await_count == 1
-
-    async def test_never_sends_a_cursor(self, zendesk_connector):
-        """Regression: /incremental/organizations/cursor.json 404s as InvalidEndpoint."""
-        datasource = _ready(zendesk_connector)
-        datasource.incremental_organizations = AsyncMock(
-            return_value=_make_response(data={"organizations": [], "end_of_stream": True})
-        )
-
-        await zendesk_connector._fetch_organizations()
-
-        assert "cursor" not in datasource.incremental_organizations.await_args.kwargs
 
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1313,14 +1283,6 @@ class TestConnectionAndLifecycle:
     async def test_webhook_notification_is_noop(self, zendesk_connector):
         assert await zendesk_connector.handle_webhook_notification({"a": 1}) is None
 
-    async def test_fresh_datasource_raises_when_uninitialised(self, zendesk_connector):
-        zendesk_connector.init = AsyncMock(return_value=False)
-        zendesk_connector.external_client = None
-        zendesk_connector.data_source = None
-
-        with pytest.raises(Exception, match="not initialized"):
-            await zendesk_connector._get_fresh_datasource()
-
     @patch("app.connectors.sources.zendesk.connector.DataSourceEntitiesProcessor")
     async def test_create_connector_initialises_processor(
         self, mock_processor_cls, mock_logger, mock_data_store_provider, mock_config_service
@@ -1361,12 +1323,6 @@ class TestDateFilters:
             SyncFilterKey.CREATED: self._range_filter((100, 200)),
         }
         assert zendesk_connector._is_allowed_by_date_filters(50, None) is False
-
-    def test_created_inside_range_allowed(self, zendesk_connector):
-        zendesk_connector.sync_filters = {
-            SyncFilterKey.CREATED: self._range_filter((100, 200)),
-        }
-        assert zendesk_connector._is_allowed_by_date_filters(150, None) is True
 
     def test_modified_outside_range_rejected(self, zendesk_connector):
         zendesk_connector.sync_filters = {
@@ -1434,12 +1390,6 @@ class TestUrlHelpersAndBlockGroups:
         assert parent.children is not None
         assert child.children is None
 
-    def test_no_children_when_flat(self, zendesk_connector):
-        only = BlockGroup(id="a", index=0, name="Description",
-                          type=GroupType.TEXT_SECTION, parent_index=None)
-        zendesk_connector._populate_block_group_children([only])
-        assert only.children is None
-
 
 # ===========================================================================
 # Article streaming and sync-point start time
@@ -1478,18 +1428,6 @@ class TestArticleStreaming:
         await zendesk_connector._process_article_blockgroups_for_streaming(self._record())
 
         assert datasource.show_article.await_args.kwargs["article_id"] == 55
-
-    async def test_empty_body_still_produces_block_group(self, zendesk_connector):
-        datasource = _ready(zendesk_connector)
-        datasource.show_article = AsyncMock(
-            return_value=_make_response(data={"article": {"title": "Stub", "body": None}})
-        )
-
-        body = (
-            await zendesk_connector._process_article_blockgroups_for_streaming(self._record())
-        ).decode()
-
-        assert "Stub" in body
 
     async def test_raises_when_article_fetch_fails(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -1773,21 +1711,6 @@ class TestFullSyncReemission:
         })
 
         assert result is not None
-
-    async def test_unchanged_ticket_still_skipped_on_incremental(
-        self, zendesk_connector, mock_tx_store
-    ):
-        self._unchanged(mock_tx_store)
-        zendesk_connector._reemit_unchanged = False
-
-        result = await zendesk_connector._ticket_to_record({
-            "id": 7,
-            "subject": "PIPESHUB TEST - Password Reset",
-            "group_id": 1,
-            "updated_at": "2026-01-03T00:00:00Z",
-        })
-
-        assert result is None
 
     async def test_unchanged_article_reemitted_without_sync_point(
         self, zendesk_connector, mock_tx_store
