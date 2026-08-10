@@ -37,8 +37,17 @@ import {
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 
+/** Leave role unset so UserGroups stubs exercise the legacy admin fallback. */
+function stubUnsetUserRole() {
+  sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().resolves({}),
+    }),
+  } as any)
+}
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1913,6 +1922,7 @@ describe('Knowledge Base Controller', () => {
   describe('reindexConnector (happy path)', () => {
     it('should reindex connector successfully', async () => {
       const handler = reindexConnector(createMockAppConfig())
+      stubUnsetUserRole()
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'admin' }]),
       } as any)
@@ -1938,6 +1948,7 @@ describe('Knowledge Base Controller', () => {
 
     it('should reindex connector with no statusFilters (reindex all)', async () => {
       const handler = reindexConnector(createMockAppConfig())
+      stubUnsetUserRole()
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'member' }]),
       } as any)
@@ -3296,6 +3307,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when reindexConnector connector throws', async () => {
+      stubUnsetUserRole()
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([]),
       } as any)
@@ -3316,6 +3328,7 @@ describe('Knowledge Base Controller', () => {
 
     it('should call next when resyncConnectorRecords connector throws', async () => {
       const mockRecordRelation = createMockRecordRelationService()
+      stubUnsetUserRole()
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([]),
       } as any)
