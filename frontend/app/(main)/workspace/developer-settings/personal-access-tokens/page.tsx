@@ -22,6 +22,19 @@ function formatDate(value: string, locale?: string): string {
   });
 }
 
+// The backend stores "never expires" as a ~100-year expiry (OAuthAccessToken.expiresAt
+// is required and TTL-indexed, so there's no literal null option). Anything decades out
+// is that sentinel, not a real expiry a human picked.
+const NEVER_EXPIRES_THRESHOLD_YEARS = 50;
+
+function formatExpiry(value: string, locale: string | undefined, neverLabel: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const yearsOut = (date.getTime() - Date.now()) / (365.25 * 24 * 60 * 60 * 1000);
+  if (yearsOut > NEVER_EXPIRES_THRESHOLD_YEARS) return neverLabel;
+  return formatDate(value, locale);
+}
+
 function PersonalAccessTokensPageContent() {
   const { t, i18n } = useTranslation();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -234,7 +247,11 @@ function PersonalAccessTokensPageContent() {
                     {formatDate(token.createdAt, i18n.language)}
                   </Text>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
-                    {formatDate(token.expiresAt, i18n.language)}
+                    {formatExpiry(
+                      token.expiresAt,
+                      i18n.language,
+                      t('workspace.personalAccessTokens.neverExpires'),
+                    )}
                   </Text>
                   <Text size="2" style={{ color: 'var(--slate-11)', flex: 1 }}>
                     {token.lastUsedAt

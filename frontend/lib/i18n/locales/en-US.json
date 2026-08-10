@@ -1203,6 +1203,7 @@
       "columnLastUsed": "Last used",
       "scopeCount": "{{count}} scopes",
       "neverUsed": "Never",
+      "neverExpires": "Never",
       "revokeAria": "Revoke {{name}}",
       "revoke": {
         "confirmTitle": "Revoke token?",
