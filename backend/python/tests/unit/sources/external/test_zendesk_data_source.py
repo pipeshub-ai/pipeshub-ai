@@ -44,13 +44,26 @@ class TestIncrementalExportsUseCursorEndpoints:
         [
             ("incremental_tickets", "/incremental/tickets/cursor.json"),
             ("incremental_users", "/incremental/users/cursor.json"),
-            ("incremental_organizations", "/incremental/organizations/cursor.json"),
         ],
     )
     async def test_targets_cursor_endpoint(self, datasource, method, path):
         await getattr(datasource, method)(start_time=1)
 
         assert _url(datasource) == f"{BASE_URL}{path}"
+
+    async def test_organizations_target_time_based_endpoint(self, datasource):
+        """Zendesk exposes cursor incremental exports for tickets and users only;
+        /incremental/organizations/cursor.json 404s as InvalidEndpoint."""
+        await datasource.incremental_organizations(start_time=1)
+
+        assert _url(datasource) == f"{BASE_URL}/incremental/organizations.json"
+
+    async def test_organizations_always_send_start_time(self, datasource):
+        await datasource.incremental_organizations(start_time=1767312000)
+
+        query = _query(datasource)
+        assert query["start_time"] == "1767312000"
+        assert "cursor" not in query
 
     @pytest.mark.parametrize(
         "method",
@@ -65,7 +78,7 @@ class TestIncrementalExportsUseCursorEndpoints:
 
     @pytest.mark.parametrize(
         "method",
-        ["incremental_tickets", "incremental_users", "incremental_organizations"],
+        ["incremental_tickets", "incremental_users"],
     )
     async def test_later_requests_send_cursor_alone(self, datasource, method):
         # Zendesk rejects start_time and cursor together.
