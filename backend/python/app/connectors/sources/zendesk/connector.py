@@ -1,5 +1,7 @@
 """Zendesk connector implementation."""
 
+import base64
+import re
 from collections import defaultdict
 from datetime import datetime
 from functools import partial
@@ -93,6 +95,9 @@ BATCH_PROCESSING_SIZE = 100
 # Zendesk rejects an incremental start_time inside the last minute.
 INCREMENTAL_SAFETY_LAG_SECONDS = 60
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# Base64 inflates by a third and the result is held in the record body.
+MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
 
 
 @ConnectorBuilder("Zendesk")\
@@ -263,6 +268,7 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._org_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._user_id_to_app_user: Dict[str, AppUser] = {}
+        self._reemit_unchanged = False
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -295,7 +301,25 @@ class ZendeskConnector(BaseConnector):
         """
         if not self.external_client or not self.data_source:
             raise RuntimeError("Zendesk data source is not initialized")
+        if await self._oauth_token_rotated():
+            await self.init()
         return self.data_source
+
+    async def _oauth_token_rotated(self) -> bool:
+        # True when the stored access token differs from the one the client holds.
+        client = self.external_client.get_client()
+        in_use = getattr(client, "access_token", None)
+        if not in_use:  # API-token auth carries no rotating credential
+            return False
+        try:
+            config = await self.config_service.get_config(
+                f"/services/connectors/{self.connector_id}/config", use_cache=False
+            )
+        except Exception as e:
+            self.logger.warning(f"Zendesk: could not re-read stored credentials: {e}")
+            return False
+        stored = ((config or {}).get("credentials") or {}).get("access_token")
+        return bool(stored) and stored != in_use
 
     async def run_sync(self) -> None:
         self.logger.info(f"Starting Zendesk sync for connector {self.connector_id}")
@@ -306,6 +330,14 @@ class ZendeskConnector(BaseConnector):
             self.connector_id,
             self.logger,
         )
+
+        # A full sync deletes the sync point and every BELONGS_TO edge with it. Skipping
+        # unchanged records would then leave them orphaned — unreachable from the App and
+        # counted as zero — so re-emit everything when the checkpoint is gone.
+        sync_point = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
+        self._reemit_unchanged = not (sync_point or {}).get("lastEndTime")
+        if self._reemit_unchanged:
+            self.logger.info("Zendesk: no sync point — re-emitting every record")
 
         users, user_email_map, users_complete = await self._fetch_users()
         if users:
@@ -478,11 +510,9 @@ class ZendeskConnector(BaseConnector):
         """
         datasource = await self._get_fresh_datasource()
         orgs_data: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        start_time = DEFAULT_INCREMENTAL_START_TIME
         while True:
-            response = await datasource.incremental_organizations(
-                start_time=DEFAULT_INCREMENTAL_START_TIME, cursor=cursor
-            )
+            response = await datasource.incremental_organizations(start_time=start_time)
             if not response.success:
                 self.logger.error(f"Zendesk incremental_organizations failed: {response.error}")
                 break
@@ -490,10 +520,11 @@ class ZendeskConnector(BaseConnector):
                 break
             payload = response.data
             orgs_data.extend(self._extract_list(payload, "organizations"))
-            next_cursor = payload.get("after_cursor") or payload.get("cursor")
-            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
+            end_time = payload.get("end_time")
+            # An end_time that does not advance would page over the same window forever.
+            if payload.get("end_of_stream", True) or not end_time or end_time <= start_time:
                 break
-            cursor = next_cursor
+            start_time = end_time
 
         members_by_org: Dict[str, List[AppUser]] = defaultdict(list)
         for user_id, user_data in self._user_id_to_data.items():
@@ -597,7 +628,11 @@ class ZendeskConnector(BaseConnector):
                 external_id=str(ticket_id),
             )
 
-        if existing_record and existing_record.source_updated_at == updated_at:
+        if (
+            existing_record
+            and existing_record.source_updated_at == updated_at
+            and not self._reemit_unchanged
+        ):
             return None
 
         record_id = existing_record.id if existing_record else str(uuid4())
@@ -726,7 +761,11 @@ class ZendeskConnector(BaseConnector):
                 connector_id=self.connector_id,
                 external_id=f"article_{article_id}",
             )
-        if existing_record and existing_record.source_updated_at == updated_at:
+        if (
+            existing_record
+            and existing_record.source_updated_at == updated_at
+            and not self._reemit_unchanged
+        ):
             return None
 
         record_id = existing_record.id if existing_record else str(uuid4())
@@ -808,7 +847,7 @@ class ZendeskConnector(BaseConnector):
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
             if "<" in body and ">" in body:
-                body = html_to_markdown(body)
+                body = html_to_markdown(await self._inline_images_as_base64(body))
             children_records = await self._build_attachment_child_records(comment, record)
             author = self._user_id_to_data.get(str(comment.get("author_id")), {})
             is_description = index == 0
@@ -851,7 +890,7 @@ class ZendeskConnector(BaseConnector):
             raise Exception(f"Failed to fetch Zendesk article {article_id}")
         article = self._extract_object(response.data, "article")
         body = article.get("body") or ""
-        body_md = html_to_markdown(body) if body else ""
+        body_md = html_to_markdown(await self._inline_images_as_base64(body)) if body else ""
         block_group = BlockGroup(
             id=str(uuid4()),
             index=0,
@@ -865,6 +904,48 @@ class ZendeskConnector(BaseConnector):
             requires_processing=True,
         )
         return BlocksContainer(blocks=[], block_groups=[block_group]).model_dump_json(indent=2).encode("utf-8")
+
+    async def _inline_images_as_base64(self, html: str) -> str:
+        # Rewrite ``<img src>`` to base64 data URIs so inline images get indexed.
+        if not html or "<img" not in html.lower():
+            return html
+        datasource = await self._get_fresh_datasource()
+        resolved: Dict[str, str] = {}
+        for match in IMG_SRC_PATTERN.finditer(html):
+            url = match.group(2)
+            if url in resolved or url.startswith("data:"):
+                continue
+            if not self._is_tenant_api_url(url):
+                continue
+            data_uri = await self._fetch_image_as_data_uri(datasource, url)
+            if data_uri:
+                resolved[url] = data_uri
+        if not resolved:
+            return html
+        return IMG_SRC_PATTERN.sub(
+            lambda m: f"{m.group(1)}{resolved.get(m.group(2), m.group(2))}{m.group(3)}",
+            html,
+        )
+
+    async def _fetch_image_as_data_uri(self, datasource: ZendeskDataSource, url: str) -> Optional[str]:
+        try:
+            response = await datasource.http.execute(
+                HTTPRequest(url=url, method="GET", headers=datasource.http.headers.copy())
+            )
+            if response.status >= 400:
+                self.logger.warning(f"Zendesk inline image {url} returned {response.status}")
+                return None
+            raw = response.bytes()
+            if len(raw) > MAX_INLINE_IMAGE_BYTES:
+                self.logger.warning(f"Skipping oversized Zendesk inline image ({len(raw)} bytes): {url}")
+                return None
+            mime = response.content_type
+            if not mime.startswith("image/"):
+                return None
+            return f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
+        except Exception as e:
+            self.logger.warning(f"Could not inline Zendesk image {url}: {e}")
+            return None
 
     async def _build_attachment_child_records(
         self,
