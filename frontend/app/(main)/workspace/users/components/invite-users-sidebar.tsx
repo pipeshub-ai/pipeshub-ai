@@ -144,9 +144,9 @@ export function InviteUsersSidebar({
   // ^ Only re-run when groups load or edit mode changes. Do NOT add inviteGroupIds
   //   to deps or this will undo manual edits the user makes after opening.
 
-  // Form validation (role hidden — not required for now)
+  // Form validation
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
-  const isFormValid = hasValidEmails;
+  const isFormValid = hasValidEmails && Boolean(inviteRole);
 
   const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
   const isGrantingAdmin =
@@ -560,8 +560,8 @@ export function InviteUsersSidebar({
           />
         </FormField>
 
-        {/* Role dropdown — hidden for now */}
-        {/* <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
+        {/* Role dropdown */}
+        <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
           <SelectDropdown
             value={inviteRole}
             onChange={setInviteRole}
@@ -571,7 +571,7 @@ export function InviteUsersSidebar({
               'Assign team member role'
             )}
           />
-        </FormField> */}
+        </FormField>
 
         {/* Groups dropdown */}
         <FormField

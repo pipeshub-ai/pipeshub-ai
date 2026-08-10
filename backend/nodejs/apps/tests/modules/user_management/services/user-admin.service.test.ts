@@ -127,7 +127,7 @@ describe('user-admin.service', () => {
     });
 
     it('returns false when role is unset and user is not in admin group', async () => {
-      stubUsersFindOne(undefined);
+      stubUsersFindOne(null);
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().resolves([{ type: 'everyone' }, { type: 'standard' }]),
       } as any);
@@ -135,6 +135,16 @@ describe('user-admin.service', () => {
       const result = await isUserOrgAdmin(userId, orgId);
 
       expect(result).to.equal(false);
+    });
+
+    it('returns false for missing/deleted users without querying groups', async () => {
+      stubUsersFindOne(undefined);
+      const groupsStub = sinon.stub(UserGroups, 'find');
+
+      const result = await isUserOrgAdmin(userId, orgId);
+
+      expect(result).to.equal(false);
+      expect(groupsStub.called).to.equal(false);
     });
 
     it('queries Users with the expected filter', async () => {

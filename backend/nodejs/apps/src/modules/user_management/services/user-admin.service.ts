@@ -59,6 +59,11 @@ export const isUserOrgAdmin = async (
     return false;
   }
 
+  // Missing/deleted users must not inherit admin via stale group membership
+  if (!user) {
+    return false;
+  }
+
   // Pre-migration fallback: membership in type=admin group
   const groups = await UserGroups.find({
     orgId,

@@ -94,15 +94,21 @@ export function useInitializeUserProfile() {
           });
         }
 
-        const groups =
-          groupsResult.status === 'fulfilled'
-            ? (groupsResult.value.data as Array<{ type: string }>)
-            : null;
+        const groupsRaw =
+          groupsResult.status === 'fulfilled' ? groupsResult.value.data : null;
+        const groups = Array.isArray(groupsRaw)
+          ? groupsRaw.filter(
+              (g): g is { type: string } =>
+                g != null &&
+                typeof g === 'object' &&
+                typeof (g as { type?: unknown }).type === 'string',
+            )
+          : null;
 
         if (groupsResult.status === 'rejected') {
           console.warn(LOG, 'Groups API failed:', groupsResult.reason);
         } else {
-          console.debug(LOG, 'Groups API OK, count:', Array.isArray(groups) ? groups.length : 0);
+          console.debug(LOG, 'Groups API OK, count:', groups?.length ?? 0);
         }
 
         const avatarUrl =
@@ -118,7 +124,7 @@ export function useInitializeUserProfile() {
           isAdmin = true;
         } else if (roleLower === 'member') {
           isAdmin = false;
-        } else if (Array.isArray(groups)) {
+        } else if (groups) {
           isAdmin = groups.some((g) => g.type === GroupType.ADMIN);
         }
 
