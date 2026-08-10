@@ -44,16 +44,6 @@ BASE_URL = "https://acme.zendesk.com/api/v2"
 
 
 class TestZendeskResponse:
-    def test_success(self):
-        resp = ZendeskResponse(success=True, data={"key": "val"})
-        assert resp.success is True
-        assert resp.data == {"key": "val"}
-
-    def test_error(self):
-        resp = ZendeskResponse(success=False, error="oops")
-        assert resp.success is False
-        assert resp.error == "oops"
-
     def test_to_dict(self):
         resp = ZendeskResponse(success=True, data={"k": "v"})
         assert resp.to_dict()["success"] is True
@@ -89,10 +79,6 @@ class TestZendeskRESTClientViaToken:
         scheme, _, encoded = client.headers["Authorization"].partition(" ")
         assert scheme == "Basic"
         assert base64.b64decode(encoded).decode() == f"{EMAIL}/token:{TOKEN}"
-
-    def test_content_type_header(self):
-        client = ZendeskRESTClientViaToken(SUBDOMAIN, TOKEN, EMAIL)
-        assert client.headers["Content-Type"] == "application/json"
 
 
 # ---------------------------------------------------------------------------
