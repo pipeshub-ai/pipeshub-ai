@@ -126,7 +126,7 @@ describe('userAdminOrSelfCheck Middleware', () => {
     expect(findOneStub.firstCall.args[0]).to.deep.equal({
       _id: adminUserId,
       orgId: orgId,
-      isDeleted: false,
+      isDeleted: { $ne: true },
     });
   });
 

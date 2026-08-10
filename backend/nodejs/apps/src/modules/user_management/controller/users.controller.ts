@@ -40,7 +40,9 @@ import {
   isUserOrgAdmin,
   toDisplayUserRole,
   normalizeUserRole,
+  resolveOptionalUserRole,
   assertNotLastOrgAdminDemotion,
+  ensureOrgRetainsAdminAfterDemotion,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -519,7 +521,7 @@ export class UserController {
       const newUser = new Users({
         ...req.body,
         orgId: req.user?.orgId,
-        role: normalizeUserRole(req.body?.role) ?? 'member',
+        role: resolveOptionalUserRole(req.body?.role),
       });
 
       await UserGroups.updateOne(
@@ -839,9 +841,17 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      // Prevent locking the org with zero admins
-      if (updateFields.role === 'member') {
-        const orgId = req.user.orgId;
+      const orgId = req.user.orgId;
+      const demotingAdmin =
+        updateFields.role === 'member' &&
+        (user.role === 'admin' ||
+          (user.role !== 'member' &&
+            !!id &&
+            !!orgId &&
+            (await isUserOrgAdmin(String(id), String(orgId)))));
+
+      // Pre-check (fast fail) + post-save compensate for concurrent demotions
+      if (demotingAdmin) {
         if (!id || !orgId) {
           throw new BadRequestError('User or organization not found');
         }
@@ -888,6 +898,10 @@ export class UserController {
       }
 
       await user.save();
+
+      if (demotingAdmin && id && orgId) {
+        await ensureOrgRetainsAdminAfterDemotion(String(id), String(orgId));
+      }
 
       await this.eventService.start();
 
@@ -1512,7 +1526,7 @@ export class UserController {
         throw new BadRequestError('Invalid emails are found');
       }
 
-      const inviteRole = normalizeUserRole(rawRole) ?? 'member';
+      const inviteRole = resolveOptionalUserRole(rawRole);
 
       const orgId = req.user.orgId;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });

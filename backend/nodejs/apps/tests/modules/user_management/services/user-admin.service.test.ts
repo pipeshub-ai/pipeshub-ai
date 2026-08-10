@@ -4,9 +4,11 @@ import sinon from 'sinon';
 import mongoose from 'mongoose';
 import {
   normalizeUserRole,
+  resolveOptionalUserRole,
   toDisplayUserRole,
   isUserOrgAdmin,
   assertNotLastOrgAdminDemotion,
+  ensureOrgRetainsAdminAfterDemotion,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -52,6 +54,29 @@ describe('user-admin.service', () => {
       expect(normalizeUserRole('')).to.equal(null);
       expect(normalizeUserRole('guest')).to.equal(null);
       expect(normalizeUserRole('owner')).to.equal(null);
+    });
+  });
+
+  describe('resolveOptionalUserRole', () => {
+    it('defaults to member when role is absent or blank', () => {
+      expect(resolveOptionalUserRole(undefined)).to.equal('member');
+      expect(resolveOptionalUserRole(null)).to.equal('member');
+      expect(resolveOptionalUserRole('')).to.equal('member');
+      expect(resolveOptionalUserRole('   ')).to.equal('member');
+    });
+
+    it('returns normalized admin / member when valid', () => {
+      expect(resolveOptionalUserRole('Admin')).to.equal('admin');
+      expect(resolveOptionalUserRole('member')).to.equal('member');
+    });
+
+    it('throws BadRequestError for invalid supplied roles', () => {
+      try {
+        resolveOptionalUserRole('admn');
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal('Invalid role. Must be admin or member');
+      }
     });
   });
 
@@ -121,7 +146,7 @@ describe('user-admin.service', () => {
       expect(findOneStub.firstCall.args[0]).to.deep.equal({
         _id: userId,
         orgId,
-        isDeleted: false,
+        isDeleted: { $ne: true },
       });
     });
   });
@@ -147,7 +172,7 @@ describe('user-admin.service', () => {
         orgId,
         _id: { $ne: userId },
         role: 'admin',
-        isDeleted: false,
+        isDeleted: { $ne: true },
       });
     });
 
@@ -163,6 +188,42 @@ describe('user-admin.service', () => {
           'Cannot demote the last admin. Promote another user to admin first.',
         );
       }
+    });
+  });
+
+  describe('ensureOrgRetainsAdminAfterDemotion', () => {
+    it('allows demotion when at least one admin remains', async () => {
+      const countStub = sinon.stub(Users, 'countDocuments').resolves(1);
+      const updateStub = sinon.stub(Users, 'updateOne');
+
+      await ensureOrgRetainsAdminAfterDemotion(userId, orgId);
+
+      expect(countStub.calledOnce).to.equal(true);
+      expect(updateStub.called).to.equal(false);
+    });
+
+    it('restores the user and rejects when zero admins remain', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(0);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await ensureOrgRetainsAdminAfterDemotion(userId, orgId);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(
+          'Cannot demote the last admin. Promote another user to admin first.',
+        );
+      }
+
+      expect(updateStub.calledOnce).to.equal(true);
+      expect(updateStub.firstCall.args[0]).to.deep.equal({
+        _id: userId,
+        orgId,
+        isDeleted: { $ne: true },
+      });
+      expect(updateStub.firstCall.args[1]).to.deep.equal({
+        $set: { role: 'admin' },
+      });
     });
   });
 });

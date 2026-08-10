@@ -1013,6 +1013,7 @@ describe('UserController', () => {
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
+      // pre-check other admins + post-save remaining admins
       sinon.stub(Users, 'countDocuments').resolves(1);
 
       await controller.updateUser(req, res, next);
@@ -1021,6 +1022,49 @@ describe('UserController', () => {
       expect(mockUser.role).to.equal('member');
       expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('should restore and reject when concurrent demotion leaves zero admins', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'member' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Second Admin',
+        email: 'second@test.com',
+        role: 'admin',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+      findOneStub.onThirdCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(1); // pre-check: another admin exists
+      countStub.onSecondCall().resolves(0); // post-save: both demoted
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal(
+        'Cannot demote the last admin. Promote another user to admin first.',
+      );
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(updateStub.calledOnce).to.be.true;
+      expect(res.json.called).to.be.false;
     });
 
     it('should reject duplicate email when updating email', async () => {
@@ -1654,6 +1698,16 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('Invalid emails are found');
+    });
+
+    it('should call next with BadRequestError for invalid invite role', async () => {
+      req.body = { emails: ['valid@test.com'], role: 'admn' };
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Invalid role. Must be admin or member');
     });
   });
 
