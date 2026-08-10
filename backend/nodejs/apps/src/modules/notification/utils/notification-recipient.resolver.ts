@@ -35,7 +35,7 @@ export async function resolveRoleRecipientUserIds(
     const adminUsers = await Users.find({
       orgId,
       role: 'admin',
-      isDeleted: false,
+      isDeleted: { $ne: true },
     })
       .select('_id')
       .lean();
@@ -49,7 +49,7 @@ export async function resolveRoleRecipientUserIds(
       const adminGroups = await UserGroups.find({
         orgId,
         type: 'admin',
-        isDeleted: false,
+        isDeleted: { $ne: true },
       })
         .select('users')
         .lean();
@@ -69,7 +69,7 @@ export async function resolveRoleRecipientUserIds(
     const groups = await UserGroups.find({
       orgId,
       type: { $in: groupRoles },
-      isDeleted: false,
+      isDeleted: { $ne: true },
     })
       .select('users')
       .lean();

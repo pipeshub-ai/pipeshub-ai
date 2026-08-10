@@ -101,11 +101,11 @@ export class AdminRoleMigration {
       }
 
       // Orgs that never had an admin group (or already soft-deleted): still
-      // default any users missing role to member.
+      // default any users missing/null role to member (same unset filter as per-org pass).
       const defaultAllResult = await Users.updateMany(
         {
           isDeleted: { $ne: true },
-          role: { $exists: false },
+          $or: [{ role: { $exists: false } }, { role: null }],
         },
         { $set: { role: 'member' } },
       );

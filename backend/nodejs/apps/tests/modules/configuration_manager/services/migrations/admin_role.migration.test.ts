@@ -129,6 +129,13 @@ describe('AdminRoleMigration', () => {
     expect(result.usersDefaultedToMember).to.equal(3);
     expect(result.errored).to.equal(0);
     expect(updateManyStub.calledOnce).to.equal(true);
+    expect(updateManyStub.firstCall.args[0]).to.deep.equal({
+      isDeleted: { $ne: true },
+      $or: [{ role: { $exists: false } }, { role: null }],
+    });
+    expect(updateManyStub.firstCall.args[1]).to.deep.equal({
+      $set: { role: 'member' },
+    });
     expect(kv.set.calledWith(configPaths.adminRoleMigration, 'true')).to.equal(
       true,
     );

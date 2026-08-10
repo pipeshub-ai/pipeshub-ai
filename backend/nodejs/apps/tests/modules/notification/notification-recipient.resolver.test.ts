@@ -59,13 +59,18 @@ describe('notification/notification-recipient.resolver', () => {
     it('resolves users for admin via User.role', async () => {
       const user1 = new mongoose.Types.ObjectId();
       const user2 = new mongoose.Types.ObjectId();
-      stubUsersFind([{ _id: user1 }, { _id: user2 }]);
+      const findStub = stubUsersFind([{ _id: user1 }, { _id: user2 }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
       expect(result.map((id) => id.toString())).to.have.members([
         user1.toString(),
         user2.toString(),
       ]);
+      expect(findStub.firstCall.args[0]).to.deep.equal({
+        orgId,
+        role: 'admin',
+        isDeleted: { $ne: true },
+      });
     });
 
     it('falls back to admin group when no users have role=admin', async () => {
