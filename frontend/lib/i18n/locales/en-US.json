@@ -1229,6 +1229,8 @@
         "expiryNever": "Never",
         "permissionsHeading": "Scopes",
         "errorScopeRequired": "Select at least one scope.",
+        "selectAllScopes": "Select All",
+        "clearAllScopes": "Clear all",
         "scopesLoading": "Loading scopes...",
         "scopesLoadError": "Failed to load scopes.",
         "scopesRetry": "Retry",

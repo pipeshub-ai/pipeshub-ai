@@ -86,6 +86,17 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     return Array.from(byCategory.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [scopes]);
 
+  const totalScopeCount = scopes?.length ?? 0;
+  const allScopesSelected = totalScopeCount > 0 && selectedScopes.size === totalScopeCount;
+
+  const toggleSelectAllScopes = useCallback(() => {
+    if (allScopesSelected) {
+      setSelectedScopes(new Set());
+    } else {
+      setSelectedScopes(new Set((scopes ?? []).map((s) => s.name)));
+    }
+  }, [allScopesSelected, scopes]);
+
   const loadScopes = useCallback(async () => {
     setScopesLoading(true);
     setScopesErrorKey(null);
@@ -409,6 +420,19 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
                 </Text>
               )}
             </Flex>
+            <Button
+              type="button"
+              variant="outline"
+              color="gray"
+              size="2"
+              onClick={toggleSelectAllScopes}
+              disabled={totalScopeCount === 0 || scopesLoading}
+              style={{ flexShrink: 0, cursor: 'pointer' }}
+            >
+              {allScopesSelected
+                ? t('workspace.personalAccessTokens.create.clearAllScopes')
+                : t('workspace.personalAccessTokens.create.selectAllScopes')}
+            </Button>
           </Flex>
 
           {scopesLoading && (
