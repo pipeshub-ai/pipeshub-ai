@@ -976,12 +976,20 @@ class DataSourceEntitiesProcessor:
             # it in for those that leave it at the default (GitLab, Jira) so the
             # stored version isn't pinned at 0 forever. Bump only on a real
             # content change, so a metadata-only refresh doesn't inflate it.
+            # Placeholders are not content versions: stub backfills keep the stored
+            # value, and stub→real is the first genuine record (version 0).
             if record.version == 0:
-                record.version = existing_record.version + (
-                    1
-                    if record.external_revision_id != existing_record.external_revision_id
-                    else 0
-                )
+                if record.is_placeholder:
+                    record.version = existing_record.version
+                elif existing_record.is_placeholder:
+                    record.version = 0
+                else:
+                    record.version = existing_record.version + (
+                        1
+                        if record.external_revision_id
+                        != existing_record.external_revision_id
+                        else 0
+                    )
             # Only fall back to the stored weburl when the incoming record
             # doesn't carry one. Overwriting unconditionally would:
             #   (a) revert renames / moves where the connector re-saves
@@ -1282,9 +1290,17 @@ class DataSourceEntitiesProcessor:
                         new_record.source_updated_at = old_record.source_updated_at
 
                     # Same contract as _process_record: connectors that leave version
-                    # at 0 (GitLab) inherit the stored value and bump only on content change.
+                    # at 0 (GitLab) inherit / bump on content change; placeholders are
+                    # not content versions (stub refresh keeps stored; stub→real = 0).
                     if new_record.version == 0:
-                        new_record.version = old_record.version + (1 if content_changed else 0)
+                        if new_record.is_placeholder:
+                            new_record.version = old_record.version
+                        elif old_record.is_placeholder:
+                            new_record.version = 0
+                        else:
+                            new_record.version = old_record.version + (
+                                1 if content_changed else 0
+                            )
 
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
