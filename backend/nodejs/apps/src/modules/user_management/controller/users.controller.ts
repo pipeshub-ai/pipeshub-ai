@@ -41,7 +41,7 @@ import {
   toDisplayUserRole,
   normalizeUserRole,
   resolveOptionalUserRole,
-  ensureOrgRetainsAdminAfterDemotion,
+  saveUserEnsuringOrgRetainsAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
@@ -892,11 +892,14 @@ export class UserController {
         }
       }
 
-      await user.save();
-
-      // Enforce last-admin invariant after the write (handles concurrent demotions)
+      // Demotion: atomic save+admin check when RS is available; otherwise save+restore
       if (demotingAdmin && id && orgId) {
-        await ensureOrgRetainsAdminAfterDemotion(String(id), String(orgId));
+        await saveUserEnsuringOrgRetainsAdmin(
+          user,
+          this.config.rsAvailable === 'true',
+        );
+      } else {
+        await user.save();
       }
 
       await this.eventService.start();
