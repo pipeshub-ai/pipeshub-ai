@@ -14,6 +14,7 @@ import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
+import { PAT_TOKEN_PREFIX } from '../../modules/oauth_provider/constants/constants';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -287,6 +288,15 @@ export class AuthMiddleware {
     if (!authHeader) return null;
 
     const [bearer, token] = authHeader.split(' ');
-    return bearer === 'Bearer' && token ? token : null;
+    if (bearer !== 'Bearer' || !token) return null;
+
+    // Personal access tokens carry a display-only phpat_ prefix ahead of the
+    // underlying JWT. Strip it here, at the single entry point, so the
+    // token-type peek in authenticate() and every downstream verifier see a
+    // bare JWT — every other token type never has this prefix, so this is a
+    // no-op for them.
+    return token.startsWith(PAT_TOKEN_PREFIX)
+      ? token.slice(PAT_TOKEN_PREFIX.length)
+      : token;
   }
 }

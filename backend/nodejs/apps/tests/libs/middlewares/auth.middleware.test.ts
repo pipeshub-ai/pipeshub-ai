@@ -11,6 +11,7 @@ import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
 import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
+import { PAT_TOKEN_PREFIX } from '../../../src/modules/oauth_provider/constants/constants'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,6 +121,14 @@ describe('AuthMiddleware', () => {
       const req = createMockRequest({ headers: { authorization: '' } })
       const result = authMiddleware.extractToken(req)
       expect(result).to.be.null
+    })
+
+    it('should strip the phpat_ prefix from a personal access token', () => {
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${PAT_TOKEN_PREFIX}my-jwt` },
+      })
+      const result = authMiddleware.extractToken(req)
+      expect(result).to.equal('my-jwt')
     })
   })
 
@@ -339,6 +348,41 @@ describe('AuthMiddleware', () => {
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it('should route a phpat_-prefixed personal access token to OAuth auth, not regular auth', async () => {
+      // Deliberately does not stub jwt.decode — this exercises the real
+      // type-detection peek in authenticate(), which is what missed the
+      // phpat_ prefix before extractToken started stripping it.
+      const rawJwt = jwt.sign(
+        { tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' },
+        'test-secret',
+      )
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'user:read',
+        fullName: 'Test User',
+        accountType: 'premium',
+      })
+
+      const userQuery = createMockQuery({ email: 'test@example.com', fullName: 'Test User' })
+      sinon.stub(Users, 'findOne').returns(userQuery)
+
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${PAT_TOKEN_PREFIX}${rawJwt}` },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(mockOAuthTokenService.verifyAccessToken.calledOnceWith(rawJwt)).to.be.true
+      expect(tokenService.verifyToken.called).to.be.false
+      expect(req.user).to.deep.include({ userId: 'user1', orgId: 'org1', isOAuth: true })
     })
 
     it('should resolve client_credentials JWT via createdBy', async () => {
