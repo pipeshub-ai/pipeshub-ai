@@ -9529,30 +9529,24 @@ class ZendeskDataSource:
     async def incremental_organizations(
         self,
         start_time: int,
-        cursor: Optional[str] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
         """Incremental export of organizations
 
         Args:
             start_time (int, required): Unix timestamp to start from
-            cursor (Optional[str], optional): Pagination cursor
 
         Returns:
             ZendeskResponse: Standardized response object
         """
         try:
             _headers = dict(headers or {})
-            _params = {}
             _data = {}
-            # Ponytail: generated datasource patch; see incremental_tickets — the
-            # time-based export never returns after_cursor, capping this at one page.
-            url = f"{self.base_url}/incremental/organizations/cursor.json"
-
-            if cursor is not None:
-                _params["cursor"] = cursor
-            else:
-                _params["start_time"] = start_time
+            # Ponytail: generated datasource patch. Zendesk exposes cursor incremental
+            # exports for tickets and users only; /incremental/organizations/cursor.json
+            # 404s as InvalidEndpoint. Time-based export pages on end_time instead.
+            url = f"{self.base_url}/incremental/organizations.json"
+            _params = {"start_time": start_time}
 
             request = HTTPRequest(
                 method="GET",
