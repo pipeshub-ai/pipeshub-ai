@@ -967,12 +967,8 @@ describe('UserController', () => {
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
-      // assertNotLastOrgAdminDemotion → isUserOrgAdmin(target)
-      findOneStub.onThirdCall().returns({
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().resolves({ role: 'admin' }),
-      } as any);
       sinon.stub(Users, 'countDocuments').resolves(0);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
 
       await controller.updateUser(req, res, next);
 
@@ -981,7 +977,9 @@ describe('UserController', () => {
       expect(error.message).to.equal(
         'Cannot demote the last admin. Promote another user to admin first.',
       );
-      expect(mockUser.save.called).to.be.false;
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(updateStub.calledOnce).to.be.true;
+      expect(res.json.called).to.be.false;
     });
 
     it('should demote an admin when another admin exists', async () => {
@@ -1009,11 +1007,6 @@ describe('UserController', () => {
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
-      findOneStub.onThirdCall().returns({
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().resolves({ role: 'admin' }),
-      } as any);
-      // pre-check other admins + post-save remaining admins
       sinon.stub(Users, 'countDocuments').resolves(1);
 
       await controller.updateUser(req, res, next);
@@ -1045,14 +1038,8 @@ describe('UserController', () => {
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
-      findOneStub.onThirdCall().returns({
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().resolves({ role: 'admin' }),
-      } as any);
 
-      const countStub = sinon.stub(Users, 'countDocuments');
-      countStub.onFirstCall().resolves(1); // pre-check: another admin exists
-      countStub.onSecondCall().resolves(0); // post-save: both demoted
+      sinon.stub(Users, 'countDocuments').resolves(0);
       const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
 
       await controller.updateUser(req, res, next);

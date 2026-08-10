@@ -113,34 +113,9 @@ export const findOrgAdminUserIds = async (
 };
 
 /**
- * Fast pre-check: blocks demoting an org admin when no other User.role=admin
- * remains. Not sufficient alone under concurrency — pair with
- * {@link ensureOrgRetainsAdminAfterDemotion} after the role write.
- */
-export const assertNotLastOrgAdminDemotion = async (
-  userId: string,
-  orgId: string,
-): Promise<void> => {
-  const isAdmin = await isUserOrgAdmin(userId, orgId);
-  if (!isAdmin) {
-    return;
-  }
-
-  const otherAdmins = await Users.countDocuments({
-    orgId,
-    _id: { $ne: userId },
-    role: 'admin',
-    isDeleted: { $ne: true },
-  });
-
-  if (otherAdmins === 0) {
-    throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
-  }
-};
-
-/**
- * Post-write guard against concurrent last-admin demotions.
- * If the org has zero admins after a demotion, restore this user to admin and fail.
+ * After an admin→member write, ensure the org still has an admin.
+ * If concurrent demotions left zero admins, restore this user and fail.
+ * Do not use a read-only count before the role write — that races.
  */
 export const ensureOrgRetainsAdminAfterDemotion = async (
   userId: string,

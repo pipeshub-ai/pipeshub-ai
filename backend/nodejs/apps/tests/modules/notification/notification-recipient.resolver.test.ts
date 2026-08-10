@@ -9,14 +9,12 @@ import {
   resolveNotificationRecipientUserIds,
 } from '../../../src/modules/notification/utils/notification-recipient.resolver';
 
-/** Build a stub chain for UserGroups.find(...).select(...).lean() */
 function stubUserGroupsFind(groups: { users?: unknown[] }[]): sinon.SinonStub {
   const lean = sinon.stub().resolves(groups);
   const select = sinon.stub().returns({ lean });
   return sinon.stub(UserGroups, 'find').returns({ select } as any);
 }
 
-/** Build a stub chain for Users.find(...).select(...).lean() */
 function stubUsersFind(users: { _id: mongoose.Types.ObjectId }[]): sinon.SinonStub {
   const lean = sinon.stub().resolves(users);
   const select = sinon.stub().returns({ lean });

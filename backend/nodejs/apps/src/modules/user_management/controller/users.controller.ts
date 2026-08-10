@@ -41,7 +41,6 @@ import {
   toDisplayUserRole,
   normalizeUserRole,
   resolveOptionalUserRole,
-  assertNotLastOrgAdminDemotion,
   ensureOrgRetainsAdminAfterDemotion,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
@@ -850,12 +849,8 @@ export class UserController {
             !!orgId &&
             (await isUserOrgAdmin(String(id), String(orgId)))));
 
-      // Pre-check (fast fail) + post-save compensate for concurrent demotions
-      if (demotingAdmin) {
-        if (!id || !orgId) {
-          throw new BadRequestError('User or organization not found');
-        }
-        await assertNotLastOrgAdminDemotion(String(id), String(orgId));
+      if (demotingAdmin && (!id || !orgId)) {
+        throw new BadRequestError('User or organization not found');
       }
 
       // Apply updates only for whitelisted fields
@@ -899,6 +894,7 @@ export class UserController {
 
       await user.save();
 
+      // Enforce last-admin invariant after the write (handles concurrent demotions)
       if (demotingAdmin && id && orgId) {
         await ensureOrgRetainsAdminAfterDemotion(String(id), String(orgId));
       }
