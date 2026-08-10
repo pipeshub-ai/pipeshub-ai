@@ -11,7 +11,7 @@ import {
   JWK,
 } from '../types/oauth.types';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Users } from '../../user_management/schema/users.schema';
+import { Users } from '../../../config';
 import {
   OAuthRequest,
   buildWwwAuthenticateHeader,

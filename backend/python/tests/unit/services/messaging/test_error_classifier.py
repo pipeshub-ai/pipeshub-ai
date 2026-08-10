@@ -159,6 +159,19 @@ class TestStatusCodeExtraction:
         exc = Exception("Generic error")
         assert _extract_status_code(exc) is None
 
+    def test_extract_status_code_ignores_string_status(self):
+        """Google-style string .status must not be treated as an HTTP code."""
+        exc = Exception("Quota exceeded")
+        exc.status = "RESOURCE_EXHAUSTED"
+        exc.code = 429
+        assert _extract_status_code(exc) == 429
+
+    def test_extract_status_code_string_status_alone_returns_none(self):
+        """String-only .status is ignored so classify does not TypeError."""
+        exc = Exception("Quota exceeded")
+        exc.status = "RESOURCE_EXHAUSTED"
+        assert _extract_status_code(exc) is None
+
 
 class TestExceptionWithStatusCode:
     """Test exceptions that contain HTTP status codes."""
@@ -176,6 +189,34 @@ class TestExceptionWithStatusCode:
         exc.status_code = 404
         result = MessageErrorClassifier.classify_by_exception(exc)
         assert result == MessageErrorType.TERMINAL
+
+    def test_classify_never_raises_on_unexpected_status_shape(self):
+        """Classifier bugs must return TRANSIENT so consumers can capped-retry."""
+        exc = Exception("unexpected shape")
+        exc.status_code = "RESOURCE_EXHAUSTED"
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_google_resource_exhausted_is_transient_not_typeerror(self):
+        """Gemini ClientError: string .status + int .code=429 → TRANSIENT."""
+        exc = Exception("You exceeded your current quota")
+        exc.status = "RESOURCE_EXHAUSTED"
+        exc.code = 429
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_wrapped_google_resource_exhausted_is_transient(self):
+        """IndexingError wrapping Gemini 429 must classify as TRANSIENT."""
+        cause = Exception("You exceeded your current quota")
+        cause.status = "RESOURCE_EXHAUSTED"
+        cause.code = 429
+        wrapped = IndexingError(
+            "Failed to get embedding model: " + str(cause),
+            details={"error": str(cause)},
+        )
+        wrapped.__cause__ = cause
+        result = MessageErrorClassifier.classify_by_exception(wrapped)
+        assert result == MessageErrorType.TRANSIENT
 
     def test_exception_with_rate_limit_status_code(self):
         """Test exception with 429 rate limit status code is transient."""

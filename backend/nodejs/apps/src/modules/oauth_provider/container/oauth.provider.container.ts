@@ -1,7 +1,7 @@
 import { Container } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
-import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
+import { AuthMiddleware } from '../../../config'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config'
 import { AppConfig } from '../../tokens_manager/config/config'

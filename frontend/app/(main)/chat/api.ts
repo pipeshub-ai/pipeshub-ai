@@ -835,11 +835,12 @@ export async function fetchOrgLogo(): Promise<string | null> {
   }
 }
 
-/**
- * Module-level singleton — guarantees a single fetch per page load
- * regardless of React StrictMode double-mounting or component remounts.
- */
+
 let _orgWithLogoPromise: Promise<{ org: OrgResponse | null; logoUrl: string | null }> | null = null;
+
+export function clearOrgWithLogoCache(): void {
+  _orgWithLogoPromise = null;
+}
 
 export function fetchOrgWithLogo(): Promise<{ org: OrgResponse | null; logoUrl: string | null }> {
   if (!_orgWithLogoPromise) {

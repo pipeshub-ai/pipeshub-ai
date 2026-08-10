@@ -1,5 +1,5 @@
 // Axios instance with interceptors
-export { apiClient, default } from './axios-instance';
+export { apiClient, default as apiClientDefault } from './axios-instance';
 
 // SWR fetchers
 export { axiosFetcher, publicFetcher, configuredFetcher } from './fetcher';

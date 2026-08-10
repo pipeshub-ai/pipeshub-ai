@@ -4,6 +4,7 @@ read-only view over `AgentContext.tool_state`'s citation-related fields, and
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agents.agent_loop.context import AgentContext
@@ -247,6 +248,129 @@ class TestFetchFullRecordTool:
             await tool.execute(record_ids=["rec-1"])
 
         assert context.tool_state["citation_ref_mapper"] is new_ref_mapper
+
+    async def test_second_fetch_of_the_same_record_does_not_redownload(self) -> None:
+        """`_fetch_multiple_records_impl` is a write-back cache: it stores what
+        it downloads into the `virtual_record_id_to_result` mapping it is
+        handed, so a repeat fetch is a map hit. That only holds if `execute()`
+        hands it the SAME mapping every call — passing a fresh dict makes the
+        write-back unreachable and every repeat re-downloads. Empty map here
+        because that is the navigate/lookup path, where retrieval never ran."""
+        context = _make_context()
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        downloads: list[str] = []
+
+        def _factory(virtual_records: dict, **_kwargs: object) -> SimpleNamespace:
+            async def _coroutine(record_ids: list[str], reason: str = "") -> dict:
+                records = []
+                for rid in record_ids:
+                    cached = next(
+                        (r for r in virtual_records.values() if r and r.get("id") == rid),
+                        None,
+                    )
+                    if cached is None:
+                        downloads.append(rid)
+                        cached = {"id": rid, "context_metadata": f"Record ID : {rid}"}
+                        virtual_records[f"v-{rid}"] = cached
+                    records.append(cached)
+                return {"ok": True, "records": records, "not_available_ids": []}
+
+            return SimpleNamespace(coroutine=_coroutine)
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            side_effect=_factory,
+        ), patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            side_effect=lambda record, ref_mapper=None, **_k: (
+                [{"type": "text", "text": f"<record>\n{record['id']}\n"}], ref_mapper
+            ),
+        ):
+            first = await tool.execute(record_ids=["rec-1"])
+            second = await tool.execute(record_ids=["rec-1"])
+
+        assert first.success is True
+        assert second.success is True
+        assert downloads == ["rec-1"], "the second fetch must hit the map, not re-download"
+
+    async def test_repeated_ids_within_one_call_are_collapsed(self) -> None:
+        """One call naming the same record twice would render the document
+        twice into the same message."""
+        context = _make_context()
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        seen: list[list[str]] = []
+
+        async def _coroutine(record_ids: list[str], reason: str = "") -> dict:
+            seen.append(list(record_ids))
+            return {
+                "ok": True,
+                "records": [{"id": r, "context_metadata": r} for r in record_ids],
+                "not_available_ids": [],
+            }
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=SimpleNamespace(coroutine=_coroutine),
+        ), patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            side_effect=lambda record, ref_mapper=None, **_k: (
+                [{"type": "text", "text": f"<record>\n{record['id']}\n"}], ref_mapper
+            ),
+        ):
+            await tool.execute(record_ids=["rec-a", "rec-a", "rec-b"])
+
+        assert seen == [["rec-a", "rec-b"]]
+
+    async def test_a_second_agent_in_the_tree_gets_real_content_not_a_pointer(self) -> None:
+        """`AgentRuntime` — and so the tool registry, the tool instance and
+        `AgentContext` — is shared across a spawn tree, but every child gets a
+        fresh `ContextManager()`. A cross-call skip guard keyed on the shared
+        context would therefore tell the parent to "re-read it above" for a
+        record only its child ever read, leaving it holding prose and no text.
+        Fetching is idempotent by design; keep it that way."""
+        context = _make_context()
+        collector = CitationCollector(context)
+        first_agent = _FetchFullRecordTool(collector, context)
+        second_agent = _FetchFullRecordTool(collector, context)
+
+        async def _coroutine(record_ids: list[str], reason: str = "") -> dict:
+            return {
+                "ok": True,
+                "records": [{"id": r, "context_metadata": r} for r in record_ids],
+                "not_available_ids": [],
+            }
+
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=SimpleNamespace(coroutine=_coroutine),
+        ), patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            side_effect=lambda record, ref_mapper=None, **_k: (
+                [{"type": "text", "text": f"<record>\ncontent of {record['id']}\n"}],
+                ref_mapper,
+            ),
+        ):
+            await first_agent.execute(record_ids=["rec-1"])
+            output = await second_agent.execute(record_ids=["rec-1"])
+
+        assert output.success is True
+        assert "content of rec-1" in output.data
+        for pointer in ("already", "re-read", "not repeated"):
+            assert pointer not in output.data.lower()
+
+    async def test_unexpected_argument_returns_a_correctable_error(self) -> None:
+        """`record_id=` (singular) is a plausible model slip. It must surface as
+        an error naming the real parameters, never as a silent empty fetch."""
+        context = _make_context()
+        tool = _FetchFullRecordTool(CitationCollector(context), context)
+
+        output = await tool.execute(record_id="rec-1")
+
+        assert output.success is False
+        assert "record_id" in output.error
+        assert "record_ids" in output.error
 
     async def test_execute_falls_back_to_to_tool_output_when_not_ok(self) -> None:
         """When the underlying fetch returns `{"ok": False, ...}` (no

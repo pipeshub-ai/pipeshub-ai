@@ -972,6 +972,16 @@ class DataSourceEntitiesProcessor:
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            # Connectors that track their own version pass a non-zero value; fill
+            # it in for those that leave it at the default (GitLab, Jira) so the
+            # stored version isn't pinned at 0 forever. Bump only on a real
+            # content change, so a metadata-only refresh doesn't inflate it.
+            if record.version == 0:
+                record.version = existing_record.version + (
+                    1
+                    if record.external_revision_id != existing_record.external_revision_id
+                    else 0
+                )
             # Only fall back to the stored weburl when the incoming record
             # doesn't carry one. Overwriting unconditionally would:
             #   (a) revert renames / moves where the connector re-saves
@@ -1163,13 +1173,47 @@ class DataSourceEntitiesProcessor:
         )
         await self._mark_queued_after_publish([record.id])
 
+    def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
+        """Carry the stored indexing lifecycle onto a metadata-only write.
+
+        These fields belong to the indexing pipeline, not to a metadata refresh.
+        The caller supplies a record it hydrated for its own purpose — GitLab's
+        commit-timestamp backfill reads every record up front and writes them back
+        minutes later — so whatever it carries is a stale snapshot, and
+        to_arango_base_record rewrites the whole document. On top of that,
+        _process_record resets a COMPLETED record to NOT_STARTED to request a
+        re-index, but this path publishes no event and nothing consumes
+        NOT_STARTED, which strands the record permanently.
+        """
+        record.indexing_status = existing_record.indexing_status
+        record.parsing_status = existing_record.parsing_status
+        record.extraction_status = existing_record.extraction_status
+        record.processing_started_at = existing_record.processing_started_at
+        record.reason = existing_record.reason
+        record.is_vlm_ocr_processed = existing_record.is_vlm_ocr_processed
+        # A connector may legitimately report these from the source, so keep its
+        # value when it has one and fall back to what is stored otherwise.
+        # size_in_bytes=0 is valid (empty file) — only fall back when unset.
+        record.md5_hash = record.md5_hash or existing_record.md5_hash
+        if record.size_in_bytes is None:
+            record.size_in_bytes = existing_record.size_in_bytes
+        record.storage_document_id = (
+            record.storage_document_id or existing_record.storage_document_id
+        )
+
     @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
+        """Persist source-metadata changes (timestamps, name, url) for an existing record.
+
+        Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
+        """
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record = await self._process_record(record, [], tx_store)
             if processed_record:
+                if existing_record is not None:
+                    self._preserve_indexing_state(processed_record, existing_record)
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
     @retry_on_deadlock()
@@ -1229,7 +1273,19 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-                    
+
+                    # Keep stored Git/source timestamps when the connector did not
+                    # supply real ones (e.g. rename path with null timestamps).
+                    if new_record.source_created_at is None:
+                        new_record.source_created_at = old_record.source_created_at
+                    if new_record.source_updated_at is None:
+                        new_record.source_updated_at = old_record.source_updated_at
+
+                    # Same contract as _process_record: connectors that leave version
+                    # at 0 (GitLab) inherit the stored value and bump only on content change.
+                    if new_record.version == 0:
+                        new_record.version = old_record.version + (1 if content_changed else 0)
+
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
                             # If the old record is completed and content hasn't changed,

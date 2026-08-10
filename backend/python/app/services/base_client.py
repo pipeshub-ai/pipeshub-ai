@@ -50,6 +50,31 @@ class ServiceUnavailableError(ServiceCallError):
     """Raised when the remote service is unreachable or persistently 5xx."""
 
 
+def _extract_service_error_message(response: httpx.Response) -> str | None:
+    """Pull a useful error message from a failed service JSON/text body."""
+    try:
+        body = response.json()
+    except Exception:
+        text = (response.text or "").strip()
+        return text[:500] if text else None
+
+    if not isinstance(body, dict):
+        return None
+
+    error = body.get("error")
+    if isinstance(error, dict):
+        msg = error.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+
+    msg = body.get("message")
+    if isinstance(msg, str) and msg.strip():
+        return msg.strip()
+    return None
+
+
 class CircuitState(Enum):
     CLOSED = "closed"        # normal operation
     OPEN = "open"             # failing fast, no requests allowed
@@ -301,6 +326,7 @@ class BaseServiceClient:
         headers = headers or {}
         last_exc: Exception | None = None
         last_status: int | None = None
+        last_error_message: str | None = None
 
         async with self._make_client() as client:
             for attempt in range(1, attempt_limit + 1):
@@ -327,7 +353,8 @@ class BaseServiceClient:
                         self.circuit_breaker.record_success()
                         return response
 
-                    # Transient 5xx / 429 — retryable.
+                    # Transient 5xx / 429 — retryable. Keep body message for final raise.
+                    last_error_message = _extract_service_error_message(response)
                     self.logger.debug(
                         "[%s] %s returned %d on attempt %d",
                         self.service_name, operation, response.status_code, attempt,
@@ -368,9 +395,14 @@ class BaseServiceClient:
         # All attempts exhausted without a usable response — a single summary
         # WARNING per failed operation, instead of one per retry attempt.
         attempted = attempt_limit
+        summary = last_exc or (
+            f"status {last_status}: {last_error_message}"
+            if last_error_message
+            else f"status {last_status}"
+        )
         self.logger.warning(
             "[%s] %s failed after %d attempt(s): %s",
-            self.service_name, operation, attempted, last_exc or f"status {last_status}",
+            self.service_name, operation, attempted, summary,
         )
         self.circuit_breaker.record_failure()
 
@@ -380,10 +412,14 @@ class BaseServiceClient:
                 service_name=self.service_name,
             ) from last_exc
 
+        message = f"{self.service_name} {operation} failed with status {last_status}"
+        if last_error_message:
+            message = f"{message}: {last_error_message}"
         raise ServiceCallError(
-            f"{self.service_name} {operation} failed with status {last_status}",
+            message,
             status_code=last_status,
             service_name=self.service_name,
+            details={"error_message": last_error_message} if last_error_message else None,
         )
 
     # ------------------------------------------------------------------

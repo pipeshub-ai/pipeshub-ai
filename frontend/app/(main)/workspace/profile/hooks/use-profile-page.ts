@@ -3,7 +3,7 @@
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
-import { logoutFromWorkspaceMenu } from '@/lib/store/auth-store';
+import { logoutFromWorkspaceMenu } from '@/config';
 import { useProfileStore, isProfileFormDirty } from '../store';
 import { ProfileApi } from '../api';
 import { getUserIdFromToken, getUserEmailFromToken } from '@/lib/utils/jwt';

@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { LottieLoader } from './lottie-loader';
 import { getOrgExists } from '@/lib/api/org-exists-public';
 

@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import { Users } from '../../user_management/schema/users.schema';
+import { Users } from '../../../config';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
 import {
   EntitiesEventProducer,
