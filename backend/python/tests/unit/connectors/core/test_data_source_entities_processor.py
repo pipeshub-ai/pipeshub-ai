@@ -4240,6 +4240,7 @@ def _make_code_record(
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
     rec.is_internal = is_internal
+    rec.is_placeholder = False
     rec.version = version
     rec.org_id = "org-1"
     rec.record_name = f"file_{record_id}.py"
@@ -4259,6 +4260,7 @@ def _make_old_record(
     rec.id = record_id
     rec.external_revision_id = external_revision_id
     rec.indexing_status = indexing_status
+    rec.is_placeholder = False
     rec.version = version
     return rec
 
