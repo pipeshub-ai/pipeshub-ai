@@ -215,3 +215,8 @@ backend/python/.claude/settings.local.json
 .commandcode
 # Subagent-driven-development progress ledger (scratch, not committed)
 .superpowers/
+
+# Load-test output and credentials (see loadtest/.gitignore)
+loadtest/results/
+# Host + bearer token for a load-test target environment.
+.env.play

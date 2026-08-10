@@ -345,6 +345,36 @@ class TestIsBase64ImageBranches:
         monkeypatch.setattr(chat_helpers_module.base64, "b64decode", boom)
         assert is_base64_image("dGVzdA==") is False
 
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            (b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000, True),
+            (b"\xff\xd8\xff" + b"\x00" * 40_000, True),
+            (b"GIF89a" + b"\x00" * 40_000, True),
+            (b'<svg xmlns="http://www.w3.org/2000/svg">' + b"<rect/>" * 5_000 + b"</svg>", True),
+            (b"not an image at all " * 2_000, False),
+        ],
+        ids=["png", "jpeg", "gif", "svg", "plain-text"],
+    )
+    def test_large_payloads_sniffed_from_prefix(self, payload, expected):
+        """Only the first 204 decoded bytes decide the verdict, so payloads far
+        larger than the decoded prefix must classify exactly as small ones do."""
+        assert is_base64_image(base64.b64encode(payload).decode()) is expected
+
+    def test_large_payload_decodes_only_the_prefix(self, monkeypatch):
+        """Guards the optimisation itself: a 40 KB image must not be fully decoded."""
+        seen: list[int] = []
+        real = chat_helpers_module.base64.b64decode
+
+        def spy(data, *a, **k):
+            seen.append(len(data))
+            return real(data, *a, **k)
+
+        monkeypatch.setattr(chat_helpers_module.base64, "b64decode", spy)
+        big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000).decode()
+        assert is_base64_image(big) is True
+        assert seen and max(seen) <= 272, f"decoded {max(seen)} chars, expected <= 272"
+
 
 class TestCreateRecordInstanceMeetingDeal:
     def test_meeting_with_graph_doc(self):

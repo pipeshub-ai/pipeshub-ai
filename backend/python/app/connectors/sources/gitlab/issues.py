@@ -31,7 +31,7 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
-from .common.utils import parse_item_id_from_url
+from .common.utils import parse_item_id_from_url, wire_block_group_parent_children
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
@@ -292,6 +292,7 @@ class IssuesSync:
             block_group_number += len(comments_bg)
             list_remaining_records.extend(remaining_records)
 
+        wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=[], block_groups=block_groups)
         await self.process_new_records(list_remaining_records)
         return blocks_container.model_dump_json(indent=2).encode(GitlabLiterals.UTF_8.value)
