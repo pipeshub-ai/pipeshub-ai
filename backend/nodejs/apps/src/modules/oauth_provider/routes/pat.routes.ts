@@ -6,7 +6,11 @@ import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-lim
 import { Logger } from '../../../libs/services/logger.service'
 import { PatController } from '../controller/pat.controller'
 import { AppConfig } from '../../tokens_manager/config/config'
-import { createPatTokenSchema, tokenIdParamsSchema } from '../validators/pat.validators'
+import {
+  createPatTokenSchema,
+  listAdminPatQuerySchema,
+  tokenIdParamsSchema,
+} from '../validators/pat.validators'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 
 export function createPatRouter(container: Container): Router {
@@ -45,8 +49,11 @@ export function createPatRouter(container: Container): Router {
 
   // Admin-only: incident response on any user's token in the org (departed
   // employee, compromised laptop) — not reachable by regular members.
-  router.get('/admin', userAdminCheck, (req, res, next) =>
-    controller.adminListTokens(req, res, next),
+  router.get(
+    '/admin',
+    userAdminCheck,
+    ValidationMiddleware.validate(listAdminPatQuerySchema),
+    (req, res, next) => controller.adminListTokens(req, res, next),
   )
 
   router.delete(

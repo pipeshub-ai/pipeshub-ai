@@ -136,10 +136,14 @@ export class PatController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
+      const page = req.query.page ? parseInt(req.query.page as string, 10) : undefined
+      const limit = req.query.limit
+        ? parseInt(req.query.limit as string, 10)
+        : undefined
 
-      const tokens = await this.patService.listAllTokens(orgId)
+      const result = await this.patService.listAllTokens(orgId, page, limit)
 
-      res.json({ tokens })
+      res.json(result)
     } catch (error) {
       next(error)
     }

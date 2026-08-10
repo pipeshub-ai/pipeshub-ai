@@ -45,7 +45,7 @@ describe('PatService', () => {
       }),
       listAccessTokensForUser: sinon.stub().resolves([]),
       revokeAccessTokenById: sinon.stub().resolves(true),
-      listTokensForApp: sinon.stub().resolves([]),
+      listAccessTokensForClientPaginated: sinon.stub().resolves({ tokens: [], total: 0 }),
       revokeAccessTokenByIdForClient: sinon.stub().resolves(true),
     }
     scopeValidatorService = new ScopeValidatorService()
@@ -282,61 +282,144 @@ describe('PatService', () => {
   })
 
   describe('listAllTokens', () => {
-    it('returns an empty list without querying tokens when the org has no PAT app yet', async () => {
-      sinon.stub(OAuthApp, 'findOne').resolves(null)
-
-      const tokens = await service.listAllTokens(orgId)
-
-      expect(tokens).to.deep.equal([])
-      expect(mockOAuthTokenService.listTokensForApp.called).to.be.false
-    })
-
-    it('lists tokens across all users, excludes refresh entries, and attaches owner info', async () => {
-      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
-      const now = new Date()
-      const ownerId = new Types.ObjectId().toString()
-      mockOAuthTokenService.listTokensForApp.resolves([
-        {
-          id: 'tok-1',
-          tokenType: 'access',
-          userId: ownerId,
-          scopes: ['kb:read'],
-          createdAt: now,
-          expiresAt: now,
-          isRevoked: false,
-          name: 'named token',
-          lastUsedAt: now,
-        },
-        {
-          id: 'refresh-1',
-          tokenType: 'refresh',
-          userId: ownerId,
-          scopes: ['kb:read'],
-          createdAt: now,
-          expiresAt: now,
-          isRevoked: false,
-        },
-      ])
+    function stubUsersFind(users: any[]) {
       sinon.stub(Users, 'find').returns({
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().returnsThis(),
-        exec: sinon
-          .stub()
-          .resolves([
-            { _id: new Types.ObjectId(ownerId), email: 'owner@example.com', fullName: 'Owner' },
-          ]),
+        exec: sinon.stub().resolves(users),
       } as any)
+    }
 
-      const tokens = await service.listAllTokens(orgId)
+    it('returns an empty page without querying tokens when the org has no PAT app yet', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(null)
 
-      expect(tokens).to.have.lengthOf(1)
-      expect(tokens[0]).to.include({
+      const result = await service.listAllTokens(orgId)
+
+      expect(result).to.deep.equal({
+        data: [],
+        pagination: { page: 1, limit: 100, total: 0, totalPages: 0 },
+      })
+      expect(mockOAuthTokenService.listAccessTokensForClientPaginated.called).to.be.false
+    })
+
+    it('lists tokens across all users and attaches owner info', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = new Date()
+      const ownerId = new Types.ObjectId().toString()
+      mockOAuthTokenService.listAccessTokensForClientPaginated.resolves({
+        tokens: [
+          {
+            id: 'tok-1',
+            tokenType: 'access',
+            userId: ownerId,
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: now,
+            isRevoked: false,
+            name: 'named token',
+            lastUsedAt: now,
+          },
+        ],
+        total: 1,
+      })
+      stubUsersFind([
+        { _id: new Types.ObjectId(ownerId), email: 'owner@example.com', fullName: 'Owner', isDeleted: false },
+      ])
+
+      const result = await service.listAllTokens(orgId)
+
+      expect(result.data).to.have.lengthOf(1)
+      expect(result.data[0]).to.include({
         id: 'tok-1',
         userId: ownerId,
         ownerEmail: 'owner@example.com',
         ownerFullName: 'Owner',
+        ownerDeleted: false,
       })
-      expect(mockOAuthTokenService.listTokensForApp.firstCall.args).to.deep.equal([patClientId])
+      expect(result.pagination).to.deep.equal({ page: 1, limit: 100, total: 1, totalPages: 1 })
+      expect(mockOAuthTokenService.listAccessTokensForClientPaginated.firstCall.args).to.deep.equal([
+        patClientId,
+        1,
+        100,
+      ])
+    })
+
+    it('passes through the requested page/limit', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      stubUsersFind([])
+
+      await service.listAllTokens(orgId, 2, 25)
+
+      expect(mockOAuthTokenService.listAccessTokensForClientPaginated.firstCall.args).to.deep.equal([
+        patClientId,
+        2,
+        25,
+      ])
+    })
+
+    it('marks a token owned by a deleted user as ownerDeleted, keeping it in the list', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = new Date()
+      const deletedOwnerId = new Types.ObjectId().toString()
+      mockOAuthTokenService.listAccessTokensForClientPaginated.resolves({
+        tokens: [
+          {
+            id: 'tok-1',
+            tokenType: 'access',
+            userId: deletedOwnerId,
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: now,
+            isRevoked: false,
+            name: 'named token',
+          },
+        ],
+        total: 1,
+      })
+      // Deliberately still returned by Users.find — the fix is that
+      // listAllTokens no longer filters isDeleted: false out of that
+      // query, so a soft-deleted owner's name/email still resolve.
+      stubUsersFind([
+        {
+          _id: new Types.ObjectId(deletedOwnerId),
+          email: 'gone@example.com',
+          fullName: 'Departed Employee',
+          isDeleted: true,
+        },
+      ])
+
+      const result = await service.listAllTokens(orgId)
+
+      expect(result.data[0]).to.include({
+        ownerEmail: 'gone@example.com',
+        ownerFullName: 'Departed Employee',
+        ownerDeleted: true,
+      })
+    })
+
+    it('marks a token as ownerDeleted when the owner no longer resolves at all', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = new Date()
+      mockOAuthTokenService.listAccessTokensForClientPaginated.resolves({
+        tokens: [
+          {
+            id: 'tok-1',
+            tokenType: 'access',
+            userId: new Types.ObjectId().toString(),
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: now,
+            isRevoked: false,
+          },
+        ],
+        total: 1,
+      })
+      stubUsersFind([])
+
+      const result = await service.listAllTokens(orgId)
+
+      expect(result.data[0].ownerDeleted).to.be.true
+      expect(result.data[0].ownerEmail).to.be.undefined
     })
   })
 

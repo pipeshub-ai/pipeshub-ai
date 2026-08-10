@@ -132,16 +132,28 @@ describe('PatController', () => {
   })
 
   describe('adminListTokens', () => {
-    it('returns every token in the org', async () => {
-      const tokens = [
-        { id: 'tok-1', name: 't', scopes: [], createdAt: new Date(), expiresAt: new Date(), userId: 'user-2' },
-      ]
-      mockPatService.listAllTokens.resolves(tokens)
+    it('returns every token in the org as a paginated response', async () => {
+      const result = {
+        data: [
+          { id: 'tok-1', name: 't', scopes: [], createdAt: new Date(), expiresAt: new Date(), userId: 'user-2', ownerDeleted: false },
+        ],
+        pagination: { page: 1, limit: 100, total: 1, totalPages: 1 },
+      }
+      mockPatService.listAllTokens.resolves(result)
 
       await controller.adminListTokens(mockReq, mockRes, mockNext)
 
-      expect(mockPatService.listAllTokens.calledWith('org-1')).to.be.true
-      expect(mockRes.json.calledWith({ tokens })).to.be.true
+      expect(mockPatService.listAllTokens.calledWith('org-1', undefined, undefined)).to.be.true
+      expect(mockRes.json.calledWith(result)).to.be.true
+    })
+
+    it('parses page/limit from the query string', async () => {
+      mockPatService.listAllTokens.resolves({ data: [], pagination: { page: 2, limit: 25, total: 0, totalPages: 0 } })
+      mockReq.query = { page: '2', limit: '25' }
+
+      await controller.adminListTokens(mockReq, mockRes, mockNext)
+
+      expect(mockPatService.listAllTokens.calledWith('org-1', 2, 25)).to.be.true
     })
 
     it('calls next on service error', async () => {

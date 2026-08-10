@@ -302,6 +302,10 @@ export interface AdminPatListItem extends PatListItem {
   userId: string
   ownerEmail?: string
   ownerFullName?: string
+  /** True if the owning user has been deleted (or no longer resolves at
+   * all) — the token still needs to be visible/revocable for cleanup,
+   * even though there's no live account behind it. */
+  ownerDeleted: boolean
 }
 
 // Request with OAuth user info

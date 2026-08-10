@@ -541,6 +541,53 @@ describe('OAuthTokenService', () => {
     })
   })
 
+  describe('listAccessTokensForClientPaginated', () => {
+    it('applies skip/limit from page/limit and returns the total count', async () => {
+      const now = new Date()
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          {
+            _id: new Types.ObjectId(),
+            userId: new Types.ObjectId(),
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 3600000),
+            isRevoked: false,
+            name: 'tok',
+          },
+        ]),
+      }
+      const findStub = sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(150)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 2, 50)
+
+      expect(findStub.firstCall.args[0]).to.deep.include({ clientId: { $eq: 'client-1' } })
+      expect(chainable.skip.calledWith(50)).to.be.true
+      expect(chainable.limit.calledWith(50)).to.be.true
+      expect(result.total).to.equal(150)
+      expect(result.tokens).to.have.lengthOf(1)
+    })
+
+    it('does not cap at a fixed 100 rows the way listTokensForApp does — total reflects the full count', async () => {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(342)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 1, 100)
+
+      expect(result.total).to.equal(342)
+    })
+  })
+
   describe('revokeAccessTokenById', () => {
     it('returns true and scopes the filter by id/clientId/userId when a token is revoked', async () => {
       const updateStub = sinon

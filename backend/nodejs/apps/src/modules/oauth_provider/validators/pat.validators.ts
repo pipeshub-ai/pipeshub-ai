@@ -21,3 +21,20 @@ export const tokenIdParamsSchema = z.object({
     tokenId: z.string().regex(mongoIdRegex, 'Invalid token ID'),
   }),
 })
+
+export const listAdminPatQuerySchema = z.object({
+  query: z.object({
+    page: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? 1 : Number(arg)),
+        z.number().int().min(1),
+      )
+      .optional(),
+    limit: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? 100 : Number(arg)),
+        z.number().int().min(1).max(100),
+      )
+      .optional(),
+  }),
+})

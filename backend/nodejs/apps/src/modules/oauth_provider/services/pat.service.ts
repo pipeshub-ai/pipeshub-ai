@@ -15,6 +15,7 @@ import { NotFoundError } from '../../../libs/errors/http.errors'
 import {
   AdminPatListItem,
   CreatePatRequest,
+  PaginatedResponse,
   PatListItem,
   PatWithSecret,
 } from '../types/oauth.types'
@@ -244,31 +245,43 @@ export class PatService {
    * List every active personal access token in the org, across all
    * users — for org admins doing incident response (departed employee,
    * compromised laptop) on a credential only its owner could otherwise
-   * see or revoke. Returns an empty list without creating the org's PAT
-   * app if nobody has minted one yet.
+   * see or revoke. Paginated (unlike the per-user `listTokens`) since an
+   * org can have far more than a fixed-window cap's worth of active
+   * PATs. Returns an empty page without creating the org's PAT app if
+   * nobody has minted one yet.
    */
-  async listAllTokens(orgId: string): Promise<AdminPatListItem[]> {
+  async listAllTokens(
+    orgId: string,
+    page = 1,
+    limit = 100,
+  ): Promise<PaginatedResponse<AdminPatListItem>> {
     const clientId = patClientId(orgId)
     const app = await OAuthApp.findOne({ clientId })
     if (!app) {
-      return []
+      return { data: [], pagination: { page, limit, total: 0, totalPages: 0 } }
     }
 
-    const tokens = (
-      await this.oauthTokenService.listTokensForApp(clientId)
-    ).filter((t) => t.tokenType === 'access' && t.userId)
+    const { tokens, total } =
+      await this.oauthTokenService.listAccessTokensForClientPaginated(
+        clientId,
+        page,
+        limit,
+      )
 
+    // Deliberately not filtered by isDeleted — a departed employee's
+    // token is exactly the case this endpoint exists for, and it must
+    // still show up (with ownerDeleted: true) rather than silently drop
+    // the owner's name/email from the response.
     const owners = await Users.find({
       _id: { $in: tokens.map((t) => t.userId) },
-      isDeleted: false,
     })
-      .select('email fullName')
+      .select('email fullName isDeleted')
       .lean()
       .exec()
     const ownersById = new Map(owners.map((u) => [u._id.toString(), u]))
 
-    return tokens.map((t) => {
-      const owner = ownersById.get(t.userId!)
+    const data = tokens.map((t): AdminPatListItem => {
+      const owner = t.userId ? ownersById.get(t.userId) : undefined
       return {
         id: t.id,
         name: t.name ?? '(unnamed token)',
@@ -276,11 +289,17 @@ export class PatService {
         createdAt: t.createdAt,
         expiresAt: t.expiresAt,
         lastUsedAt: t.lastUsedAt,
-        userId: t.userId!,
+        userId: t.userId ?? '',
         ownerEmail: owner?.email,
         ownerFullName: owner?.fullName,
+        ownerDeleted: !owner || Boolean(owner.isDeleted),
       }
     })
+
+    return {
+      data,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    }
   }
 
   /**

@@ -540,6 +540,47 @@ export class OAuthTokenService {
   }
 
   /**
+   * List a client's active access tokens with real pagination — unlike
+   * {@link listTokensForApp}, which caps at a fixed 100 rows. Used for
+   * org-admin PAT listing, where silently dropping tokens past the
+   * hundredth would defeat the point of a complete-visibility view.
+   */
+  async listAccessTokensForClientPaginated(
+    clientId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ tokens: TokenListItem[]; total: number }> {
+    const filter = {
+      clientId: { $eq: clientId },
+      isRevoked: { $eq: false },
+      expiresAt: { $gt: new Date() },
+    }
+    const [tokens, total] = await Promise.all([
+      OAuthAccessToken.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .exec(),
+      OAuthAccessToken.countDocuments(filter),
+    ])
+
+    return {
+      tokens: tokens.map((t) => ({
+        id: (t._id as Types.ObjectId).toString(),
+        tokenType: 'access' as const,
+        userId: t.userId?.toString(),
+        scopes: t.scopes,
+        createdAt: t.createdAt,
+        expiresAt: t.expiresAt,
+        isRevoked: t.isRevoked,
+        name: t.name,
+        lastUsedAt: t.lastUsedAt,
+      })),
+      total,
+    }
+  }
+
+  /**
    * Revoke a single access token by its document id, scoped to the owning
    * client and user so one user can't revoke another's token even if both
    * share a client (e.g. the shared per-org personal-access-token client).
