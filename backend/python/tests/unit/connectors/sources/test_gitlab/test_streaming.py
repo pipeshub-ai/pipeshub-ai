@@ -38,6 +38,16 @@ async def _failing_gen() -> AsyncGenerator[bytes, None]:
     yield b""  # noqa: unreachable
 
 
+def _make_dispatch_connector() -> MagicMock:
+    """Connector with both blob fetchers stubbed, so routing can be asserted."""
+    c = make_mock_connector()
+    c.attachments = MagicMock()
+    c.attachments.fetch_attachment_content = MagicMock(return_value=_gen(b"attachment"))
+    c.repos = MagicMock()
+    c.repos._fetch_code_file_content = MagicMock(return_value=_gen(b"blob"))
+    return c
+
+
 def _make_record(record_type: str, record_name: str = "file.py") -> MagicMock:
     r = MagicMock()
     r.id = "rec-1"
@@ -109,38 +119,38 @@ class TestStreamRecord:
         result = await helper.stream_record(record)
         assert isinstance(result, StreamingResponse)
 
-    async def test_file_record_returns_streaming_response(self) -> None:
-        c = make_mock_connector()
-        c.attachments = MagicMock()
-        c.attachments.fetch_attachment_content = MagicMock(return_value=_gen(b"bytes"))
+    async def test_attachment_file_record_uses_attachment_fetcher(self) -> None:
+        c = _make_dispatch_connector()
         helper = StreamingHelper(c)
+
+        record = _make_record("FILE", "report.pdf")
+        record.mime_type = "application/pdf"
 
         with patch("app.connectors.sources.gitlab.streaming.create_stream_record_response") as mock_csr:
             mock_csr.return_value = MagicMock()
-            record = _make_record("FILE", "report.pdf")
-            record.mime_type = "application/pdf"
             await helper.stream_record(record)
             mock_csr.assert_called_once()
+        c.attachments.fetch_attachment_content.assert_called_once_with(record)
+        c.repos._fetch_code_file_content.assert_not_called()
 
-    async def test_code_file_record_returns_streaming_response(self) -> None:
+    async def test_code_file_record_uses_repo_fetcher(self) -> None:
         from app.models.entities import CodeFileRecord
-        c = make_mock_connector()
-        c.repos = MagicMock()
-        c.repos._fetch_code_file_content = MagicMock(return_value=_gen(b"code"))
-
+        c = _make_dispatch_connector()
         helper = StreamingHelper(c)
 
-        code_record = MagicMock(spec=CodeFileRecord)
-        code_record.record_type = "CODE_FILE"
-        code_record.record_name = "main.py"
-        code_record.mime_type = "text/plain"
-        code_record.external_record_id = "ext-1"
-        code_record.id = "rec-1"
+        record = MagicMock(spec=CodeFileRecord)
+        record.id = "rec-1"
+        record.record_type = "CODE_FILE"
+        record.record_name = "main.py"
+        record.mime_type = "text/plain"
+        record.external_record_id = "/ns/proj/-/blob/HEAD/src/main.py"
 
         with patch("app.connectors.sources.gitlab.streaming.create_stream_record_response") as mock_csr:
             mock_csr.return_value = MagicMock()
-            await helper.stream_record(code_record)
+            await helper.stream_record(record)
             mock_csr.assert_called_once()
+        c.repos._fetch_code_file_content.assert_called_once_with(record)
+        c.attachments.fetch_attachment_content.assert_not_called()
 
     async def test_code_file_non_code_file_record_raises(self) -> None:
         c = make_mock_connector()

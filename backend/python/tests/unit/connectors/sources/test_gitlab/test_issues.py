@@ -554,7 +554,12 @@ class TestBuildTicketBlocks:
         c.attachments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
 
         from app.models.blocks import BlockGroup, GroupType
-        comment_bg = BlockGroup(index=1, name="comment", type=GroupType.TEXT_SECTION.value)
+        comment_bg = BlockGroup(
+            index=1,
+            parent_index=0,
+            name="comment",
+            type=GroupType.TEXT_SECTION.value,
+        )
         c.comments = MagicMock()
         c.comments.build_comment_blocks = AsyncMock(return_value=([comment_bg], []))
 
@@ -567,3 +572,6 @@ class TestBuildTicketBlocks:
         import json
         data = json.loads(result)
         assert len(data["block_groups"]) == 2  # description + comment
+        parent_children = data["block_groups"][0].get("children") or {}
+        group_ranges = parent_children.get("block_group_ranges") or []
+        assert group_ranges == [{"start": 1, "end": 1}]

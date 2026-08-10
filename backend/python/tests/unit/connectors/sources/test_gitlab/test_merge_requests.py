@@ -255,6 +255,7 @@ class TestCheckAndFetchUpdatedRecord:
         record = _make_record(record_type="CODE_FILE")
         result = await mrs.check_and_fetch_updated_record_for_reindex(record)
         assert result is None
+        mrs.gitlab_project_id_and_iid_from_record.assert_not_called()
 
 
 # ===========================================================================

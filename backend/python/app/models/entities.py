@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
 from uuid import uuid4
-from jinja2 import Template
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
 )
@@ -24,6 +23,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.utils.jinja_templates import compiled_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
@@ -34,14 +34,17 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     """Normalize a record's weburl into an absolute URL.
 
     Relative paths are prefixed with *frontend_url*; already-absolute URLs
-    pass through unchanged.  Returns ``None`` when *weburl* is falsy.
+    pass through unchanged.  Returns ``None`` when *weburl* is falsy, or when
+    a relative path cannot be resolved — a guessed host would produce a link
+    that does not work in the deployment.
     """
     if not weburl:
         return None
     if weburl.startswith("http"):
         return weburl
-    base = frontend_url or "http://localhost:3000"
-    return f"{base.rstrip('/')}/{weburl.lstrip('/')}"
+    if not frontend_url:
+        return None
+    return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
 
 
 class LlmTextContent(BaseModel):
@@ -525,7 +528,7 @@ class FileRecord(Record):
                                     })
 
                             if child_results:
-                                template = Template(agent_block_group_prompt)
+                                template = compiled_template(agent_block_group_prompt)
                                 rendered_form = template.render(
                                     block_group_index=block_group_index,
                                     label=GroupType.TABLE.value,
@@ -540,7 +543,7 @@ class FileRecord(Record):
                     block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
                     if block_group_id in seen_block_groups:
                         continue
-                    template = Template(agent_block_group_prompt)
+                    template = compiled_template(agent_block_group_prompt)
                     if parent_index >= len(block_groups):
                         continue
                     block_group = block_groups[parent_index]
@@ -2525,6 +2528,7 @@ class CodeFileRecord(Record):
 
     file_path: str | None = None
     file_hash: str | None = None
+    extension: str | None = None
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2535,6 +2539,7 @@ class CodeFileRecord(Record):
             "connectorName": self.connector_name.value,
             "connectorId": self.connector_id,
             "mimeType": self.mime_type,
+            "extension": self.extension,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "origin": self.origin.value,
@@ -2552,6 +2557,7 @@ class CodeFileRecord(Record):
             "name": self.record_name,
             "filePath": self.file_path,
             "fileHash": self.file_hash,
+            "extension": self.extension,
         }
 
     @staticmethod
@@ -2564,6 +2570,13 @@ class CodeFileRecord(Record):
             connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
+        extension = arango_base_code_file_record.get("extension")
+        if not extension:
+            # Older code-file docs omitted extension; derive from name for reindex.
+            name = arango_base_record.get("recordName") or ""
+            base = name.rsplit("/", 1)[-1]
+            if "." in base:
+                extension = base.rsplit(".", 1)[-1].lower()
         return CodeFileRecord(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
@@ -2603,6 +2616,7 @@ class CodeFileRecord(Record):
             reason=arango_base_record.get("reason"),
             file_path=arango_base_code_file_record.get("filePath"),
             file_hash=arango_base_code_file_record.get("fileHash"),
+            extension=extension,
         )
 
 

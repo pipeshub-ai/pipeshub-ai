@@ -60,6 +60,12 @@ const PROXY_FORWARD_HEADERS: readonly string[] = [
   'accept-language',
 ];
 
+// Client-controlled values must not be able to forge extra log lines.
+const forLog = (value: unknown, maxLength = 200): string =>
+  String(value ?? '')
+    .replace(/[\r\n]/g, ' ')
+    .slice(0, maxLength);
+
 const buildProxyHeaders = (
   req: AuthenticatedUserRequest,
   isAdmin: boolean,
@@ -1960,6 +1966,126 @@ export const getRecordContent =
         error,
       });
       const handleError = handleBackendError(error, 'get record content');
+      next(handleError);
+      return;
+    }
+  };
+
+export const navigateKnowledgeGraph =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const {
+        nodeId,
+        page,
+        limit,
+        depth,
+        nodeTypes,
+        createdAfter,
+        createdBefore,
+        modifiedAfter,
+        modifiedBefore,
+      } = req.query;
+
+      const queryParams = new URLSearchParams();
+      if (nodeId) queryParams.append('node_id', String(nodeId));
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (depth) queryParams.append('depth', String(depth));
+      // Append per item: String(['a','b']) joins with a comma, which FastAPI
+      // would read as one value literally named `a,b`.
+      if (Array.isArray(nodeTypes)) {
+        for (const t of nodeTypes) {
+          if (t && String(t).trim()) queryParams.append('node_types', String(t).trim());
+        }
+      }
+      if (createdAfter) queryParams.append('created_after', String(createdAfter));
+      if (createdBefore) queryParams.append('created_before', String(createdBefore));
+      if (modifiedAfter) queryParams.append('modified_after', String(modifiedAfter));
+      if (modifiedBefore) queryParams.append('modified_before', String(modifiedBefore));
+
+      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
+
+      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
+      // the Python side trusts it for authorization. This route needs no admin rights.
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/knowledge-graph/navigate${queryString}`,
+        HttpMethod.GET,
+        buildProxyHeaders(req, false),
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Navigating knowledge graph',
+        'Navigation result not found',
+      );
+
+      logger.info('Knowledge graph navigated successfully');
+    } catch (error: any) {
+      logger.error('Error navigating knowledge graph', {
+        nodeId: forLog(req.query?.nodeId),
+        error,
+      });
+      const handleError = handleBackendError(error, 'navigate knowledge graph');
+      next(handleError);
+      return;
+    }
+  };
+
+export const lookupRecord =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const { identifiers, connectorName } = req.query;
+
+      // Append per item: String(['a','b']) joins with a comma, which corrupts
+      // any identifier that is a URL.
+      const queryParams = new URLSearchParams();
+      if (Array.isArray(identifiers)) {
+        for (const id of identifiers) {
+          if (id && String(id).trim()) queryParams.append('identifiers', String(id).trim());
+        }
+      }
+      if (connectorName) queryParams.append('connector_name', String(connectorName));
+
+      if (!queryParams.has('identifiers')) {
+        throw new BadRequestError('At least one identifier is required');
+      }
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/knowledge-graph/lookup?${queryParams.toString()}`,
+        HttpMethod.GET,
+        buildProxyHeaders(req, false),
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Looking up records',
+        'Lookup result not found',
+      );
+
+      logger.info('Record lookup completed successfully');
+    } catch (error: any) {
+      logger.error('Error looking up records', { error });
+      const handleError = handleBackendError(error, 'look up records');
       next(handleError);
       return;
     }

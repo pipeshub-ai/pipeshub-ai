@@ -16346,6 +16346,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: record.recordType,
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
+                    reason: record.reason,
                     createdAt: record.createdAtTimestamp != null ? record.createdAtTimestamp : 0,
                     updatedAt: record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.sizeInBytes,
