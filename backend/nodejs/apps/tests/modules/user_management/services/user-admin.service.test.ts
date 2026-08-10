@@ -7,6 +7,7 @@ import {
   resolveOptionalUserRole,
   toDisplayUserRole,
   isUserOrgAdmin,
+  findOrgAdminUserIds,
   assertNotLastOrgAdminDemotion,
   ensureOrgRetainsAdminAfterDemotion,
 } from '../../../../src/modules/user_management/services/user-admin.service';
@@ -148,6 +149,53 @@ describe('user-admin.service', () => {
         orgId,
         isDeleted: { $ne: true },
       });
+    });
+  });
+
+  describe('findOrgAdminUserIds', () => {
+    it('returns admin user ids with the shared active-admin filter', async () => {
+      const adminId = new mongoose.Types.ObjectId();
+      const lean = sinon.stub().resolves([{ _id: adminId }]);
+      const select = sinon.stub().returns({ lean });
+      const findStub = sinon.stub(Users, 'find').returns({ select } as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().returns({ lean: sinon.stub().resolves([]) }),
+      } as any);
+
+      const result = await findOrgAdminUserIds(orgId);
+
+      expect(result).to.deep.equal([adminId.toString()]);
+      expect(findStub.firstCall.args[0]).to.deep.equal({
+        orgId,
+        role: 'admin',
+        isDeleted: { $ne: true },
+      });
+    });
+
+    it('unions and dedupes legacy admin-group members', async () => {
+      const roleAdmin = new mongoose.Types.ObjectId();
+      const groupOnlyAdmin = new mongoose.Types.ObjectId();
+
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().resolves([{ _id: roleAdmin }]),
+        }),
+      } as any);
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().resolves([
+            { users: [roleAdmin, groupOnlyAdmin] },
+          ]),
+        }),
+      } as any);
+
+      const result = await findOrgAdminUserIds(orgId);
+
+      expect(result).to.have.members([
+        roleAdmin.toString(),
+        groupOnlyAdmin.toString(),
+      ]);
+      expect(result).to.have.length(2);
     });
   });
 

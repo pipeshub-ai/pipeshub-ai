@@ -60,6 +60,7 @@ describe('notification/notification-recipient.resolver', () => {
       const user1 = new mongoose.Types.ObjectId();
       const user2 = new mongoose.Types.ObjectId();
       const findStub = stubUsersFind([{ _id: user1 }, { _id: user2 }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
       expect(result.map((id) => id.toString())).to.have.members([
@@ -107,6 +108,7 @@ describe('notification/notification-recipient.resolver', () => {
     it('normalizes role casing and trims whitespace for admin', async () => {
       const user = new mongoose.Types.ObjectId();
       const findStub = stubUsersFind([{ _id: user }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['  Admin  ', 'ADMIN']);
       expect(result).to.have.length(1);
@@ -129,6 +131,19 @@ describe('notification/notification-recipient.resolver', () => {
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
       expect(result).to.deep.equal([]);
     });
+
+    it('unions role admins with legacy group admins during partial migration', async () => {
+      const roleAdmin = new mongoose.Types.ObjectId();
+      const groupAdmin = new mongoose.Types.ObjectId();
+      stubUsersFind([{ _id: roleAdmin }]);
+      stubUserGroupsFind([{ users: [groupAdmin] }]);
+
+      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
+      expect(result.map((id) => id.toString())).to.have.members([
+        roleAdmin.toString(),
+        groupAdmin.toString(),
+      ]);
+    });
   });
 
   describe('resolveNotificationRecipientUserIds', () => {
@@ -145,6 +160,7 @@ describe('notification/notification-recipient.resolver', () => {
     it('resolves role recipients when no direct ids are given', async () => {
       const user = new mongoose.Types.ObjectId();
       stubUsersFind([{ _id: user }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(orgId, [], ['admin']);
       expect(result.map((id) => id.toString())).to.include(user.toString());
@@ -154,6 +170,7 @@ describe('notification/notification-recipient.resolver', () => {
       const shared = new mongoose.Types.ObjectId();
       const roleOnly = new mongoose.Types.ObjectId();
       stubUsersFind([{ _id: shared }, { _id: roleOnly }]);
+      stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(
         orgId,

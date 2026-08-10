@@ -1,6 +1,7 @@
 import { Users, type UserRole } from '../schema/users.schema';
 import { UserGroups, type UserGroup } from '../schema/userGroup.schema';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import mongoose from 'mongoose';
 
 const LAST_ADMIN_DEMOTION_MESSAGE =
   'Cannot demote the last admin. Promote another user to admin first.';
@@ -66,6 +67,49 @@ export const isUserOrgAdmin = async (
   }).select('type');
 
   return groups.some((userGroup: UserGroup) => userGroup.type === 'admin');
+};
+
+/**
+ * Active org admin user IDs for notifications / internal APIs.
+ * Prefers User.role === 'admin', and unions members of any still-active
+ * legacy type=admin UserGroup (partial migration / retry safety).
+ * This codebase has no Users repository layer — Mongoose models are the data access.
+ */
+export const findOrgAdminUserIds = async (
+  orgId: string | { toString(): string },
+): Promise<string[]> => {
+  const ids = new Set<string>();
+
+  const adminUsers = await Users.find({
+    orgId,
+    role: 'admin',
+    isDeleted: { $ne: true },
+  })
+    .select('_id')
+    .lean();
+
+  for (const user of adminUsers) {
+    ids.add(String(user._id));
+  }
+
+  const adminGroups = await UserGroups.find({
+    orgId,
+    type: 'admin',
+    isDeleted: { $ne: true },
+  })
+    .select('users')
+    .lean();
+
+  for (const group of adminGroups) {
+    for (const userId of (group as { users?: unknown[] }).users ?? []) {
+      const asString = String(userId);
+      if (mongoose.isValidObjectId(asString)) {
+        ids.add(asString);
+      }
+    }
+  }
+
+  return [...ids];
 };
 
 /**

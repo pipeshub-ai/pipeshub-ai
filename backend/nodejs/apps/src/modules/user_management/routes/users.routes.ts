@@ -21,6 +21,7 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
 import { NotFoundError } from '../../../libs/errors/http.errors';
+import { findOrgAdminUserIds } from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
@@ -360,15 +361,7 @@ export function createUserRouter(container: Container) {
           return;
         }
 
-        const adminUsers = await Users.find({
-          orgId,
-          role: 'admin',
-          isDeleted: false,
-        })
-          .select('_id')
-          .lean();
-
-        const adminUserIds = adminUsers.map((u) => String(u._id));
+        const adminUserIds = await findOrgAdminUserIds(orgId);
 
         res.status(200).json({ adminUserIds });
         return;

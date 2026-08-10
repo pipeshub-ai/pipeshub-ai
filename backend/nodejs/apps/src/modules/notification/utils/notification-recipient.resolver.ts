@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { UserGroups } from '../../user_management/schema/userGroup.schema';
-import { Users } from '../../user_management/schema/users.schema';
+import { findOrgAdminUserIds } from '../../user_management/services/user-admin.service';
 
 const SUPPORTED_GROUP_ROLE_TYPES = new Set(['standard', 'everyone', 'custom']);
 
@@ -32,35 +32,9 @@ export async function resolveRoleRecipientUserIds(
   const userIdStrings = new Set<string>();
 
   if (validRoles.includes('admin')) {
-    const adminUsers = await Users.find({
-      orgId,
-      role: 'admin',
-      isDeleted: { $ne: true },
-    })
-      .select('_id')
-      .lean();
-
-    for (const user of adminUsers) {
-      userIdStrings.add(String(user._id));
-    }
-
-    // Legacy fallback while migration may still be in flight
-    if (adminUsers.length === 0) {
-      const adminGroups = await UserGroups.find({
-        orgId,
-        type: 'admin',
-        isDeleted: { $ne: true },
-      })
-        .select('users')
-        .lean();
-      for (const group of adminGroups) {
-        for (const userId of (group as { users?: unknown[] }).users ?? []) {
-          const asString = String(userId);
-          if (mongoose.isValidObjectId(asString)) {
-            userIdStrings.add(asString);
-          }
-        }
-      }
+    const adminUserIds = await findOrgAdminUserIds(orgId);
+    for (const userId of adminUserIds) {
+      userIdStrings.add(userId);
     }
   }
 
