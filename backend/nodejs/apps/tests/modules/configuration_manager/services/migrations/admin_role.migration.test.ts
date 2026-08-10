@@ -118,4 +118,210 @@ describe('AdminRoleMigration', () => {
     expect(result.adminGroupsProcessed).to.equal(1);
     expect(kv.set.called).to.equal(false);
   });
+
+  it('skips when migration flag is already set', async () => {
+    const kv = makeKvStore('true');
+    const findStub = sinon.stub(UserGroups, 'find');
+
+    const result = await new AdminRoleMigration(
+      makeLogger() as any,
+      kv as any,
+    ).run();
+
+    expect(result).to.deep.equal({
+      adminGroupsProcessed: 0,
+      usersPromoted: 0,
+      usersDefaultedToMember: 0,
+      adminGroupsSoftDeleted: 0,
+      errored: 0,
+    });
+    expect(findStub.called).to.equal(false);
+    expect(kv.set.called).to.equal(false);
+  });
+
+  it('continues when reading the migration flag fails', async () => {
+    const kv = {
+      get: sinon.stub().rejects(new Error('kv unavailable')),
+      set: sinon.stub().resolves(),
+    };
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([]),
+      }),
+    } as any);
+    sinon.stub(Users, 'updateMany').resolves({ modifiedCount: 0 } as any);
+
+    const result = await new AdminRoleMigration(
+      makeLogger() as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(0);
+    expect(kv.set.calledWith(configPaths.adminRoleMigration, 'true')).to.equal(
+      true,
+    );
+  });
+
+  it('skips promote when admin group has no users and ignores soft-delete no-op', async () => {
+    const kv = makeKvStore(null);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([
+          {
+            _id: groupId,
+            orgId,
+            users: [],
+          },
+        ]),
+      }),
+    } as any);
+
+    const updateManyStub = sinon.stub(Users, 'updateMany');
+    updateManyStub.onCall(0).resolves({ modifiedCount: 1 } as any); // org members
+    updateManyStub.onCall(1).resolves({ modifiedCount: 0 } as any); // global default
+    sinon.stub(UserGroups, 'updateOne').resolves({ modifiedCount: 0 } as any);
+
+    const result = await new AdminRoleMigration(
+      makeLogger() as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(0);
+    expect(result.adminGroupsProcessed).to.equal(1);
+    expect(result.usersPromoted).to.equal(0);
+    expect(result.usersDefaultedToMember).to.equal(1);
+    expect(result.adminGroupsSoftDeleted).to.equal(0);
+    expect(updateManyStub.callCount).to.equal(2);
+  });
+
+  it('records an error when listing admin groups fails', async () => {
+    const kv = makeKvStore(null);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().rejects(new Error('find failed')),
+      }),
+    } as any);
+
+    const result = await new AdminRoleMigration(
+      makeLogger() as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(1);
+    expect(kv.set.called).to.equal(false);
+  });
+
+  it('warns when writing the completion flag fails after success', async () => {
+    const logger = makeLogger();
+    const kv = {
+      get: sinon.stub().resolves(null),
+      set: sinon.stub().rejects(new Error('set failed')),
+    };
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([]),
+      }),
+    } as any);
+    sinon.stub(Users, 'updateMany').resolves({ modifiedCount: 0 } as any);
+
+    const result = await new AdminRoleMigration(
+      logger as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(0);
+    expect(logger.warn.called).to.equal(true);
+  });
+
+  it('handles undefined users, missing modifiedCount, and non-Error throws', async () => {
+    const logger = makeLogger();
+    const kv = {
+      get: sinon.stub().rejects('flag-read-failed'),
+      set: sinon.stub().rejects('flag-write-failed'),
+    };
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([
+          {
+            _id: groupId,
+            orgId,
+            users: undefined,
+          },
+          {
+            _id: new mongoose.Types.ObjectId(),
+            orgId,
+            users: [adminUserId, null, undefined],
+          },
+        ]),
+      }),
+    } as any);
+
+    const updateManyStub = sinon.stub(Users, 'updateMany');
+    // first group: no promote (empty after filter), org members
+    updateManyStub.onCall(0).resolves({} as any);
+    // second group: promote + org members
+    updateManyStub.onCall(1).resolves({} as any); // modifiedCount undefined → ?? 0
+    updateManyStub.onCall(2).resolves({ modifiedCount: 1 } as any);
+    // global default
+    updateManyStub.onCall(3).resolves({ modifiedCount: 0 } as any);
+
+    sinon.stub(UserGroups, 'updateOne').resolves({ modifiedCount: 1 } as any);
+
+    const result = await new AdminRoleMigration(
+      logger as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(0);
+    expect(result.adminGroupsProcessed).to.equal(2);
+    expect(result.usersPromoted).to.equal(0);
+    expect(logger.warn.called).to.equal(true);
+  });
+
+  it('stringifies non-Error failures in per-group and outer catches', async () => {
+    const logger = makeLogger();
+    const kv = makeKvStore(null);
+
+    // First run: per-group non-Error reject
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([
+          {
+            _id: groupId,
+            orgId,
+            users: [adminUserId],
+          },
+        ]),
+      }),
+    } as any);
+    const updateManyStub = sinon.stub(Users, 'updateMany');
+    updateManyStub.onCall(0).rejects('promote-failed');
+    updateManyStub.resolves({ modifiedCount: 0 } as any);
+    sinon.stub(UserGroups, 'updateOne');
+
+    const perGroup = await new AdminRoleMigration(
+      logger as any,
+      kv as any,
+    ).run();
+    expect(perGroup.errored).to.equal(1);
+    expect(logger.error.called).to.equal(true);
+
+    sinon.restore();
+
+    // Second run: outer find failure with non-Error
+    const logger2 = makeLogger();
+    const kv2 = makeKvStore(null);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().rejects('list-failed'),
+      }),
+    } as any);
+
+    const outer = await new AdminRoleMigration(
+      logger2 as any,
+      kv2 as any,
+    ).run();
+    expect(outer.errored).to.equal(1);
+    expect(logger2.error.called).to.equal(true);
+  });
 });

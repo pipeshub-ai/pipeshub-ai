@@ -968,6 +968,102 @@ describe('UserController', () => {
       expect(res.json.called).to.be.false;
     });
 
+    it('should reject demoting the last admin when replica set is available', async () => {
+      mockConfig.rsAvailable = 'true';
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'member' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Only Admin',
+        email: 'admin@test.com',
+        role: 'admin',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({}),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+
+      const withTransaction = sinon
+        .stub()
+        .callsFake(async (fn: () => Promise<void>) => {
+          await fn();
+        });
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction,
+        endSession: sinon.stub().resolves(),
+      } as any);
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(0)),
+      } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(withTransaction.calledOnce).to.be.true;
+      expect(mockUser.save.calledOnce).to.be.true;
+      expect(mockUser.save.firstCall.args[0]).to.have.property('session');
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Cannot demote the last admin. Promote another user to admin first.',
+      );
+      expect(res.json.called).to.be.false;
+    });
+
+    it('should demote an admin when another admin remains and RS is available', async () => {
+      mockConfig.rsAvailable = 'true';
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { role: 'member' };
+
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        fullName: 'Admin Two',
+        email: 'admin2@test.com',
+        role: 'admin',
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({
+          _id: targetId,
+          role: 'member',
+          email: 'admin2@test.com',
+        }),
+      };
+
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+
+      const withTransaction = sinon
+        .stub()
+        .callsFake(async (fn: () => Promise<void>) => {
+          await fn();
+        });
+      sinon.stub(mongoose, 'startSession').resolves({
+        withTransaction,
+        endSession: sinon.stub().resolves(),
+      } as any);
+      sinon.stub(Users, 'countDocuments').returns({
+        session: sinon.stub().callsFake(() => Promise.resolve(1)),
+      } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockUser.role).to.equal('member');
+      expect(withTransaction.calledOnce).to.be.true;
+      expect(res.json.calledOnce).to.be.true;
+    });
+
     it('should reject duplicate email when updating email', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       req.body = { email: 'new@test.com' };
