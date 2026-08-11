@@ -247,6 +247,18 @@ def shape_auto_compact(
     with 50 small turns keeps most of them; a conversation with 3 huge
     retrieve results protects only what fits the budget.
 
+    Prompt-cache note: `trigger_ratio=0.85` sits BELOW `shape_sliding_
+    window`'s implicit 100% ceiling and runs AFTER it in the PRE_MODEL
+    pipeline (`factory.py`'s L5 -> L7a/L7b) — for the common case (total
+    tokens climb gradually into the 85-100% band) this shaper is the ONLY
+    one that rewrites the cached prefix for that dispatch; `shape_sliding_
+    window` stays a no-op below 100% and never doubles up on the same
+    rewrite. A single dispatch that jumps straight past 100% (one huge
+    tool result, not a slow climb) can still trigger BOTH shapers in that
+    one dispatch — accepted as a single compounded cold write for that
+    dispatch, not a rewrite spread across separate turns. See
+    `tests/unit/agent_loop_lib/hooks/middleware/builtin/test_compaction_sliding_window_interaction.py`.
+
     Parameters
     ----------
     summarizer:

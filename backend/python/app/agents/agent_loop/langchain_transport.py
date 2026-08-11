@@ -58,6 +58,17 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
+from app.llm.prompt_cache.config import resolve_cache_config
+from app.llm.prompt_cache.decision import CacheDecision, CacheReuseClass
+from app.llm.prompt_cache.langchain_kwargs import (
+    resolve_cache_provider,
+    resolve_langchain_cache_kwargs,
+)
+from app.llm.prompt_cache.metrics import (
+    detect_langchain_provider,
+    log_cache_usage,
+    usage_from_ai_message,
+)
 from app.utils.llm_api_mode_store import (
     REASONING_MANDATORY_FALLBACK_EFFORT,
     LLMApiMode,
@@ -185,9 +196,15 @@ class LangChainTransport(LLMTransport):
         model_name: str = "",
         opik_project_name: str | None = None,
         model_key: str | None = None,
+        call_site: str = "agent_loop",
+        cache_key: str | None = None,
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Phase 0 measurement tag only (e.g. "agent_loop", "intent_parser")
+        # — never used for provider dispatch or caching decisions, which
+        # start with Phase 2's `CacheReuseClass`.
+        self._call_site = call_site
         # etcd `aiModels` config-entry key (see `app/utils/aimodels.py`'s
         # `get_generator_model`) — the identity a learned API-mode fact is
         # recorded/looked-up against (`app/utils/llm_api_mode_store.py`).
@@ -195,10 +212,77 @@ class LangChainTransport(LLMTransport):
         # case `_record_api_mode` just skips persisting (the in-request
         # runtime fallback below still applies either way).
         self._model_key = model_key
+        # Tenant(+user)-scoped routing hint for OpenAI's `prompt_cache_key`
+        # — build via `app.llm.prompt_cache.cache_key.build_prompt_cache_key`.
+        # `None` means no key is sent (still eligible for automatic
+        # caching, just without the improved-matching hint).
+        self._cache_key = cache_key
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
         # Keyed on the turn's tool names; see `_bind_tools`. A transport is
         # built per request, so this can never be shared across users.
         self._bound_by_tools: dict[tuple[str, ...], BaseChatModel] = {}
+
+    def _record_cache_usage(
+        self, ai_message: AIMessage, *, decision: CacheDecision | None = None
+    ) -> None:
+        """Phase 0 measurement only — logs cache_read/cache_write already
+        present on `ai_message.usage_metadata`, if any. Never raises and
+        never alters `ai_message` or the caller's return value.
+
+        `decision` (Phase 7) is the `CacheDecision` `_resolve_cache_kwargs`
+        resolved right before this same call was made, if any — attaching
+        it here correlates "why we did/didn't try to cache" with "what
+        actually happened" in the ONE log line `log_cache_usage` emits,
+        instead of two separately-timed debug/info lines a reader would
+        otherwise have to cross-reference by hand.
+        """
+        try:
+            sample = usage_from_ai_message(
+                ai_message,
+                provider=detect_langchain_provider(self._llm),
+                model=self._model,
+                call_site=self._call_site,
+                decision=decision,
+            )
+            log_cache_usage(sample)
+        except Exception:
+            logger.debug("LangChainTransport: cache usage logging failed", exc_info=True)
+
+    def _resolve_cache_kwargs(
+        self, reuse_class: CacheReuseClass = CacheReuseClass.MULTI_TURN
+    ) -> tuple[dict[str, Any], CacheDecision]:
+        """Invoke-time cache kwargs for `.ainvoke()`/`.astream()` — see
+        `app.llm.prompt_cache.langchain_kwargs` for the mechanics per
+        provider. `complete()`/`stream()` (the turn loop, re-read on
+        every subsequent turn) pass the default `MULTI_TURN`;
+        `complete_structured()`'s one-shot tool-trick calls pass
+        `ONE_SHOT_UNIQUE`, which always resolves to `{}` — matching the
+        native `AnthropicTransport`/`OpenAITransport` Phase 2/4 fix for
+        the same call shape.
+
+        Reads `resolve_cache_config()` fresh on every call (a single
+        cheap env lookup) rather than caching it on `self`, so toggling
+        `ENABLE_PROMPT_CACHING` takes effect on this process's very
+        next call without needing a transport rebuild.
+
+        Returns `(kwargs, decision)` — callers pass `decision` through to
+        `_record_cache_usage` after the call completes (Phase 7 structured
+        decision/outcome logging); it is never used to alter control flow.
+        """
+        cache_provider = resolve_cache_provider(self._llm, detect_langchain_provider(self._llm))
+        kwargs, decision = resolve_langchain_cache_kwargs(
+            provider=cache_provider,
+            model=self._model,
+            reuse_class=reuse_class,
+            cache_config=resolve_cache_config(),
+            cache_key=self._cache_key,
+        )
+        logger.debug(
+            "LangChainTransport: cache decision call_site=%s reuse_class=%s "
+            "enabled=%s reason=%s",
+            self._call_site, reuse_class.value, decision.enabled, decision.reason,
+        )
+        return kwargs, decision
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -451,9 +535,12 @@ class LangChainTransport(LLMTransport):
             system = "\n\n".join(b for b in system_blocks if b)
         lc_messages = convert_messages_to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
+        cache_kwargs, cache_decision = self._resolve_cache_kwargs()
 
         try:
-            ai_message = await lc_llm.ainvoke(lc_messages, config=self._langchain_config())
+            ai_message = await lc_llm.ainvoke(
+                lc_messages, config=self._langchain_config(), **cache_kwargs
+            )
         except Exception as exc:
             fallback = self._conflict_fallback(exc)
             if fallback is None:
@@ -466,7 +553,15 @@ class LangChainTransport(LLMTransport):
             )
             try:
                 fallback_bound = self._bind_tools(tools, llm=fallback_llm)
-                ai_message = await fallback_bound.ainvoke(lc_messages, config=self._langchain_config())
+                # Same `cache_kwargs`, recomputed from nothing new — the
+                # fallback only changes reasoning/API-shape config, never
+                # provider identity, so the SAME provider/model cache
+                # decision still applies; this is not a "double inject"
+                # since these are inert invoke kwargs, not a mutated
+                # message payload replayed a second time.
+                ai_message = await fallback_bound.ainvoke(
+                    lc_messages, config=self._langchain_config(), **cache_kwargs
+                )
             except Exception as retry_exc:
                 logger.error(
                     "LangChainTransport.complete: retry with api_mode=%s also failed for "
@@ -490,6 +585,7 @@ class LangChainTransport(LLMTransport):
 
         assistant_message = convert_assistant_message_from_langchain(ai_message)
         usage = token_usage_from_ai_message(ai_message)
+        self._record_cache_usage(ai_message, decision=cache_decision)
         stop_reason = (
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(ai_message)
@@ -514,6 +610,8 @@ class LangChainTransport(LLMTransport):
 
         parsed, raw = await self._invoke_structured(lc_messages, output_schema)
         usage = token_usage_from_ai_message(raw) if isinstance(raw, AIMessage) else TokenUsage()
+        if isinstance(raw, AIMessage):
+            self._record_cache_usage(raw)
         return StructuredResponse(
             data=parsed or {},
             usage=usage,
@@ -613,6 +711,7 @@ class LangChainTransport(LLMTransport):
             system = "\n\n".join(b for b in system_blocks if b)
         lc_messages = convert_messages_to_langchain(messages, system)
         lc_llm = self._bind_tools(tools)
+        cache_kwargs, cache_decision = self._resolve_cache_kwargs()
 
         chunks: list[AIMessage] = []
         fallback_llm: BaseChatModel | None = None
@@ -622,7 +721,9 @@ class LangChainTransport(LLMTransport):
         current_llm = lc_llm
         while True:
             try:
-                async for chunk in current_llm.astream(lc_messages, config=self._langchain_config()):
+                async for chunk in current_llm.astream(
+                    lc_messages, config=self._langchain_config(), **cache_kwargs
+                ):
                     chunks.append(chunk)
                     text = getattr(chunk, "content", None)
                     if isinstance(text, str) and text:
@@ -724,6 +825,7 @@ class LangChainTransport(LLMTransport):
 
         assistant_message = convert_assistant_message_from_langchain(final_ai_message)
         usage = token_usage_from_ai_message(final_ai_message)
+        self._record_cache_usage(final_ai_message, decision=cache_decision)
         stop_reason = (
             StopReason.MAX_TOKENS if assistant_message.truncated
             else self._stop_reason_from(final_ai_message)

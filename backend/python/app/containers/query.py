@@ -51,6 +51,10 @@ class QueryAppContainer(BaseAppContainer):
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
     )
 
+    feature_flag_service = providers.Singleton(
+        container_utils.create_feature_flag_service, config_service=config_service
+    )
+
     # Query-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[

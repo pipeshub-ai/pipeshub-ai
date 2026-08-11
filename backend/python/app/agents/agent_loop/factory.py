@@ -104,6 +104,7 @@ from app.agents.agent_loop.hooks import (
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
 from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.llm.prompt_cache.cache_key import build_prompt_cache_key
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
     META_TOOL_NAMES,
@@ -231,12 +232,21 @@ class PipesHubAgentFactory:
         opik_active = resolve_opik_gate(True)
         opik_project_name = os.getenv("OPIK_PROJECT_NAME")
 
+        # Tenant+user scoped, per the plan's settled decision: `user_context`
+        # renders into the prompt's stable band, so every user's prefix is
+        # already distinct — an org-only key would route different users'
+        # prefixes to the same backend-side cache slot for no benefit. See
+        # `app.llm.prompt_cache.cache_key` for the full rationale.
+        cache_key = build_prompt_cache_key(
+            org_id=context.org_id, user_id=context.user_id, spec_id=model_key or "",
+        )
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
             traced_transport_factory(
                 lambda: LangChainTransport(
-                    llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                    llm, model_name=model_name, opik_project_name=opik_project_name,
+                    model_key=model_key, cache_key=cache_key,
                 ),
                 opik_active=opik_active,
                 project_name=opik_project_name,

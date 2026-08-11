@@ -372,16 +372,31 @@ def token_usage_from_ai_message(ai_message: AIMessage) -> TokenUsage:
     """Best-effort `TokenUsage` extraction from `AIMessage.usage_metadata`.
     Not every provider integration populates every sub-field (or even
     `usage_metadata` itself), so every access defaults to 0 rather than
-    raising — a missing usage field should never crash the turn loop."""
+    raising — a missing usage field should never crash the turn loop.
+
+    `usage_metadata["input_tokens"]` is LangChain's TOTAL prompt token
+    count, which on every provider integration observed here already
+    INCLUDES `input_token_details["cache_read"]` — it is not additive.
+    Returning it as-is double-counted cached tokens into
+    `TokenUsage.input_tokens` (they'd show up there AND in
+    `cache_read_tokens`), which both inflates the reported non-cached
+    cost and hides the win prompt caching is supposed to demonstrate.
+    Subtracting `cache_read` here matches the semantics
+    `app.llm.prompt_cache.metrics.usage_from_ai_message` already uses
+    for the Phase 0 measurement path, so both consumers of this same
+    `usage_metadata` agree on what "input_tokens" means.
+    """
     usage = ai_message.usage_metadata
     if not usage:
         return TokenUsage()
 
     input_details = usage.get("input_token_details") or {}
+    cache_read = input_details.get("cache_read", 0) or 0
+    raw_input = usage.get("input_tokens", 0) or 0
     return TokenUsage(
-        input_tokens=usage.get("input_tokens", 0) or 0,
+        input_tokens=max(raw_input - cache_read, 0),
         output_tokens=usage.get("output_tokens", 0) or 0,
-        cache_read_tokens=input_details.get("cache_read", 0) or 0,
+        cache_read_tokens=cache_read,
         cache_write_tokens=input_details.get("cache_creation", 0) or 0,
     )
 

@@ -45,6 +45,7 @@ from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.llm.prompt_cache.cache_key import build_prompt_cache_key
 from app.modules.agents.qna.router import (
     build_capability_context,
     build_prior_routing_messages,
@@ -308,6 +309,7 @@ async def parse_intent_and_route(
     graph_provider: Any = None,
     is_multimodal_llm: bool = False,
     org_id: str = "",
+    user_id: str = "",
     model_name: str = "",
     transport_registry: TransportRegistry | None = None,
     opik_active: bool | None = None,
@@ -380,10 +382,14 @@ async def parse_intent_and_route(
         opik_project_name = os.getenv("OPIK_PROJECT_NAME")
     if transport_registry is None or not transport_registry.has("langchain"):
         transport_registry = transport_registry or TransportRegistry()
+        cache_key = build_prompt_cache_key(org_id=org_id, user_id=user_id)
         transport_registry.register(
             "langchain",
             lambda: wrap_if_enabled(
-                LangChainTransport(llm, model_name=model_name, opik_project_name=opik_project_name),
+                LangChainTransport(
+                    llm, model_name=model_name, opik_project_name=opik_project_name,
+                    call_site="intent_parser", cache_key=cache_key,
+                ),
                 enabled=opik_active,
                 project_name=opik_project_name,
             ),

@@ -93,4 +93,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Let agents run Python/TypeScript code in a sandboxed environment. Disable to hide coding_sandbox tools from all agents.',
     defaultEnabled: true,
   },
+  {
+    key: 'ENABLE_PROMPT_CACHING',
+    label: 'Enable Prompt Caching',
+    description:
+      'Reuse cached prompt prefixes across LLM calls to cut latency and cost on supported providers (Anthropic, OpenAI, Gemini). Disable to send every call as a fresh, uncached prompt.',
+    defaultEnabled: true,
+  },
 ];

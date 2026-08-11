@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.agent_loop_lib.cache.base import ApplyResult, CacheableRequest, PromptCacheStrategy
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -51,7 +52,13 @@ class OpenAITransport(LLMTransport):
 
     DEFAULT_MODEL = "gpt-4o"
 
-    def __init__(self, api_key: str, model: str = DEFAULT_MODEL, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        base_url: str | None = None,
+        cache_strategy: PromptCacheStrategy | None = None,
+    ) -> None:
         super().__init__()
         try:
             import openai as _openai
@@ -66,6 +73,11 @@ class OpenAITransport(LLMTransport):
         if base_url:
             client_kwargs["base_url"] = base_url
         self._client = _openai.AsyncOpenAI(**client_kwargs)
+        # `None` (the default) means no caching kwargs/restructuring at
+        # all — this transport's original behavior, unchanged. See
+        # `app.llm.prompt_cache.strategy.openai.OpenAICacheStrategy` for
+        # the concrete strategy PipesHub injects.
+        self._cache_strategy = cache_strategy
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -175,6 +187,22 @@ class OpenAITransport(LLMTransport):
             cache_write_tokens=0,
         )
 
+    def _apply_cache_strategy(
+        self, formatted_messages: list[dict], formatted_tools: list[dict] | None
+    ) -> ApplyResult:
+        """Routes the plain (uncached) payload through the injected
+        strategy, if any. With no strategy injected, or a strategy
+        that declines to cache this call, returns the payload
+        unchanged and adds no request kwargs."""
+        identity = ApplyResult(messages=formatted_messages, tools=formatted_tools)
+        if self._cache_strategy is None:
+            return identity
+        request = CacheableRequest(messages=formatted_messages, tools=formatted_tools)
+        plan = self._cache_strategy.plan(request)
+        if not plan.enabled:
+            return identity
+        return self._cache_strategy.apply(plan, request)
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
         is_network = isinstance(
@@ -208,19 +236,23 @@ class OpenAITransport(LLMTransport):
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
+        formatted_tools = self._format_tools(tools)
+        cache_result = self._apply_cache_strategy(
+            self._format_messages(messages, system), formatted_tools
+        )
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": cache_result.messages,
         }
-        formatted_tools = self._format_tools(tools)
-        if formatted_tools:
-            kwargs["tools"] = formatted_tools
+        if cache_result.tools:
+            kwargs["tools"] = cache_result.tools
         if effort:
             # o-series/gpt-5-series "reasoning effort" knob — accepted as a
             # no-op parameter by models that don't support it.
             kwargs["reasoning_effort"] = effort
         # thinking_budget has no Chat Completions equivalent — no-op, kept
         # for interface parity with AnthropicTransport.
+        kwargs.update(cache_result.request_kwargs)
 
         try:
             response = await self._client.chat.completions.create(**kwargs)
@@ -288,17 +320,21 @@ class OpenAITransport(LLMTransport):
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
         resolved_model = model or self._model
+        formatted_tools = self._format_tools(tools)
+        cache_result = self._apply_cache_strategy(
+            self._format_messages(messages, system), formatted_tools
+        )
         kwargs: dict[str, Any] = {
             "model": resolved_model,
-            "messages": self._format_messages(messages, system),
+            "messages": cache_result.messages,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        formatted_tools = self._format_tools(tools)
-        if formatted_tools:
-            kwargs["tools"] = formatted_tools
+        if cache_result.tools:
+            kwargs["tools"] = cache_result.tools
         if effort:
             kwargs["reasoning_effort"] = effort
+        kwargs.update(cache_result.request_kwargs)
 
         text_parts: list[str] = []
         usage = TokenUsage()

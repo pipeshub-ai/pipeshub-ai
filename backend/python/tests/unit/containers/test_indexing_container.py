@@ -91,12 +91,26 @@ class TestIndexingAppContainerInstantiation:
 
 
 class TestInitializeContainer:
+    @pytest.fixture(autouse=True)
+    def _no_real_feature_flag_refresh_task(self):
+        """`initialize_container` spawns a real `asyncio.create_task` for
+        the periodic feature-flag refresh loop (see
+        `FeatureFlagService.start_periodic_refresh`) — patch it out so
+        tests don't leak a pending background task past the test's event
+        loop."""
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.start_periodic_refresh",
+            return_value=MagicMock(),
+        ):
+            yield
+
     def _make_mock_container(self):
         container = MagicMock()
         logger = MagicMock()
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
+        container.feature_flag_service = AsyncMock(return_value=MagicMock())
         return container, logger
 
     @pytest.mark.asyncio
@@ -252,12 +266,21 @@ class TestIndexingAppContainerInstantiationFullCoverage:
 
 
 class TestInitializeContainerFullCoverage:
+    @pytest.fixture(autouse=True)
+    def _no_real_feature_flag_refresh_task(self):
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.start_periodic_refresh",
+            return_value=MagicMock(),
+        ):
+            yield
+
     def _make_mock_container(self):
         container = MagicMock()
         logger = MagicMock()
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
+        container.feature_flag_service = AsyncMock(return_value=MagicMock())
         return container, logger
 
     @pytest.mark.asyncio

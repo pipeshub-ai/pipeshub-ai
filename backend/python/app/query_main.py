@@ -36,6 +36,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
 
+_FEATURE_FLAG_REFRESH_INTERVAL_SECONDS = 60.0
+
 
 async def initialize_container(container: QueryAppContainer) -> bool:
     """Initialize container resources"""
@@ -63,6 +65,18 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         # just means the heuristic-only path is used until the next
         # `llmConfigured` event refreshes it.
         await get_llm_api_mode_store(container.config_service()).load()
+
+        # Etcd-backed feature flags (e.g. the ENABLE_PROMPT_CACHING Labs
+        # toggle) — this process only ever consults FeatureFlagService off
+        # the request path, so nothing else would ever call refresh() for
+        # it; a bounded-cadence background refresh keeps it from going
+        # stale for the lifetime of the process. See
+        # FeatureFlagService.start_periodic_refresh.
+        await container.feature_flag_service()
+        from app.services.featureflag.featureflag import FeatureFlagService
+        container._feature_flag_refresh_task = FeatureFlagService.start_periodic_refresh(
+            _FEATURE_FLAG_REFRESH_INTERVAL_SECONDS, logger
+        )
 
         return True
 

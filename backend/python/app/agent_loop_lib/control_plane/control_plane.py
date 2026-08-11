@@ -263,6 +263,7 @@ class ControlPlane:
                 max_input_tokens=cfg.budget.max_tokens,
                 max_tool_calls=cfg.budget.max_tool_calls,
                 model=model,
+                provider=cfg.transport,
             )
 
         # 5. Builtin tools → ToolRegistry

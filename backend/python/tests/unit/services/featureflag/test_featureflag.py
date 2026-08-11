@@ -5,6 +5,7 @@ Tests for the feature flag system:
   - EtcdProvider      (refresh, get_flag_value, get_all_flags, error handling)
 """
 
+import asyncio
 import logging
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
@@ -177,6 +178,59 @@ class TestRefresh:
         svc = FeatureFlagService.get_service(provider=mock_provider)
         await svc.refresh()
         mock_provider.refresh.assert_awaited_once()
+
+
+class TestStartPeriodicRefresh:
+    """Background bounded-cadence refresh (prompt-caching Phase 7) — the
+    query/indexing services never otherwise call refresh() off the request
+    path, so this is the only thing keeping their FeatureFlagService
+    singleton from going permanently stale after process startup."""
+
+    @pytest.mark.asyncio
+    async def test_calls_refresh_on_the_current_singleton_each_tick(self, mock_provider):
+        mock_provider.refresh = AsyncMock()
+        FeatureFlagService.get_service(provider=mock_provider)
+
+        task = FeatureFlagService.start_periodic_refresh(interval_seconds=0.01)
+        try:
+            await asyncio.sleep(0.05)
+            assert mock_provider.refresh.await_count >= 1
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_a_failed_tick_does_not_kill_the_loop(self, mock_provider):
+        mock_provider.refresh = AsyncMock(side_effect=[Exception("boom"), None, None])
+        FeatureFlagService.get_service(provider=mock_provider)
+
+        task = FeatureFlagService.start_periodic_refresh(interval_seconds=0.01)
+        try:
+            await asyncio.sleep(0.05)
+            # Multiple ticks happened despite the first one raising.
+            assert mock_provider.refresh.await_count >= 2
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_failed_tick_is_logged_when_logger_provided(self, mock_provider, mock_logger):
+        mock_provider.refresh = AsyncMock(side_effect=Exception("boom"))
+        FeatureFlagService.get_service(provider=mock_provider)
+
+        with patch.object(mock_logger, "debug") as mock_debug:
+            task = FeatureFlagService.start_periodic_refresh(
+                interval_seconds=0.01, logger=mock_logger
+            )
+            try:
+                await asyncio.sleep(0.05)
+                assert mock_debug.called
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
 
 # ===========================================================================

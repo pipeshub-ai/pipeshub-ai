@@ -341,10 +341,69 @@ class TestTokenUsage:
             },
         )
         usage = token_usage_from_ai_message(ai_message)
-        assert usage.input_tokens == 10
+        # `usage_metadata["input_tokens"]` (10) already INCLUDES the 2
+        # cache_read tokens on every provider integration observed —
+        # input_tokens must exclude them (10 - 2 = 8) or those 2 tokens
+        # get billed twice: once at full price via input_tokens, once
+        # at the cache-read discount via cache_read_tokens.
+        assert usage.input_tokens == 8
         assert usage.output_tokens == 5
         assert usage.cache_read_tokens == 2
         assert usage.cache_write_tokens == 1
+
+    def test_input_tokens_never_goes_negative_if_cache_read_exceeds_reported_input(self) -> None:
+        """Defensive floor for a malformed/inconsistent provider payload
+        (cache_read reported larger than the total input_tokens) — never
+        surface a negative token count."""
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 5,
+                "output_tokens": 1,
+                "total_tokens": 6,
+                "input_token_details": {"cache_read": 50},
+            },
+        )
+        usage = token_usage_from_ai_message(ai_message)
+        assert usage.input_tokens == 0
+
+    def test_no_cache_activity_leaves_input_tokens_unchanged(self) -> None:
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+        usage = token_usage_from_ai_message(ai_message)
+        assert usage.input_tokens == 10
+        assert usage.cache_read_tokens == 0
+
+    def test_matches_native_anthropic_transport_semantics_for_the_same_call(self) -> None:
+        """`TokenUsage.input_tokens` must exclude cached tokens on BOTH
+        paths a request can take through this codebase. The native
+        `AnthropicTransport._usage_from` already reports `input_tokens`
+        this way natively (Anthropic's API never includes cached tokens
+        in it) — see `TestUsageFrom.test_full_usage_extracted_and_accumulated`
+        in `test_anthropic_coverage.py`, which asserts `input_tokens == 100`
+        for a response where the SDK's own `usage.input_tokens` field is
+        already 100 (excluding its separate `cache_read_input_tokens=10`).
+        This test pins the equivalent LangChain-path scenario: LangChain's
+        `usage_metadata["input_tokens"]` for the same underlying call
+        reports 110 (100 + the 10 cached), so this function must subtract
+        the 10 to land on the same 100 the native path reports for
+        identical underlying provider usage.
+        """
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 110,
+                "output_tokens": 50,
+                "total_tokens": 160,
+                "input_token_details": {"cache_read": 10, "cache_creation": 5},
+            },
+        )
+        usage = token_usage_from_ai_message(ai_message)
+        assert usage.input_tokens == 100
+        assert usage.cache_read_tokens == 10
+        assert usage.cache_write_tokens == 5
 
 
 class TestToolSchemaConversion:

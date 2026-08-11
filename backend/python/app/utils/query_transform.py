@@ -2,7 +2,37 @@ from typing import Tuple
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnablePassthrough
+from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
+
+from app.llm.prompt_cache.metrics import (
+    detect_langchain_provider,
+    log_cache_usage,
+    model_name_of,
+    usage_from_ai_message,
+)
+
+
+def _cache_usage_tap(llm, call_site: str) -> RunnableLambda:
+    """Phase 0 measurement only. Inserted between `llm` and the output
+    parser in a `Runnable` chain: observes the raw `AIMessage` for
+    cache usage and passes it through unchanged, so it never alters the
+    chain's behavior or output.
+    """
+    provider = detect_langchain_provider(llm)
+    model = model_name_of(llm)
+
+    def _tap(ai_message):
+        try:
+            log_cache_usage(
+                usage_from_ai_message(
+                    ai_message, provider=provider, model=model, call_site=call_site
+                )
+            )
+        except Exception:
+            pass
+        return ai_message
+
+    return RunnableLambda(_tap)
 
 
 def setup_query_transformation(llm) -> Tuple[Runnable, Runnable]:
@@ -33,6 +63,7 @@ def setup_query_transformation(llm) -> Tuple[Runnable, Runnable]:
         {"query": RunnablePassthrough()}
         | query_rewrite_prompt
         | llm
+        | _cache_usage_tap(llm, "query_rewrite")
         | StrOutputParser()
     )
 
@@ -40,6 +71,7 @@ def setup_query_transformation(llm) -> Tuple[Runnable, Runnable]:
         {"query": RunnablePassthrough()}
         | query_expansion_prompt
         | llm
+        | _cache_usage_tap(llm, "query_expansion")
         | StrOutputParser()
     )
 
@@ -66,6 +98,7 @@ def setup_followup_query_transformation(llm) -> Runnable:
         {"query": RunnablePassthrough(), "previous_conversations": RunnablePassthrough()}
         | query_rewrite_prompt
         | llm
+        | _cache_usage_tap(llm, "followup_query_rewrite")
         | StrOutputParser()
     )
 

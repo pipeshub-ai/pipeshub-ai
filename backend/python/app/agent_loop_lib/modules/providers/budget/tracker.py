@@ -15,6 +15,11 @@ class BudgetTracker(BudgetManager):
     model the agent is actually running so max_cost_usd enforcement and the
     cost in snapshot() reflect real per-model rates instead of one hardcoded
     table. Falls back to Sonnet-class pricing when model is None/unknown.
+
+    `provider` selects the cache read/write multiplier pair
+    (`pricing.CACHE_MULTIPLIERS`) — omitted, it falls back to the
+    Anthropic-shaped default, matching every caller from before this
+    parameter existed.
     """
 
     def __init__(
@@ -25,6 +30,7 @@ class BudgetTracker(BudgetManager):
         max_turns: int | None = None,
         max_cost_usd: float | None = None,
         model: str | None = None,
+        provider: str | None = None,
     ) -> None:
         self._max_input_tokens = max_input_tokens
         self._max_output_tokens = max_output_tokens
@@ -32,7 +38,7 @@ class BudgetTracker(BudgetManager):
         self._max_turns = max_turns
         self._max_cost_usd = max_cost_usd
         self._model = model
-        self._pricing = get_pricing(model)
+        self._pricing = get_pricing(model, provider=provider)
 
         self._input_tokens: int = 0
         self._output_tokens: int = 0

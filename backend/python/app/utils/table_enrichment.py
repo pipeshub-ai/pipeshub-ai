@@ -164,7 +164,8 @@ async def enrich_table_grid(
     parsed: Optional[TableEnrichment] = None
     try:
         parsed = await invoke_with_count_validation_and_reflection(
-            llm, messages, TableEnrichment, "descriptions", len(first_batch)
+            llm, messages, TableEnrichment, "descriptions", len(first_batch),
+            call_site="table_enrichment",
         )
     except Exception as e:
         logger.warning(f"Table enrichment call failed: {e}")
@@ -475,7 +476,7 @@ async def get_rows_text(
 
             # Use centralized utility with reflection
             parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, RowDescriptions
+                llm, messages, RowDescriptions, call_site="table_row_descriptions"
             )
 
             if parsed_response is not None and parsed_response.descriptions:

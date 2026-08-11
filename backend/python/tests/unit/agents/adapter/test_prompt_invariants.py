@@ -639,3 +639,88 @@ def test_source_catalog_cached_on_context() -> None:
     first = context.get_source_catalog()
     second = context.get_source_catalog()
     assert first is second
+
+
+# ---------------------------------------------------------------------------
+# Byte-stability of the cache-eligible stable block (prompt-caching Phase 6).
+#
+# `build_blocks()` splits the prompt into `(stable_block, volatile_block)` —
+# the Anthropic/OpenAI cache breakpoint sits at the boundary between them
+# (see `section_order.py`). A literal byte mismatch anywhere in `stable_block`
+# between two otherwise-identical requests silently turns caching into a
+# pure cost increase (a write with zero reads), with no error and nothing
+# else to notice it by — the single highest-value regression class in the
+# prompt-caching plan.
+# ---------------------------------------------------------------------------
+
+def build_prompt_blocks_for_fixture(
+    fixture_name: str, *, current_time: str | None = None, timezone: str | None = None,
+) -> tuple[str, str]:
+    """Same construction as `build_prompt_for_fixture`, but returns the
+    `(stable_block, volatile_block)` split the cache strategies key off of,
+    with `current_time`/`timezone` overridable so callers can simulate two
+    requests separated by real wall-clock time without changing anything
+    else about the agent/conversation state."""
+    context = _make_context(fixture_name)
+    context.current_time = current_time
+    context.timezone = timezone
+    fx = _FIXTURES[fixture_name]
+
+    context.tool_state.update(
+        {
+            "agent_knowledge": fx.get("agent_knowledge") or [],
+            "has_knowledge": fx.get("has_knowledge", False),
+            "available_connectors": fx.get("available_connectors", []),
+            "web_search_config": fx.get("web_search_config"),
+            "agent_toolsets": fx.get("agent_toolsets") or [],
+        }
+    )
+
+    tool_names = _tool_names_for_fixture(fx)
+    spec = AgentSpec(
+        name="test-agent",
+        system_prompt="BASE_REACT_PROMPT",
+        tool_names=tool_names,
+        tool_disclosure=fx.get("tool_disclosure", "eager"),
+        pinned_toolsets=fx.get("pinned_toolsets", []),
+        model=ModelSpec(provider="scripted", model="scripted-model"),
+    )
+    runtime = AgentRuntime(tool_registry=_build_registry_for_fixture(fx))
+    builder = PipesHubPromptBuilder(context)
+    return builder.build_blocks(spec, runtime, Goal(description="test query"), [], {})
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_FIXTURES)
+def test_stable_block_is_byte_identical_across_rebuilds(fixture_name: str) -> None:
+    """Baseline determinism: rebuilding the SAME fixture twice, with no
+    input changed at all, must produce byte-identical stable AND volatile
+    blocks. A failure here means something in the builder itself is
+    non-deterministic (e.g. a `set` iterated into rendered text) —
+    independent of whether the clock or request id vary."""
+    stable_1, volatile_1 = build_prompt_blocks_for_fixture(fixture_name)
+    stable_2, volatile_2 = build_prompt_blocks_for_fixture(fixture_name)
+    assert stable_1 == stable_2
+    assert volatile_1 == volatile_2
+
+
+@pytest.mark.parametrize("fixture_name", _ALL_FIXTURES)
+def test_stable_block_survives_a_changed_clock(fixture_name: str) -> None:
+    """`time_context` (Band C / TURN) legitimately changes every turn — the
+    regression this guards against is clock rendering leaking anywhere
+    into Band A/B. Two builds with a different `current_time`/`timezone`
+    (standing in for "a changed clock and a changed request id" from the
+    plan's corner case) and nothing else different must still produce the
+    exact same `stable_block`; only `volatile_block` is allowed to differ."""
+    stable_1, volatile_1 = build_prompt_blocks_for_fixture(
+        fixture_name, current_time="2026-01-01T00:00:00Z", timezone="UTC",
+    )
+    stable_2, volatile_2 = build_prompt_blocks_for_fixture(
+        fixture_name, current_time="2027-06-15T12:34:56Z", timezone="America/Los_Angeles",
+    )
+    assert stable_1 == stable_2
+    if volatile_1 or volatile_2:
+        assert volatile_1 != volatile_2, (
+            f"[{fixture_name}] time_context did not actually vary between "
+            "the two clocks — this test would pass vacuously if the "
+            "volatile block stopped rendering time_context at all"
+        )

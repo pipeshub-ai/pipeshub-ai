@@ -1245,6 +1245,7 @@ def get_generator_model(
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
+                stream_usage=True,  # BaseChatOpenAI subclass — same OpenAI quirk as ChatOpenAI
             )
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:

@@ -23,6 +23,18 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.llm.prompt_cache.config import resolve_cache_config
+from app.llm.prompt_cache.decision import CacheDecision, CacheReuseClass
+from app.llm.prompt_cache.langchain_kwargs import (
+    resolve_cache_provider,
+    resolve_langchain_cache_kwargs,
+)
+from app.llm.prompt_cache.metrics import (
+    detect_langchain_provider,
+    log_cache_usage,
+    model_name_of,
+    usage_from_ai_message,
+)
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -79,19 +91,82 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return any(marker in message for marker in _RATE_LIMIT_MARKERS)
 
 
-async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  # noqa: ANN401
+def _record_cache_usage(
+    response: Any,  # noqa: ANN401
+    *,
+    provider: str,
+    model: str,
+    call_site: str,
+    decision: CacheDecision | None = None,
+) -> None:
+    """Phase 0 measurement only — logs cache_read/cache_write already
+    present on ``response.usage_metadata``, if any. Never raises; a bug
+    in measurement must not take down the indexing/query call it
+    instruments. See `app.llm.prompt_cache.metrics` for why a `None`
+    sample (no usage metadata, e.g. a bare parsed Pydantic model with no
+    `include_raw=True`) is a silent no-op rather than a logged zero.
+
+    `decision` (Phase 8) is the `CacheDecision` resolved for this call in
+    `_ainvoke_throttled` — attaching it correlates why caching was/wasn't
+    attempted with what actually happened in one log line."""
+    try:
+        sample = usage_from_ai_message(
+            response, provider=provider or "unknown", model=model, call_site=call_site,
+            decision=decision,
+        )
+        log_cache_usage(sample)
+    except Exception:
+        logger.debug("_record_cache_usage: failed to log sample", exc_info=True)
+
+
+async def _ainvoke_throttled(
+    llm: BaseChatModel,
+    messages: list[Any],
+    *,
+    provider: str = "",
+    model: str = "",
+    call_site: str = "structured_llm",
+    reuse_class: CacheReuseClass = CacheReuseClass.ONE_SHOT_UNIQUE,
+    cache_key: str | None = None,
+    shared_static_enabled: bool = False,
+) -> Any:  # noqa: ANN401
     """Invoke *llm*, holding a slot in the process-wide indexing budget.
 
     Retries rate-limit errors with jittered backoff. The jitter matters more than the
     retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
     429ed all retry in lockstep.
+
+    `reuse_class` (Phase 8) defaults to `ONE_SHOT_UNIQUE` — every current
+    caller of this function sends per-document/per-table/per-query content
+    that is genuinely unique per call, so caching it would be a guaranteed
+    write with zero reads. `resolve_langchain_cache_kwargs` always resolves
+    `ONE_SHOT_UNIQUE` to `{}`, so this is a no-op for existing callers; a
+    call site can opt into `SHARED_STATIC` explicitly once its prompt
+    structure and Phase 0 measurement justify it — see
+    `document_extraction.py` for the one call site that does today (kept
+    off by default via `shared_static_enabled`, see its own caveat in
+    `resolve_langchain_cache_kwargs`'s docstring about Anthropic's
+    last-block placement).
     """
+    cache_provider = resolve_cache_provider(llm, provider or detect_langchain_provider(llm))
+    cache_kwargs, cache_decision = resolve_langchain_cache_kwargs(
+        provider=cache_provider,
+        model=model or model_name_of(llm),
+        reuse_class=reuse_class,
+        cache_config=resolve_cache_config(),
+        cache_key=cache_key,
+        shared_static_enabled=shared_static_enabled,
+    )
     delay = 0.0
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         async with indexing_llm_slot():
             try:
-                result = await llm.ainvoke(messages)
+                result = await llm.ainvoke(messages, **cache_kwargs)
                 note_llm_call()
+                _record_cache_usage(
+                    result, provider=provider, model=model, call_site=call_site,
+                    decision=cache_decision,
+                )
                 return result
             except Exception as e:
                 if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
@@ -1053,6 +1128,11 @@ async def invoke_with_structured_output_and_reflection(
     messages: list,
     schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    call_site: str = "structured_llm",
+    *,
+    reuse_class: CacheReuseClass = CacheReuseClass.ONE_SHOT_UNIQUE,
+    cache_key: str | None = None,
+    shared_static_enabled: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1062,14 +1142,35 @@ async def invoke_with_structured_output_and_reflection(
         messages: List of messages to send to the LLM
         schema: Pydantic model class to validate the response against
         max_retries: Maximum number of reflection retries on parse failure
+        call_site: Phase 0 measurement tag (e.g. "table_enrichment",
+            "document_extraction") — logged alongside cache usage, never
+            used to change behavior.
+        reuse_class: Phase 8 cache eligibility class for this call site.
+            Defaults to `ONE_SHOT_UNIQUE` (no caching attempted). Pass
+            `CacheReuseClass.SHARED_STATIC` for a call site whose prompt
+            has a large, byte-identical, reusable prefix; it still stays
+            disabled unless `shared_static_enabled=True` too.
+        cache_key: Tenant-scoped `prompt_cache_key` routing hint for
+            OpenAI-family models (ignored by other providers). See
+            `app.llm.prompt_cache.cache_key.build_prompt_cache_key`.
+        shared_static_enabled: Per-call-site opt-in for `SHARED_STATIC`
+            caching — see `resolve_langchain_cache_kwargs`'s docstring for
+            the Anthropic last-block-placement caveat before flipping this.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    cache_provider = detect_langchain_provider(llm)
+    cache_model = model_name_of(llm)
 
     try:
-        response = await _ainvoke_throttled(llm_with_structured_output, messages)
+        response = await _ainvoke_throttled(
+            llm_with_structured_output, messages,
+            provider=cache_provider, model=cache_model, call_site=call_site,
+            reuse_class=reuse_class, cache_key=cache_key,
+            shared_static_enabled=shared_static_enabled,
+        )
     except Exception as e:
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
@@ -1139,7 +1240,13 @@ Respond only with valid JSON that matches the schema."""
 
         for attempt in range(max_retries):
             try:
-                reflection_response = await _ainvoke_throttled(llm_with_structured_output, reflection_messages)
+                reflection_response = await _ainvoke_throttled(
+                    llm_with_structured_output, reflection_messages,
+                    provider=cache_provider, model=cache_model,
+                    call_site=f"{call_site}_reflection",
+                    reuse_class=reuse_class, cache_key=cache_key,
+                    shared_static_enabled=shared_static_enabled,
+                )
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1193,6 +1300,11 @@ async def invoke_with_count_validation_and_reflection(
     count_field: str,
     expected_count: int,
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    call_site: str = "structured_llm",
+    *,
+    reuse_class: CacheReuseClass = CacheReuseClass.ONE_SHOT_UNIQUE,
+    cache_key: str | None = None,
+    shared_static_enabled: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and validate that a list field has the expected length.
@@ -1206,13 +1318,20 @@ async def invoke_with_count_validation_and_reflection(
         count_field: Name of the list field on *schema* whose length must match
         expected_count: Expected length of that field
         max_retries: Maximum number of reflection retries on parse failure (default: 2)
+        call_site: Phase 0 measurement tag, forwarded to
+            `invoke_with_structured_output_and_reflection`.
+        reuse_class, cache_key, shared_static_enabled: Phase 8 cache
+            eligibility, forwarded unchanged to
+            `invoke_with_structured_output_and_reflection`.
 
     Returns:
         Validated schema instance with correct count, or None if validation fails
     """
     # First, try to get a parsed response using the standard reflection function
     parsed_response = await invoke_with_structured_output_and_reflection(
-        llm, messages, schema, max_retries
+        llm, messages, schema, max_retries, call_site=call_site,
+        reuse_class=reuse_class, cache_key=cache_key,
+        shared_static_enabled=shared_static_enabled,
     )
 
     if parsed_response is None:
@@ -1259,7 +1378,10 @@ Respond with a valid JSON object:
     # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
     try:
         reflection_response = await invoke_with_structured_output_and_reflection(
-            llm, reflection_messages, schema, max_retries=1
+            llm, reflection_messages, schema, max_retries=1,
+            call_site=f"{call_site}_count_reflection",
+            reuse_class=reuse_class, cache_key=cache_key,
+            shared_static_enabled=shared_static_enabled,
         )
 
         if reflection_response is None:
@@ -1291,8 +1413,15 @@ async def invoke_with_row_descriptions_and_reflection(
     messages: list,
     expected_count: int,
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    call_site: str = "row_descriptions",
 ) -> RowDescriptions | None:
-    """Invoke LLM for row descriptions and validate the count matches expected."""
+    """Invoke LLM for row descriptions and validate the count matches expected.
+
+    No `reuse_class` parameter: row descriptions are per-table-batch unique
+    content (see Phase 8 analysis in `table_enrichment.py`), always
+    `ONE_SHOT_UNIQUE`.
+    """
     return await invoke_with_count_validation_and_reflection(
-        llm, messages, RowDescriptions, "descriptions", expected_count, max_retries
+        llm, messages, RowDescriptions, "descriptions", expected_count, max_retries,
+        call_site=call_site,
     )

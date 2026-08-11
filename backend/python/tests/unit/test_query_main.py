@@ -26,6 +26,7 @@ def _make_container():
     })
     mock_config.close = AsyncMock()
     c.config_service.return_value = mock_config
+    c.feature_flag_service = AsyncMock(return_value=MagicMock())
     return c
 
 
@@ -43,6 +44,17 @@ def _make_graph_provider(orgs=None):
 
 class TestInitializeContainer:
     """Tests for the initialize_container coroutine."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_feature_flag_refresh_task(self):
+        """`initialize_container` spawns a real `asyncio.create_task` for
+        the periodic feature-flag refresh loop — patch it out so tests
+        don't leak a pending background task past the test's event loop."""
+        with patch(
+            "app.services.featureflag.featureflag.FeatureFlagService.start_periodic_refresh",
+            return_value=MagicMock(),
+        ):
+            yield
 
     async def test_success_returns_true(self):
         """Successful initialisation returns True."""

@@ -21,6 +21,7 @@ Usage:
     is_enabled = FeatureFlagService.get_service().is_feature_enabled(CONFIG.ENABLE_WORKFLOW_BUILDER)
 """
 
+import asyncio
 import os
 from logging import Logger
 from threading import Lock
@@ -128,6 +129,39 @@ class FeatureFlagService:
     async def refresh(self) -> None:
         """Refresh feature flags from the provider"""
         await self._provider.refresh()
+
+    @classmethod
+    def start_periodic_refresh(
+        cls, interval_seconds: float, logger: Optional[Logger] = None
+    ) -> "asyncio.Task[None]":
+        """Spawn a background task that calls `refresh()` on the current
+        singleton every `interval_seconds`.
+
+        The connectors service refreshes at request time on every call (see
+        `app.connectors.core.registry.connector_registry`), so it never
+        needed this. Long-lived processes that consult flags off the hot
+        request path (e.g. the query service's per-LLM-call prompt-caching
+        gate, `app.llm.prompt_cache.config.resolve_cache_config`) would
+        otherwise only ever see the value from process startup, since
+        nothing else calls `refresh()` for them. This gives those flags a
+        bounded staleness window instead.
+
+        A failed tick is logged (if a logger is given) and swallowed so one
+        bad refresh never kills the loop. Returns the task so the caller can
+        hold a reference (and optionally cancel it on shutdown) — the task
+        itself runs forever until cancelled or the process exits.
+        """
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                try:
+                    await cls.get_service().refresh()
+                except Exception as exc:
+                    if logger is not None:
+                        logger.debug(f"Periodic feature flag refresh failed: {exc}")
+
+        return asyncio.create_task(_loop())
 
     def set_provider(self, provider: IConfigProvider) -> None:
         """

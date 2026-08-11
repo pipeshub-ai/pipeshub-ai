@@ -21,6 +21,21 @@ def shape_sliding_window(pin_first_n: int = 1):
     Evicts tool-call groups atomically: an ``AssistantMessage`` with
     ``tool_calls`` is always evicted together with its matching
     ``ToolMessage``s to keep the pairing that LLM providers require.
+
+    Prompt-cache note: any eviction here rewrites the byte content of
+    everything after the evicted point, so it forces a cold write of the
+    provider's cached prefix for the rest of this run — unavoidable with a
+    literal-byte-match cache, since the whole point of eviction is to
+    change what gets sent. What this shaper controls is HOW OFTEN that
+    happens: the trigger is a hard `> effective_max_tokens` check, not a
+    softer ratio, and one pass evicts everything needed to get fully back
+    under budget rather than stopping at "barely still over" — so a single
+    dispatch produces at most one deliberate cold write, never a drip of
+    marginal per-turn ones. See `shape_auto_compact`'s module docstring
+    (`auto_compact.py`) and
+    `tests/unit/agent_loop_lib/hooks/middleware/builtin/test_compaction_sliding_window_interaction.py`
+    for how this interacts with the other budget shaper in the same
+    PRE_MODEL pipeline.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:

@@ -519,6 +519,52 @@ class TestPrepareContent:
 # =========================================================================
 # extract_metadata
 # =========================================================================
+class TestClassify:
+    """Tests for DocumentExtraction.classify (pre-fetched departments variant)."""
+
+    @pytest.mark.asyncio
+    async def test_classify_passes_shared_static_cache_params(self) -> None:
+        """Phase 8: classify() shares the same SHARED_STATIC wiring as
+        extract_metadata() — same org-scoped cache key, caching still off
+        by default."""
+        from app.llm.prompt_cache.decision import CacheReuseClass
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+
+        fake_classification = DocumentClassification(
+            departments=["Engineering"],
+            category="Technical",
+            subcategories=SubCategories(level1="Software", level2="Backend", level3="API"),
+            languages=["English"],
+            sentiment="Positive",
+            confidence_score=0.95,
+            topics=["microservices"],
+            summary="A document about microservices.",
+        )
+
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        blocks = [_make_text_block("Hello world about microservices")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            return_value=fake_classification,
+        ) as mock_invoke:
+            await ext.classify(blocks, "org-2", departments=["Engineering"])
+
+        _, kwargs = mock_invoke.call_args
+        assert kwargs["reuse_class"] == CacheReuseClass.SHARED_STATIC
+        assert kwargs["cache_key"] == "document_extraction:org-2"
+        assert kwargs["shared_static_enabled"] is False
+
+
 class TestExtractMetadata:
     """Tests for DocumentExtraction.extract_metadata."""
 
@@ -565,6 +611,52 @@ class TestExtractMetadata:
         assert result is not None
         assert result.departments == ["Engineering"]
         assert result.summary == "A document about microservices."
+
+    @pytest.mark.asyncio
+    async def test_extract_metadata_passes_shared_static_cache_params(self):
+        """Phase 8: extract_metadata is a SHARED_STATIC candidate — verify
+        it threads the right reuse class and an org-scoped cache key
+        through, with caching still disabled by default."""
+        from app.llm.prompt_cache.decision import CacheReuseClass
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+
+        fake_classification = DocumentClassification(
+            departments=["Engineering"],
+            category="Technical",
+            subcategories=SubCategories(level1="Software", level2="Backend", level3="API"),
+            languages=["English"],
+            sentiment="Positive",
+            confidence_score=0.95,
+            topics=["microservices"],
+            summary="A document about microservices.",
+        )
+
+        fake_llm = MagicMock()
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+        blocks = [_make_text_block("Hello world about microservices")]
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(
+            ext, "graph_provider"
+        ) as mock_graph, patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            return_value=fake_classification,
+        ) as mock_invoke:
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
+
+            await ext.extract_metadata(blocks, "org-1")
+
+        _, kwargs = mock_invoke.call_args
+        assert kwargs["reuse_class"] == CacheReuseClass.SHARED_STATIC
+        assert kwargs["cache_key"] == "document_extraction:org-1"
+        assert kwargs["shared_static_enabled"] is False
 
     @pytest.mark.asyncio
     async def test_extract_metadata_structured_fails_falls_back(self):

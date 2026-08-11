@@ -132,12 +132,19 @@ class IndexingAppContainer(BaseAppContainer):
         sink_orchestrator=sink_orchestrator,
     )
 
+    feature_flag_service = providers.Singleton(
+        container_utils.create_feature_flag_service, config_service=config_service
+    )
+
     # Indexing-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
             "app.indexing_main"
         ]
     )
+
+_FEATURE_FLAG_REFRESH_INTERVAL_SECONDS = 60.0
+
 
 async def initialize_container(container: IndexingAppContainer) -> bool:
     """Initialize container resources"""
@@ -158,6 +165,17 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         # Store the resolved graph_provider in the container to avoid coroutine reuse
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
+
+        # Etcd-backed feature flags (e.g. the ENABLE_PROMPT_CACHING Labs
+        # toggle) — this process only ever consults FeatureFlagService off
+        # the request path, so a bounded-cadence background refresh keeps it
+        # from going stale for the process lifetime. See
+        # FeatureFlagService.start_periodic_refresh.
+        await container.feature_flag_service()
+        from app.services.featureflag.featureflag import FeatureFlagService
+        container._feature_flag_refresh_task = FeatureFlagService.start_periodic_refresh(
+            _FEATURE_FLAG_REFRESH_INTERVAL_SECONDS, logger
+        )
 
         await Health.system_health_check(container)
         return True

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.agent_loop_lib.cache.base import ApplyResult, CacheableRequest, PromptCacheStrategy
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -63,6 +64,7 @@ class AnthropicTransport(LLMTransport):
         api_key: str,
         model: str = DEFAULT_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        cache_strategy: PromptCacheStrategy | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -77,6 +79,14 @@ class AnthropicTransport(LLMTransport):
         self._model = model
         self._max_tokens = max_tokens
         self._client = _anthropic.AsyncAnthropic(api_key=api_key)
+        # `None` (the default) preserves this transport's original,
+        # unconditional caching behavior via the private methods below
+        # byte-for-byte — nothing in agent_loop_lib constructs a
+        # concrete strategy (that would break hermeticity; see
+        # `app.llm.prompt_cache`). When a caller DOES inject one,
+        # `complete()`/`stream()` route through it instead — see
+        # `_apply_cache_strategy`.
+        self._cache_strategy = cache_strategy
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; `Agent.usage` (a `RunUsage` built from each call's
         # returned `ModelResponse.usage`) is the source of truth callers
@@ -304,6 +314,44 @@ class AnthropicTransport(LLMTransport):
             return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         return None
 
+    def _format_system_blocks(
+        self, system: str | None, system_blocks: list[str] | None
+    ) -> list[dict] | None:
+        """Same block construction as `_build_system_kwargs`, with no
+        `cache_control` at all — the plain payload a `PromptCacheStrategy`
+        decorates when one is injected. Kept separate from
+        `_build_system_kwargs` rather than layered on top of it so that
+        method's default (no-strategy) output is never at risk of
+        changing."""
+        if system_blocks:
+            blocks = [{"type": "text", "text": t} for t in system_blocks if t]
+            return blocks or None
+        if system:
+            return [{"type": "text", "text": system}]
+        return None
+
+    def _apply_cache_strategy(
+        self,
+        formatted_messages: list[dict],
+        system_blocks_formatted: list[dict] | None,
+        formatted_tools: list[dict] | None,
+    ) -> ApplyResult:
+        """Routes the plain (uncached) payload through the injected
+        strategy, if any. With no strategy injected, or a strategy that
+        declines to cache this call, returns the payload unchanged."""
+        identity = ApplyResult(
+            messages=formatted_messages, system=system_blocks_formatted, tools=formatted_tools,
+        )
+        if self._cache_strategy is None:
+            return identity
+        request = CacheableRequest(
+            messages=formatted_messages, system=system_blocks_formatted, tools=formatted_tools,
+        )
+        plan = self._cache_strategy.plan(request)
+        if not plan.enabled:
+            return identity
+        return self._cache_strategy.apply(plan, request)
+
     async def complete(
         self,
         messages: list[Message],
@@ -314,13 +362,28 @@ class AnthropicTransport(LLMTransport):
         effort: str | None = None,
         system_blocks: list[str] | None = None,
     ) -> ModelResponse:
+        formatted_tools = self._format_tools(tools)
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
+
+        if self._cache_strategy is None:
+            # Unchanged default path — byte-identical to before the seam.
+            self._apply_prompt_cache(formatted)
+            cached_messages = formatted
+            cached_system = self._build_system_kwargs(system, system_blocks)
+            cached_tools = self._apply_tool_cache(formatted_tools) if formatted_tools else formatted_tools
+            cache_request_kwargs: dict[str, Any] = {}
+        else:
+            system_formatted = self._format_system_blocks(system, system_blocks)
+            result = self._apply_cache_strategy(formatted, system_formatted, formatted_tools)
+            cached_messages = result.messages
+            cached_system = result.system
+            cached_tools = result.tools
+            cache_request_kwargs = result.request_kwargs
 
         kwargs: dict[str, Any] = {
             "model": model or self._model,
             "max_tokens": self._max_tokens,
-            "messages": formatted,
+            "messages": cached_messages,
         }
         if thinking_budget:
             # Anthropic extended thinking requires max_tokens to exceed the
@@ -329,12 +392,11 @@ class AnthropicTransport(LLMTransport):
             kwargs["max_tokens"] = max(self._max_tokens, thinking_budget + 1024)
         # effort has no Anthropic equivalent today — accepted for interface
         # parity with other providers and intentionally a no-op here.
-        system_list = self._build_system_kwargs(system, system_blocks)
-        if system_list:
-            kwargs["system"] = system_list
-        formatted_tools = self._format_tools(tools)
-        if formatted_tools:
-            kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+        if cached_system:
+            kwargs["system"] = cached_system
+        if cached_tools:
+            kwargs["tools"] = cached_tools
+        kwargs.update(cache_request_kwargs)
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -353,27 +415,52 @@ class AnthropicTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredResponse:
-        """Force structured JSON output using the tool-use trick."""
+        """Force structured JSON output using the tool-use trick.
+
+        Unlike `complete()`/`stream()` (the turn loop — `CacheReuseClass.MULTI_TURN`,
+        cached by default because the same prefix is re-read on the very
+        next turn), this method caches NOTHING by default. A one-shot
+        structured call's prefix is only re-read if an identical prefix
+        recurs across DIFFERENT calls before the TTL — a per-call-site
+        judgment (`SHARED_STATIC` vs `ONE_SHOT_UNIQUE`) this transport
+        cannot make on its own. The previous unconditional
+        `cache_control` here paid the 1.25x write premium on every
+        structured one-shot (`IntentParser`, `GoalBuilder`,
+        planner/critic) with no guarantee of a matching read — see the
+        plan's "existing bugs this plan fixes" #2. Inject `cache_strategy`
+        at construction time to opt a specific call site back into
+        caching once `app.llm.prompt_cache.decision.decide()` has
+        justified it.
+        """
         tool_def = {
             "name": "structured_output",
             "description": "Return the structured result.",
             "input_schema": output_schema,
         }
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
-
         resolved_model = model or self._model
+
+        if self._cache_strategy is None:
+            cached_messages = formatted
+            cached_system = [{"type": "text", "text": system}] if system else None
+            cache_request_kwargs: dict[str, Any] = {}
+        else:
+            system_formatted = [{"type": "text", "text": system}] if system else None
+            result = self._apply_cache_strategy(formatted, system_formatted, None)
+            cached_messages = result.messages
+            cached_system = result.system
+            cache_request_kwargs = result.request_kwargs
+
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": self._max_tokens,
-            "messages": formatted,
+            "messages": cached_messages,
             "tools": [tool_def],
             "tool_choice": {"type": "tool", "name": "structured_output"},
         }
-        if system:
-            kwargs["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+        if cached_system:
+            kwargs["system"] = cached_system
+        kwargs.update(cache_request_kwargs)
 
         try:
             response = await self._client.messages.create(**kwargs)
@@ -398,25 +485,39 @@ class AnthropicTransport(LLMTransport):
         effort: str | None = None,
         system_blocks: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        formatted_tools = self._format_tools(tools)
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
+
+        if self._cache_strategy is None:
+            # Unchanged default path — byte-identical to before the seam.
+            self._apply_prompt_cache(formatted)
+            cached_messages = formatted
+            cached_system = self._build_system_kwargs(system, system_blocks)
+            cached_tools = self._apply_tool_cache(formatted_tools) if formatted_tools else formatted_tools
+            cache_request_kwargs: dict[str, Any] = {}
+        else:
+            system_formatted = self._format_system_blocks(system, system_blocks)
+            result = self._apply_cache_strategy(formatted, system_formatted, formatted_tools)
+            cached_messages = result.messages
+            cached_system = result.system
+            cached_tools = result.tools
+            cache_request_kwargs = result.request_kwargs
 
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": self._max_tokens,
-            "messages": formatted,
+            "messages": cached_messages,
         }
         if thinking_budget:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
             kwargs["max_tokens"] = max(self._max_tokens, thinking_budget + 1024)
         # effort has no Anthropic equivalent today — same no-op as complete().
-        system_list = self._build_system_kwargs(system, system_blocks)
-        if system_list:
-            kwargs["system"] = system_list
-        formatted_tools = self._format_tools(tools)
-        if formatted_tools:
-            kwargs["tools"] = self._apply_tool_cache(formatted_tools)
+        if cached_system:
+            kwargs["system"] = cached_system
+        if cached_tools:
+            kwargs["tools"] = cached_tools
+        kwargs.update(cache_request_kwargs)
 
         try:
             async with self._client.messages.stream(**kwargs) as stream:

@@ -220,7 +220,14 @@ def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> 
         # to discover and unlock them.
         return registry.schemas(spec.tool_names)
 
-    return registry.schemas(list(agent.visible_tools))
+    # Sorted, not `list(agent.visible_tools)`: `visible_tools` is a `set`,
+    # so its iteration order depends on Python's per-process string hash
+    # seed — identical tool grants would serialize in a different wire
+    # order (and thus a different prompt-cache-breaking byte sequence)
+    # depending only on which worker process/restart handled the request,
+    # not on anything that actually changed for the user. Matches the
+    # `sorted(...)` already used for the lazy+ceiling branch above.
+    return registry.schemas(sorted(agent.visible_tools))
 
 
 async def execute_tool_call(

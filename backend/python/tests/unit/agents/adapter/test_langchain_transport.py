@@ -940,3 +940,87 @@ class TestBindToolsCaching:
         await LangChainTransport(model_b).complete([UserMessage(content="hi")], tools=tools)
 
         assert model_a.bind_calls == 1 and model_b.bind_calls == 1
+
+
+class _FakeAnthropicModel:
+    """Named `ChatAnthropic` so `detect_langchain_provider`/`resolve_cache_provider`
+    resolve it to the real `"anthropic"` provider — required to exercise the
+    Phase 7 decision/outcome correlation, since an unrecognized fake class
+    always resolves to `capability.mode="none"` (cache disabled, empty
+    kwargs) and would never trigger the code path this test targets."""
+
+    __name__ = "ChatAnthropic"
+
+    def __init__(self, response: AIMessage) -> None:
+        self._response = response
+        self.ainvoke_kwargs: dict[str, Any] | None = None
+
+    def bind_tools(self, tools: list[Any]) -> "_FakeAnthropicModel":
+        return self
+
+    async def ainvoke(self, messages: list, config: Any = None, **kwargs: Any) -> AIMessage:
+        self.ainvoke_kwargs = kwargs
+        return self._response
+
+
+# `type(instance).__name__` is what `detect_langchain_provider` actually
+# reads — renaming the class itself (not just setting an instance
+# attribute) so that lookup resolves to "anthropic".
+_FakeAnthropicModel.__name__ = "ChatAnthropic"
+_FakeAnthropicModel.__qualname__ = "ChatAnthropic"
+
+
+class TestCacheDecisionOutcomeCorrelation:
+    """Phase 7: `_resolve_cache_kwargs`'s `CacheDecision` is threaded through
+    to `_record_cache_usage` so the "why" (decision) and the "what happened"
+    (usage) land in the SAME structured log line instead of two separately
+    timed debug/info lines a reader has to cross-reference by hand."""
+
+    async def test_decision_fields_appear_in_the_usage_log_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 500,
+                "output_tokens": 10,
+                "total_tokens": 510,
+                "input_token_details": {"cache_read": 400, "cache_creation": 0},
+            },
+        )
+        model = _FakeAnthropicModel(ai_message)
+        transport = LangChainTransport(model, model_name="claude-sonnet-5")
+
+        with caplog.at_level("INFO", logger="app.llm.prompt_cache.metrics"):
+            await transport.complete([UserMessage(content="hi")])
+
+        # The cache_control kwarg actually reached the model — confirms
+        # caching was genuinely attempted, not a no-op that happened to
+        # still log decision_enabled=True by accident.
+        assert model.ainvoke_kwargs == {"cache_control": {"type": "ephemeral"}}
+
+        usage_lines = [r.getMessage() for r in caplog.records if "prompt_cache_usage" in r.getMessage()]
+        assert len(usage_lines) == 1
+        assert "decision_enabled=True" in usage_lines[0]
+        assert "decision_reason=multi_turn_default_on" in usage_lines[0]
+        assert "cache_read_tokens=400" in usage_lines[0]
+
+    async def test_disabled_decision_still_correlates_with_zero_usage(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ENABLE_PROMPT_CACHING", "false")
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={"input_tokens": 500, "output_tokens": 10, "total_tokens": 510},
+        )
+        model = _FakeAnthropicModel(ai_message)
+        transport = LangChainTransport(model, model_name="claude-sonnet-5")
+
+        with caplog.at_level("INFO", logger="app.llm.prompt_cache.metrics"):
+            await transport.complete([UserMessage(content="hi")])
+
+        assert model.ainvoke_kwargs == {}
+        usage_lines = [r.getMessage() for r in caplog.records if "prompt_cache_usage" in r.getMessage()]
+        assert len(usage_lines) == 1
+        assert "decision_enabled=False" in usage_lines[0]
+        assert "decision_reason=cache_disabled_by_env" in usage_lines[0]

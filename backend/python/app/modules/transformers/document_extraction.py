@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import DepartmentNames
+from app.llm.prompt_cache.decision import CacheReuseClass
 from app.models.blocks import Block, SemanticMetadata
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
@@ -16,6 +17,30 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
+
+# Phase 8: the filled instruction block (`prompt_for_document_extraction`
+# with `{department_list}`/`{sentiment_list}` substituted) is identical for
+# every document processed for the same org — `department_list` comes from
+# `graph_provider.get_departments(org_id)`, which is org-scoped, not
+# per-document or per-user. That is why the cache key below is
+# `org_id`-only rather than `build_prompt_cache_key` (which additionally
+# requires `user_id` for the agent loop's per-user stable band — there is
+# no per-user content in this prompt at all).
+_DOCUMENT_EXTRACTION_SHARED_STATIC_ENABLED = False
+"""Kept off: the static instructions are the FIRST block(s) of a single
+multi-block `HumanMessage`, followed by the unique document content as the
+LAST block(s). Anthropic's automatic `cache_control` invoke kwarg marks the
+LAST cacheable block, so enabling this without restructuring into the
+native block-list + explicit `cache_control` placement would cache the
+unique document instead of the shared instructions — a guaranteed write
+with zero reads. Safe to flip for OpenAI/Gemini-only deployments (their
+automatic modes match the longest common prefix, not a block position);
+flip once Phase 0 measurement on this call site confirms it's worth a
+provider-specific carve-out."""
+
+
+def _document_extraction_cache_key(org_id: str) -> str:
+    return f"document_extraction:{org_id}"
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
@@ -292,7 +317,10 @@ class DocumentExtraction(Transformer):
             message_content.extend(content)
             messages = [HumanMessage(content=message_content)]
             parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, DocumentClassification
+                self.llm, messages, DocumentClassification, call_site="document_classification",
+                reuse_class=CacheReuseClass.SHARED_STATIC,
+                cache_key=_document_extraction_cache_key(org_id),
+                shared_static_enabled=_DOCUMENT_EXTRACTION_SHARED_STATIC_ENABLED,
             )
             if parsed_response is not None:
                 self.logger.info("✅ Document classification parsed successfully")
@@ -360,7 +388,10 @@ class DocumentExtraction(Transformer):
 
             # Use centralized utility with reflection
             parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, DocumentClassification
+                self.llm, messages, DocumentClassification, call_site="document_metadata_extraction",
+                reuse_class=CacheReuseClass.SHARED_STATIC,
+                cache_key=_document_extraction_cache_key(org_id),
+                shared_static_enabled=_DOCUMENT_EXTRACTION_SHARED_STATIC_ENABLED,
             )
 
             if parsed_response is not None:

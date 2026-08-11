@@ -5,6 +5,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel, Field
 
+from app.llm.prompt_cache.metrics import (
+    detect_langchain_provider,
+    log_cache_usage,
+    model_name_of,
+    usage_from_ai_message,
+)
 from app.utils.aimodels import coerce_message_content_to_text
 
 MIN_DECOMPOSE_AND_EXPAND_QUERIES = 1
@@ -149,9 +155,24 @@ class QueryDecompositionExpansionService:
             """
         )
 
-    def _parse_decomposition_response(self, response: str) -> Dict[str, Any]:
+    def _parse_decomposition_response(
+        self, response: str, call_site: str = "query_decompose"
+    ) -> Dict[str, Any]:
         """Parse the LLM response to extract the JSON structure with confidence scores"""
         try:
+            # Phase 0 measurement only: observes usage on the raw AIMessage
+            # before any content extraction below, and never alters `response`.
+            try:
+                log_cache_usage(
+                    usage_from_ai_message(
+                        response,
+                        provider=detect_langchain_provider(self.llm),
+                        model=model_name_of(self.llm),
+                        call_site=call_site,
+                    )
+                )
+            except Exception:
+                pass
             # Handle different response formats. LangChain message content may be
             # a plain string or a list of blocks (e.g. Gemini), so coerce to text
             # before any string handling to avoid 'list' has no attribute 'strip'.
@@ -242,7 +263,7 @@ class QueryDecompositionExpansionService:
                 {"query": RunnablePassthrough()}
                 | self.decomposition_template
                 | self.llm
-                | self._parse_decomposition_response
+                | (lambda r: self._parse_decomposition_response(r, call_site="query_decompose"))
             )
 
             # Execute the chain
@@ -371,7 +392,7 @@ class QueryDecompositionExpansionService:
                 {"query": RunnablePassthrough()}
                 | analysis_template
                 | self.llm
-                | self._parse_decomposition_response
+                | (lambda r: self._parse_decomposition_response(r, call_site="query_analysis"))
             )
 
             return await analysis_chain.ainvoke(query)
