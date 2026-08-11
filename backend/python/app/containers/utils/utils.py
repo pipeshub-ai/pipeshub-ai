@@ -190,10 +190,10 @@ class ContainerUtils:
         )
         return event_processor
 
-    async def create_parsing_client(self) -> "ParsingClient":  # type: ignore[name-defined]
+    async def create_parsing_client(self, config_service: object) -> "ParsingClient":  # type: ignore[name-defined]
         """Async factory for ParsingClient."""
         from app.services.parsing.client import ParsingClient  # noqa: PLC0415
-        return ParsingClient()
+        return ParsingClient(config_service=config_service)
 
     async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
         """Async factory for ExtractionClient."""

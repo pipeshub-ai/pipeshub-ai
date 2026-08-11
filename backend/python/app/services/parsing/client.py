@@ -13,9 +13,12 @@ Usage::
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from docling_core.types.doc.document import DoclingDocument
 
 from app.models.blocks import BlocksContainer
 from app.services.base_client import BaseServiceClient, ServiceCallError
@@ -24,7 +27,11 @@ from app.services.parsing.interface import (
     ParseResult,
     ParserProvider,
 )
+from app.utils.converters.caption_map import apply_caption_map
 from app.utils.image_utils import get_extension_from_mimetype
+
+if TYPE_CHECKING:
+    from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,7 @@ class ParsingClient(BaseServiceClient):
         read_timeout: float = 2400.0,  # 40 min — matching DoclingClient
         max_retries: int = 3,
         retry_delay: float = 2.0,
+        config_service: object | None = None,
     ) -> None:
         super().__init__(
             service_url=service_url or os.getenv("PARSING_SERVICE_URL", "http://localhost:8092"),
@@ -61,6 +69,20 @@ class ParsingClient(BaseServiceClient):
             max_retries=max_retries,
             retry_delay=retry_delay,
         )
+        # Docling-backed providers defer block construction to keep the Parsing
+        # service stateless; this client completes that phase locally on demand.
+        self._config_service = config_service
+        self._docling_processor: DoclingProcessor | None = None
+
+    def _get_docling_processor(self) -> DoclingProcessor:
+        if self._docling_processor is None:
+            from app.modules.parsers.pdf.docling_processor import (  # noqa: PLC0415
+                DoclingProcessor,
+            )
+            self._docling_processor = DoclingProcessor(
+                logger=logger, config=self._config_service
+            )
+        return self._docling_processor
 
     async def parse(
         self,
@@ -116,8 +138,19 @@ class ParsingClient(BaseServiceClient):
                 details=error.get("details", {}),
             )
 
-        bc_dict = body.get("block_container") or {}
-        block_container = BlocksContainer(**bc_dict)
+        metadata = body.get("metadata") or {}
+        raw_document = body.get("raw_document")
+        if raw_document is not None:
+            # Docling-backed provider deferred block construction (incl. LLM table
+            # enrichment) to keep the Parsing service stateless - finish it here.
+            doc = await asyncio.to_thread(DoclingDocument.model_validate_json, raw_document)
+            block_container = await self._get_docling_processor().create_blocks(doc)
+            caption_map = metadata.get("caption_map")
+            if caption_map:
+                apply_caption_map(block_container, caption_map, logger)
+        else:
+            bc_dict = body.get("block_container") or {}
+            block_container = BlocksContainer(**bc_dict)
 
         provider_used_str = body.get("provider_used", ParserProvider.DEFAULT.value)
         try:
@@ -128,7 +161,7 @@ class ParsingClient(BaseServiceClient):
         return ParseResult(
             block_container=block_container,
             provider_used=provider_used,
-            metadata=body.get("metadata") or {},
+            metadata=metadata,
         )
 
     async def list_providers(self) -> dict[str, list[str]]:

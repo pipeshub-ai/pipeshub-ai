@@ -1,10 +1,8 @@
 """
 Tests for DoclingClient:
   - __init__ (URL, timeout, retry config)
-  - _parse_blocks_container (dict and string input)
-  - process_pdf (single multipart POST /process-pdf, response parsing, size validation)
   - parse_pdf (multipart POST /parse-pdf, response parsing, retry, size validation)
-  - create_blocks (POST /create-blocks)
+  - parse_pdf_batched (page counting, batching, concatenation)
   - health_check (GET /health)
   - _check_service_health (internal health check with existing client)
 """
@@ -81,44 +79,6 @@ class TestInit:
     def test_default_url_fallback(self):
         c = DoclingClient()
         assert c.service_url == "http://localhost:8081"
-
-
-# ===========================================================================
-# _parse_blocks_container
-# ===========================================================================
-
-
-class TestParseBlocksContainer:
-    """Test _parse_blocks_container method."""
-
-    def test_dict_input(self, client):
-        with patch("app.services.docling.client.BlocksContainer") as MockBC:
-            mock_instance = MagicMock()
-            MockBC.return_value = mock_instance
-
-            result = client._parse_blocks_container({"blocks": []})
-
-            MockBC.assert_called_once_with(blocks=[])
-            assert result is mock_instance
-
-    def test_string_input(self, client):
-        with patch("app.services.docling.client.BlocksContainer") as MockBC:
-            mock_instance = MagicMock()
-            MockBC.return_value = mock_instance
-
-            result = client._parse_blocks_container('{"blocks": []}')
-
-            MockBC.assert_called_once_with(blocks=[])
-            assert result is mock_instance
-
-    def test_invalid_string_raises(self, client):
-        with pytest.raises(Exception):
-            client._parse_blocks_container("not-json")
-
-    def test_invalid_data_raises(self, client):
-        with patch("app.services.docling.client.BlocksContainer", side_effect=TypeError("bad")):
-            with pytest.raises(TypeError):
-                client._parse_blocks_container({"invalid": True})
 
 
 # ===========================================================================
@@ -332,210 +292,89 @@ class TestParsePdf:
 
 
 # ===========================================================================
-# process_pdf
+# parse_pdf_batched
 # ===========================================================================
 
 
-class TestProcessPdf:
-    """Test process_pdf method."""
+class TestParsePdfBatched:
+    """Test parse_pdf_batched method."""
 
     @pytest.mark.asyncio
     async def test_invalid_type_returns_none(self, client):
-        result = await client.process_pdf("doc.pdf", "not bytes")  # type: ignore
+        result = await client.parse_pdf_batched("doc.pdf", "not bytes")  # type: ignore
         assert result is None
 
     @pytest.mark.asyncio
     async def test_too_large_returns_none(self, client):
         huge = b"x" * (101 * 1024 * 1024)
-        result = await client.process_pdf("doc.pdf", huge)
+        result = await client.parse_pdf_batched("doc.pdf", huge)
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_uploads_pdf_once(self, client, small_pdf):
-        """A single multipart POST carries the whole PDF; the service batches internally."""
-        blocks_data = {"blocks": [], "block_groups": []}
-        mock_blocks = MagicMock()
-        mock_response = _make_response(
-            status_code=200,
-            json_data={"success": True, "block_containers": blocks_data},
-        )
+    async def test_single_batch_uploads_once(self, client, small_pdf):
+        """When page_count <= batch_size, a single /parse-pdf call is made."""
+        mock_doc = MagicMock()
 
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
+        with patch(
+            "app.services.docling.client.get_pdf_page_count", return_value=5
+        ), patch.object(
+            client, "parse_pdf", new=AsyncMock(return_value="serialized-doc")
+        ) as mock_parse_pdf, patch(
+            "app.services.docling.client.DoclingDocument"
+        ) as MockDoc:
+            MockDoc.model_validate_json.return_value = mock_doc
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=10)
 
-        async def fake_to_thread(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            with patch("asyncio.to_thread", side_effect=fake_to_thread):
-                with patch.object(client, "_parse_blocks_container", return_value=mock_blocks):
-                    result = await client.process_pdf("doc.pdf", small_pdf)
-
-        assert result is mock_blocks
-        mock_http.post.assert_awaited_once()
-        call_args = mock_http.post.call_args
-        assert "/process-pdf" in call_args[0][0]
-        assert call_args.kwargs["data"] == {"record_name": "doc.pdf"}
-        assert call_args.kwargs["files"] == {
-            "file": ("doc.pdf", small_pdf, "application/pdf")
-        }
+        assert result is mock_doc
+        mock_parse_pdf.assert_awaited_once_with("doc.pdf", small_pdf)
 
     @pytest.mark.asyncio
-    async def test_service_error_response_returns_none(self, client, small_pdf):
-        mock_response = _make_response(
-            status_code=200, json_data={"success": False, "error": "process fail"}
-        )
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        async def fake_to_thread(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            with patch("asyncio.to_thread", side_effect=fake_to_thread):
-                result = await client.process_pdf("doc.pdf", small_pdf)
+    async def test_single_batch_parse_failure_returns_none(self, client, small_pdf):
+        with patch(
+            "app.services.docling.client.get_pdf_page_count", return_value=5
+        ), patch.object(client, "parse_pdf", new=AsyncMock(return_value=None)):
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=10)
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_http_error_retries(self, client, small_pdf):
-        client.max_retries = 2
-        client.retry_delay = 0.001
+    async def test_multi_batch_concatenates(self, client, small_pdf):
+        """When page_count > batch_size, multiple page-range calls are concatenated."""
+        merged_doc = MagicMock()
+        docs = [MagicMock(), MagicMock(), MagicMock()]
 
-        mock_response = _make_response(status_code=503, text="Service Unavailable")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
+        async def fake_parse_pdf(record_name, pdf_binary, page_range=None):
+            return f"doc-for-{page_range}"
 
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.process_pdf("doc.pdf", small_pdf)
+        with patch(
+            "app.services.docling.client.get_pdf_page_count", return_value=25
+        ), patch.object(
+            client, "parse_pdf", new=AsyncMock(side_effect=fake_parse_pdf)
+        ) as mock_parse_pdf, patch(
+            "app.services.docling.client.DoclingDocument"
+        ) as MockDoc:
+            MockDoc.model_validate_json.side_effect = docs
+            MockDoc.concatenate.return_value = merged_doc
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=10)
 
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-
-# ===========================================================================
-# create_blocks
-# ===========================================================================
-
-
-class TestCreateBlocks:
-    """Test create_blocks method."""
-
-    @pytest.mark.asyncio
-    async def test_successful_create(self, client):
-        blocks_data = {"blocks": [], "block_groups": []}
-        response_json = {"success": True, "block_containers": blocks_data}
-        mock_blocks = MagicMock()
-        mock_response = _make_response(status_code=200, json_data=response_json)
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        async def fake_to_thread(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            with patch("asyncio.to_thread", side_effect=fake_to_thread):
-                with patch.object(client, "_parse_blocks_container", return_value=mock_blocks):
-                    result = await client.create_blocks("serialized-parse-result", page_number=1)
-
-        assert result is mock_blocks
-        call_kwargs = mock_http.post.call_args.kwargs
-        payload = call_kwargs["json"]
-        assert payload["parse_result"] == "serialized-parse-result"
-        assert payload["page_number"] == 1
+        assert result is merged_doc
+        assert merged_doc.name == "doc.pdf"
+        assert mock_parse_pdf.await_count == 3
+        page_ranges = [call.kwargs.get("page_range") for call in mock_parse_pdf.await_args_list]
+        assert page_ranges == [(1, 10), (11, 20), (21, 25)]
+        MockDoc.concatenate.assert_called_once_with(docs)
 
     @pytest.mark.asyncio
-    async def test_create_blocks_error_response(self, client):
-        response_json = {"success": False, "error": "create fail"}
-        mock_response = _make_response(status_code=200, json_data=response_json)
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        async def fake_to_thread(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            with patch("asyncio.to_thread", side_effect=fake_to_thread):
-                result = await client.create_blocks("parse-result")
+    async def test_multi_batch_failure_returns_none(self, client, small_pdf):
+        """If any batch fails to parse, the whole call returns None."""
+        with patch(
+            "app.services.docling.client.get_pdf_page_count", return_value=25
+        ), patch.object(
+            client, "parse_pdf", new=AsyncMock(return_value=None)
+        ):
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=10)
 
         assert result is None
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_http_error_retries(self, client):
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_response = _make_response(status_code=504, text="Gateway Timeout")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_timeout_retries(self, client):
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_connect_error_retries(self, client):
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_unexpected_error_retries(self, client):
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(side_effect=RuntimeError("unexpected"))
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
 
 
 # ===========================================================================

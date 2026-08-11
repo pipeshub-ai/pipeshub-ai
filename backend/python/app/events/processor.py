@@ -116,6 +116,10 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
+        # Shared local block-builder: parsing (DoclingDocument) is fetched either
+        # from the external Docling service (PDF) or parsed in-process (DOCX/PPTX/OCR),
+        # but block construction (incl. LLM table enrichment) always happens here.
+        self.docling_processor = DoclingProcessor(logger=self.logger, config=self.config_service)
 
     def _create_transform_context(
         self,
@@ -316,13 +320,17 @@ class Processor:
 
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
-            block_containers = await self.docling_client.process_pdf(record_name, pdf_binary)
-            if block_containers is None:
-                self.logger.error(f"❌ External Docling service failed to process {recordName}")
+            # Phase 1: Parse PDF via the external Docling service (no LLM calls)
+            doc = await self.docling_client.parse_pdf_batched(record_name, pdf_binary)
+            if doc is None:
+                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
                 yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
                 return
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            # Phase 2: Create blocks locally (involves LLM calls for tables)
+            block_containers = await self.docling_processor.create_blocks(doc)
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -423,7 +431,7 @@ class Processor:
 
                 # Phase 1: Parse all pages with Docling (no LLM calls yet)
                 all_conv_results = []
-                processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+                processor = self.docling_processor
 
                 for page in pages:
                     page_number = page.get("page_number")
@@ -669,7 +677,7 @@ class Processor:
             # Initialize DocxParser and parse content
             self.logger.debug("📄 Processing DOCX content")
 
-            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+            processor = self.docling_processor
 
             # Phase 1: Parse document with Docling (no LLM calls)
             conv_res = await processor.parse_document(recordName, docx_binary)
@@ -1806,7 +1814,7 @@ class Processor:
             # Initialize PPTX parser
             self.logger.debug("📄 Processing PPTX content")
 
-            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+            processor = self.docling_processor
 
             # Phase 1: Parse document with Docling (no LLM calls)
             if not recordName.lower().endswith(".pptx"):

@@ -4,8 +4,6 @@ Targets missing lines/branches:
 - parse_pdf non-503 HTTP error (non-retryable status codes)
 - parse_pdf loop fallthrough (all retries exhausted)
 - parse_pdf retryable HTTP 502/504 status
-- create_blocks non-503 HTTP error
-- create_blocks loop fallthrough (all retries exhausted)
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -166,69 +164,3 @@ class TestParsePdf502:
 
         assert result is None
         assert mock_http.post.await_count == 2
-
-
-# ===========================================================================
-# create_blocks - non-503 HTTP error + loop fallthrough
-# ===========================================================================
-
-
-class TestCreateBlocksNon503Error:
-    """Cover create_blocks HTTP error not in [502, 503, 504]."""
-
-    @pytest.mark.asyncio
-    async def test_non_retryable_http_error(self, client):
-        """HTTP 400 should not match 502/503/504 warning but still retries."""
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_response = _make_response(status_code=400, text="Bad Request")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_write_error_retries(self, client):
-        """WriteError in create_blocks should retry."""
-        client.max_retries = 2
-        client.retry_delay = 0.001
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx.WriteError("write could not complete without blocking")
-        )
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        assert mock_http.post.await_count == 2
-
-
-class TestCreateBlocksLoopFallthrough:
-    """Cover create_blocks loop fallthrough."""
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_zero_retries(self, client):
-        """When max_retries=0, loop doesn't run and returns None."""
-        client.max_retries = 0
-
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock()
-
-        with patch("app.services.docling.client.httpx.AsyncClient") as MockClient:
-            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_http)
-            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-        mock_http.post.assert_not_awaited()

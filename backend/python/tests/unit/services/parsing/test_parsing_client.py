@@ -69,6 +69,45 @@ async def test_parse_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_parse_with_raw_document_builds_blocks_locally() -> None:
+    """Docling-backed providers defer block construction; the client must finish it."""
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+
+    raw_doc_body = {
+        "success": True,
+        "block_container": None,
+        "raw_document": '{"schema_name": "DoclingDocument"}',
+        "provider_used": "docling",
+        "metadata": {"record_name": "test.pdf"},
+    }
+
+    mock_block_container = BlocksContainer(**_bc_dict())
+    mock_processor = MagicMock()
+    mock_processor.create_blocks = AsyncMock(return_value=mock_block_container)
+
+    with patch.object(
+        client,
+        "_post_multipart",
+        new=AsyncMock(return_value=_make_response(200, raw_doc_body)),
+    ), patch.object(
+        client, "_get_docling_processor", return_value=mock_processor
+    ), patch(
+        "app.services.parsing.client.DoclingDocument"
+    ) as MockDoc:
+        MockDoc.model_validate_json.return_value = MagicMock()
+        result = await client.parse(
+            file_content=b"%PDF-1.4",
+            record_name="test.pdf",
+            mime_type="application/pdf",
+            provider=ParserProvider.DOCLING,
+        )
+
+    assert result.block_container is mock_block_container
+    assert result.provider_used == ParserProvider.DOCLING
+    mock_processor.create_blocks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_parse_with_explicit_provider() -> None:
     client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
 

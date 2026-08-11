@@ -50,15 +50,14 @@ class LocalDoclingParser:
         doc_name = f"{stem}{target_ext}"
 
         conv_res = await self._processor.parse_document(doc_name, content)
-        block_containers = await self._processor.create_blocks(conv_res)
-        if block_containers is None or block_containers is False:
+        if conv_res is None or conv_res is False:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
                 f"Local Docling processor returned empty result for '{record_name}'",
             )
 
         return ParseResult(
-            block_container=block_containers,  # type: ignore[arg-type]
+            raw_document=conv_res.model_dump_json(),
             provider_used=ParserProvider.DOCLING,
             metadata={"record_name": record_name},
         )

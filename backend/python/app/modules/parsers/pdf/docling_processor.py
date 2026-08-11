@@ -1,5 +1,4 @@
 import asyncio
-import gc
 import logging
 import multiprocessing
 import os
@@ -174,39 +173,6 @@ class DoclingProcessor():
         """
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
         return await doc_to_blocks_converter.convert(doc, page_number=page_number)
-
-    async def process_in_batches(
-        self,
-        doc_name: str,
-        content: bytes,
-        batch_size: int = PAGE_BATCH_SIZE,
-    ) -> BlocksContainer:
-        """Parse the PDF in page-range batches to cap peak memory, then convert it as one document."""
-        page_count = await asyncio.to_thread(get_pdf_page_count, content)
-
-        if page_count <= batch_size:
-            doc = await self.parse_document(doc_name, content)
-            return await self.create_blocks(doc)
-
-        self.logger.info(
-            f"Parsing '{doc_name}' ({page_count} pages) in batches of {batch_size} pages"
-        )
-        docs: list[DoclingDocument] = []
-        for start in range(1, page_count + 1, batch_size):
-            end = min(start + batch_size - 1, page_count)
-            docs.append(
-                await self.parse_document(doc_name, content, page_range=(start, end))
-            )
-            self.logger.info(f"Parsed pages {start}-{end} of {page_count} for '{doc_name}'")
-            gc.collect()
-
-        merged = await asyncio.to_thread(DoclingDocument.concatenate, docs)
-        # concatenate() names the result by joining every input name with " + ".
-        merged.name = doc_name
-        docs.clear()
-        gc.collect()
-
-        return await self.create_blocks(merged)
 
     async def load_document(self, doc_name: str, content: bytes, page_number: int | None = None) -> BlocksContainer|bool:
         """Parse document and create blocks in one call (legacy method).

@@ -3,8 +3,10 @@
 Endpoints
 ---------
 POST /api/v1/parse
-    Parse a file into a BlocksContainer.  File content is sent as multipart
-    form-data (field: ``file``).  Metadata fields are passed as form fields.
+    Parse a file into blocks (or a raw parsed document for Docling-backed
+    providers, which defer block construction to the caller). File content is
+    sent as multipart form-data (field: ``file``). Metadata fields are passed
+    as form fields.
 
 GET  /api/v1/parse/providers
     List registered providers per format key.
@@ -133,14 +135,17 @@ async def parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
 ) -> JSONResponse:
-    """Parse *file* into a ``BlocksContainer``.
+    """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
-    The response body is ``ParseResponse`` JSON::
+    The response body is ``ParseResponse`` JSON. Exactly one of ``block_container``
+    or ``raw_document`` is populated - Docling-backed providers defer block
+    construction (and any LLM calls) to the caller so this service stays stateless::
 
         {
           "success": true,
-          "block_container": { ... },
-          "provider_used": "docling_service",
+          "block_container": { ... } | null,
+          "raw_document": "<serialized DoclingDocument>" | null,
+          "provider_used": "docling",
           "error": null
         }
     """
@@ -260,19 +265,26 @@ async def parse_file(
             "Slow parse: record='%s' provider=%s parse_ms=%.0f",
             record_name, provider_enum.value, parse_ms,
         )
+    blocks_count = len(result.block_container.blocks) if result.block_container is not None else 0
     logger.info(
-        "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d",
+        "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d raw_document=%s",
         record_name,
         result.provider_used.value if result.provider_used is not None else "default",
         parse_ms,
-        len(result.block_container.blocks),
+        blocks_count,
+        result.raw_document is not None,
     )
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
             "success": True,
-            "block_container": json.loads(result.block_container.model_dump_json()),
+            "block_container": (
+                json.loads(result.block_container.model_dump_json())
+                if result.block_container is not None
+                else None
+            ),
+            "raw_document": result.raw_document,
             "provider_used": (
                 result.provider_used.value if result.provider_used is not None else None
             ),

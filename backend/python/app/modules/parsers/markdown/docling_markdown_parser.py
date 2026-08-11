@@ -25,7 +25,8 @@ from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import BlockType, BlocksContainer
+from app.models.blocks import BlocksContainer
+from app.utils.converters.caption_map import apply_caption_map
 
 
 class DoclingMarkdownParser:
@@ -80,15 +81,16 @@ class DoclingMarkdownParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        block_containers = await self.parse_to_blocks(
-            modified_markdown,
-            caption_map=caption_map or None,
-            name=record_name,
-        )
-        
+        from app.modules.parsers.pdf.docling_processor import DoclingProcessor  # noqa: PLC0415
+
+        html_bytes = self.parse_string(modified_markdown)
+        processor = DoclingProcessor(logger=self._logger, config=self._config_service)
+        filename = f"{Path(record_name).stem}.md" if record_name else "document.md"
+        doc = await processor.parse_document(filename, html_bytes)
+
         return ParseResult(
-            block_container=block_containers,
-            metadata={"record_name": record_name},
+            raw_document=doc.model_dump_json(),
+            metadata={"record_name": record_name, "caption_map": caption_map or None},
         )
     # ------------------------------------------------------------------
     # Public API
@@ -181,7 +183,7 @@ class DoclingMarkdownParser:
         container = await processor.create_blocks(doc, page_number=page_number)
 
         if caption_map:
-            _apply_caption_map(container, caption_map, self._logger)
+            apply_caption_map(container, caption_map, self._logger)
         return container
 
 
@@ -264,29 +266,3 @@ def _extract_and_replace_images(
     modified = re.sub(markdown_img_pattern, replace_markdown_image, modified)
     modified = process_html_images(modified)
     return modified, images
-
-
-def _apply_caption_map(
-    container: BlocksContainer,
-    caption_map: Dict[str, str],
-    logger: logging.Logger,
-) -> None:
-    """Attach base-64 URIs to image blocks using normalised caption keys."""
-    for block in container.blocks:
-        if block.type == BlockType.IMAGE and block.image_metadata:
-            captions = block.image_metadata.captions
-            if captions:
-                caption = captions[0]
-                uri = caption_map.get(caption)
-                if uri:
-                    if block.data is None:
-                        block.data = {}
-                    if isinstance(block.data, dict):
-                        block.data["uri"] = uri
-                    else:
-                        block.data = {"uri": uri}
-                else:
-                    logger.warning(
-                        "Skipping image with caption '%s' - no valid base64 data available",
-                        caption,
-                    )

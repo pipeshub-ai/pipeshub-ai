@@ -23,9 +23,19 @@ class ParserProvider(str, Enum):
 
 
 class ParseResult(BaseModel):
-    """Output of a successful parse operation."""
+    """Output of a successful parse operation.
 
-    block_container: BlocksContainer
+    Exactly one of ``block_container`` or ``raw_document`` is populated:
+
+    * ``block_container`` -- final blocks, already constructed by the provider
+      (used by non-Docling providers, which build blocks directly).
+    * ``raw_document`` -- serialized ``DoclingDocument`` JSON from a Docling-backed
+      provider that only parsed the content; block construction (incl. LLM table
+      enrichment) is deferred to the caller so Docling/Parsing stay stateless.
+    """
+
+    block_container: BlocksContainer | None = None
+    raw_document: str | None = None
     provider_used: ParserProvider | None = None
     # Free-form parser-specific metadata (page_count, ocr_pages, was_fallback, …)
     metadata: dict[str, Any] = Field(default_factory=dict)
