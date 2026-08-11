@@ -161,12 +161,21 @@ def resolve_ceilings(
 
     if env_parse is not None:
         parse_ceiling = max(1, env_parse)
+        light_ceiling = parse_ceiling
     else:
         if free_gb is not None:
             derived = min(snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
         else:
             derived = snap.cpu_quota
-        parse_ceiling = int(_clamp(math.floor(derived), _PARSE_CEILING_MIN, _PARSE_CEILING_MAX))
+        # _PARSE_CEILING_MIN guarantees useful concurrency on a derived
+        # (non-overridden) ceiling, but must never hand out more heavy-parse
+        # slots than CPUs actually available — a sub-2-core cgroup (fractional
+        # cpu.max, e.g. cpu_quota=1.0) would otherwise get a floor of 2 for 1
+        # CPU. Cap the floor itself by the CPU-derived bound (never below 1,
+        # so there's always room for at least one heavy-parse slot).
+        cpu_cap = max(1, math.floor(snap.cpu_quota))
+        parse_floor = min(_PARSE_CEILING_MIN, cpu_cap)
+        parse_ceiling = int(_clamp(math.floor(derived), parse_floor, _PARSE_CEILING_MAX))
 
     if env_index is not None:
         index_ceiling = max(1, env_index)
@@ -174,9 +183,9 @@ def resolve_ceilings(
         derived_index = parse_ceiling * _INDEX_CEILING_PARSE_MULTIPLIER
         index_ceiling = int(_clamp(derived_index, _INDEX_CEILING_MIN, _INDEX_CEILING_MAX))
 
-    light_ceiling = int(
-        _clamp(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER, _LIGHT_CEILING_MIN, _LIGHT_CEILING_MAX)
-    )
+    light_ceiling = min(light_ceiling, int(
+        snap.cpu_quota * _LIGHT_CPU_MULTIPLIER
+    ))
 
     if snap.mem_limit_bytes is not None:
         bytes_max = max(_BYTES_FLOOR, int(snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION))

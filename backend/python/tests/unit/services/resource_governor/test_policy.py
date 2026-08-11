@@ -111,6 +111,20 @@ class TestResolveCeilings:
         assert ceilings.heavy == 200
         assert ceilings.index == 200
 
+    def test_sub_two_cpu_host_floor_never_exceeds_cpu_quota(self) -> None:
+        """A fractional cgroup cpu.max (e.g. a 1-CPU container) must not be
+        handed the derived-path's usual floor of 2 heavy-parse slots — that
+        would admit twice as much CPU-bound work as the cgroup actually has
+        cores for."""
+        snap = _snapshot(cpu_quota=1.0, mem_limit_bytes=8 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 1
+
+    def test_sub_one_cpu_host_floors_at_one_not_zero(self) -> None:
+        snap = _snapshot(cpu_quota=0.5, mem_limit_bytes=8 * 1024 ** 3)
+        ceilings = resolve_ceilings(snap, None, None, worker_count=1)
+        assert ceilings.heavy == 1
+
     def test_worker_count_divides_ceilings(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
         one_worker = resolve_ceilings(snap, None, None, worker_count=1)
