@@ -19,6 +19,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from docling_core.types.doc.document import DoclingDocument
+from pydantic import BaseModel, Field, ValidationError
 
 from app.models.blocks import BlocksContainer
 from app.services.base_client import BaseServiceClient, ServiceCallError
@@ -34,6 +35,20 @@ if TYPE_CHECKING:
     from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
 logger = logging.getLogger(__name__)
+
+
+class _ParseSuccessPayload(BaseModel):
+    """Shape of a successful ``/api/v1/parse`` response body.
+
+    Validated before field access so a malformed payload raises
+    ``ParsingClientError`` instead of an ``AttributeError`` deep in ``parse()``.
+    """
+
+    success: bool
+    block_container: dict[str, Any] | None = None
+    raw_document: str | None = None
+    provider_used: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ParsingClientError(Exception):
@@ -138,23 +153,31 @@ class ParsingClient(BaseServiceClient):
                 details=error.get("details", {}),
             )
 
-        metadata = body.get("metadata") or {}
-        raw_document = body.get("raw_document")
+        try:
+            payload = _ParseSuccessPayload.model_validate(body)
+        except ValidationError as exc:
+            raise ParsingClientError(
+                code=ParseErrorCode.PARSE_FAILED,
+                message=f"Malformed response from parsing service: {exc}",
+            ) from exc
+
+        metadata = payload.metadata
+        raw_document = payload.raw_document
         if raw_document is not None:
             # Docling-backed provider deferred block construction (incl. LLM table
             # enrichment) to keep the Parsing service stateless - finish it here.
             doc = await asyncio.to_thread(DoclingDocument.model_validate_json, raw_document)
-            block_container = await self._get_docling_processor().create_blocks(doc)
+            block_container = await self._get_docling_processor().create_blocks(
+                doc, skip_table_enrichment=skip_table_enrichment
+            )
             caption_map = metadata.get("caption_map")
-            if caption_map:
+            if isinstance(caption_map, dict) and caption_map:
                 apply_caption_map(block_container, caption_map, logger)
         else:
-            bc_dict = body.get("block_container") or {}
-            block_container = BlocksContainer(**bc_dict)
+            block_container = BlocksContainer(**(payload.block_container or {}))
 
-        provider_used_str = body.get("provider_used", ParserProvider.DEFAULT.value)
         try:
-            provider_used = ParserProvider(provider_used_str)
+            provider_used = ParserProvider(payload.provider_used or ParserProvider.DEFAULT.value)
         except ValueError:
             provider_used = ParserProvider.DEFAULT
 

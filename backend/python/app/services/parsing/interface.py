@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.blocks import BlocksContainer
 
@@ -40,6 +40,14 @@ class ParseResult(BaseModel):
     # Free-form parser-specific metadata (page_count, ocr_pages, was_fallback, …)
     metadata: dict[str, Any] = Field(default_factory=dict)
     model_config = {"arbitrary_types_allowed": True}
+
+    @model_validator(mode="after")
+    def _exactly_one_payload(self) -> "ParseResult":
+        if (self.block_container is None) == (self.raw_document is None):
+            raise ValueError(
+                "Exactly one of block_container or raw_document must be set"
+            )
+        return self
 
 
 @runtime_checkable

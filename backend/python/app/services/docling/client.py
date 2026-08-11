@@ -6,11 +6,8 @@ import httpx
 from docling_core.types.doc.document import DoclingDocument
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.parsers.pdf.docling_processor import (
-    PAGE_BATCH_SIZE,
-    get_pdf_page_count,
-)
 from app.utils.logger import create_logger
+from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count
 from app.utils.request_context import inject_request_headers
 
 MAX_PDF_BYTES = 100 * 1024 * 1024
@@ -170,7 +167,11 @@ class DoclingClient:
         if not self._validate_pdf_binary(pdf_binary):
             return None
 
-        page_count = await asyncio.to_thread(get_pdf_page_count, pdf_binary)
+        try:
+            page_count = await asyncio.to_thread(get_pdf_page_count, pdf_binary)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read page count for {record_name}: {str(e)}")
+            return None
 
         if page_count <= batch_size:
             serialized = await self.parse_pdf(record_name, pdf_binary)

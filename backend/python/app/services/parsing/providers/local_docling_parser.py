@@ -4,6 +4,7 @@ Handles PDF, DOCX, PPTX, MD without an external HTTP call.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -56,8 +57,9 @@ class LocalDoclingParser:
                 f"Local Docling processor returned empty result for '{record_name}'",
             )
 
+        raw_document = await asyncio.to_thread(conv_res.model_dump_json)
         return ParseResult(
-            raw_document=conv_res.model_dump_json(),
+            raw_document=raw_document,
             provider_used=ParserProvider.DOCLING,
             metadata={"record_name": record_name},
         )

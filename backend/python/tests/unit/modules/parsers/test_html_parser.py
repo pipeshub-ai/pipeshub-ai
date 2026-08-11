@@ -424,7 +424,7 @@ class TestDoclingHtmlParse:
         assert result.block_container is None
         assert result.raw_document == '{"doc": true}'
         assert result.metadata == {"record_name": "test.html", "caption_map": None}
-        instance.parse_document.assert_awaited_once_with("document.md", b"# Hello")
+        instance.parse_document.assert_awaited_once_with("test.md", b"# Hello")
 
     @pytest.mark.asyncio
     async def test_parse_converts_to_markdown(self, parser):
@@ -443,7 +443,7 @@ class TestDoclingHtmlParse:
         mock_convert.assert_called_once_with("<p>Hello</p>")
         instance.parse_document.assert_awaited_once()
         call_args = instance.parse_document.call_args
-        assert call_args[0][0] == "document.md"
+        assert call_args[0][0] == "test.md"
 
     @pytest.mark.asyncio
     async def test_parse_bytes_strips_and_runs_pipeline(self, parser):

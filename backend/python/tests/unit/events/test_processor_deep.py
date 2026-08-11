@@ -744,9 +744,10 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):
-        """When docling parse_pdf_batched returns None, yields docling_failed."""
+        """When create_blocks() returns None (phase 2), yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")

@@ -1,6 +1,7 @@
 """Parser provider that delegates PDF parsing to the external Docling HTTP service."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.services.docling.client import DoclingClient
@@ -37,8 +38,9 @@ class DoclingServiceParser:
                 f"Docling service failed to parse '{record_name}'",
             )
 
+        raw_document = await asyncio.to_thread(doc.model_dump_json)
         return ParseResult(
-            raw_document=doc.model_dump_json(),
+            raw_document=raw_document,
             provider_used=ParserProvider.DOCLING,
             metadata={"record_name": record_name},
         )

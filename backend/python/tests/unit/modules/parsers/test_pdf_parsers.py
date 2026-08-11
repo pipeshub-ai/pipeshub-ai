@@ -193,7 +193,9 @@ class TestDoclingProcessorCreateBlocks:
             mock_doc = MagicMock()
             result = await processor.create_blocks(mock_doc)
             assert result is mock_blocks_container
-            mock_converter_instance.convert.assert_awaited_once_with(mock_doc, page_number=None)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=None, skip_table_enrichment=False
+            )
 
     @pytest.mark.asyncio
     async def test_create_blocks_with_page_number(self):
@@ -208,7 +210,9 @@ class TestDoclingProcessorCreateBlocks:
 
             mock_doc = MagicMock()
             result = await processor.create_blocks(mock_doc, page_number=5)
-            mock_converter_instance.convert.assert_awaited_once_with(mock_doc, page_number=5)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=5, skip_table_enrichment=False
+            )
 
     @pytest.mark.asyncio
     async def test_create_blocks_passes_logger_and_config(self):

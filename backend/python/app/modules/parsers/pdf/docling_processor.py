@@ -7,7 +7,6 @@ from functools import lru_cache
 from io import BytesIO
 from typing import TYPE_CHECKING
 
-import pypdfium2 as pdfium
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.pipeline_options import (
@@ -29,23 +28,9 @@ if TYPE_CHECKING:
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
+from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
 
 SUCCESS_STATUS = "success"
-
-DEFAULT_PAGE_BATCH_SIZE = 10
-
-
-def _get_page_batch_size() -> int:
-    raw = os.getenv("DOCLING_PAGE_BATCH_SIZE")
-    if raw:
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
-    return DEFAULT_PAGE_BATCH_SIZE
-
-
-PAGE_BATCH_SIZE = _get_page_batch_size()
 
 
 def _get_local_parse_worker_count() -> int:
@@ -111,15 +96,6 @@ def _parse_document_in_worker(
     return conv_res.document.model_dump_json()
 
 
-def get_pdf_page_count(content: bytes) -> int:
-    """Return the number of pages in a PDF binary using pypdfium2."""
-    pdf = pdfium.PdfDocument(content)
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
-
-
 class DoclingProcessor():
     def __init__(self, logger: logging.Logger, config: object) -> None:
         self.logger = logger
@@ -166,22 +142,21 @@ class DoclingProcessor():
 
         return conv_res.document
 
-    async def create_blocks(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer:
+    async def create_blocks(
+        self,
+        doc: DoclingDocument,
+        page_number: int | None = None,
+        skip_table_enrichment: bool = False,
+    ) -> BlocksContainer:
         """Convert parsed Docling result to BlocksContainer.
 
-        This is the second phase - involves LLM calls for table processing.
+        This is the second phase - involves LLM calls for table processing,
+        unless skip_table_enrichment is set.
         """
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
-        return await doc_to_blocks_converter.convert(doc, page_number=page_number)
-
-    async def load_document(self, doc_name: str, content: bytes, page_number: int | None = None) -> BlocksContainer|bool:
-        """Parse document and create blocks in one call (legacy method).
-
-        For new code, prefer using parse_document() followed by create_blocks()
-        to allow yielding progress events between phases.
-        """
-        conv_res = await self.parse_document(doc_name, content)
-        return await self.create_blocks(conv_res, page_number=page_number)
+        return await doc_to_blocks_converter.convert(
+            doc, page_number=page_number, skip_table_enrichment=skip_table_enrichment
+        )
 
     def process_document(self) -> None:
         pass

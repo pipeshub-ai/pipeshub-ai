@@ -22,6 +22,7 @@ from app.utils.table_enrichment import (
     TableEnrichmentResult,
     enrich_table_grid,
     enrich_tables,
+    simple_table_enrichment,
 )
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
@@ -147,7 +148,7 @@ class DoclingDocToBlocksConverter():
     # }
     #
     # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
-    async def _process_content_in_order(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
+    async def _process_content_in_order(self, doc: DoclingDocument, page_number: int | None = None, skip_table_enrichment: bool = False) -> BlocksContainer|bool:
         """
         Process document content in proper reading order by following references.
 
@@ -323,7 +324,9 @@ class DoclingDocToBlocksConverter():
             table_grid = table_data.get("grid", [])
 
             enrichment = table_enrichments.get(ref_path)
-            if enrichment is None:
+            if enrichment is None and skip_table_enrichment:
+                enrichment = simple_table_enrichment(table_grid)
+            elif enrichment is None:
                 # The pre-pass and this walk are meant to visit the same tables; a miss
                 # means they drifted apart. Enrich inline so correctness never depends
                 # on the two walks staying in sync - only the latency win does.
@@ -482,12 +485,15 @@ class DoclingDocToBlocksConverter():
                 valid_refs.append(ref_path)
 
             if grids:
-                llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
-                results = await enrich_tables(
-                    llm,
-                    grids,
-                    logger=self.logger,
-                )
+                if skip_table_enrichment:
+                    results = [simple_table_enrichment(grid) for grid in grids]
+                else:
+                    llm, _ = await get_llm_for_role(self.config, "indexing", reasoning_effort="low")
+                    results = await enrich_tables(
+                        llm,
+                        grids,
+                        logger=self.logger,
+                    )
                 table_enrichments = dict(zip(valid_refs, results))
 
         body = doc_dict.get("body", {})
@@ -497,10 +503,10 @@ class DoclingDocToBlocksConverter():
         self.logger.debug(f"Processed {len(blocks)} items in order")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    async def convert(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
+    async def convert(self, doc: DoclingDocument, page_number: int | None = None, skip_table_enrichment: bool = False) -> BlocksContainer|bool:
         label = f"docling-page-{page_number}" if page_number is not None else "docling"
         with track_indexing_enrichment(self.logger, label=label):
-            return await self._process_content_in_order(doc, page_number=page_number)
+            return await self._process_content_in_order(doc, page_number=page_number, skip_table_enrichment=skip_table_enrichment)
 
 
 

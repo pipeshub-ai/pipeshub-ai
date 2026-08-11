@@ -218,7 +218,8 @@ class DoclingHtmlParser:
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
-        doc = await processor.parse_document("document.md", md_bytes)
+        filename = f"{Path(record_name).stem}.md" if record_name else "document.md"
+        doc = await processor.parse_document(filename, md_bytes)
 
         return ParseResult(
             raw_document=doc.model_dump_json(),

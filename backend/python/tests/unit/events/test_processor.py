@@ -1629,14 +1629,18 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
-        """Should yield docling_failed when parse_pdf_batched returns None."""
+        """Should yield docling_failed when local block construction fails."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(
+            side_effect=Exception("block construction failed")
+        )
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
         ))
-        assert events[0].event == "docling_failed"
+        assert events[0].event == "parsing_complete"
+        assert events[1].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -3376,10 +3380,13 @@ class TestProcessPdfWithDoclingCoverage:
 
     @pytest.mark.asyncio
     async def test_blocks_failure(self):
-        """parse_pdf_batched returning None covers parse/block failure in one shot."""
+        """Should yield docling_failed when local block construction fails."""
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=MagicMock())
+        proc.docling_processor.create_blocks = AsyncMock(
+            side_effect=Exception("block construction failed")
+        )
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")

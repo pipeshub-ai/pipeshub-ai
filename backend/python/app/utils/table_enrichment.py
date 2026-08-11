@@ -107,6 +107,14 @@ def _header_context(known_headers: Optional[List[str]]) -> str:
     )
 
 
+def simple_table_enrichment(grid: Sequence[Sequence[Any]]) -> TableEnrichmentResult:
+    """Build a table's row text without any LLM call (skip_table_enrichment=True)."""
+    rows = normalize_grid(grid)
+    if not rows:
+        return TableEnrichmentResult()
+    return TableEnrichmentResult(descriptions=_simple_texts(rows, []))
+
+
 async def enrich_table_grid(
     llm: BaseChatModel,
     grid: Sequence[Sequence[Any]],
