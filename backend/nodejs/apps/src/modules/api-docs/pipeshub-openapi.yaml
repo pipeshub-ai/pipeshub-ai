@@ -103,6 +103,38 @@ tags:
       - Regenerate secrets if compromised
       - Suspend/activate apps to control access
       - Revoke all tokens for emergency access removal
+  - name: Personal Access Tokens
+    description: |
+      Self-service, long-lived, scoped, revocable credentials that act as their
+      creator — unlike an OAuth app's `client_credentials` flow, which acts as
+      the app.
+
+      **Who can create one**
+      - **Any authenticated org member** — unlike OAuth apps, this is
+        deliberately not admin-gated.
+
+      **How it's issued**
+      - Minted through the same OAuth access-token machinery as `/oauth2/token`,
+        against one lazily-created, per-org synthetic OAuth app
+        (`clientId: pat-system:<orgId>`) that every PAT in that org shares.
+        That app is hidden from `/oauth-clients/*` — it never appears in your
+        own OAuth app list and can't be managed through those routes.
+      - The raw token is prefixed `phpat_` ahead of the underlying JWT (see the
+        `bearerAuth` security scheme) so it's recognizable to secret scanners.
+        It's shown exactly once, at creation.
+
+      **Expiry and scopes**
+      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - Scopes default to the org's full configured `MCP_SCOPES` set if none
+        are requested; `GET /personal-access-tokens/scopes` lists what's
+        available.
+
+      **Admin visibility**
+      - Regular members only ever see and revoke their own tokens.
+      - Org admins can list and revoke *any* member's token via
+        `/personal-access-tokens/admin*` — for incident response (a departed
+        employee, a compromised laptop) — without needing the OAuth app CRUD
+        access described above.
   - name: OpenID Connect
     description: |
       OpenID Connect 1.0 endpoints for identity federation and discovery.
@@ -286,7 +318,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT Bearer token for authenticated requests
+      description: |
+        JWT Bearer token for authenticated requests.
+
+        A personal access token (see the **Personal Access Tokens** tag) is a
+        `phpat_`-prefixed variant of this same JWT — e.g. `phpat_eyJhbGci...`.
+        The prefix is display-only, added for secret-scanner detectability; the
+        gateway strips it before verifying the token, so send it exactly as
+        issued, prefix included.
     scopedToken:
       type: http
       scheme: bearer
@@ -2031,6 +2070,230 @@ components:
           items:
             $ref: '#/components/schemas/OAuthTokenListItem'
           description: Active access and refresh tokens for the app
+
+    # ==================== PERSONAL ACCESS TOKEN SCHEMAS ====================
+    CreatePatRequest:
+      type: object
+      description: |
+        Request to create a personal access token (`createPatTokenSchema` in `pat.validators.ts`).
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Label to help you recognize the token later
+          minLength: 1
+          maxLength: 100
+          example: "Claude Desktop"
+        scopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: |
+            Scopes to grant, validated against the org's configured `MCP_SCOPES`
+            (not the full role-aware OAuth-app scope set). Defaults to every
+            scope in `MCP_SCOPES` if omitted.
+          example: ["kb:read", "semantic:write"]
+        expiryDays:
+          oneOf:
+            - type: integer
+              enum: [30, 90, 365]
+            - type: string
+              enum: ["never"]
+          description: |
+            Token lifetime. Defaults to `30` if omitted — a token minted
+            without an explicit choice shouldn't default to the longest
+            lifetime. `"never"` is stored as a ~100-year expiry (the
+            underlying schema field is required and TTL-indexed, so there's
+            no literal null option).
+          default: 30
+          example: 30
+
+    PatListItem:
+      type: object
+      description: |
+        A personal access token as seen by its own creator (one element of
+        `GET /personal-access-tokens`'s `tokens` array, or the `token` object
+        returned by `POST /personal-access-tokens` before `accessToken` is added).
+      required:
+        - id
+        - name
+        - scopes
+        - createdAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          description: Token ID
+        name:
+          type: string
+          description: Token name
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Granted scopes
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            Expiry timestamp. A `"never"`-expiry token is stored as a
+            ~100-year-out date, not a literal null — treat anything decades
+            out as "never" rather than a real deadline.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: |
+            Last time this token successfully authenticated a request.
+            Throttled server-side to update at most once per 5 minutes per
+            token; absent if the token has never been used.
+
+    PatWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - accessToken
+          properties:
+            accessToken:
+              type: string
+              description: |
+                The raw token, `phpat_`-prefixed. Returned **only** in this
+                creation response — only its hash is stored server-side, so
+                it cannot be retrieved again later.
+              example: "phpat_eyJhbGciOiJIUzI1NiIs..."
+
+    CreatePatResponse:
+      type: object
+      description: Response body for `POST /personal-access-tokens` (`pat.controller.ts` `createToken`).
+      required:
+        - message
+        - token
+      properties:
+        message:
+          type: string
+          example: Personal access token created successfully
+        token:
+          $ref: '#/components/schemas/PatWithSecret'
+
+    ListPatResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens` (`listTokens`) — the
+        caller's own active tokens, capped at 100 most-recent server-side.
+        Unlike the admin list, this is a flat array with no pagination
+        envelope and no owner fields (it's implicitly scoped to the caller).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatListItem'
+
+    RevokePatRequest:
+      type: object
+      description: |
+        Optional request body for `DELETE /personal-access-tokens/{tokenId}`
+        and `DELETE /personal-access-tokens/admin/{tokenId}`. The body itself
+        is optional; `reason`, if present, is stored on the revocation for
+        auditing.
+      properties:
+        reason:
+          type: string
+          example: "rotated"
+
+    RevokePatResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          example: Personal access token revoked successfully
+
+    PatScopesListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/scopes` (`listScopes`).
+        Unlike `GET /oauth-clients/scopes`, this is a **flat array**, not
+        grouped by category, and reflects the org's configured `MCP_SCOPES`
+        rather than the full role-aware OAuth-app scope catalog.
+      required:
+        - scopes
+      properties:
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthScopeInfo'
+
+    AdminPatListItem:
+      description: |
+        A personal access token as seen by an org admin — extends
+        `PatListItem` with who it belongs to, since an admin is looking
+        across every member's tokens rather than just their own.
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - userId
+            - ownerDeleted
+          properties:
+            userId:
+              type: string
+              description: ID of the user who created this token
+            ownerEmail:
+              type: string
+              format: email
+              description: |
+                Owner's email. Populated even when `ownerDeleted` is true
+                (last-known value), for auditing.
+            ownerFullName:
+              type: string
+              description: Owner's full name (same last-known-value behavior as `ownerEmail`)
+            ownerDeleted:
+              type: boolean
+              description: |
+                True if the owning user has been removed from the org (or no
+                longer resolves at all). The token still appears — a deleted
+                user's tokens stop authenticating automatically, but stay
+                visible here so an admin can audit/clean them up.
+
+    AdminPatListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/admin` (`adminListTokens`).
+        Paginated — unlike the self-service `ListPatResponse` — since an org
+        can have far more active tokens than a fixed-window cap's worth.
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminPatListItem'
+        pagination:
+          type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+              description: Items per page (max 100)
+            total:
+              type: integer
+            totalPages:
+              type: integer
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -15350,6 +15613,318 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  # ==================== PERSONAL ACCESS TOKEN ENDPOINTS ====================
+  /personal-access-tokens:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List your own personal access tokens
+      description: |
+        Lists the caller's own active (non-revoked, unexpired) personal
+        access tokens, newest first, capped at 100 rows server-side. Never
+        returns another user's tokens — see `GET /personal-access-tokens/admin`
+        for the org-admin, cross-user view.
+
+        Shares the same per-user rate limiter as `/oauth-clients/*`
+        (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
+      operationId: listPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's active personal access tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+    post:
+      tags:
+        - Personal Access Tokens
+      summary: Create a personal access token
+      description: |
+        Mints a new personal access token for the caller. Deliberately not
+        admin-gated — any authenticated org member may create their own,
+        unlike OAuth app registration.
+
+        The token is minted against a lazily-created, per-org synthetic
+        OAuth app (`clientId: pat-system:<orgId>`) shared by every PAT in
+        that org — the same signing, hashing, and revocation machinery as
+        `/oauth2/token`, reused rather than duplicated.
+
+        `scopes` is validated against the org's configured `MCP_SCOPES`
+        env var, not the full role-aware OAuth-app scope catalog — a
+        non-admin can request any scope in that set.
+
+        The response's `accessToken` is shown **once**; only its SHA-256
+        hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
+        security scheme).
+      operationId: createPersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        description: "Request body for Create personal access token"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePatRequest'
+        required: true
+      responses:
+        '201':
+          description: Personal access token created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePatResponse'
+        '400':
+          description: Invalid request (validation error, or a requested scope isn't in the org's configured `MCP_SCOPES`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/scopes:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List scopes available for a new personal access token
+      description: |
+        Returns the org's configured `MCP_SCOPES` as a flat array of scope
+        definitions, for populating the create-token scope picker. Unlike
+        `GET /oauth-clients/scopes`, this is **not** grouped by category and
+        **not** role-aware — every org member sees the same set, since PAT
+        scope selection isn't gated by admin status.
+      operationId: listPersonalAccessTokenScopes
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scopes available to grant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatScopesListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: Revoke one of your own personal access tokens
+      description: |
+        Revokes a token by id, scoped to `{tokenId, clientId, callerUserId}`
+        — a caller can never revoke another user's token through this route,
+        even though everyone in the org shares the same underlying
+        `pat-system:<orgId>` client. Revocation takes effect immediately: the
+        token's next verification attempt fails, including one already in
+        flight.
+      operationId: revokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found, already revoked, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: list every active personal access token in the org'
+      description: |
+        Lists every active personal access token across every member of the
+        org, paginated, with each token's owner attached (including owners
+        who've since been deleted from the org — see `ownerDeleted` on
+        `AdminPatListItem`). For incident response: a departed employee or a
+        compromised laptop, where only the token's own creator could
+        otherwise see or revoke it.
+
+        Requires org-admin privileges (`userAdminCheck`) — note this returns
+        **`400`**, not `403`, for a non-admin caller (shared middleware
+        behavior across the codebase, not specific to this route).
+      operationId: adminListPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number (defaults to `1` when omitted or empty)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          description: Items per page (defaults to `100` when omitted or empty; max 100)
+      responses:
+        '200':
+          description: Every active personal access token in the org
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPatListResponse'
+        '400':
+          description: Invalid query parameters, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: revoke any user''s personal access token by id'
+      description: |
+        Revokes a token by id, scoped to the org's PAT client but **not** to
+        a specific owning user — the admin counterpart to
+        `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
+        privileges (`userAdminCheck`); returns `400` (not `403`) for a
+        non-admin caller, same as `GET /personal-access-tokens/admin`.
+      operationId: adminRevokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Admin revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '400':
+          description: Invalid token ID, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found in this org, already revoked, or the org has no PAT app yet
           content:
             application/json:
               schema:
