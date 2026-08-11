@@ -19,7 +19,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from docling_core.types.doc.document import DoclingDocument
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.models.blocks import BlocksContainer
 from app.services.base_client import BaseServiceClient, ServiceCallError
@@ -49,6 +49,14 @@ class _ParseSuccessPayload(BaseModel):
     raw_document: str | None = None
     provider_used: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _exactly_one_payload(self) -> "_ParseSuccessPayload":
+        if (self.block_container is None) == (self.raw_document is None):
+            raise ValueError(
+                "Exactly one of block_container or raw_document must be set"
+            )
+        return self
 
 
 class ParsingClientError(Exception):
@@ -166,7 +174,13 @@ class ParsingClient(BaseServiceClient):
         if raw_document is not None:
             # Docling-backed provider deferred block construction (incl. LLM table
             # enrichment) to keep the Parsing service stateless - finish it here.
-            doc = await asyncio.to_thread(DoclingDocument.model_validate_json, raw_document)
+            try:
+                doc = await asyncio.to_thread(DoclingDocument.model_validate_json, raw_document)
+            except ValidationError as exc:
+                raise ParsingClientError(
+                    code=ParseErrorCode.PARSE_FAILED,
+                    message=f"Malformed raw_document from parsing service: {exc}",
+                ) from exc
             block_container = await self._get_docling_processor().create_blocks(
                 doc, skip_table_enrichment=skip_table_enrichment
             )

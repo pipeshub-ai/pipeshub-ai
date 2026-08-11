@@ -215,6 +215,24 @@ class TestDoclingProcessorCreateBlocks:
             )
 
     @pytest.mark.asyncio
+    async def test_create_blocks_with_skip_table_enrichment(self):
+        """create_blocks passes skip_table_enrichment to converter."""
+        processor = _make_processor()
+        mock_blocks_container = MagicMock()
+
+        with patch("app.modules.parsers.pdf.docling_processor.DoclingDocToBlocksConverter") as MockBlockConverter:
+            mock_converter_instance = MagicMock()
+            mock_converter_instance.convert = AsyncMock(return_value=mock_blocks_container)
+            MockBlockConverter.return_value = mock_converter_instance
+
+            mock_doc = MagicMock()
+            result = await processor.create_blocks(mock_doc, skip_table_enrichment=True)
+            mock_converter_instance.convert.assert_awaited_once_with(
+                mock_doc, page_number=None, skip_table_enrichment=True
+            )
+            assert result is mock_blocks_container
+
+    @pytest.mark.asyncio
     async def test_create_blocks_passes_logger_and_config(self):
         """create_blocks creates DoclingDocToBlocksConverter with correct logger and config."""
         processor = _make_processor()

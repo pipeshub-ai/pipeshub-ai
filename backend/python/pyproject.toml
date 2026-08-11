@@ -272,6 +272,7 @@ dependencies = [
     "Pillow<12.0.0",
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
+    "pypdfium2==4.30.0",
     "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
