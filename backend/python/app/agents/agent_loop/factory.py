@@ -120,6 +120,7 @@ from app.agents.agent_loop.loops.orchestrator import (
     register_coordination_tools,
 )
 from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
@@ -141,6 +142,7 @@ from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollec
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.mcp.service import is_mcp_enabled
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -278,6 +280,22 @@ class PipesHubAgentFactory:
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
+        # MCP servers attached to this agent (or, for the assistant/placeholder
+        # agent, every MCP instance the executing user has authenticated — see
+        # `get_authenticated_mcp_servers`) — loaded right after connector
+        # toolsets so their tools count toward every composition/lazy-disclosure
+        # decision below exactly like any other tool. `context.mcp_servers`/
+        # `mcp_server_configs` are empty for a request with no attached MCP
+        # servers, so this is a cheap no-op in the common case (see
+        # `MCPToolProvider.load_into`).
+        #
+        # Gated on `ENABLE_MCP` — belt-and-suspenders alongside `api/routes/agent.py`
+        # forcing `agent_mcp_servers` empty when disabled, so MCP tools never load
+        # into an agent regardless of entry point. The flag read is skipped when
+        # nothing is attached (nothing to gate, and it saves a settings read on
+        # every MCP-less chat).
+        if not context.mcp_servers or await is_mcp_enabled(context.config_service):
+            await MCPToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode

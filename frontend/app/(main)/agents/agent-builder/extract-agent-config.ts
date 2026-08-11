@@ -4,6 +4,7 @@ import type {
   AgentFormPayload,
   AgentWebSearchAttachment,
   KnowledgeReference,
+  McpServerReference,
   SkillReference,
   ToolsetReference,
 } from './types';
@@ -316,6 +317,36 @@ export function extractAgentConfigFromFlow(
   }
   const skills: SkillReference[] = Array.from(skillNames).map((name) => ({ name }));
 
+  const mcpServersByInstanceId = new Map<string, McpServerReference>();
+  if (agentCoreNode) {
+    edges.forEach((edge) => {
+      if (edge.target !== agentCoreNode.id || edge.targetHandle !== 'mcpServers') return;
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const st = sourceNode?.data?.type ?? '';
+      if (!st.startsWith('mcp-')) return;
+      const cfg = (sourceNode!.data.config || {}) as Record<string, unknown>;
+      const instanceId = (cfg.instanceId as string) || st.slice('mcp-'.length);
+      if (!instanceId || mcpServersByInstanceId.has(instanceId)) return;
+      const name = (cfg.name as string) || (cfg.displayName as string) || sourceNode!.data.label || '';
+      if (!name) return;
+      const toolsCfg = (cfg.tools as { name?: string; fullName?: string; description?: string }[]) || [];
+      mcpServersByInstanceId.set(instanceId, {
+        instanceId,
+        name,
+        displayName: (cfg.displayName as string) || undefined,
+        typeId: (cfg.typeId as string) || undefined,
+        tools: toolsCfg
+          .filter((tool) => tool.name)
+          .map((tool) => ({
+            name: tool.name!,
+            fullName: tool.fullName || `${name}.${tool.name}`,
+            description: tool.description || '',
+          })),
+      });
+    });
+  }
+  const mcpServers: McpServerReference[] = Array.from(mcpServersByInstanceId.values());
+
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
     id: ts.instanceId || ts.name,
     instanceId: ts.instanceId,
@@ -354,6 +385,7 @@ export function extractAgentConfigFromFlow(
     toolsets,
     knowledge,
     skills,
+    mcpServers,
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

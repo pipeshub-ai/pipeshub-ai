@@ -117,7 +117,9 @@ export const executeConnectorCommand = async (
     method,
     headers: {
       ...headers,
-      'Content-Type': 'application/json',
+      // Lowercase — sanitizeHeaders normalizes keys; avoid a second
+      // Content-Type that fetch would join into "application/json, application/json".
+      'content-type': 'application/json',
     },
     ...(body && { body }),
   };

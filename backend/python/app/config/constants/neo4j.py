@@ -71,6 +71,7 @@ class Neo4jLabel(Enum):
     AGENT_KNOWLEDGE = "AgentKnowledge"
     AGENT_TOOLSETS = "AgentToolset"
     AGENT_TOOLS = "AgentTool"
+    AGENT_MCP_SERVERS = "AgentMcpServer"
 
     # Agent Skills collections
     AGENT_SKILLS = "AgentSkills"
@@ -105,6 +106,8 @@ class Neo4jRelationshipType(Enum):
     AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
     TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
     AGENT_HAS_SKILL = "AGENT_HAS_SKILL"
+    AGENT_HAS_MCP_SERVER = "AGENT_HAS_MCP_SERVER"
+    MCP_SERVER_HAS_TOOL = "MCP_SERVER_HAS_TOOL"
 
     # Agent Skills relationships
     AGENT_SKILL_RELATION = "AGENT_SKILL_RELATION"
@@ -168,6 +171,7 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.AGENT_KNOWLEDGE.value: Neo4jLabel.AGENT_KNOWLEDGE.value,
     CollectionNames.AGENT_TOOLSETS.value: Neo4jLabel.AGENT_TOOLSETS.value,
     CollectionNames.AGENT_TOOLS.value: Neo4jLabel.AGENT_TOOLS.value,
+    CollectionNames.AGENT_MCP_SERVERS.value: Neo4jLabel.AGENT_MCP_SERVERS.value,
     # Agent Skills collections
     CollectionNames.AGENT_SKILLS.value: Neo4jLabel.AGENT_SKILLS.value,
     CollectionNames.AGENT_SKILL_VERSIONS.value: Neo4jLabel.AGENT_SKILL_VERSIONS.value,
@@ -193,6 +197,8 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
     CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
     CollectionNames.AGENT_HAS_SKILL.value: Neo4jRelationshipType.AGENT_HAS_SKILL.value,
+    CollectionNames.AGENT_HAS_MCP_SERVER.value: Neo4jRelationshipType.AGENT_HAS_MCP_SERVER.value,
+    CollectionNames.MCP_SERVER_HAS_TOOL.value: Neo4jRelationshipType.MCP_SERVER_HAS_TOOL.value,
     CollectionNames.AGENT_SKILL_RELATION.value: Neo4jRelationshipType.AGENT_SKILL_RELATION.value,
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,

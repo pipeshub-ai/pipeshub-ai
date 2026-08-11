@@ -90,6 +90,8 @@ import { ToolsetsContainer } from './modules/toolsets/container/toolsets.contain
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
+import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
+import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 
 const loggerConfig = {
@@ -116,6 +118,7 @@ export class Application {
   private toolsetsContainer!: Container;
   private skillsContainer!: Container;
   private oauthAppsContainer!: Container;
+  private mcpServersContainer!: Container;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -208,6 +211,9 @@ export class Application {
       );
 
       this.oauthAppsContainer = await OAuthAppsContainer.initialize(
+        configurationManagerConfig,
+      );
+      this.mcpServersContainer = await McpServersContainer.initialize(
         configurationManagerConfig,
       );
 
@@ -513,6 +519,12 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-apps',
       createOAuthAppsRouter(this.oauthAppsContainer),
+    );
+
+    // MCP servers routes (registry + auth + token management -> Python connectors service)
+    this.app.use(
+      '/api/v1/mcp-servers',
+      createMcpServersRouter(this.mcpServersContainer)
     );
 
     this.app.use(

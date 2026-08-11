@@ -813,6 +813,30 @@ export const getAvailablePlatformFeatureFlags =
     res.status(200).json({ flags }).end();
   };
 
+export const getEffectivePlatformFeatureFlags =
+  (keyValueStoreService: KeyValueStoreService) =>
+  async (
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    // Unlike getPlatformSettings/getAvailablePlatformFeatureFlags (admin-only),
+    // this is callable by every authenticated user: flag values are just
+    // booleans (no secrets), and non-admin UI (chat, agent builder, personal
+    // pages) needs them to decide whether to render flag-gated features.
+    try {
+      const { featureFlags } = await getPlatformSettingsFromStore(
+        keyValueStoreService,
+      );
+      res.status(200).json({ featureFlags }).end();
+    } catch (error: any) {
+      logger.error('Error getting effective platform feature flags', {
+        error,
+      });
+      next(error);
+    }
+  };
+
 export const getAzureAdAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

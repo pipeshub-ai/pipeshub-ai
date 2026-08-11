@@ -77,6 +77,7 @@ from app.schema.arango.documents import (
     knowledge_schema,
     link_record_schema,
     mail_record_schema,
+    mcp_server_schema,
     meeting_record_schema,
     message_record_schema,
     orgs_schema,
@@ -98,6 +99,7 @@ from app.schema.arango.documents import (
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
+    agent_has_mcp_server_schema,
     agent_has_skill_schema,
     agent_has_toolset_schema,
     agent_skill_relation_schema,
@@ -111,6 +113,7 @@ from app.schema.arango.edges import (
     inherit_permissions_schema,
     is_of_type_schema,
     lead_schema,
+    mcp_server_has_tool_schema,
     member_of_schema,
     permissions_schema,
     prospect_schema,
@@ -163,6 +166,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
     (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
     (CollectionNames.AGENT_TOOLS.value, tool_schema),
+    (CollectionNames.AGENT_MCP_SERVERS.value, mcp_server_schema),
     (CollectionNames.AGENT_SKILLS.value, agent_skills_schema),
     (CollectionNames.AGENT_SKILL_VERSIONS.value, agent_skill_versions_schema),
     (CollectionNames.AGENT_SKILL_CANDIDATES.value, agent_skill_candidates_schema),
@@ -201,6 +205,8 @@ EDGE_COLLECTIONS = [
     (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
     (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
     (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
+    (CollectionNames.AGENT_HAS_MCP_SERVER.value, agent_has_mcp_server_schema),
+    (CollectionNames.MCP_SERVER_HAS_TOOL.value, mcp_server_has_tool_schema),
     (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
     (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
@@ -19807,6 +19813,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
+            // Get linked MCP servers with their tools (agentHasMcpServer -> mcpServerHasTool)
+            // — same shape as linked_toolsets; MCP server nodes carry no secrets (see
+            // mcp_server_schema), only the attach-time snapshot of instanceId/typeId/name.
+            LET linked_mcp_servers = (
+                FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                    FILTER edge._from == agent_path
+                    LET mcp_server = DOCUMENT(edge._to)
+                    FILTER mcp_server != null
+
+                    LET mcp_server_tools = (
+                        FOR tool_edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                            FILTER tool_edge._from == edge._to
+                            LET tool = DOCUMENT(tool_edge._to)
+                            FILTER tool != null
+                            RETURN {{
+                                _key: tool._key,
+                                name: tool.name,
+                                fullName: tool.fullName,
+                                description: tool.description
+                            }}
+                    )
+
+                    RETURN {{
+                        _key: mcp_server._key,
+                        name: mcp_server.name,
+                        displayName: mcp_server.displayName,
+                        typeId: mcp_server.typeId,
+                        instanceId: mcp_server.instanceId,
+                        tools: mcp_server_tools
+                    }}
+            )
+
             // Get linked knowledge with filters and enrich with names
             LET linked_knowledge = (
                 FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
@@ -19894,6 +19932,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
+                mcpServers: linked_mcp_servers,
                 knowledge: linked_knowledge,
                 skills: linked_skills,
                 shareWithOrg: share_with_org
@@ -20371,6 +20410,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             }}
                     )
 
+                    LET linked_mcp_servers = (
+                        FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                            FILTER edge._from == agent_path
+                            LET mcp_server = DOCUMENT(edge._to)
+                            FILTER mcp_server != null
+
+                            LET mcp_server_tools = (
+                                FOR tool_edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                                    FILTER tool_edge._from == edge._to
+                                    LET tool = DOCUMENT(tool_edge._to)
+                                    FILTER tool != null
+                                    RETURN {{
+                                        _key: tool._key,
+                                        name: tool.name,
+                                        fullName: tool.fullName,
+                                        description: tool.description
+                                    }}
+                            )
+
+                            RETURN {{
+                                _key: mcp_server._key,
+                                name: mcp_server.name,
+                                displayName: mcp_server.displayName,
+                                typeId: mcp_server.typeId,
+                                instanceId: mcp_server.instanceId,
+                                tools: mcp_server_tools
+                            }}
+                    )
+
                     LET linked_knowledge = (
                         FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
                             FILTER edge._from == agent_path
@@ -20417,6 +20485,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
                     RETURN MERGE(a, {{
                         toolsets: linked_toolsets,
+                        mcpServers: linked_mcp_servers,
                         knowledge: linked_knowledge
                     }})
             )
@@ -20637,11 +20706,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         4. Tool nodes (AGENT_TOOLS)
         5. Agent -> Toolset edges (AGENT_HAS_TOOLSET)
         6. Toolset nodes (AGENT_TOOLSETS)
-        7. Permission edges (PERMISSION) - user, org, team permissions
-        8. The agent document itself (AGENT_INSTANCES)
+        7. MCP server -> Tool edges (MCP_SERVER_HAS_TOOL), tool nodes (AGENT_TOOLS),
+           Agent -> MCP server edges (AGENT_HAS_MCP_SERVER), MCP server nodes (AGENT_MCP_SERVERS)
+        8. Permission edges (PERMISSION) - user, org, team permissions
+        9. The agent document itself (AGENT_INSTANCES)
 
         Returns:
-            Dict with counts: {"agents_deleted": 1, "toolsets_deleted": X, "tools_deleted": Y, "knowledge_deleted": Z, "edges_deleted": W}
+            Dict with counts: {"agents_deleted": 1, "toolsets_deleted": X, "tools_deleted": Y,
+            "knowledge_deleted": Z, "edges_deleted": W, "mcp_servers_deleted": V} — `tools_deleted`
+            includes both toolset and MCP tool nodes, since both live in AGENT_TOOLS.
         """
         try:
             toolsets_deleted = 0
@@ -20805,6 +20878,102 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
                     )
 
+            # Steps 7b-7f: MCP servers — mirrors steps 3-7 above exactly (tool nodes live in
+            # the same AGENT_TOOLS collection; orphan checks below only see MCP_SERVER_HAS_TOOL
+            # since a given tool node is created uniquely per attachment, same as toolset tools).
+            mcp_servers_deleted = 0
+
+            find_mcp_server_ids_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._from == @agent_doc_id
+                RETURN edge._to
+            """
+
+            mcp_server_ids = await self.execute_query(
+                find_mcp_server_ids_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if mcp_server_ids:
+                delete_mcp_tool_edges_query = f"""
+                FOR msid IN @mcp_server_ids
+                    FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                        FILTER edge._from == msid
+                        REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                        RETURN OLD._to
+                """
+
+                mcp_tool_ids = await self.execute_query(
+                    delete_mcp_tool_edges_query,
+                    bind_vars={"mcp_server_ids": mcp_server_ids},
+                    transaction=transaction
+                )
+
+                if mcp_tool_ids:
+                    edges_deleted += len(mcp_tool_ids)
+
+                    delete_orphaned_mcp_tools_query = f"""
+                    FOR tid IN @mcp_tool_ids
+                        LET remaining = FIRST(
+                            FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                                FILTER edge._to == tid
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER remaining == null
+                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                        RETURN OLD
+                    """
+
+                    deleted_mcp_tools = await self.execute_query(
+                        delete_orphaned_mcp_tools_query,
+                        bind_vars={"mcp_tool_ids": mcp_tool_ids},
+                        transaction=transaction
+                    )
+
+                    if deleted_mcp_tools:
+                        tools_deleted += len(deleted_mcp_tools)
+
+            delete_mcp_server_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._from == @agent_doc_id
+                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                RETURN OLD
+            """
+
+            deleted_mcp_server_edges = await self.execute_query(
+                delete_mcp_server_edges_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if deleted_mcp_server_edges:
+                edges_deleted += len(deleted_mcp_server_edges)
+
+            if mcp_server_ids:
+                delete_orphaned_mcp_servers_query = f"""
+                FOR msid IN @mcp_server_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                            FILTER edge._to == msid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                    RETURN OLD
+                """
+
+                deleted_mcp_servers = await self.execute_query(
+                    delete_orphaned_mcp_servers_query,
+                    bind_vars={"mcp_server_ids": mcp_server_ids},
+                    transaction=transaction
+                )
+
+                if deleted_mcp_servers:
+                    mcp_servers_deleted = len(deleted_mcp_servers)
+
             # Step 8: Delete all permission edges pointing to this agent
             delete_permissions_query = f"""
             FOR edge IN {CollectionNames.PERMISSION.value}
@@ -20840,7 +21009,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(
                 f"Hard deleted agent {agent_id}: {agents_deleted} agent, "
-                f"{toolsets_deleted} toolsets, {tools_deleted} tools, "
+                f"{toolsets_deleted} toolsets, {mcp_servers_deleted} mcp servers, {tools_deleted} tools, "
                 f"{knowledge_deleted} knowledge, {edges_deleted} edges"
             )
 
@@ -20850,6 +21019,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -20860,6 +21030,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def hard_delete_all_agents(self, transaction: str | None = None) -> dict[str, int]:
@@ -20874,11 +21045,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         4. Tool nodes (AGENT_TOOLS)
         5. Agent -> Toolset edges (AGENT_HAS_TOOLSET)
         6. Toolset nodes (AGENT_TOOLSETS)
-        7. Permission edges (PERMISSION) - user, org, team permissions
-        8. All agent documents (AGENT_INSTANCES)
+        7. MCP server -> Tool edges (MCP_SERVER_HAS_TOOL), tool nodes (AGENT_TOOLS),
+           Agent -> MCP server edges (AGENT_HAS_MCP_SERVER), MCP server nodes (AGENT_MCP_SERVERS)
+        8. Permission edges (PERMISSION) - user, org, team permissions
+        9. All agent documents (AGENT_INSTANCES)
 
         Returns:
-            Dict with counts: {"agents_deleted": X, "toolsets_deleted": Y, "tools_deleted": Z, "knowledge_deleted": W, "edges_deleted": V}
+            Dict with counts: {"agents_deleted": X, "toolsets_deleted": Y, "tools_deleted": Z,
+            "knowledge_deleted": W, "edges_deleted": V, "mcp_servers_deleted": U} — `tools_deleted`
+            includes both toolset and MCP tool nodes, since both live in AGENT_TOOLS.
         """
         try:
             agents_deleted = 0
@@ -21018,6 +21193,97 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     toolsets_deleted = len(deleted_toolsets)
                     self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
 
+            # Steps 7b-7f: MCP servers — mirrors steps 3-7 above exactly (tool nodes live in
+            # the same AGENT_TOOLS collection as toolset tools).
+            find_mcp_server_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN edge._to
+            """
+
+            mcp_server_ids = await self.execute_query(
+                find_mcp_server_edges_query,
+                transaction=transaction
+            )
+
+            if mcp_server_ids:
+                mcp_server_ids = list(set(mcp_server_ids))
+                self.logger.debug(f"Found {len(mcp_server_ids)} MCP servers connected to agents")
+
+                delete_mcp_tool_edges_query = f"""
+                FOR mcp_server_id IN @mcp_server_ids
+                    FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                        FILTER edge._from == mcp_server_id
+                        REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                        RETURN OLD
+                """
+
+                deleted_mcp_tool_edges = await self.execute_query(
+                    delete_mcp_tool_edges_query,
+                    bind_vars={"mcp_server_ids": mcp_server_ids},
+                    transaction=transaction
+                )
+
+                if deleted_mcp_tool_edges:
+                    edges_deleted += len(deleted_mcp_tool_edges)
+                    self.logger.debug(f"Deleted {len(deleted_mcp_tool_edges)} MCP server -> tool edges")
+
+                    mcp_tool_ids = list({edge['_to'] for edge in deleted_mcp_tool_edges})
+                    if mcp_tool_ids:
+                        delete_mcp_tools_query = f"""
+                        FOR tool_id IN @mcp_tool_ids
+                            LET tool = DOCUMENT(tool_id)
+                            FILTER tool != null
+                            REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
+                            RETURN OLD
+                        """
+
+                        deleted_mcp_tools = await self.execute_query(
+                            delete_mcp_tools_query,
+                            bind_vars={"mcp_tool_ids": mcp_tool_ids},
+                            transaction=transaction
+                        )
+
+                        if deleted_mcp_tools:
+                            tools_deleted += len(deleted_mcp_tools)
+                            self.logger.debug(f"Deleted {len(deleted_mcp_tools)} MCP tool nodes")
+
+            delete_mcp_server_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.AGENT_INSTANCES.value}/')
+                REMOVE edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                RETURN OLD
+            """
+
+            deleted_mcp_server_edges = await self.execute_query(
+                delete_mcp_server_edges_query,
+                transaction=transaction
+            )
+
+            if deleted_mcp_server_edges:
+                edges_deleted += len(deleted_mcp_server_edges)
+                self.logger.debug(f"Deleted {len(deleted_mcp_server_edges)} agent -> MCP server edges")
+
+            mcp_servers_deleted = 0
+            if mcp_server_ids:
+                delete_mcp_servers_query = f"""
+                FOR mcp_server_id IN @mcp_server_ids
+                    LET mcp_server = DOCUMENT(mcp_server_id)
+                    FILTER mcp_server != null
+                    REMOVE mcp_server IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                    RETURN OLD
+                """
+
+                deleted_mcp_servers = await self.execute_query(
+                    delete_mcp_servers_query,
+                    bind_vars={"mcp_server_ids": mcp_server_ids},
+                    transaction=transaction
+                )
+
+                if deleted_mcp_servers:
+                    mcp_servers_deleted = len(deleted_mcp_servers)
+                    self.logger.debug(f"Deleted {mcp_servers_deleted} MCP server nodes")
+
             # Step 8: Delete all permission edges (PERMISSION) pointing to agents
             delete_permissions_query = f"""
             FOR edge IN {CollectionNames.PERMISSION.value}
@@ -21052,7 +21318,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
-                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} edges"
+                f"{mcp_servers_deleted} mcp servers, {tools_deleted} tools, "
+                f"{knowledge_deleted} knowledge, and {edges_deleted} edges"
             )
 
             return {
@@ -21061,6 +21328,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -21071,6 +21339,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> bool | None:

@@ -1842,6 +1842,104 @@ describe('enterprise_search/validators/es_validators', () => {
       })
       expect(result.success).to.be.false
     })
+
+    it('should accept a valid mcpServers list', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [
+            {
+              instanceId: 'inst-1',
+              name: 'My Jira MCP',
+              displayName: 'Jira MCP',
+              typeId: 'jira_mcp',
+              tools: [{ name: 'search', fullName: 'mcp_jira_mcp_search' }],
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should strip unknown fields from mcpServers entries', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [
+            {
+              instanceId: 'inst-1',
+              name: 'My Jira MCP',
+              typeId: 'jira_mcp',
+              extraMcpField: 'drop-me',
+            },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]).to.not.have.property('extraMcpField')
+      }
+    })
+
+    it('should reject mcpServers entries missing instanceId', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{ name: 'My Jira MCP', typeId: 'jira_mcp' }],
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should reject two mcpServers entries with the same typeId', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [
+            { instanceId: 'inst-1', name: 'Jira MCP A', typeId: 'jira_mcp' },
+            { instanceId: 'inst-2', name: 'Jira MCP B', typeId: 'jira_mcp' },
+          ],
+        },
+      })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(
+          result.error.issues.some((i) => i.message.includes('Duplicate MCP server type')),
+        ).to.be.true
+      }
+    })
+
+    it('should accept two mcpServers entries with no typeId (custom servers exempt from dedupe)', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [
+            { instanceId: 'inst-1', name: 'Custom MCP A' },
+            { instanceId: 'inst-2', name: 'Custom MCP B' },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject an mcpServers list exceeding the max of 50', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: Array.from({ length: 51 }, (_, i) => ({
+            instanceId: `inst-${i}`,
+            name: `MCP ${i}`,
+          })),
+        },
+      })
+      expect(result.success).to.be.false
+    })
   })
 
   // ---------------------------------------------------------------------------
@@ -1951,6 +2049,31 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: { models: ['some-model-string'] },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept a valid mcpServers list on update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          mcpServers: [
+            { instanceId: 'inst-1', name: 'Jira MCP', typeId: 'jira_mcp' },
+          ],
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should reject two mcpServers entries with the same typeId on update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: {
+          mcpServers: [
+            { instanceId: 'inst-1', name: 'Jira MCP A', typeId: 'jira_mcp' },
+            { instanceId: 'inst-2', name: 'Jira MCP B', typeId: 'jira_mcp' },
+          ],
+        },
       })
       expect(result.success).to.be.false
     })

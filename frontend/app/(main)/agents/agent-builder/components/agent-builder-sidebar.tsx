@@ -14,9 +14,13 @@ import type { ToolsetTypeKeyFlowNode } from '../sidebar-toolset-utils';
 import { toggleKeyedBoolean } from '../sidebar-expand-utils';
 import { AGENT_LLM_FALLBACK_ICON, resolveLlmProviderIconPath } from '../display-utils';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
+import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
+import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
+import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
+import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
 import type { AgentWebSearchAttachment } from '../types';
 
 const PALETTE_ROW_MIN_HEIGHT = 44;
@@ -110,6 +114,9 @@ export function AgentBuilderSidebar(props: {
     isServiceAccount?: boolean,
     search?: string
   ) => Promise<void>;
+  mcpServers: McpMyServerEntry[];
+  mcpMergeCheckNodes: McpInstanceIdFlowNode[];
+  refreshMcpServers: () => Promise<void>;
   onNotify: (message: string) => void;
   agentKey?: string | null;
   isServiceAccount?: boolean;
@@ -133,6 +140,9 @@ export function AgentBuilderSidebar(props: {
     activeToolsetTypeKeys,
     toolsetMergeCheckNodes,
     refreshToolsets,
+    mcpServers,
+    mcpMergeCheckNodes,
+    refreshMcpServers,
     onNotify,
     agentKey = null,
     isServiceAccount = false,
@@ -144,6 +154,7 @@ export function AgentBuilderSidebar(props: {
   } = props;
 
   const { t } = useTranslation();
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
@@ -154,6 +165,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
+    mcpServers: true,
     skills: true,
   });
 
@@ -169,6 +181,7 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
+  const skillTemplates = filtered.filter((t) => t.category === 'skills');
 
   const toggle = useCallback(
     (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
@@ -463,6 +476,71 @@ export function AgentBuilderSidebar(props: {
             </Box>
           ) : null}
 
+          {mcpEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.mcpServersSection')}
+                icon="hub"
+                open={expanded.mcpServers}
+                onToggle={() => toggle('mcpServers')}
+              />
+              {expanded.mcpServers ? (
+                <Box className="agent-builder-palette-nest" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <AgentBuilderMcpSection
+                    mcpServers={mcpServers}
+                    loading={loading}
+                    refreshMcpServers={refreshMcpServers}
+                    mcpMergeCheckNodes={mcpMergeCheckNodes}
+                    isServiceAccount={isServiceAccount}
+                    agentKey={agentKey}
+                    onNotify={onNotify}
+                    structureLocked={paletteStructureLocked}
+                    onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                  />
+                </Box>
+              ) : null}
+            </>
+          ) : null}
+
+          <SectionHeader
+            title={t('agentBuilder.skillsSection')}
+            icon="psychology"
+            open={expanded.skills}
+            onToggle={() => toggle('skills')}
+          />
+          {expanded.skills ? (
+            loading ? (
+              <Box className="agent-builder-palette-nest">
+                <AgentBuilderPaletteSkeletonList count={3} />
+              </Box>
+            ) : (
+              <Box className="agent-builder-palette-nest">
+                {skillTemplates.length === 0 ? (
+                  <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
+                    {t('agentBuilder.noSkills')}
+                  </Text>
+                ) : (
+                  skillTemplates.map((tmpl) => (
+                    <DraggableRow
+                      key={tmpl.type}
+                      comfortable
+                      data={prepareDragData(tmpl)}
+                      disabled={paletteStructureLocked}
+                      onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
+                    >
+                      <MaterialIcon
+                        name="psychology"
+                        size={PALETTE_ICON_SIZE}
+                        color="var(--olive-11)"
+                        style={{ flexShrink: 0 }}
+                      />
+                      <span style={paletteRowLabelStyle}>{tmpl.label}</span>
+                    </DraggableRow>
+                  ))
+                )}
+              </Box>
+            )
+          ) : null}
         </Box>
       </ScrollArea>
     </Box>

@@ -364,6 +364,21 @@ async def run_agent_loop_stream(
                     await context.sandbox_manager.destroy_all()
                 except Exception:
                     log.warning("agent-loop stream: sandbox cleanup failed", exc_info=True)
+            # Tears down every MCP session `MCPToolProvider`/`MCPToolAdapter`
+            # opened this request (see `mcp_session.py`). Guarded on the cache
+            # dict itself (rather than always constructing a manager) so a
+            # request with no MCP servers attached skips this entirely; the
+            # `MCPSessionManager` constructed here shares the SAME cache dict
+            # via `context.tool_state`, so it tears down the real sessions.
+            if context.tool_state.get("_mcp_client_managers"):
+                try:
+                    from app.agents.agent_loop.mcp_session import MCPSessionManager
+
+                    await MCPSessionManager(context).aclose_all()
+                except Exception:
+                    log.warning("agent-loop stream: MCP session cleanup failed", exc_info=True)
+            await event_sink.flush()
+            await queue.put(_DONE)
 
     producer = asyncio.create_task(_produce())
     heartbeat = asyncio.create_task(_heartbeat(queue)) if protocol == "agui" else None

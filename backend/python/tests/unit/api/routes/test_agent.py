@@ -3563,8 +3563,8 @@ class TestToolsetEdgeCreationFailures:
         gp.batch_create_edges = AsyncMock(side_effect=Exception("edge fail"))
         toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [], "instanceId": None, "instanceName": None}}
         with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
-            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
-        assert len(created) == 1
+            with pytest.raises(Exception, match="edge fail"):
+                await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_tool_nodes_upsert_none(self) -> None:
@@ -3574,8 +3574,8 @@ class TestToolsetEdgeCreationFailures:
         gp.batch_create_edges = AsyncMock(return_value=True)
         toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
         with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
-            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
-        assert len(created) == 1
+            with pytest.raises(RuntimeError, match="Failed to create tool nodes"):
+                await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_tool_nodes_upsert_exception(self) -> None:
@@ -3585,8 +3585,8 @@ class TestToolsetEdgeCreationFailures:
         gp.batch_create_edges = AsyncMock(return_value=True)
         toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
         with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
-            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
-        assert len(created) == 1
+            with pytest.raises(Exception, match="fail"):
+                await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_toolset_tool_edges_exception(self) -> None:
@@ -3596,8 +3596,8 @@ class TestToolsetEdgeCreationFailures:
         gp.batch_create_edges = AsyncMock(side_effect=[True, Exception("fail")])
         toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
         with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
-            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
-        assert len(created) == 1
+            with pytest.raises(Exception, match="fail"):
+                await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
 
 class TestKnowledgeEdgeFailures2:
     @pytest.mark.asyncio

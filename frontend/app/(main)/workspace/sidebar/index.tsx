@@ -11,6 +11,7 @@ import { WorkspaceSidebarItem } from './sidebar-item';
 import { SectionHeader } from './section-header';
 import { CollapsibleSection } from './collapsible-section';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 
 // ========================================
@@ -23,6 +24,8 @@ interface NavItem {
   route: string;
   adminOnly?: boolean;
   customIcon?: ReactNode;
+  /** Only rendered when the named feature flag is enabled. */
+  requiresFlag?: 'mcp';
 }
 
 const OVERVIEW_ITEMS: NavItem[] = [
@@ -47,6 +50,7 @@ const PEOPLE_SUB_ITEMS = [
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
   { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
+  { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.mcpServers', route: '/workspace/mcp-servers/team', adminOnly: true, requiresFlag: 'mcp' },
   { icon: 'bolt', labelKey: 'workspace.sidebar.nav.actions', route: '/workspace/actions/team', adminOnly: true },
   { icon: 'support_agent', labelKey: 'workspace.sidebar.nav.bots', route: '/workspace/bots', adminOnly: true },
   { icon: 'manage_accounts', labelKey: 'workspace.sidebar.nav.services', route: '/workspace/services', adminOnly: true },
@@ -60,6 +64,8 @@ const PERSONAL_ITEMS: NavItem[] = [
   { icon: 'person', labelKey: 'workspace.sidebar.nav.profile', route: '/workspace/profile' },
   { icon: '', labelKey: 'workspace.sidebar.nav.yourConnectors', route: '/workspace/connectors/personal', customIcon: <YourConnectorsIcon size={ICON_SIZE_DEFAULT} color="var(--slate-11)" /> },
   { icon: 'bolt', labelKey: 'workspace.sidebar.nav.yourActions', route: '/workspace/actions/personal' },
+  { icon: 'psychology', labelKey: 'workspace.sidebar.nav.yourSkills', route: '/workspace/skills/personal' },
+  { icon: 'device_hub', labelKey: 'workspace.sidebar.nav.yourMcpServers', route: '/workspace/mcp-servers/personal', requiresFlag: 'mcp' },
   { icon: 'archive', labelKey: 'workspace.sidebar.nav.archivedChats', route: '/workspace/archived-chats' },
 ];
 
@@ -79,6 +85,7 @@ export default function WorkspaceSidebar() {
   const rawPathname = usePathname();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
 
   // Normalize trailing slash (trailingSlash: true in next.config)
   const pathname = rawPathname.endsWith('/') && rawPathname !== '/'
@@ -89,11 +96,14 @@ export default function WorkspaceSidebar() {
     PEOPLE_ROUTES.some((route) => pathname.startsWith(route))
   );
 
+  const isNavItemVisible = (item: NavItem) =>
+    (isAdmin || !item.adminOnly) && (item.requiresFlag !== 'mcp' || mcpEnabled);
+
   const allRoutes = [
     ...OVERVIEW_ITEMS.map((item) => item.route),
-    ...(isAdmin ? WORKSPACE_ITEMS.map((item) => item.route) : []),
+    ...(isAdmin ? WORKSPACE_ITEMS.filter(isNavItemVisible).map((item) => item.route) : []),
     ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
-    ...PERSONAL_ITEMS.map((item) => item.route),
+    ...PERSONAL_ITEMS.filter(isNavItemVisible).map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
     '/workspace/actions',
   ];
@@ -111,9 +121,10 @@ export default function WorkspaceSidebar() {
   };
   const isPeopleChildActive = PEOPLE_ROUTES.some((route) => pathname.startsWith(route));
 
-  const visibleOverviewItems = OVERVIEW_ITEMS.filter((item) => isAdmin || !item.adminOnly);
-  const visibleWorkspaceItems = WORKSPACE_ITEMS.filter((item) => isAdmin || !item.adminOnly);
+  const visibleOverviewItems = OVERVIEW_ITEMS.filter(isNavItemVisible);
+  const visibleWorkspaceItems = WORKSPACE_ITEMS.filter(isNavItemVisible);
   const visiblePeopleItems = PEOPLE_SUB_ITEMS.filter((item) => isAdmin || !item.adminOnly);
+  const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
   return (
     <SidebarBase>
@@ -191,7 +202,7 @@ export default function WorkspaceSidebar() {
         {/* ── Personal section ── */}
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.personal')} />
-          {PERSONAL_ITEMS.map((item) => (
+          {visiblePersonalItems.map((item) => (
             <WorkspaceSidebarItem
               key={item.route}
               icon={item.customIcon ?? <MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}

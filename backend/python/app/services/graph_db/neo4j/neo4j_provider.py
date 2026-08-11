@@ -16879,6 +16879,59 @@ class Neo4jProvider(IGraphDBProvider):
 
         return result_map
 
+    async def _project_agents_mcp_servers(
+        self, agent_ids: list[str], transaction: str | None = None
+    ) -> dict[str, list[dict]]:
+        """Build the MCP servers + tools graph projection for many agents at once.
+
+        Mirrors the toolsets query in ``_project_agents_toolsets_and_knowledge`` exactly
+        (agentHasMcpServer -> mcpServerHasTool); kept as a separate helper since MCP server
+        nodes carry no secrets and the tool nodes point at nothing else (no knowledge join
+        needed here).
+        """
+        result_map: dict[str, list[dict]] = {agent_id: [] for agent_id in agent_ids}
+        if not agent_ids:
+            return result_map
+
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        agent_has_mcp_server_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+        mcp_server_has_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+        mcp_server_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+        tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+
+        mcp_servers_query = f"""
+        MATCH (agent:{agent_label})-[r:{agent_has_mcp_server_rel}]->(ms:{mcp_server_label})
+        WHERE agent.id IN $agent_ids
+        OPTIONAL MATCH (ms)-[tr:{mcp_server_has_tool_rel}]->(tool:{tool_label})
+        WITH agent, ms, collect(DISTINCT CASE
+            WHEN tool IS NOT NULL THEN {{
+                _key: tool.id,
+                name: tool.name,
+                fullName: tool.fullName,
+                description: tool.description
+            }}
+            ELSE null
+        END) AS tools_raw
+        WITH agent, ms, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+        RETURN agent.id AS agent_id, {{
+            _key: ms.id,
+            name: ms.name,
+            displayName: ms.displayName,
+            typeId: ms.typeId,
+            instanceId: ms.instanceId,
+            tools: tools
+        }} AS mcp_server
+        """
+        mcp_servers_result = await self.client.execute_query(
+            mcp_servers_query, parameters={"agent_ids": agent_ids}, txn_id=transaction
+        )
+        for row in mcp_servers_result or []:
+            agent_id = row["agent_id"]
+            if agent_id in result_map:
+                result_map[agent_id].append(row["mcp_server"])
+
+        return result_map
+
     async def _project_agent_skills(
         self, agent_id: str, transaction: str | None = None
     ) -> list[dict]:
@@ -16959,6 +17012,15 @@ class Neo4jProvider(IGraphDBProvider):
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
             agent["skills"] = await self._project_agent_skills(agent_id, transaction)
+            try:
+                mcp_projection = await self._project_agents_mcp_servers([agent_id], transaction)
+            except Exception as e:
+                # Mirrors get_all_agents._enrich: an MCP-projection failure must not make
+                # this single-agent lookup indistinguishable from "not found" via the
+                # outer except below — degrade to an empty list instead.
+                self.logger.warning(f"Agent MCP server enrichment failed for {agent_id}; returning agent without mcpServers: {str(e)}")
+                mcp_projection = {}
+            agent["mcpServers"] = mcp_projection.get(agent_id, [])
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a
@@ -17426,10 +17488,16 @@ class Neo4jProvider(IGraphDBProvider):
                     # error. Degrade to the consistent empty-array shape instead.
                     self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
                     projection = {}
+                try:
+                    mcp_projection = await self._project_agents_mcp_servers(ids, transaction)
+                except Exception as e:
+                    self.logger.warning(f"Agent list MCP server enrichment failed; returning agents without mcpServers: {str(e)}")
+                    mcp_projection = {}
                 for ag in agent_list:
                     proj = projection.get(ag.get("_key"), {"toolsets": [], "knowledge": []})
                     ag["toolsets"] = proj["toolsets"]
                     ag["knowledge"] = proj["knowledge"]
+                    ag["mcpServers"] = mcp_projection.get(ag.get("_key"), [])
                 return agent_list
 
             has_paging = page is not None and limit is not None

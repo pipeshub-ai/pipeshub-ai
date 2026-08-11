@@ -43,6 +43,11 @@ export const OAuthScopeNames = Object.freeze({
   SKILL_READ: 'skill:read',
   SKILL_WRITE: 'skill:write',
 
+  // MCP Servers
+  MCP_READ: 'mcp:read',
+  MCP_WRITE: 'mcp:write',
+  MCP_DELETE: 'mcp:delete',
+
   // Connectors
   CONNECTOR_READ: 'connector:read',
   CONNECTOR_WRITE: 'connector:write',

@@ -852,11 +852,13 @@ async def _create_toolset_edges(
         for toolset_info in toolset_mapping.values()
     ]
 
-    # Batch create agent -> toolset edges
+    # Batch create agent -> toolset edges. Re-raise — mirrors `_create_mcp_server_edges`,
+    # since every caller already wraps this in a transaction rollback or an HTTPException.
     try:
         await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value)
     except Exception as e:
         logger.error(f"Failed to create agent-toolset edges: {e}")
+        raise
 
     # Prepare all tool nodes and edges
     tool_nodes = []
@@ -897,21 +899,25 @@ async def _create_toolset_edges(
                 "updatedAtTimestamp": time,
             })
 
-    # Batch create all tool nodes
+    # Batch create all tool nodes. Must raise on failure: edge creation below points at
+    # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
+    # silently even when the referenced node was never created.
     if tool_nodes:
         try:
             result = await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value)
             if not result:
-                logger.warning("Failed to create tool nodes")
+                raise RuntimeError("Failed to create tool nodes")
         except Exception as e:
             logger.error(f"Failed to batch create tool nodes: {e}")
+            raise
 
-    # Batch create toolset -> tool edges
+    # Batch create toolset -> tool edges. Re-raise for the same reason as above.
     if toolset_tool_edges:
         try:
             await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value)
         except Exception as e:
             logger.error(f"Failed to create toolset-tool edges: {e}")
+            raise
 
     # Build response with created toolsets and tools
     for toolset_info in toolset_mapping.values():
@@ -933,6 +939,247 @@ async def _create_toolset_edges(
         })
 
     return created_toolsets, failed_toolsets
+
+
+def _parse_mcp_servers(raw_mcp_servers: list[Any]) -> dict[str, dict[str, Any]]:
+    """Parse attached MCP server references with their tools.
+
+    Unlike `_parse_toolsets` (keyed by name — built-in toolset types have a
+    single instance system-wide), MCP servers are keyed by `instanceId`: an
+    agent can attach several distinct instances, but never two instances of
+    the same `typeId` — that's enforced here so `mcp_{server_type}_{tool}`
+    tool names stay unique at chat time (see `get_authenticated_mcp_servers`
+    in `app/agents/mcp/service.py`).
+    """
+    mcp_servers_with_tools: dict[str, dict[str, Any]] = {}
+    seen_type_ids: dict[str, str] = {}
+
+    if not raw_mcp_servers or not isinstance(raw_mcp_servers, list):
+        return mcp_servers_with_tools
+
+    for mcp_data in raw_mcp_servers:
+        if not isinstance(mcp_data, dict):
+            continue
+
+        instance_id = str(mcp_data.get("instanceId", "")).strip()
+        if not instance_id:
+            continue
+
+        name = str(mcp_data.get("name", "")).strip()
+        if not name:
+            continue
+
+        type_id = mcp_data.get("typeId") or None
+        if type_id:
+            existing_instance_id = seen_type_ids.get(type_id)
+            if existing_instance_id and existing_instance_id != instance_id:
+                raise InvalidRequestError(
+                    f"Cannot attach two MCP server instances of the same type ('{type_id}') to one agent."
+                )
+            seen_type_ids[type_id] = instance_id
+
+        display_name = mcp_data.get("displayName") or name.replace("_", " ").title()
+        tools_list = mcp_data.get("tools", [])
+
+        if instance_id not in mcp_servers_with_tools:
+            mcp_servers_with_tools[instance_id] = {
+                "name": name,
+                "displayName": display_name,
+                "typeId": type_id,
+                "tools": [],
+            }
+
+        for tool in tools_list:
+            if isinstance(tool, dict):
+                tool_name = tool.get("name", "")
+                if tool_name:
+                    mcp_servers_with_tools[instance_id]["tools"].append({
+                        "name": tool_name,
+                        "fullName": tool.get("fullName", f"{name}.{tool_name}"),
+                        "description": tool.get("description", "")
+                    })
+
+    return mcp_servers_with_tools
+
+
+async def _create_mcp_server_edges(
+    agent_key: str,
+    mcp_servers_with_tools: dict[str, dict[str, Any]],
+    user_info: dict[str, Any],
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    transaction: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Create MCP server nodes and edges for an agent using batch operations.
+
+    Mirrors `_create_toolset_edges`, keyed by `instanceId` instead of name.
+    MCP server nodes never carry credentials — auth is resolved at chat time
+    from `/services/mcp/credentials/{instanceId}/{ownerId}` (etcd), same as
+    the attach-time Node/Python validation that already rejects secrets here.
+    Accepts an optional `transaction` so callers can fold this into an
+    existing agent-creation transaction (unlike the toolset equivalent,
+    which create_agent re-implements inline for that reason).
+    """
+    created_mcp_servers: list[dict[str, Any]] = []
+    failed_mcp_servers: list[dict[str, Any]] = []
+    time = get_epoch_timestamp_in_ms()
+
+    if not mcp_servers_with_tools:
+        return created_mcp_servers, failed_mcp_servers
+
+    # Prepare all MCP server nodes
+    mcp_server_nodes = []
+    mcp_server_mapping = {}  # Map instance_id to node key/tools
+
+    for instance_id, mcp_data in mcp_servers_with_tools.items():
+        mcp_server_key = str(uuid.uuid4())
+        name = mcp_data["name"]
+        display_name = mcp_data["displayName"]
+        type_id = mcp_data.get("typeId")
+        tools_list = mcp_data["tools"]
+
+        mcp_server_node = {
+            "_key": mcp_server_key,
+            "instanceId": instance_id,
+            "name": name,
+            "displayName": display_name,
+            "userId": user_info["userId"],
+            "createdBy": user_key,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time
+        }
+        if type_id:
+            mcp_server_node["typeId"] = type_id
+
+        mcp_server_nodes.append(mcp_server_node)
+        mcp_server_mapping[instance_id] = {
+            "key": mcp_server_key,
+            "name": name,
+            "displayName": display_name,
+            "tools": tools_list
+        }
+
+    # Batch create all MCP server nodes
+    try:
+        result = await graph_provider.batch_upsert_nodes(
+            mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
+        )
+        if not result:
+            return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
+    except Exception as e:
+        logger.error(f"Failed to batch create MCP server nodes: {e}")
+        return created_mcp_servers, [{"name": "all", "error": str(e)}]
+
+    # Prepare agent -> mcpServer edges
+    agent_mcp_server_edges = [
+        {
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{CollectionNames.AGENT_MCP_SERVERS.value}/{mcp_info['key']}",
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        }
+        for mcp_info in mcp_server_mapping.values()
+    ]
+
+    # Batch create agent -> mcpServer edges. Re-raise (rather than log-and-continue) — every
+    # caller already wraps this in a transaction rollback or an HTTPException, so swallowing
+    # here would otherwise let create/update report "success" with MCP server nodes that were
+    # never actually linked to the agent.
+    try:
+        await graph_provider.batch_create_edges(
+            agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
+        )
+    except Exception as e:
+        logger.error(f"Failed to create agent-mcpServer edges: {e}")
+        raise
+
+    # Prepare all tool nodes and edges (tools live in the shared AGENT_TOOLS
+    # collection, same as toolset tools)
+    tool_nodes = []
+    mcp_server_tool_edges = []
+    tool_mapping = {}  # Map full_name to tool_key
+
+    for mcp_info in mcp_server_mapping.values():
+        for tool_data in mcp_info["tools"]:
+            tool_name = tool_data["name"]
+            full_name = tool_data["fullName"]
+            description = tool_data["description"]
+
+            tool_key = str(uuid.uuid4())
+
+            tool_node = {
+                "_key": tool_key,
+                "name": tool_name,
+                "fullName": full_name,
+                "toolsetName": mcp_info["name"],
+                "description": description,
+                "createdBy": user_key,
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time
+            }
+
+            tool_nodes.append(tool_node)
+            tool_mapping[full_name] = {
+                "key": tool_key,
+                "name": tool_name,
+                "mcpServer": mcp_info["name"]
+            }
+
+            # Prepare mcpServer -> tool edge
+            mcp_server_tool_edges.append({
+                "_from": f"{CollectionNames.AGENT_MCP_SERVERS.value}/{mcp_info['key']}",
+                "_to": f"{CollectionNames.AGENT_TOOLS.value}/{tool_key}",
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time,
+            })
+
+    # Batch create all tool nodes. Must raise on failure: edge creation below points at
+    # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
+    # silently even when the referenced node was never created.
+    if tool_nodes:
+        try:
+            result = await graph_provider.batch_upsert_nodes(
+                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+            )
+            if not result:
+                raise RuntimeError("Failed to create MCP tool nodes")
+        except Exception as e:
+            logger.error(f"Failed to batch create MCP tool nodes: {e}")
+            raise
+
+    # Batch create mcpServer -> tool edges. Re-raise for the same reason as the
+    # agent->mcpServer edges above — a swallowed failure here leaves tools listed in the
+    # response with no MCP_SERVER_HAS_TOOL edge actually connecting them.
+    if mcp_server_tool_edges:
+        try:
+            await graph_provider.batch_create_edges(
+                mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
+            )
+        except Exception as e:
+            logger.error(f"Failed to create mcpServer-tool edges: {e}")
+            raise
+
+    # Build response with created MCP servers and tools
+    for mcp_info in mcp_server_mapping.values():
+        created_tools = []
+        for tool_data in mcp_info["tools"]:
+            full_name = tool_data["fullName"]
+            if full_name in tool_mapping:
+                created_tools.append({
+                    "name": tool_mapping[full_name]["name"],
+                    "fullName": full_name,
+                    "key": tool_mapping[full_name]["key"]
+                })
+
+        created_mcp_servers.append({
+            "name": mcp_info["name"],
+            "displayName": mcp_info["displayName"],
+            "key": mcp_info["key"],
+            "tools": created_tools
+        })
+
+    return created_mcp_servers, failed_mcp_servers
 
 
 async def _create_knowledge_edges(
@@ -1446,8 +1693,9 @@ async def create_agent(request: Request) -> JSONResponse:
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
 
-        # Parse toolsets, knowledge, and skills BEFORE starting transaction
+        # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
         skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
@@ -1483,6 +1731,8 @@ async def create_agent(request: Request) -> JSONResponse:
         # Wrap ALL creation operations in a single transaction
         created_toolsets = []
         failed_toolsets = []
+        created_mcp_servers: list[dict[str, Any]] = []
+        failed_mcp_servers: list[dict[str, Any]] = []
         created_knowledge = []
         linked_skills: list[str] = []
 
@@ -1498,6 +1748,9 @@ async def create_agent(request: Request) -> JSONResponse:
                     CollectionNames.AGENT_TOOLS.value,
                     CollectionNames.AGENT_HAS_TOOLSET.value,
                     CollectionNames.TOOLSET_HAS_TOOL.value,
+                    CollectionNames.AGENT_MCP_SERVERS.value,
+                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                    CollectionNames.MCP_SERVER_HAS_TOOL.value,
                     CollectionNames.AGENT_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_SKILL.value,
@@ -1662,6 +1915,14 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
 
+            # Step 3.5: Create attached MCP servers and their tools (within same transaction)
+            if mcp_servers_with_tools:
+                created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
+                    agent_key, mcp_servers_with_tools, user_context, user_key,
+                    graph_provider, logger, transaction=transaction_id,
+                )
+                logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
+
             # Step 4: Create knowledge sources (within same transaction)
             if knowledge_sources:
                 knowledge_mapping = {}
@@ -1753,6 +2014,7 @@ async def create_agent(request: Request) -> JSONResponse:
         response_agent = {
             **agent,
             "toolsets": created_toolsets,
+            "mcpServers": created_mcp_servers,
             "knowledge": created_knowledge,
             "skills": [{"name": n} for n in linked_skills],
         }
@@ -1761,8 +2023,9 @@ async def create_agent(request: Request) -> JSONResponse:
         )
         response_agent["createdBy"] = user_context["userId"]
 
-        status = "partial_success" if failed_toolsets else "success"
-        message = f"Agent created with warnings: {len(failed_toolsets)} toolset(s) failed" if failed_toolsets else "Agent created successfully"
+        all_failed = failed_toolsets + failed_mcp_servers
+        status = "partial_success" if all_failed else "success"
+        message = f"Agent created with warnings: {len(all_failed)} attachment(s) failed" if all_failed else "Agent created successfully"
 
         return JSONResponse(
             status_code=200,
@@ -1770,7 +2033,7 @@ async def create_agent(request: Request) -> JSONResponse:
                 "status": status,
                 "message": message,
                 "agent": response_agent,
-                "warnings": failed_toolsets if failed_toolsets else None,
+                "warnings": all_failed if all_failed else None,
             }
         )
 
@@ -2311,6 +2574,183 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
+
+        # Update attached MCP servers if provided in request (even if empty array - means detach all)
+        if "mcpServers" in body:
+            # Parse first to validate (duplicate typeId) before deletion
+            mcp_servers_with_tools = _parse_mcp_servers(body.get("mcpServers", []))
+
+            graph_provider = services["graph_provider"]
+            transaction_id = None
+            try:
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                        CollectionNames.AGENT_MCP_SERVERS.value,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        CollectionNames.AGENT_TOOLS.value
+                    ]
+                )
+                logger.debug(f"Started transaction for MCP server update on agent {agent_id}")
+
+                agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+
+                # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
+
+                mcp_server_edges = await graph_provider.get_edges_from_node(
+                    agent_full_id,
+                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                    transaction=transaction_id
+                )
+
+                mcp_server_keys = []
+                mcp_server_full_ids = []
+                for edge in mcp_server_edges:
+                    mcp_server_full_id = edge.get("_to")
+                    if mcp_server_full_id:
+                        mcp_server_full_ids.append(mcp_server_full_id)
+                        parts = mcp_server_full_id.split("/", 1)
+                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                            mcp_server_keys.append(parts[1])
+
+                logger.debug(f"Found {len(mcp_server_keys)} MCP server(s) connected to agent {agent_id}")
+
+                all_tool_keys = []
+                all_tool_full_ids = []
+                for mcp_server_full_id in mcp_server_full_ids:
+                    tool_edges = await graph_provider.get_edges_from_node(
+                        mcp_server_full_id,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        transaction=transaction_id
+                    )
+
+                    for edge in tool_edges:
+                        tool_full_id = edge.get("_to")
+                        if tool_full_id:
+                            all_tool_full_ids.append(tool_full_id)
+                            parts = tool_full_id.split("/", 1)
+                            if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
+                                all_tool_keys.append(parts[1])
+
+                logger.debug(f"Found {len(all_tool_keys)} tool(s) connected to MCP servers")
+
+                # ========== PHASE 2: DELETE FROM LEAVES TO ROOT ==========
+
+                # Step 1: Delete mcpServer -> tool edges (MCP_SERVER_HAS_TOOL)
+                total_tool_edges_deleted = 0
+                for tool_full_id in all_tool_full_ids:
+                    count = await graph_provider.delete_all_edges_for_node(
+                        tool_full_id,
+                        CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                        transaction=transaction_id
+                    )
+                    total_tool_edges_deleted += count
+
+                logger.debug(f"Deleted {total_tool_edges_deleted} mcpServer->tool edge(s)")
+
+                # Step 2: Delete tool nodes (now safe, all their edges are gone)
+                deleted_tool_nodes = 0
+                if all_tool_keys:
+                    result = await graph_provider.delete_nodes(
+                        all_tool_keys,
+                        CollectionNames.AGENT_TOOLS.value,
+                        transaction=transaction_id
+                    )
+                    deleted_tool_nodes = len(all_tool_keys) if result else 0
+                    logger.debug(f"Deleted {deleted_tool_nodes} tool node(s)")
+
+                # Step 3: Delete agent -> mcpServer edges (AGENT_HAS_MCP_SERVER)
+                total_mcp_server_edges_deleted = 0
+                for mcp_server_full_id in mcp_server_full_ids:
+                    count = await graph_provider.delete_all_edges_for_node(
+                        mcp_server_full_id,
+                        CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                        transaction=transaction_id
+                    )
+                    total_mcp_server_edges_deleted += count
+
+                logger.debug(f"Deleted {total_mcp_server_edges_deleted} agent->mcpServer edge(s)")
+
+                # Step 4: Delete mcpServer nodes (now safe, all their edges are gone)
+                deleted_mcp_server_nodes = 0
+                if mcp_server_keys:
+                    result = await graph_provider.delete_nodes(
+                        mcp_server_keys,
+                        CollectionNames.AGENT_MCP_SERVERS.value,
+                        transaction=transaction_id
+                    )
+                    deleted_mcp_server_nodes = len(mcp_server_keys) if result else 0
+                    logger.debug(f"Deleted {deleted_mcp_server_nodes} MCP server node(s)")
+
+                logger.info(
+                    f"Deleted for agent {agent_id}: "
+                    f"{deleted_tool_nodes} tool(s), {deleted_mcp_server_nodes} MCP server(s), "
+                    f"{total_tool_edges_deleted + total_mcp_server_edges_deleted} edge(s) total"
+                )
+
+                # Commit transaction after deletion
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
+                logger.debug(f"Committed transaction for MCP server deletion on agent {agent_id}")
+
+            except Exception as e:
+                if transaction_id:
+                    try:
+                        await graph_provider.rollback_transaction(transaction_id)
+                        logger.warning(f"Aborted transaction for MCP server update on agent {agent_id}")
+                    except Exception as abort_error:
+                        logger.error(f"Failed to abort transaction: {abort_error}")
+                logger.error(f"Failed to delete MCP server nodes and edges for agent {agent_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to delete MCP server nodes and edges: {str(e)}"
+                ) from e
+
+            # Create new MCP server nodes, tool nodes, and edges only if there are servers to attach.
+            # Runs in its own transaction (the delete transaction above is already committed) so a
+            # failure partway through rolls back rather than leaving orphaned MCP server/tool nodes
+            # with no AGENT_HAS_MCP_SERVER edge linking them to the agent.
+            if mcp_servers_with_tools:
+                create_transaction_id = None
+                try:
+                    create_transaction_id = await graph_provider.begin_transaction(
+                        read=[],
+                        write=[
+                            CollectionNames.AGENT_HAS_MCP_SERVER.value,
+                            CollectionNames.AGENT_MCP_SERVERS.value,
+                            CollectionNames.MCP_SERVER_HAS_TOOL.value,
+                            CollectionNames.AGENT_TOOLS.value
+                        ]
+                    )
+                    created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
+                        agent_id, mcp_servers_with_tools, user_context, user_key,
+                        services["graph_provider"], logger, transaction=create_transaction_id
+                    )
+                    if failed_mcp_servers:
+                        logger.warning(
+                            f"Agent {agent_id}: {len(failed_mcp_servers)} MCP server(s) failed to create: {failed_mcp_servers}"
+                        )
+                    await graph_provider.commit_transaction(create_transaction_id)
+                    create_transaction_id = None
+                    logger.info(f"Created {len(created_mcp_servers)} MCP server(s) for agent {agent_id}")
+                except Exception as e:
+                    if create_transaction_id:
+                        try:
+                            await graph_provider.rollback_transaction(create_transaction_id)
+                            logger.warning(f"Aborted transaction for MCP server creation on agent {agent_id}")
+                        except Exception as abort_error:
+                            logger.error(f"Failed to abort transaction: {abort_error}")
+                    logger.error(
+                        f"Failed to create MCP server edges for agent {agent_id} after deletion: {e}",
+                        exc_info=True
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to create MCP server edges: {str(e)}"
+                    ) from e
+            else:
+                logger.info(f"All MCP servers detached for agent {agent_id}")
 
         # Update knowledge if provided in request (even if empty array - means delete all)
         if "knowledge" in body:
@@ -2963,6 +3403,51 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filtered_toolsets.append(toolset_copy)
             agent_toolsets = filtered_toolsets
 
+        # Get and filter attached MCP servers — same `chat_query.tools` filter,
+        # applied to MCP tool `fullName`s (mirrors the toolset filter above).
+        # Runs for BOTH custom agents (`agent.mcpServers` from the graph) and the
+        # assistant/placeholder agent (`agent.mcpServers` from
+        # `get_authenticated_mcp_servers`, populated in `get_assistant_agent`).
+        # Gated on the `ENABLE_MCP` platform flag: when disabled, this is forced
+        # empty so the "LOAD MCP SERVER CONFIGS" block below becomes a no-op and
+        # no MCP tool ever reaches the agent loop, regardless of what's attached.
+        from app.agents.mcp.service import is_mcp_enabled
+
+        agent_mcp_servers = (
+            agent.get("mcpServers", [])
+            if await is_mcp_enabled(config_service)
+            else []
+        )
+        if chat_query.tools is not None:
+            from app.agents.mcp.service import match_enabled_tools_for_mcp_server
+
+            enabled_tools_set = set(chat_query.tools)
+            filtered_mcp_servers = []
+            for mcp_server in agent_mcp_servers:
+                server_tools = mcp_server.get("tools")
+                if server_tools is None:
+                    # Assistant/placeholder path (`get_authenticated_mcp_servers`) never
+                    # populates "tools" — match selected `mcp_{type}_*` names by type
+                    # prefix instead of keeping every authenticated server (which would
+                    # let live discovery expose tools the chat filter excluded).
+                    matched_tools = match_enabled_tools_for_mcp_server(
+                        mcp_server, enabled_tools_set,
+                    )
+                    if matched_tools:
+                        mcp_server_copy = dict(mcp_server)
+                        mcp_server_copy["tools"] = matched_tools
+                        filtered_mcp_servers.append(mcp_server_copy)
+                    continue
+                mcp_server_copy = dict(mcp_server)
+                filtered_tools = [
+                    tool for tool in server_tools
+                    if tool.get("fullName") in enabled_tools_set
+                ]
+                if filtered_tools:
+                    mcp_server_copy["tools"] = filtered_tools
+                    filtered_mcp_servers.append(mcp_server_copy)
+            agent_mcp_servers = filtered_mcp_servers
+
         # ============================================================================
         # LOAD TOOLSET CONFIGS (SECURITY-CRITICAL)
         # ============================================================================
@@ -3090,6 +3575,115 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
             agent_toolsets = configured_toolsets
 
+        # ============================================================================
+        # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
+        # ============================================================================
+        # Mirrors the toolset config loading immediately above: same
+        # `credential_lookup_id` (agentKey for service accounts, executing user
+        # otherwise), same hard-block-on-unauthenticated policy. Unlike toolset
+        # configs, an MCP server also needs its org-level instance definition
+        # (transport/url/authMode) — never stored on the graph node
+        # (`_create_mcp_server_edges` avoids secrets there) — so each fetch is a
+        # two-step: `get_instance` then `resolve_effective_user_auth`.
+        # ============================================================================
+        mcp_server_configs: dict[str, dict[str, Any]] = {}  # SENSITIVE: contains credentials
+
+        named_mcp_servers = [m for m in agent_mcp_servers if m.get("instanceId")]
+        if named_mcp_servers:
+            import asyncio as _asyncio  # noqa: F401 — may not have run yet if named_toolsets was empty above
+
+            from app.agents.mcp import service as mcp_service
+
+            async def _fetch_mcp_server_config(
+                mcp_server: dict,
+            ) -> tuple[dict, dict[str, Any] | None, dict[str, Any] | None]:
+                """Return (mcp_server, instance_or_None, effective_auth) without raising."""
+                instance_id = mcp_server["instanceId"]
+                try:
+                    instance = await mcp_service.get_instance(org_key, instance_id, services["config_service"])
+                    if not instance:
+                        return mcp_server, None, None
+                    effective_auth = await mcp_service.resolve_effective_user_auth(
+                        instance, credential_lookup_id, services["config_service"],
+                    )
+                    return mcp_server, instance, effective_auth
+                except Exception as exc:
+                    logger.warning(f"Failed to load MCP server config for instance '{instance_id}': {exc}")
+                    return mcp_server, None, None
+
+            mcp_fetch_results = await _asyncio.gather(*[_fetch_mcp_server_config(m) for m in named_mcp_servers])
+
+            configured_mcp_servers = []
+            missing_mcp_server_display_names: list[str] = []          # instance no longer exists
+            unauthenticated_mcp_server_display_names: list[str] = []  # instance exists, auth incomplete
+
+            for mcp_server, instance, effective_auth in mcp_fetch_results:
+                instance_id = mcp_server["instanceId"]
+                display_name = mcp_server.get("displayName") or mcp_server.get("name") or instance_id
+
+                if instance is None:
+                    missing_mcp_server_display_names.append(display_name)
+                    logger.warning(f"MCP server instance '{instance_id}' not found for agent {agent_id}.")
+                    continue
+
+                if mcp_service.is_effective_auth_authenticated(effective_auth):
+                    # `ownerId` is `credential_lookup_id` (mirrors the toolset config
+                    # loading above) — the agent-loop runtime's `MCPSessionManager`
+                    # needs it to persist a refreshed OAuth token back to the SAME
+                    # etcd credential record this was resolved from (see
+                    # `app/agents/agent_loop/mcp_session.py`).
+                    mcp_server_configs[instance_id] = {
+                        "instance": instance, "auth": effective_auth or {}, "ownerId": credential_lookup_id,
+                    }
+                    configured_mcp_servers.append(mcp_server)
+                else:
+                    unauthenticated_mcp_server_display_names.append(display_name)
+                    cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+                    logger.warning(
+                        f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
+                        f"for {cred_owner}."
+                    )
+
+            if missing_mcp_server_display_names or unauthenticated_mcp_server_display_names:
+                problem_parts = []
+                if missing_mcp_server_display_names:
+                    missing_list = ", ".join(f"'{n}'" for n in missing_mcp_server_display_names)
+                    problem_parts.append(f"not found: {missing_list}")
+                if unauthenticated_mcp_server_display_names:
+                    unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_mcp_server_display_names)
+                    problem_parts.append(f"not authenticated: {unauth_list}")
+
+                if is_service_account:
+                    error_message = (
+                        f"This service account agent requires the following MCP servers to be configured — "
+                        f"{'; '.join(problem_parts)}. "
+                        "Please configure the agent's MCP server credentials in Agent Builder."
+                    )
+                else:
+                    error_message = (
+                        f"This agent requires the following MCP servers to be set up — "
+                        f"{'; '.join(problem_parts)}. "
+                        "Please connect them in Workspace → MCP Servers before using this agent."
+                    )
+                logger.info(
+                    f"Blocking agent {agent_id} execution "
+                    f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
+                    f"MCP server issue(s) — {'; '.join(problem_parts)}"
+                )
+
+                async def _mcp_server_config_error_stream() -> AsyncGenerator[str, None]:
+                    if protocol == "agui":
+                        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+
+                        evt = frame(AGUIEventType.RUN_ERROR, message=error_message, code="mcp_server_config_missing")
+                        yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+                    else:
+                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'mcp_server_config_missing'})}\n\n"
+
+                return StreamingResponse(_mcp_server_config_error_stream(), media_type="text/event-stream")
+
+            agent_mcp_servers = configured_mcp_servers
+
         # Build filters and knowledge from agent's knowledge sources
         agent_knowledge = agent.get("knowledge", [])
         filters = chat_query.filters.copy() if chat_query.filters else {}
@@ -3197,6 +3791,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
+            "mcpServers": agent_mcp_servers,
+            "mcpServerConfigs": mcp_server_configs,
             "knowledge": agent_knowledge,
             "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
             "connector_configs": connector_configs,
@@ -3271,6 +3867,7 @@ async def get_assistant_agent(
     Returns:
         Dictionary containing assistant agent configuration with toolsets and knowledge sources
     """
+    from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
     from app.api.routes.toolsets import get_authenticated_toolsets
 
     # Get authenticated toolsets using the helper method
@@ -3284,6 +3881,24 @@ async def get_assistant_agent(
     except Exception as e:
         logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
         authenticated_toolsets_list = []
+
+    # Get authenticated MCP server instances — parallel to toolsets above, no
+    # graph attachment required (see `get_authenticated_mcp_servers` docstring).
+    # Skipped entirely when MCP is disabled — the chat handler forces
+    # `agent_mcp_servers` empty regardless, so this would just be a wasted
+    # etcd/graph round-trip on every assistant chat.
+    if await is_mcp_enabled(config_service):
+        try:
+            authenticated_mcp_servers_list = await get_authenticated_mcp_servers(
+                owner_id=user_id,
+                org_id=org_id,
+                config_service=config_service,
+            )
+        except Exception as e:
+            logger.error(f"Error fetching authenticated MCP servers: {e}", exc_info=True)
+            authenticated_mcp_servers_list = []
+    else:
+        authenticated_mcp_servers_list = []
 
     # Get all accessible connectors for knowledge sources
     knowledge_sources = []
@@ -3367,5 +3982,6 @@ async def get_assistant_agent(
         "isActive": True,
         "tags": ["assistant", "general-purpose"],
         "toolsets": authenticated_toolsets_list,
+        "mcpServers": authenticated_mcp_servers_list,
         "knowledge": knowledge_sources,
     }

@@ -415,7 +415,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Ensure directory ends with appropriate separator
         prefix = directory if directory.endswith("/") else f"{directory}/"
         pattern = f"{self.key_prefix}{prefix}*"
-        logger.debug("Listing keys in directory: %s (pattern: %s)", directory, pattern)
+        logger.debug("Listing keys in directory")
 
         try:
 
@@ -429,7 +429,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error("Failed to list keys in directory: %s", str(e))
+            logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 
     async def close(self) -> None:

@@ -17,6 +17,7 @@ import { buildChatHref } from '@/chat/build-chat-url';
 import {
   AgentsApi,
   buildAgentChatToolGroups,
+  buildAgentChatMcpGroups,
   extractAgentKnowledgeDefaults,
   extractAgentKnowledgeConnectors,
   extractAgentKnowledgeCollectionRows,
@@ -373,6 +374,7 @@ function ChatContent() {
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
           const toolGroups = buildAgentChatToolGroups(agent);
+          const mcpGroups = buildAgentChatMcpGroups(agent);
           const deprecatedToolNames = (agent?.toolsets ?? [])
             .flatMap((ts) => ts.tools ?? [])
             .filter((tool) => tool.deprecated === true)
@@ -380,6 +382,7 @@ function ChatContent() {
           store.hydrateAgentChatResources({
             toolCatalogFullNames: toolFullNames,
             toolGroups,
+            mcpGroups,
             connectors,
             kbIds,
             knowledgeCollectionRows: collectionRows,

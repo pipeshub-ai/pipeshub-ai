@@ -83,6 +83,12 @@ export type ConnectorType =
   | 'clickup'
   | 'redshift'
   | 'lumos'
+  // MCP / AI tools
+  | 'exa'
+  | 'atlassian'
+  | 'discord'
+  | 'posthog'
+  | 'brave'
   // Generic / Fallback
   | 'web'
   | 'generic';
@@ -169,6 +175,12 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'clickup': { svg: svg('clickup'), fallback: 'task_alt' },
   'redshift': { svg: svg('redshift'), fallback: 'storage' },
   'lumos': { svg: svg('lumos'), fallback: 'manage_accounts' },
+  // MCP / AI tools
+  'exa': { svg: svg('exa'), fallback: 'travel_explore' },
+  'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
+  'discord': { svg: null, fallback: 'forum' },
+  'posthog': { svg: null, fallback: 'insights' },
+  'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   'generic': { svg: svg('default'), fallback: 'extension' },
@@ -219,6 +231,10 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   // Media & Other
   ['youtube', 'youtube'], ['rss', 'rss'],
   ['seek', 'seek'], ['frame', 'frame'], ['vector', 'vector'],
+  // MCP / AI tools
+  ['atlassian', 'atlassian'], ['rovo', 'atlassian'],
+  ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
+  ['brave', 'brave'],
   // Broad fallbacks (last — only match if nothing specific matched)
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
   ['azure', 'azure-blob'], ['drive', 'google-drive'],
