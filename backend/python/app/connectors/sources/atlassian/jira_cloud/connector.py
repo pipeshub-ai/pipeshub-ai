@@ -3422,6 +3422,10 @@ class JiraConnector(BaseConnector):
             # recreated even for unchanged issues; _process_record is idempotent).
             if not is_issue_changed and not is_new_project:
                 skipped_unchanged_count += 1
+                # Count toward Scanned/Unchanged so Current sync explains the gap
+                # vs lifetime Records Status Completed.
+                if existing_record is not None:
+                    await self.data_entities_processor._track_unchanged(existing_record)
                 continue
 
             # Set parent relationships and record group

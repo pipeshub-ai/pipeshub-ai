@@ -195,7 +195,7 @@ async def get_knowledge_hub_root_nodes(
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
-    include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
+    include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions, indexingRollup"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """
@@ -256,7 +256,7 @@ async def get_knowledge_hub_children_nodes(
     updated_at: Optional[str] = Query(None, description="Updated date range: gte:timestamp,lte:timestamp"),
     size: Optional[str] = Query(None, description="Size range: gte:bytes,lte:bytes"),
     flattened: Optional[bool] = Query(None, description="Force flattened/recursive search (true) or direct listing (false). When omitted, computed from which filters are present."),
-    include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions"),
+    include: Optional[str] = Query(None, description="Comma-separated includes: breadcrumbs, counts, availableFilters, permissions, indexingRollup"),
     knowledge_hub_service: KnowledgeHubService = Depends(get_knowledge_hub_service),
 ) -> Union[KnowledgeHubNodesResponse, Dict[str, Any]]:
     """

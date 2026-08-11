@@ -42,6 +42,7 @@ export function nodeToTreeNode(
     extension: node.extension,
     mimeType: node.mimeType,
     indexingStatus: node.indexingStatus,
+    isInternal: node.isInternal,
   };
 }
 
