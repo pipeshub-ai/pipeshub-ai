@@ -5379,18 +5379,21 @@ components:
       additionalProperties: false
       description: |
         Per-request agent capability toggles. Only meaningful when `chatMode`
-        selects an agent mode; ignored otherwise. Omitting the object, or
-        omitting any individual field, keeps that capability enabled — the
-        backend treats a missing flag as `true`.
+        selects an agent mode; ignored otherwise. Each field falls back to its
+        own `default` below when omitted — a missing flag is not uniformly
+        `true`. Omitting the whole object applies every default.
       properties:
         internalSearch:
           type: boolean
+          default: true
           description: Whether the agent may search internal knowledge bases for this turn.
         webSearch:
           type: boolean
+          default: true
           description: Whether the agent may perform web search for this turn.
         deepSearch:
           type: boolean
+          default: false
           description: Whether the agent may use deeper, higher-latency retrieval for this turn.
 
     Filters:
