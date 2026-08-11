@@ -1201,6 +1201,27 @@ class TestInvokeWithStructuredOutputAndReflection:
         )
         assert result is None
 
+    async def test_recovers_json_retained_by_eager_pydantic_error(self):
+        """An eager parser exception must not hide recoverable raw content."""
+        from langchain_openai import ChatOpenAI
+
+        with pytest.raises(ValueError) as error_info:
+            self.SimpleSchema.model_validate_json(
+                '{{"answer": "recovered", "confidence": "High"}'
+            )
+
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(side_effect=error_info.value)
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema
+        )
+
+        assert result is not None
+        assert result.answer == "recovered"
+
     async def test_parse_failure_then_reflection_success(self):
         """Initial parse fails, but reflection succeeds."""
         from langchain_openai import ChatOpenAI
