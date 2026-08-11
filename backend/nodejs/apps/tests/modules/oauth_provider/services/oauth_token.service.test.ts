@@ -60,7 +60,7 @@ describe('OAuthTokenService', () => {
     } as any
 
     it('should generate access token without refresh token', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const result = await service.generateTokens(
         mockApp,
@@ -77,7 +77,7 @@ describe('OAuthTokenService', () => {
     })
 
     it('should generate access and refresh tokens when offline_access scope present', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
       sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
       const userId = new Types.ObjectId().toString()
@@ -94,7 +94,7 @@ describe('OAuthTokenService', () => {
     })
 
     it('should not generate refresh token without offline_access scope', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const userId = new Types.ObjectId().toString()
       const result = await service.generateTokens(
@@ -109,7 +109,7 @@ describe('OAuthTokenService', () => {
     })
 
     it('should not generate refresh token without userId', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const result = await service.generateTokens(
         mockApp,
@@ -141,6 +141,34 @@ describe('OAuthTokenService', () => {
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+    })
+
+    it('should verify a personal access token carrying the phpat_ prefix', async () => {
+      const payload = {
+        userId: 'user-1',
+        orgId: 'org-1',
+        iss: testIssuer,
+        scope: 'org:read',
+        client_id: 'client-1',
+        tokenType: 'oauth',
+        jti: 'jti-1',
+      }
+      const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
+
+      const findOneStub = sinon
+        .stub(OAuthAccessToken, 'findOne')
+        .resolves({ isRevoked: false } as any)
+
+      const result = await service.verifyAccessToken(`phpat_${token}`)
+      expect(result.userId).to.equal('user-1')
+
+      // The prefix must never leak into the hash lookup — a phpat_-prefixed
+      // token has to resolve to the same stored hash as its bare JWT.
+      const bareResult = await service.verifyAccessToken(token)
+      expect(findOneStub.firstCall.args[0].tokenHash).to.deep.equal(
+        findOneStub.secondCall.args[0].tokenHash,
+      )
+      expect(bareResult.userId).to.equal('user-1')
     })
 
     it('should throw InvalidTokenError for refresh token used as access token', async () => {
@@ -412,6 +440,312 @@ describe('OAuthTokenService', () => {
     })
   })
 
+  describe('generateTokens with opts', () => {
+    const mockApp = {
+      clientId: 'client-pat',
+      accessTokenLifetime: 3600,
+      refreshTokenLifetime: 2592000,
+      createdBy: new Types.ObjectId(),
+    } as any
+
+    it('overrides the app accessTokenLifetime when accessTokenLifetimeOverrideSeconds is set', async () => {
+      const createStub = sinon
+        .stub(OAuthAccessToken, 'create')
+        .resolves({ _id: new Types.ObjectId() } as any)
+
+      const oneYearSeconds = 365 * 86400
+      const result = await service.generateTokens(
+        mockApp,
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+        ['org:read'],
+        false,
+        undefined,
+        undefined,
+        { accessTokenLifetimeOverrideSeconds: oneYearSeconds },
+      )
+
+      expect(result.expiresIn).to.equal(oneYearSeconds)
+      const decoded = jwt.decode(result.accessToken) as { exp: number; iat: number }
+      expect(decoded.exp - decoded.iat).to.equal(oneYearSeconds)
+      // App's own accessTokenLifetime (3600) must not leak in when overridden.
+      expect(result.expiresIn).to.not.equal(mockApp.accessTokenLifetime)
+      void createStub
+    })
+
+    it('passes opts.name through to the stored OAuthAccessToken document', async () => {
+      const createStub = sinon
+        .stub(OAuthAccessToken, 'create')
+        .resolves({ _id: new Types.ObjectId() } as any)
+
+      await service.generateTokens(
+        mockApp,
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+        ['org:read'],
+        false,
+        undefined,
+        undefined,
+        { name: 'my laptop' },
+      )
+
+      expect(createStub.firstCall.args[0]).to.include({ name: 'my laptop' })
+    })
+
+    it('returns accessTokenId matching the created document id', async () => {
+      const fakeId = new Types.ObjectId()
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: fakeId } as any)
+
+      const result = await service.generateTokens(
+        mockApp,
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+        ['org:read'],
+        false,
+      )
+
+      expect(result.accessTokenId).to.equal(fakeId.toString())
+    })
+  })
+
+  describe('listAccessTokensForUser', () => {
+    it('scopes the query by both clientId and userId, and maps name/lastUsedAt', async () => {
+      const userId = new Types.ObjectId()
+      const now = new Date()
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          {
+            _id: new Types.ObjectId(),
+            userId,
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 3600000),
+            isRevoked: false,
+            name: 'ci token',
+            lastUsedAt: now,
+          },
+        ]),
+      }
+      const findStub = sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+
+      const tokens = await service.listAccessTokensForUser('client-1', userId.toString())
+
+      expect(findStub.firstCall.args[0]).to.deep.include({
+        clientId: { $eq: 'client-1' },
+      })
+      expect(tokens).to.have.lengthOf(1)
+      expect(tokens[0].name).to.equal('ci token')
+      expect(tokens[0].lastUsedAt).to.equal(now)
+    })
+  })
+
+  describe('listAccessTokensForClientPaginated', () => {
+    it('applies skip/limit from page/limit and returns the total count', async () => {
+      const now = new Date()
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([
+          {
+            _id: new Types.ObjectId(),
+            userId: new Types.ObjectId(),
+            scopes: ['kb:read'],
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 3600000),
+            isRevoked: false,
+            name: 'tok',
+          },
+        ]),
+      }
+      const findStub = sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(150)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 2, 50)
+
+      expect(findStub.firstCall.args[0]).to.deep.include({ clientId: { $eq: 'client-1' } })
+      expect(chainable.skip.calledWith(50)).to.be.true
+      expect(chainable.limit.calledWith(50)).to.be.true
+      expect(result.total).to.equal(150)
+      expect(result.tokens).to.have.lengthOf(1)
+    })
+
+    it('does not cap at a fixed 100 rows the way listTokensForApp does — total reflects the full count', async () => {
+      const chainable = {
+        sort: sinon.stub().returnsThis(),
+        skip: sinon.stub().returnsThis(),
+        limit: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves([]),
+      }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+      sinon.stub(OAuthAccessToken, 'countDocuments').resolves(342)
+
+      const result = await service.listAccessTokensForClientPaginated('client-1', 1, 100)
+
+      expect(result.total).to.equal(342)
+    })
+  })
+
+  describe('revokeAccessTokenById', () => {
+    it('returns true and scopes the filter by id/clientId/userId when a token is revoked', async () => {
+      const updateStub = sinon
+        .stub(OAuthAccessToken, 'updateOne')
+        .resolves({ modifiedCount: 1 } as any)
+
+      const id = new Types.ObjectId().toString()
+      const userId = new Types.ObjectId().toString()
+      const result = await service.revokeAccessTokenById(id, 'client-1', userId, userId, 'no longer needed')
+
+      expect(result).to.be.true
+      const filter = updateStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.have.property('clientId')
+      expect(filter).to.have.property('userId')
+      expect(filter).to.have.property('isRevoked')
+    })
+
+    it('returns false when no document matched (not found, not owned, or already revoked)', async () => {
+      sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 0 } as any)
+
+      const result = await service.revokeAccessTokenById(
+        new Types.ObjectId().toString(),
+        'client-1',
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+    })
+
+    it('returns false for a malformed id without touching the database', async () => {
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne')
+
+      const result = await service.revokeAccessTokenById(
+        'not-a-valid-object-id',
+        'client-1',
+        new Types.ObjectId().toString(),
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+      expect(updateStub.called).to.be.false
+    })
+  })
+
+  describe('revokeAccessTokenByIdForClient', () => {
+    it('returns true and scopes the filter by id/clientId only, not userId', async () => {
+      const updateStub = sinon
+        .stub(OAuthAccessToken, 'updateOne')
+        .resolves({ modifiedCount: 1 } as any)
+
+      const id = new Types.ObjectId().toString()
+      const adminId = new Types.ObjectId().toString()
+      const result = await service.revokeAccessTokenByIdForClient(
+        id,
+        'client-1',
+        adminId,
+        'departed employee',
+      )
+
+      expect(result).to.be.true
+      const filter = updateStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.have.property('clientId')
+      expect(filter).to.have.property('isRevoked')
+      // Deliberately not scoped by userId — an admin revoking must be able
+      // to target a token owned by someone else.
+      expect(filter).to.not.have.property('userId')
+      const update = updateStub.firstCall.args[1] as Record<string, unknown>
+      expect(update.revokedBy).to.deep.equal(new Types.ObjectId(adminId))
+    })
+
+    it('returns false when no document matched', async () => {
+      sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 0 } as any)
+
+      const result = await service.revokeAccessTokenByIdForClient(
+        new Types.ObjectId().toString(),
+        'client-1',
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+    })
+
+    it('returns false for a malformed id without touching the database', async () => {
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne')
+
+      const result = await service.revokeAccessTokenByIdForClient(
+        'not-a-valid-object-id',
+        'client-1',
+        new Types.ObjectId().toString(),
+      )
+
+      expect(result).to.be.false
+      expect(updateStub.called).to.be.false
+    })
+  })
+
+  describe('touchLastUsed via verifyAccessToken', () => {
+    const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve))
+
+    const signValidToken = () =>
+      jwt.sign(
+        {
+          userId: 'user-1',
+          orgId: 'org-1',
+          iss: testIssuer,
+          scope: 'org:read',
+          client_id: 'client-1',
+          tokenType: 'oauth',
+          jti: 'jti-1',
+        },
+        testSecret,
+        { algorithm: 'HS256' },
+      )
+
+    it('updates lastUsedAt when the stored token has never been touched', async () => {
+      const tokenDoc = { _id: new Types.ObjectId(), isRevoked: false, lastUsedAt: undefined }
+      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+      await service.verifyAccessToken(signValidToken())
+      await flushMicrotasks()
+
+      expect(updateStub.calledOnce).to.be.true
+      expect(updateStub.firstCall.args[0]).to.deep.equal({ _id: tokenDoc._id })
+    })
+
+    it('skips the update when lastUsedAt is within the throttle window', async () => {
+      const tokenDoc = {
+        _id: new Types.ObjectId(),
+        isRevoked: false,
+        lastUsedAt: new Date(Date.now() - 60 * 1000), // 1 minute ago
+      }
+      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+      await service.verifyAccessToken(signValidToken())
+      await flushMicrotasks()
+
+      expect(updateStub.called).to.be.false
+    })
+
+    it('updates lastUsedAt again once the throttle window has passed', async () => {
+      const tokenDoc = {
+        _id: new Types.ObjectId(),
+        isRevoked: false,
+        lastUsedAt: new Date(Date.now() - 6 * 60 * 1000), // 6 minutes ago
+      }
+      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+      await service.verifyAccessToken(signValidToken())
+      await flushMicrotasks()
+
+      expect(updateStub.calledOnce).to.be.true
+    })
+  })
+
   describe('decodeToken', () => {
     it('should decode a valid token without verification', () => {
       const token = jwt.sign({ userId: 'user-1' }, 'some-secret')
@@ -474,7 +808,7 @@ describe('OAuthTokenService - branch coverage', () => {
   // =========================================================================
   describe('generateTokens', () => {
     it('should generate access token without refresh token when includeRefreshToken is false', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const app = {
         clientId: 'client-1',
@@ -491,7 +825,7 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should generate refresh token when includeRefreshToken is true, userId exists, and scope includes offline_access', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
       sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
       const app = {
@@ -510,7 +844,7 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should NOT generate refresh token when userId is null', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const app = {
         clientId: 'client-1',
@@ -525,7 +859,7 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should NOT generate refresh token when scopes dont include offline_access', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const app = {
         clientId: 'client-1',
@@ -540,7 +874,7 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should use clientId as userId when userId is null (client_credentials)', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const app = {
         clientId: 'client-1',
@@ -556,7 +890,7 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should include fullName and accountType when provided', async () => {
-      sinon.stub(OAuthAccessToken, 'create').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
       const app = {
         clientId: 'client-1',

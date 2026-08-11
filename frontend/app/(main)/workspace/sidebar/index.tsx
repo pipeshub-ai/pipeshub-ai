@@ -31,6 +31,11 @@ const OVERVIEW_ITEMS: NavItem[] = [
 ];
 const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
   { icon: 'code', labelKey: 'workspace.sidebar.nav.oauth2', route: '/workspace/developer-settings/oauth2' },
+  {
+    icon: 'vpn_key',
+    labelKey: 'workspace.sidebar.nav.personalAccessTokens',
+    route: '/workspace/developer-settings/personal-access-tokens',
+  },
 ];
 
 const PEOPLE_SUB_ITEMS = [
