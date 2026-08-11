@@ -8567,6 +8567,46 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
+    McpServer:
+      type: object
+      additionalProperties: false
+      description: |
+        MCP server instance linked to an agent, as projected by the graph
+        store on `GET /agents/{agentKey}` and `GET /agents` — same shape as
+        `Toolset`. MCP server nodes carry no secrets, only the attach-time
+        snapshot of `instanceId`/`typeId`/`name`.
+      properties:
+        _key:
+          type: string
+          description: MCP server instance node key in the backing graph store.
+        name:
+          type: string
+          description: MCP server attachment name (attach-time snapshot).
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        typeId:
+          type: string
+          description: Catalog server type id, when this instance came from a registered template.
+        instanceId:
+          type: string
+          description: Admin-created MCP server instance id.
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+                description: Tool node key in the backing graph store.
+              name:
+                type: string
+              fullName:
+                type: string
+              description:
+                type: string
+
     AgentFilters:
       description: |
         Knowledge scope filter as stored on the graph edge. The Node `getAgent`
@@ -8725,6 +8765,13 @@ components:
             and optional `instanceName`.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent (GET /agents/{agentKey} graph
+            projection). Same shape/semantics as `toolsets`, keyed by `instanceId`.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
@@ -8821,6 +8868,7 @@ components:
         - shareWithOrg
         - knowledge
         - toolsets
+        - mcpServers
         - skills
         - can_view
         - can_share
@@ -8942,6 +8990,14 @@ components:
             for each agent on the returned page.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent. Same projection as
+            `GET /agents/{agentKey}`; the backend builds it from the graph
+            edges for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: |
@@ -8984,6 +9040,7 @@ components:
         - updatedAtTimestamp
         - shareWithOrg
         - toolsets
+        - mcpServers
         - knowledge
         - can_view
         - can_share
@@ -9343,6 +9400,42 @@ components:
           items:
             $ref: '#/components/schemas/AgentCreateResponseTool'
 
+    AgentCreateResponseMcpServerTool:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - fullName
+        - key
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        key:
+          type: string
+
+    AgentCreateResponseMcpServer:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - displayName
+        - key
+        - tools
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        key:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServerTool'
+
     AgentCreateResponseKnowledge:
       type: object
       additionalProperties: false
@@ -9397,6 +9490,7 @@ components:
         - updatedAtTimestamp
         - isDeleted
         - toolsets
+        - mcpServers
         - knowledge
         - skills
       properties:
@@ -9457,6 +9551,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentCreateResponseToolset'
+        mcpServers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServer'
         knowledge:
           type: array
           items:
