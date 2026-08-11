@@ -57,6 +57,14 @@ class TestZendeskResponse:
         assert resp.data is None
         assert resp.error is None
         assert resp.message is None
+        assert resp.status_code is None
+
+    def test_status_code_survives_serialization(self):
+        """Without the declared field Pydantic dropped it, leaving the retry path
+        unable to tell a retryable 429 from a fatal 401."""
+        resp = ZendeskResponse(success=False, error="Too Many Requests", status_code=429)
+        assert resp.to_dict()["status_code"] == 429
+        assert json.loads(resp.to_json())["status_code"] == 429
 
 
 # ---------------------------------------------------------------------------

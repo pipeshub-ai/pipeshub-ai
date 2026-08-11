@@ -302,7 +302,12 @@ class ZendeskConnector(BaseConnector):
         if not self.external_client or not self.data_source:
             raise RuntimeError("Zendesk data source is not initialized")
         if await self._oauth_token_rotated():
-            await self.init()
+            # init() reports failure by returning False; ignoring it would serve the
+            # client holding the superseded token and 401 on every following call.
+            if not await self.init():
+                raise RuntimeError(
+                    "Zendesk credentials rotated but the client could not be rebuilt"
+                )
         return self.data_source
 
     async def _oauth_token_rotated(self) -> bool:
@@ -335,7 +340,7 @@ class ZendeskConnector(BaseConnector):
         # unchanged records would then leave them orphaned — unreachable from the App and
         # counted as zero — so re-emit everything when the checkpoint is gone.
         sync_point = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
-        self._reemit_unchanged = not (sync_point or {}).get("lastEndTime")
+        self._reemit_unchanged = not sync_point.get("lastEndTime")
         if self._reemit_unchanged:
             self.logger.info("Zendesk: no sync point — re-emitting every record")
 
@@ -359,13 +364,14 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(group_record_groups)
         self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
-        org_user_groups = await self._fetch_organizations()
-        if org_user_groups and users_complete:
+        org_user_groups, orgs_complete = await self._fetch_organizations()
+        if org_user_groups and users_complete and orgs_complete:
             await self.data_entities_processor.on_new_user_groups(org_user_groups)
         elif org_user_groups:
             self.logger.error(
-                "Zendesk: skipping organization membership sync — the user export was "
-                "truncated and partial membership would revoke existing access"
+                "Zendesk: skipping organization membership sync — the %s export was "
+                "truncated and partial membership would revoke existing access",
+                "user" if not users_complete else "organization",
             )
         self.logger.info(f"Zendesk: synced {len(org_user_groups)} organizations")
 
@@ -388,9 +394,15 @@ class ZendeskConnector(BaseConnector):
         complete = True
 
         while True:
-            response = await datasource.incremental_users(start_time=start_time, cursor=cursor)
-            if not response.success:
-                self.logger.error(f"Zendesk incremental_users failed: {response.error}")
+            response = await self._call_incremental(
+                datasource.incremental_users,
+                "incremental_users",
+                start_time=start_time,
+                cursor=cursor,
+            )
+            if response is None or not response.success:
+                error = response.error if response else "retries exhausted"
+                self.logger.error(f"Zendesk incremental_users failed: {error}")
                 complete = False
                 break
             if not response.data:
@@ -501,20 +513,30 @@ class ZendeskConnector(BaseConnector):
 
         return record_groups, user_groups, memberships_complete
 
-    async def _fetch_organizations(self) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+    async def _fetch_organizations(self) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]], bool]:
         """Sync Zendesk organizations as user groups.
 
         Membership comes from the users already fetched — Zendesk has no bulk
         organization-membership endpoint. Not RecordGroups: nothing files a record
         under one, so they would render empty; tickets carry the org permission.
+
+        The second return value flags a truncated export: on_new_user_groups rebuilds
+        each group from scratch, so writing partial membership revokes real access.
         """
         datasource = await self._get_fresh_datasource()
         orgs_data: List[Dict[str, Any]] = []
         start_time = DEFAULT_INCREMENTAL_START_TIME
+        complete = True
         while True:
-            response = await datasource.incremental_organizations(start_time=start_time)
-            if not response.success:
-                self.logger.error(f"Zendesk incremental_organizations failed: {response.error}")
+            response = await self._call_incremental(
+                datasource.incremental_organizations,
+                "incremental_organizations",
+                start_time=start_time,
+            )
+            if response is None or not response.success:
+                error = response.error if response else "retries exhausted"
+                self.logger.error(f"Zendesk incremental_organizations failed: {error}")
+                complete = False
                 break
             if not response.data:
                 break
@@ -555,7 +577,7 @@ class ZendeskConnector(BaseConnector):
                 members_by_org.get(org_id, []),
             ))
 
-        return user_groups
+        return user_groups, complete
 
     async def _sync_tickets(self) -> int:
         if not self._is_indexing_enabled(IndexingFilterKey.TICKETS.value):
@@ -566,14 +588,19 @@ class ZendeskConnector(BaseConnector):
         start_time = await self._get_start_time()
         cursor: Optional[str] = None
         max_end_time = start_time
+        complete = True
         while True:
-            response = await datasource.incremental_tickets(
+            response = await self._call_incremental(
+                datasource.incremental_tickets,
+                "incremental_tickets",
                 start_time=start_time,
                 cursor=cursor,
                 include="users,groups,organizations",
             )
-            if not response.success:
-                self.logger.error(f"Zendesk incremental_tickets failed: {response.error}")
+            if response is None or not response.success:
+                error = response.error if response else "retries exhausted"
+                self.logger.error(f"Zendesk incremental_tickets failed: {error}")
+                complete = False
                 break
             if not response.data:
                 break
@@ -599,6 +626,15 @@ class ZendeskConnector(BaseConnector):
             if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
                 break
             cursor = next_cursor
+
+        # Advancing past a truncated export skips every ticket the failed pages held,
+        # permanently — the next run would start after tickets it never saw.
+        if not complete:
+            self.logger.error(
+                "Zendesk: ticket export truncated — leaving the sync point at %s so the "
+                "next run re-reads the missing window", start_time,
+            )
+            return synced
 
         now_seconds = get_epoch_timestamp_in_ms() // 1000
         max_end_time = min(max_end_time, now_seconds - INCREMENTAL_SAFETY_LAG_SECONDS)
@@ -1148,13 +1184,13 @@ class ZendeskConnector(BaseConnector):
             created_by,
         )
 
-    async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
+    async def _call_api(self, api_method: Any, **kwargs: Any) -> Any:
         """Re-raise a retryable status as the exception ``call_with_retry`` acts on.
 
         The data source folds HTTP errors into a ``ZendeskResponse`` instead of
         raising, so a 429 would otherwise never be retried.
         """
-        response = await api_method(page=page, per_page=PAGE_SIZE, **kwargs)
+        response = await api_method(**kwargs)
         status = response.status_code
         if not response.success and status in RETRYABLE_STATUS_CODES:
             request = httpx.Request("GET", getattr(api_method, "__name__", "zendesk"))
@@ -1164,6 +1200,25 @@ class ZendeskConnector(BaseConnector):
                 response=httpx.Response(status, request=request),
             )
         return response
+
+    async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
+        return await self._call_api(api_method, page=page, per_page=PAGE_SIZE, **kwargs)
+
+    async def _call_incremental(self, api_method: Any, label: str, **kwargs: Any) -> Any:
+        """Incremental exports are capped at 10 req/min, so 429s are routine here.
+
+        Returns None once retries are exhausted; the caller must then treat the
+        export as truncated rather than as a complete result set.
+        """
+        try:
+            return await call_with_retry(
+                partial(self._call_api, api_method, **kwargs),
+                logger=self.logger,
+                label=f"zendesk/{label}",
+            )
+        except httpx.HTTPStatusError as e:
+            self.logger.error(f"Zendesk {label} gave up after retries: {e}")
+            return None
 
     async def _fetch_paginated_list(self, api_method: Any, key: str, **kwargs: Any) -> List[Dict[str, Any]]:
         items, _ = await self._fetch_paginated_list_checked(api_method, key, **kwargs)
