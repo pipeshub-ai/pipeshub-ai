@@ -313,3 +313,270 @@ class TestStartStop:
         assert service._background_tasks == []
         await asyncio.sleep(0)  # let cancellation propagate
         assert all(task.cancelled() or task.done() for task in tasks)
+
+
+class TestRefreshAllTokensInternal:
+    @pytest.mark.asyncio
+    async def test_list_keys_failure_is_swallowed(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
+        await service._refresh_all_tokens_internal()  # no raise
+
+    @pytest.mark.asyncio
+    async def test_skips_nested_credential_subkeys_and_refreshes_leaf(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.list_keys_in_directory = AsyncMock(
+            return_value=[
+                "/services/mcp/credentials/inst-1/user-1/dcr-client",  # nested — skip
+                CONFIG_PATH,
+            ]
+        )
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict()}
+        )
+
+        with patch.object(service, "_refresh_credential", new=AsyncMock()) as refresh:
+            await service._refresh_all_tokens_internal()
+
+        refresh.assert_awaited_once_with(CONFIG_PATH)
+
+    @pytest.mark.asyncio
+    async def test_per_credential_errors_do_not_abort_scan(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.list_keys_in_directory = AsyncMock(
+            return_value=[CONFIG_PATH, "/services/mcp/credentials/inst-2/user-1"]
+        )
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict()}
+        )
+
+        async def _boom(path: str) -> None:
+            if path == CONFIG_PATH:
+                raise RuntimeError("refresh failed")
+
+        with patch.object(service, "_refresh_credential", new=AsyncMock(side_effect=_boom)) as refresh:
+            await service._refresh_all_tokens_internal()
+
+        assert refresh.await_count == 2
+
+
+class TestLoadTokenParseFailure:
+    @pytest.mark.asyncio
+    async def test_invalid_oauth_token_shape_returns_false(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "isAuthenticated": True,
+                "oauthTokens": {"refreshToken": "rt"},  # missing required accessToken
+            }
+        )
+        token, has_oauth = await service._load_token_from_config(CONFIG_PATH)
+        assert has_oauth is False
+        assert token is None
+
+
+class TestRefreshCredential:
+    @pytest.mark.asyncio
+    async def test_immediate_refresh_then_reschedule(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        expired = _oauth_token_dict(expires_in=3600)
+        expired["createdAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": expired}
+        )
+        new_token = OAuthTokens(access_token="new", refresh_token="nr", expires_in=3600)
+
+        with (
+            patch.object(service, "_perform_token_refresh", new=AsyncMock(return_value=new_token)) as perform,
+            patch.object(service, "schedule_token_refresh", new=AsyncMock()) as schedule,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        perform.assert_awaited_once()
+        schedule.assert_awaited_once_with(CONFIG_PATH, new_token)
+
+    @pytest.mark.asyncio
+    async def test_future_expiry_schedules_without_refreshing(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict(expires_in=7200)}
+        )
+
+        with (
+            patch.object(service, "_perform_token_refresh", new=AsyncMock()) as perform,
+            patch.object(service, "schedule_token_refresh", new=AsyncMock()) as schedule,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        perform.assert_not_awaited()
+        schedule.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_refresh_token_is_handled(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        expired = _oauth_token_dict(expires_in=3600)
+        expired["createdAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": expired}
+        )
+
+        with (
+            patch.object(
+                service,
+                "_perform_token_refresh",
+                new=AsyncMock(side_effect=oauth_client_module.MCPRefreshTokenInvalidError("invalid_grant")),
+            ),
+            patch.object(service, "_handle_refresh_token_invalid", new=AsyncMock()) as handle,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        handle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_credential_no_longer_oauth(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(return_value={"isAuthenticated": False})
+        with patch.object(service, "_perform_token_refresh", new=AsyncMock()) as perform:
+            await service._refresh_credential(CONFIG_PATH)
+        perform.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_lock_timeout_aborts(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        lock = asyncio.Lock()
+        await lock.acquire()
+        service._credential_locks[CONFIG_PATH] = lock
+
+        with patch(
+            "app.connectors.core.base.token_service.mcp_token_refresh_service.LOCK_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        lock.release()
+        mock_config_service.get_config.assert_not_awaited()
+
+
+class TestHandleRefreshTokenInvalidPersistenceError:
+    @pytest.mark.asyncio
+    async def test_set_config_failure_is_logged_not_raised(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        error = oauth_client_module.MCPRefreshTokenInvalidError("invalid_grant")
+        mock_config_service.get_config = AsyncMock(return_value={"isAuthenticated": True})
+        mock_config_service.set_config = AsyncMock(side_effect=RuntimeError("write failed"))
+
+        for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            await service._handle_refresh_token_invalid(CONFIG_PATH, error)
+
+        mock_config_service.set_config.assert_awaited()
+
+
+class TestDelayedRefreshAndPeriodicLoops:
+    @pytest.mark.asyncio
+    async def test_delayed_refresh_runs_and_clears_task_slot(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        with patch.object(service, "_refresh_credential", new=AsyncMock()) as refresh:
+            task = asyncio.create_task(service._delayed_refresh(CONFIG_PATH, 0.01))
+            service._refresh_tasks[CONFIG_PATH] = task
+            await task
+
+        refresh.assert_awaited_once_with(CONFIG_PATH)
+        assert CONFIG_PATH not in service._refresh_tasks
+
+    @pytest.mark.asyncio
+    async def test_delayed_refresh_swallows_non_cancel_errors(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        with patch.object(
+            service, "_refresh_credential", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
+            task = asyncio.create_task(service._delayed_refresh(CONFIG_PATH, 0))
+            service._refresh_tasks[CONFIG_PATH] = task
+            await task  # no raise
+        assert CONFIG_PATH not in service._refresh_tasks
+
+    @pytest.mark.asyncio
+    async def test_periodic_refresh_check_exits_on_cancel(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        service._running = True
+
+        async def _sleep(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch(
+                "app.connectors.core.base.token_service.mcp_token_refresh_service.asyncio.sleep",
+                new=_sleep,
+            ),
+            patch.object(service, "_refresh_all_tokens", new=AsyncMock()) as refresh_all,
+        ):
+            await service._periodic_refresh_check()
+
+        refresh_all.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_periodic_state_sweep_deletes_expired(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        service._running = True
+        mock_config_service.list_keys_in_directory = AsyncMock(return_value=["/services/mcp/oauth-states/a"])
+        mock_config_service.get_config = AsyncMock(return_value={"expiresAt": 1})
+        mock_config_service.delete_config = AsyncMock()
+
+        sleep_calls = 0
+
+        async def _sleep(_seconds: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 1:
+                return
+            service._running = False
+
+        with patch(
+            "app.connectors.core.base.token_service.mcp_token_refresh_service.asyncio.sleep",
+            new=_sleep,
+        ):
+            await service._periodic_state_sweep()
+
+        mock_config_service.delete_config.assert_awaited_once_with("/services/mcp/oauth-states/a")
+
+    @pytest.mark.asyncio
+    async def test_schedule_replaces_completed_task(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        done = asyncio.create_task(asyncio.sleep(0))
+        await done
+        service._refresh_tasks[CONFIG_PATH] = done
+        token = OAuthTokens(access_token="tok", expires_in=3600)
+        await service.schedule_token_refresh(CONFIG_PATH, token)
+        assert CONFIG_PATH in service._refresh_tasks
+        assert service._refresh_tasks[CONFIG_PATH] is not done
+        service.cancel_refresh_task(CONFIG_PATH)
+
+    @pytest.mark.asyncio
+    async def test_schedule_skips_when_live_task_already_pending(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        pending = asyncio.create_task(asyncio.sleep(60))
+        service._refresh_tasks[CONFIG_PATH] = pending
+        token = OAuthTokens(access_token="tok", expires_in=3600)
+        await service.schedule_token_refresh(CONFIG_PATH, token)
+        assert service._refresh_tasks[CONFIG_PATH] is pending
+        pending.cancel()
+        try:
+            await pending
+        except asyncio.CancelledError:
+            pass
+        service._refresh_tasks.pop(CONFIG_PATH, None)

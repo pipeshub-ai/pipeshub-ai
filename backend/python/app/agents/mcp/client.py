@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 from fastmcp import Client
@@ -47,6 +48,20 @@ class MCPConnectionError(Exception):
     """Raised when an MCP server cannot be reached or its transport config is invalid."""
 
 
+def _sanitize_url_for_diagnostics(url: str) -> str:
+    """Scheme + host[:port] + path only — strip userinfo, query, and fragment so
+    credentials never land in logs or `MCPConnectionError` messages."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "<unparseable-url>"
+    if not parsed.scheme or not parsed.netloc:
+        return "<redacted-url>"
+    # Drop userinfo (`user:pass@`) while keeping host/port, including bracketed IPv6.
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunparse((parsed.scheme, netloc, parsed.path or "", "", "", ""))
+
+
 class _LastHttpResponse:
     """Records the most recent HTTP status/URL seen on an HTTP transport's httpx
     client, purely for diagnostics.
@@ -66,7 +81,7 @@ class _LastHttpResponse:
 
     async def _on_response(self, response: httpx.Response) -> None:
         self.status_code = response.status_code
-        self.url = str(response.request.url)
+        self.url = _sanitize_url_for_diagnostics(str(response.request.url))
 
     def httpx_client_factory(
         self,
@@ -269,22 +284,33 @@ class MCPClientManager:
         response_recorder = (
             _LastHttpResponse() if self.config.transport in (MCPTransport.STREAMABLE_HTTP, MCPTransport.SSE) else None
         )
-        transport = build_transport(
-            self.config,
-            env=self.env,
-            headers=self.headers,
-            stderr_log_file=stderr_path,
-            keep_alive=True,
-            http_response_recorder=response_recorder,
-        )
-        client = Client(transport)
+        client: Optional[Client] = None
         try:
+            transport = build_transport(
+                self.config,
+                env=self.env,
+                headers=self.headers,
+                stderr_log_file=stderr_path,
+                keep_alive=True,
+                http_response_recorder=response_recorder,
+            )
+            client = Client(transport)
             await asyncio.wait_for(client.__aenter__(), timeout=DEFAULT_CONNECT_TIMEOUT_SECONDS)
         except Exception as e:
-            message = _annotate_with_stderr(str(e), _read_stderr_tail(stderr_path))
+            # Read stderr before tearing anything down — the capture file is unlinked
+            # below, and `keep_alive=True` means a half-started STDIO transport can
+            # leave an orphaned subprocess unless we force-close (same reason
+            # `aclose()` calls `client.close()` rather than `__aexit__()`).
+            stderr_tail = _read_stderr_tail(stderr_path)
+            if client is not None:
+                with suppress(Exception):
+                    await client.close()
+            _cleanup_stderr_capture_path(stderr_path)
+            if isinstance(e, MCPConnectionError):
+                raise
+            message = _annotate_with_stderr(str(e), stderr_tail)
             message = _annotate_with_last_http_response(message, response_recorder)
             logger.error(f"Failed to open MCP session for {self.config.id} ({self.config.name}): {message}")
-            _cleanup_stderr_capture_path(stderr_path)
             raise MCPConnectionError(message) from e
         self._session_client = client
         self._session_stderr_path = stderr_path

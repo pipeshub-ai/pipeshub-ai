@@ -28,6 +28,53 @@ def _config(**overrides) -> MCPServerConfig:
     return MCPServerConfig(**defaults)
 
 
+class TestSanitizeUrlForDiagnostics:
+    def test_strips_userinfo_query_and_fragment(self) -> None:
+        from app.agents.mcp.client import _sanitize_url_for_diagnostics
+
+        raw = "https://user:pass@mcp.example.com:8443/v1/mcp?access_token=secret#frag"
+        assert _sanitize_url_for_diagnostics(raw) == "https://mcp.example.com:8443/v1/mcp"
+
+    def test_preserves_clean_url(self) -> None:
+        from app.agents.mcp.client import _sanitize_url_for_diagnostics
+
+        assert (
+            _sanitize_url_for_diagnostics("https://gitlab.com/api/v4/mcp")
+            == "https://gitlab.com/api/v4/mcp"
+        )
+
+    def test_ipv6_host_keeps_brackets_drops_userinfo(self) -> None:
+        from app.agents.mcp.client import _sanitize_url_for_diagnostics
+
+        raw = "https://token@[2001:db8::1]/mcp?key=abc"
+        assert _sanitize_url_for_diagnostics(raw) == "https://[2001:db8::1]/mcp"
+
+
+class TestLastHttpResponseRedaction:
+    @pytest.mark.asyncio
+    async def test_on_response_redacts_sensitive_url_components(self) -> None:
+        """Regression: query tokens / userinfo must never be stored for diagnostics —
+        `_annotate_with_last_http_response` later embeds `recorder.url` in logged
+        `MCPConnectionError` messages."""
+        from app.agents.mcp.client import _LastHttpResponse, _annotate_with_last_http_response
+
+        recorder = _LastHttpResponse()
+        request = MagicMock()
+        request.url = "https://user:pass@mcp.example.com/v1/mcp?access_token=secret#frag"
+        response = MagicMock()
+        response.status_code = 404
+        response.request = request
+
+        await recorder._on_response(response)
+
+        assert recorder.url == "https://mcp.example.com/v1/mcp"
+        message = _annotate_with_last_http_response("Session terminated", recorder)
+        assert "https://mcp.example.com/v1/mcp" in message
+        assert "secret" not in message
+        assert "user:pass" not in message
+        assert "access_token" not in message
+
+
 class TestBuildTransport:
     def test_stdio_builds_stdio_transport(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command="npx", args=["-y", "server"])
@@ -376,6 +423,7 @@ class TestMCPClientManagerSession:
     async def test_open_annotates_error_with_captured_stderr_and_cleans_up(self) -> None:
         config = _config(transport=MCPTransport.STDIO, command="npx")
         mock_client = MagicMock()
+        mock_client.close = AsyncMock()
 
         captured_path: dict[str, Path] = {}
 
@@ -395,6 +443,50 @@ class TestMCPClientManagerSession:
                 await manager.open()
 
         assert not captured_path["path"].exists()
+        # Failed `__aenter__` with keep_alive=True must force-close so a half-started
+        # STDIO transport can't leave an orphaned subprocess behind.
+        mock_client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_open_cleans_stderr_when_build_transport_fails(self) -> None:
+        """`stderr_path` is allocated before `build_transport` — a raise there must
+        still unlink the temp capture file."""
+        config = _config(transport=MCPTransport.STDIO, command="npx")
+        captured_path: dict[str, Path] = {}
+
+        def _fail_build(*_args, stderr_log_file: Path, **_kwargs) -> MagicMock:
+            captured_path["path"] = stderr_log_file
+            raise MCPConnectionError("no command configured")
+
+        with patch("app.agents.mcp.client.build_transport", side_effect=_fail_build):
+            manager = MCPClientManager(config)
+            with pytest.raises(MCPConnectionError, match="no command"):
+                await manager.open()
+
+        assert "path" in captured_path
+        assert not captured_path["path"].exists()
+        assert manager._session_client is None
+
+    @pytest.mark.asyncio
+    async def test_open_closes_client_on_aenter_timeout(self) -> None:
+        config = _config(transport=MCPTransport.STDIO, command="npx")
+        mock_client = MagicMock()
+        mock_client.close = AsyncMock()
+
+        async def _hangs_forever() -> None:
+            await asyncio.sleep(3600)
+
+        mock_client.__aenter__ = AsyncMock(side_effect=_hangs_forever)
+
+        with patch("app.agents.mcp.client.build_transport", return_value=MagicMock()), \
+             patch("app.agents.mcp.client.Client", return_value=mock_client), \
+             patch("app.agents.mcp.client.DEFAULT_CONNECT_TIMEOUT_SECONDS", 0.01):
+            manager = MCPClientManager(config)
+            with pytest.raises(MCPConnectionError):
+                await manager.open()
+
+        mock_client.close.assert_awaited_once()
+        assert manager._session_client is None
 
     @pytest.mark.asyncio
     async def test_call_tool_in_session_raises_when_not_open(self) -> None:
