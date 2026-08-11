@@ -80,6 +80,21 @@ def ensure_sample_data_files_root() -> Path:
     return files_root
 
 
+def ensure_sample_data_google_drive_it_files_root() -> Path:
+    """
+    Return the path to sample-data/entities/google-drive-it-files inside the
+    integration-test repo, cloning on demand if necessary.
+    """
+    repo_dir = _ensure_repo_cloned()
+    files_root = repo_dir / "sample-data" / "entities" / "google-drive-it-files"
+    if not files_root.exists():
+        raise RuntimeError(
+            "sample-data/entities/google-drive-it-files not found in "
+            f"integration-test repo at {files_root}"
+        )
+    return files_root
+
+
 def count_sample_files() -> int:
     """Return the number of non-hidden files in the sample data directory."""
     files_root = ensure_sample_data_files_root()

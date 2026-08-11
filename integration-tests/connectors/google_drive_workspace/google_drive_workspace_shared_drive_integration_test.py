@@ -1,6 +1,6 @@
 # pyright: ignore-file
 
-"""Google Drive Workspace – Shared Drive folder_ids lean integration tests.
+"""Google Drive Workspace – Shared Drive folder_ids + drive_ids lean ITs.
 
 Creates/tears down temporary Shared Drives. Covers only Shared Drive-specific
 plumbing; full leave/return/rename matrix lives in the My Drive suite.
@@ -9,6 +9,9 @@ plumbing; full leave/return/rename matrix lives in the My Drive suite.
   order 2  TC-SD-FF-002  — new nested subfolder expands scope (corpora=drive)
   order 3  TC-SD-FF-003  — new file under seed syncs on incremental
   order 4  TC-SD-FF-004  — folder_ids=[Shared Drive root] expands top-level tree
+
+  order 5  TC-DRIVE-IDS-001 — drive_ids=[A] only: Drive A in, Drive B out
+  order 6  TC-DRIVE-IDS-002 — widen drive_ids to [A,B]: Drive B gains BELONGS_TO
 """
 
 from __future__ import annotations
@@ -295,4 +298,138 @@ class TestDriveWorkspaceSharedDriveFolderFilter:
                 parent_external_record_id=root_folder_id,
                 external_record_group_id=drive_a_id,
             ),
+        )
+
+
+def _drive_ids_filters(drive_ids: list[str]) -> dict[str, Any]:
+    """Build filters payload for ``config.filters.sync.values.drive_ids``."""
+    return {
+        "sync": {
+            "values": {
+                "drive_ids": {
+                    "operator": "in",
+                    "type": "list",
+                    "value": drive_ids,
+                }
+            }
+        }
+    }
+
+
+async def _apply_drive_ids_filter(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    drive_ids: list[str],
+) -> None:
+    """Update drive_ids via filters-sync and wait for the pending full sync."""
+    pipeshub_client.update_connector_filters_sync_safe(
+        connector_id,
+        filters=_drive_ids_filters(drive_ids),
+    )
+    await wait_for_sync_completion(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        timeout=_SYNC_TIMEOUT_SEC,
+    )
+
+
+class TestDriveWorkspaceDriveIdsFilter:
+    """Pure drive_ids filter — no folder_ids (full Shared Drive A in scope)."""
+
+    @pytest.mark.order(5)
+    async def test_tc_drive_ids_001_drive_a_in_drive_b_out(
+        self,
+        drive_workspace_drive_ids_connector: dict[str, Any],
+        connector_assertions: ConnectorAssertions,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        connector_id = drive_workspace_drive_ids_connector["connector_id"]
+        drive_a_id = drive_workspace_drive_ids_connector["drive_a_id"]
+        drive_b_id = drive_workspace_drive_ids_connector["drive_b_id"]
+        file_a_id = drive_workspace_drive_ids_connector["drive_a_file_id"]
+        file_b_id = drive_workspace_drive_ids_connector["drive_b_file_id"]
+
+        rg_a = await graph_provider.get_record_group_by_external_id(
+            connector_id, drive_a_id
+        )
+        assert rg_a is not None, (
+            f"Shared Drive A RecordGroup missing for drive_ids=[A] ({drive_a_id})"
+        )
+
+        await connector_assertions.assert_record_exists(
+            connector_id,
+            file_a_id,
+            RecordAssertion(
+                external_record_id=file_a_id,
+                record_name=drive_workspace_drive_ids_connector["drive_a_file_name"],
+                external_record_group_id=drive_a_id,
+            ),
+        )
+        assert await graph_provider.record_belongs_to_external_group(
+            connector_id, file_a_id, drive_a_id
+        ), f"{file_a_id} should BELONGS_TO Shared Drive A {drive_a_id}"
+
+        file_b = await graph_provider.get_record_by_external_id(connector_id, file_b_id)
+        assert file_b is None, (
+            f"Drive B file {file_b_id} must not sync when drive_ids=[Drive A]"
+        )
+        rg_b = await graph_provider.get_record_group_by_external_id(
+            connector_id, drive_b_id
+        )
+        assert rg_b is None, (
+            f"Shared Drive B RecordGroup must not sync when drive_ids=[Drive A] "
+            f"({drive_b_id})"
+        )
+
+    @pytest.mark.order(6)
+    async def test_tc_drive_ids_002_widen_includes_drive_b(
+        self,
+        drive_workspace_drive_ids_connector: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+        connector_assertions: ConnectorAssertions,
+    ) -> None:
+        connector_id = drive_workspace_drive_ids_connector["connector_id"]
+        drive_a_id = drive_workspace_drive_ids_connector["drive_a_id"]
+        drive_b_id = drive_workspace_drive_ids_connector["drive_b_id"]
+        file_b_id = drive_workspace_drive_ids_connector["drive_b_file_id"]
+
+        await _apply_drive_ids_filter(
+            pipeshub_client,
+            graph_provider,
+            connector_id,
+            [drive_a_id, drive_b_id],
+        )
+
+        async def _b_scoped() -> bool:
+            return await graph_provider.record_belongs_to_external_group(
+                connector_id, file_b_id, drive_b_id
+            )
+
+        await wait_until_graph_condition(
+            connector_id,
+            check=_b_scoped,
+            timeout=_SYNC_TIMEOUT_SEC,
+            poll_interval=10,
+            description=(
+                f"Drive B file ({file_b_id}) BELONGS_TO after drive_ids widen"
+            ),
+        )
+
+        await connector_assertions.assert_record_exists(
+            connector_id,
+            file_b_id,
+            RecordAssertion(
+                external_record_id=file_b_id,
+                record_name=drive_workspace_drive_ids_connector["drive_b_file_name"],
+                external_record_group_id=drive_b_id,
+            ),
+        )
+        rg_b = await graph_provider.get_record_group_by_external_id(
+            connector_id, drive_b_id
+        )
+        assert rg_b is not None, (
+            f"Shared Drive B RecordGroup missing after widen ({drive_b_id})"
         )

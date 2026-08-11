@@ -79,6 +79,8 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     preview_jira_role_member_counts,
     search_issues_jql,
     wait_until_jira_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
     wait_until_record_indexing_completed,
 )
 

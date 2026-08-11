@@ -349,7 +349,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r:Record {connectorId: $cid})
             WHERE coalesce(r.recordName, r.name) = $name
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
-            RETURN g.name AS group_name
+            RETURN g.groupName AS group_name
             LIMIT 1
             """,
             {"cid": connector_id, "name": record_name}
@@ -553,7 +553,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
             OPTIONAL MATCH path = (g)-[:BELONGS_TO*0..5]->(root:RecordGroup)
             WITH r, g, root, nodes(path) AS ns
-            WITH r, [x IN ns | coalesce(x.name, '')] AS parts
+            WITH r, [x IN ns | coalesce(x.groupName, '')] AS parts
             WITH r, reduce(s = '', p IN [p IN parts WHERE p <> ''] | 
                 CASE WHEN s = '' THEN p ELSE s + '/' + p END
             ) AS parent_path
@@ -676,7 +676,57 @@ class TestNeo4jProvider(Neo4jProvider):
             {"cid": connector_id, "eid": external_record_id}
         )
         return bool(result[0]["inherits"]) if result else False
-    
+
+    async def record_belongs_to_external_group(
+        self,
+        connector_id: str,
+        external_record_id: str,
+        external_group_id: str,
+    ) -> bool:
+        """True if Record has BELONGS_TO → RecordGroup with the given externalGroupId."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+                  -[:BELONGS_TO]->
+                  (g:RecordGroup {connectorId: $cid, externalGroupId: $gid})
+            RETURN count(*) AS c
+            """,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "gid": str(external_group_id),
+            },
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
+    async def user_has_direct_record_permission(
+        self,
+        connector_id: str,
+        user_email: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if User -[:PERMISSION]-> Record for this connector external id."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (u:User)-[:PERMISSION]->(r:Record {
+                connectorId: $cid,
+                externalRecordId: $eid
+            })
+            WHERE toLower(u.email) = toLower($email)
+            RETURN count(*) AS c
+            """,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "email": user_email,
+            },
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
     async def count_group_members(
         self, connector_id: str, external_group_id: str
     ) -> int:
@@ -898,13 +948,13 @@ class TestNeo4jProvider(Neo4jProvider):
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:
-        """Return the ``parentExternalRecordId`` field of a record, or None if unset."""
+        """Return the record's ``externalParentId`` (parent external record id), or None."""
         if not self.client:
             raise RuntimeError("Provider not connected")
         result = await self.client.execute_query(
             """
             MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
-            RETURN r.parentExternalRecordId AS pid
+            RETURN r.externalParentId AS pid
             LIMIT 1
             """,
             {"cid": connector_id, "eid": external_record_id},
