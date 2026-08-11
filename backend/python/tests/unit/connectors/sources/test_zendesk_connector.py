@@ -487,6 +487,43 @@ class TestIncrementalCursor:
             DEFAULT_INCREMENTAL_START_TIME
         )
 
+    async def test_incremental_users_retries_a_rate_limited_page(self, zendesk_connector):
+        """Incremental exports allow 10 req/min, so a 429 here is routine — and it used
+        to end the export outright, truncating the user list."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_users = AsyncMock(side_effect=[
+            _make_response(success=False, error="Too Many Requests", status_code=429),
+            _make_response(data={
+                "users": [{"id": 1, "email": "a@acme.com", "name": "A"}],
+                "end_of_stream": True,
+            }),
+        ])
+        datasource.incremental_users.__name__ = "incremental_users"
+
+        users, _, complete = await zendesk_connector._fetch_users()
+
+        assert datasource.incremental_users.await_count == 2
+        assert complete is True
+        assert len(users) == 1
+
+    async def test_truncated_ticket_export_leaves_sync_point_alone(self, zendesk_connector):
+        """Advancing past a failed page skips every ticket it held, permanently."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_tickets = AsyncMock(side_effect=[
+            _make_response(data={
+                "tickets": [{"id": 1, "subject": "a", "updated_at": "2026-01-01T00:00:00Z"}],
+                "after_cursor": "page2",
+                "end_of_stream": False,
+            }),
+            _make_response(success=False, error="500 Internal Server Error"),
+        ])
+        zendesk_connector.records_sync_point.update_sync_point = AsyncMock()
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+
+        await zendesk_connector._sync_tickets()
+
+        zendesk_connector.records_sync_point.update_sync_point.assert_not_awaited()
+
     async def test_sync_tickets_persists_end_time(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.incremental_tickets = AsyncMock(return_value=_make_response(data={
@@ -593,7 +630,7 @@ class TestRunSync:
         connector._fetch_groups = AsyncMock(
             return_value=([("g_rg", [])], [("g_ug", [])], True)
         )
-        connector._fetch_organizations = AsyncMock(return_value=[("o_ug", [])])
+        connector._fetch_organizations = AsyncMock(return_value=([("o_ug", [])], True))
         connector._sync_tickets = AsyncMock(return_value=3)
         connector._sync_help_center_articles = AsyncMock(return_value=4)
 
@@ -669,7 +706,7 @@ class TestRunSync:
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
-        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
         zendesk_connector._sync_tickets = AsyncMock(return_value=0)
         zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
 
@@ -776,7 +813,7 @@ class TestFetchOrganizations:
             })
         )
 
-        user_groups = await zendesk_connector._fetch_organizations()
+        user_groups, _ = await zendesk_connector._fetch_organizations()
 
         assert user_groups[0][0].source_user_group_id == "org_21"
         assert user_groups[0][0].name == "Acme Corp"
@@ -796,7 +833,7 @@ class TestFetchOrganizations:
         zendesk_connector._user_id_to_data = {"1": {"organization_id": 21}}
         zendesk_connector._user_id_to_app_user = {"1": user}
 
-        user_groups = await zendesk_connector._fetch_organizations()
+        user_groups, _ = await zendesk_connector._fetch_organizations()
 
         assert user_groups[0][1] == [user]
         assert datasource.incremental_organizations.await_count == 1
@@ -817,7 +854,7 @@ class TestFetchOrganizations:
             }),
         ])
 
-        user_groups = await zendesk_connector._fetch_organizations()
+        user_groups, _ = await zendesk_connector._fetch_organizations()
 
         assert datasource.incremental_organizations.await_count == 2
         assert datasource.incremental_organizations.await_args_list[1].kwargs[
@@ -840,13 +877,36 @@ class TestFetchOrganizations:
 
         assert datasource.incremental_organizations.await_count == 1
 
+    async def test_truncated_org_export_skips_membership_sync(
+        self, zendesk_connector, mock_data_entities_processor
+    ):
+        """on_new_user_groups rebuilds each org from scratch, so partial membership
+        revokes access for whoever fell off the failed page."""
+        _ready(zendesk_connector)
+        zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
+        zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
+        zendesk_connector._fetch_organizations = AsyncMock(
+            return_value=([("o_ug", [])], False)
+        )
+        zendesk_connector._sync_tickets = AsyncMock(return_value=0)
+        zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
+        zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
+            return_value={"lastEndTime": 1767312000}
+        )
+
+        with patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+                   new_callable=AsyncMock, return_value=({}, {})):
+            await zendesk_connector.run_sync()
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+
     async def test_logs_and_stops_on_failure(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
         datasource.incremental_organizations = AsyncMock(
             return_value=_make_response(success=False, error="401 Unauthorized")
         )
 
-        assert await zendesk_connector._fetch_organizations() == []
+        assert await zendesk_connector._fetch_organizations() == ([], False)
 
     async def test_skips_org_without_id(self, zendesk_connector):
         datasource = _ready(zendesk_connector)
@@ -857,7 +917,7 @@ class TestFetchOrganizations:
             })
         )
 
-        assert await zendesk_connector._fetch_organizations() == []
+        assert await zendesk_connector._fetch_organizations() == ([], True)
 
 
 # ===========================================================================
@@ -1677,6 +1737,20 @@ class TestOAuthTokenRotation:
         with pytest.raises(RuntimeError, match="not initialized"):
             await zendesk_connector._get_fresh_datasource()
 
+    async def test_failed_rebuild_raises_instead_of_serving_stale_token(
+        self, zendesk_connector
+    ):
+        """init() reports failure by returning False; serving the cached client then
+        401s on every call while the log blames the export."""
+        self._oauth_ready(zendesk_connector, in_use="old-token")
+        zendesk_connector.config_service.get_config = AsyncMock(
+            return_value={"credentials": {"access_token": "new-token"}}
+        )
+        zendesk_connector.init = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="could not be rebuilt"):
+            await zendesk_connector._get_fresh_datasource()
+
 
 # ===========================================================================
 # Full-sync re-emission
@@ -1734,7 +1808,7 @@ class TestFullSyncReemission:
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
-        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
         zendesk_connector._sync_tickets = AsyncMock(return_value=0)
         zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
 
@@ -1751,7 +1825,7 @@ class TestFullSyncReemission:
         )
         zendesk_connector._fetch_users = AsyncMock(return_value=([], {}, True))
         zendesk_connector._fetch_groups = AsyncMock(return_value=([], [], True))
-        zendesk_connector._fetch_organizations = AsyncMock(return_value=[])
+        zendesk_connector._fetch_organizations = AsyncMock(return_value=([], True))
         zendesk_connector._sync_tickets = AsyncMock(return_value=0)
         zendesk_connector._sync_help_center_articles = AsyncMock(return_value=0)
 
