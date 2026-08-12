@@ -3,10 +3,9 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
-import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 
 function stubUserRole(role: 'admin' | 'member' | null) {
-  // null => existing user with unset role (legacy fallback); not a missing user
+  // null => existing user with unset role (not admin)
   const doc = role === null ? {} : { role };
   return sinon.stub(Users, 'findOne').returns({
     select: sinon.stub().returns({
@@ -59,16 +58,15 @@ describe('userAdminCheck Middleware', () => {
     expect(error.message).to.equal('Admin access required');
   });
 
-  it('should fall back to admin group when role is unset', async () => {
+  it('should deny access when role is unset (no admin-group fallback)', async () => {
     stubUserRole(null);
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([{ type: 'admin' }]),
-    } as any);
 
     await userAdminCheck(req, res, next);
 
     expect(next.calledOnce).to.be.true;
-    expect(next.firstCall.args).to.have.lengthOf(0);
+    const error = next.firstCall.args[0];
+    expect(error).to.be.an('error');
+    expect(error.message).to.equal('Admin access required');
   });
 
   it('should call next with NotFoundError when userId is missing', async () => {

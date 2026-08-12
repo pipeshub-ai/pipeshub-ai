@@ -36,15 +36,15 @@ import {
   reindexConnector,
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
-import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 
-/** Leave role unset so UserGroups stubs exercise the legacy admin fallback. */
-function stubUnsetUserRole() {
+/** Stub Users.findOne for role-based admin checks. */
+function stubUserRole(role: 'admin' | 'member' | null = 'admin') {
+  const doc = role === null ? {} : { role }
   sinon.stub(Users, 'findOne').returns({
     select: sinon.stub().returns({
-      lean: sinon.stub().resolves({}),
+      lean: sinon.stub().resolves(doc),
     }),
   } as any)
 }
@@ -1922,10 +1922,7 @@ describe('Knowledge Base Controller', () => {
   describe('reindexConnector (happy path)', () => {
     it('should reindex connector successfully', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      stubUnsetUserRole()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
+      stubUserRole('admin')
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
@@ -1948,10 +1945,7 @@ describe('Knowledge Base Controller', () => {
 
     it('should reindex connector with no statusFilters (reindex all)', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      stubUnsetUserRole()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'member' }]),
-      } as any)
+      stubUserRole('member')
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
@@ -3307,10 +3301,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when reindexConnector connector throws', async () => {
-      stubUnsetUserRole()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
+      stubUserRole('admin')
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Service down'))
 
       const handler = reindexConnector(createMockAppConfig())
@@ -3328,10 +3319,7 @@ describe('Knowledge Base Controller', () => {
 
     it('should call next when resyncConnectorRecords connector throws', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      stubUnsetUserRole()
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
+      stubUserRole('admin')
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Resync error'))
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())

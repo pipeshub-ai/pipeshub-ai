@@ -72,13 +72,13 @@ describe('notification/notification-recipient.resolver', () => {
       });
     });
 
-    it('falls back to admin group when no users have role=admin', async () => {
+    it('returns empty when no users have role=admin (no admin-group fallback)', async () => {
       const user1 = new mongoose.Types.ObjectId();
       stubUsersFind([]);
       stubUserGroupsFind([{ users: [user1] }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([user1.toString()]);
+      expect(result).to.deep.equal([]);
     });
 
     it('resolves users for standard/everyone/custom group types', async () => {
@@ -113,12 +113,11 @@ describe('notification/notification-recipient.resolver', () => {
       expect(findStub.calledOnce).to.be.true;
     });
 
-    it('filters invalid ObjectIds out of legacy admin group.users', async () => {
+    it('filters invalid ObjectIds out of group.users for non-admin roles', async () => {
       const valid = new mongoose.Types.ObjectId();
-      stubUsersFind([]);
       stubUserGroupsFind([{ users: [valid, 'not-an-oid', null as unknown as string] }]);
 
-      const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
+      const result = await resolveRoleRecipientUserIds(orgId, ['standard']);
       expect(result).to.have.length(1);
       expect(result[0].toString()).to.equal(valid.toString());
     });
@@ -130,17 +129,14 @@ describe('notification/notification-recipient.resolver', () => {
       expect(result).to.deep.equal([]);
     });
 
-    it('unions role admins with legacy group admins during partial migration', async () => {
+    it('does not include admin-group members when resolving admin role', async () => {
       const roleAdmin = new mongoose.Types.ObjectId();
       const groupAdmin = new mongoose.Types.ObjectId();
       stubUsersFind([{ _id: roleAdmin }]);
       stubUserGroupsFind([{ users: [groupAdmin] }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([
-        roleAdmin.toString(),
-        groupAdmin.toString(),
-      ]);
+      expect(result.map((id) => id.toString())).to.have.members([roleAdmin.toString()]);
     });
   });
 

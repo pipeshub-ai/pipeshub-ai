@@ -10,7 +10,7 @@ function normalizeRole(role: string): string {
 
 /**
  * Resolves Kafka `recipientRoles` entries to user IDs.
- * - "admin" → Users with role === 'admin' (with legacy admin-group fallback)
+ * - "admin" → Users with role === 'admin'
  * - other names → UserGroup.type match (standard / everyone / custom)
  */
 export async function resolveRoleRecipientUserIds(
