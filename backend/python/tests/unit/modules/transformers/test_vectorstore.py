@@ -616,6 +616,19 @@ class TestProcessImageEmbeddings:
 
         vs._process_image_embeddings_jina.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_openai_compatible_dispatch(self):
+        """OpenAI-compatible provider dispatches to its image helper."""
+        from app.utils.aimodels import EmbeddingProvider
+        vs = _make_vectorstore()
+        vs.embedding_provider = EmbeddingProvider.OPENAI_COMPATIBLE.value
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        vs._process_image_embeddings_openai_compatible = AsyncMock(return_value=[])
+
+        await vs._process_image_embeddings([], [], "rec-1")
+
+        vs._process_image_embeddings_openai_compatible.assert_awaited_once()
+
 
 # ===================================================================
 # _store_image_points
@@ -2246,6 +2259,57 @@ class TestProcessImageEmbeddingsJina:
             points = await vs._process_image_embeddings_jina(image_chunks, image_base64s)
 
         assert len(points) == 0
+
+
+class TestProcessImageEmbeddingsOpenAICompatible:
+    """Tests for vLLM multimodal embeddings through an OpenAI-compatible endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_success_uses_messages_image_url(self):
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1/"
+        vs.api_key = "test-key"
+        vs.model_name = "Qwen/Qwen3-VL-Embedding-2B"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {"page": 1}, "image_uri": "aW1hZ2U="}],
+                ["aW1hZ2U="],
+            )
+
+        assert len(points) == 1
+        call = mock_client.post.await_args
+        assert call.args[0] == "http://embedding.test/v1/embeddings"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer test-key"
+        content = call.kwargs["json"]["messages"][0]["content"]
+        assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,aW1hZ2U="
+
+    @pytest.mark.asyncio
+    async def test_http_failure_skips_image(self):
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1"
+        vs.model_name = "vl-embedding"
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = RuntimeError("unsupported messages")
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {}, "image_uri": "aW1hZ2U="}], ["aW1hZ2U="]
+            )
+
+        assert points == []
 
 
 # ===================================================================

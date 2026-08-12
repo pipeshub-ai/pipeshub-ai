@@ -242,6 +242,7 @@ class VectorStore(Transformer):
 
         self.dense_embeddings = None
         self.api_key = None
+        self.embedding_endpoint = None
         self.model_name = None
         self.embedding_provider = None
         self.is_multimodal_embedding = False
@@ -580,6 +581,9 @@ class VectorStore(Transformer):
         self.api_key = (
             configuration.get("apiKey") if configuration and "apiKey" in configuration else None
         )
+        self.embedding_endpoint = (
+            configuration.get("endpoint") if configuration else None
+        )
         self.model_name = model_name
         self.region_name = (
             configuration.get("region") if configuration else None
@@ -892,6 +896,81 @@ class VectorStore(Transformer):
                 points.extend(r)
         return points
 
+    async def _process_image_embeddings_openai_compatible(
+        self, image_chunks: List[dict], image_base64s: List[str]
+    ) -> List[VectorPoint]:
+        """Embed images using vLLM's multimodal OpenAI-compatible extension."""
+        if not self.embedding_endpoint:
+            self.logger.warning(
+                "OpenAI-compatible image embedding skipped: endpoint is not configured"
+            )
+            return []
+
+        semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
+        endpoint = f"{self.embedding_endpoint.rstrip('/')}/embeddings"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        async def embed_single(
+            client: httpx.AsyncClient, i: int, image_ref: str
+        ) -> Optional[VectorPoint]:
+            async with semaphore:
+                normalized = await self._normalize_image_to_base64(image_ref)
+                if not normalized:
+                    return None
+                image_url = (
+                    image_ref.strip()
+                    if image_ref.strip().startswith("data:")
+                    else f"data:image/jpeg;base64,{normalized}"
+                )
+                try:
+                    response = await client.post(
+                        endpoint,
+                        headers=headers,
+                        json={
+                            "model": self.model_name,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": image_url},
+                                        }
+                                    ],
+                                }
+                            ],
+                            "encoding_format": "float",
+                        },
+                    )
+                    response.raise_for_status()
+                    embedding = response.json()["data"][0]["embedding"]
+                    if not isinstance(embedding, list) or not embedding:
+                        raise ValueError("response contains no embedding vector")
+                    return VectorPoint(
+                        id=str(uuid.uuid4()),
+                        dense_vector=embedding,
+                        payload={
+                            "metadata": image_chunks[i].get("metadata", {}),
+                            "page_content": image_chunks[i].get("image_uri", ""),
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"OpenAI-compatible image embedding failed for index {i}: {e}"
+                    )
+                    return None
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            results = await asyncio.gather(
+                *[
+                    embed_single(client, i, image_ref)
+                    for i, image_ref in enumerate(image_base64s)
+                ]
+            )
+        return [point for point in results if point is not None]
+
     async def _process_image_embeddings(
         self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
     ) -> List[VectorPoint]:
@@ -916,6 +995,10 @@ class VectorStore(Transformer):
             return await self._process_image_embeddings_bedrock(image_chunks, image_base64s)
         elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
             return await self._process_image_embeddings_jina(image_chunks, image_base64s)
+        elif self.embedding_provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
+            return await self._process_image_embeddings_openai_compatible(
+                image_chunks, image_base64s
+            )
         else:
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
