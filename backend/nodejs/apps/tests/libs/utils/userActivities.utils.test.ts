@@ -41,8 +41,12 @@ describe('userActivities.utils', () => {
       expect(userActivitiesType.PASSWORD_CHANGED).to.equal('PASSWORD CHANGED')
     })
 
-    it('should have exactly 8 activity types', () => {
-      expect(Object.keys(userActivitiesType)).to.have.length(8)
+    it('should have ROLE_CHANGED activity type', () => {
+      expect(userActivitiesType.ROLE_CHANGED).to.equal('ROLE CHANGED')
+    })
+
+    it('should have exactly 9 activity types', () => {
+      expect(Object.keys(userActivitiesType)).to.have.length(9)
     })
 
     it('should have unique values for all activity types', () => {

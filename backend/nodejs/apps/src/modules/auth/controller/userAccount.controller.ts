@@ -954,28 +954,38 @@ export class UserAccountController {
       // Reject refresh if logout / password change / role change happened after
       // this refresh token was issued (same rule as access-token auth middleware).
       if (userId && orgId) {
-        const invalidatingActivity = await UserActivities.findOne({
-          userId,
-          orgId,
-          isDeleted: false,
-          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
-        })
-          .sort({ createdAt: -1 })
-          .lean()
-          .exec();
+        try {
+          const invalidatingActivity = await UserActivities.findOne({
+            userId,
+            orgId,
+            isDeleted: false,
+            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
+          })
+            .sort({ createdAt: -1 })
+            .lean()
+            .exec();
 
-        if (invalidatingActivity) {
-          const tokenIssuedAt = req.tokenPayload?.iat
-            ? req.tokenPayload.iat * 1000
-            : 0;
-          const activityTimestamp =
-            invalidatingActivity.createdAt?.getTime() || 0;
-          if (
-            activityTimestamp >
-            tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
-          ) {
-            throw new UnauthorizedError('Session expired, please login again');
+          if (invalidatingActivity) {
+            const tokenIssuedAt = req.tokenPayload?.iat
+              ? req.tokenPayload.iat * 1000
+              : 0;
+            const activityTimestamp =
+              invalidatingActivity.createdAt?.getTime() || 0;
+            if (
+              activityTimestamp >
+              tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
+            ) {
+              throw new UnauthorizedError('Session expired, please login again');
+            }
           }
+        } catch (activityError) {
+          if (activityError instanceof UnauthorizedError) {
+            throw activityError;
+          }
+          this.logger.error(
+            'Failed to fetch session-invalidating activity on refresh',
+            activityError,
+          );
         }
       }
 
