@@ -44,10 +44,16 @@ export const loadConfigurationManagerConfig =
     const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'redis';
     const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
 
+    // Reject anything that is not a known mode: silently treating a typo like
+    // `cluser` as standalone would point the app at the wrong topology.
+    const rawRedisMode = process.env.REDIS_MODE?.trim().toLowerCase();
+    if (rawRedisMode && rawRedisMode !== 'cluster' && rawRedisMode !== 'standalone') {
+      throw new Error(
+        `Invalid REDIS_MODE '${process.env.REDIS_MODE}'. Must be 'standalone' or 'cluster'.`,
+      );
+    }
     const redisMode: RedisMode =
-      (process.env.REDIS_MODE?.toLowerCase() as RedisMode) === 'cluster'
-        ? 'cluster'
-        : 'standalone';
+      rawRedisMode === 'cluster' ? 'cluster' : 'standalone';
     const redisNodes = parseRedisNodes(process.env.REDIS_NODES);
     if (redisMode === 'cluster' && (!redisNodes || redisNodes.length === 0)) {
       throw new Error(

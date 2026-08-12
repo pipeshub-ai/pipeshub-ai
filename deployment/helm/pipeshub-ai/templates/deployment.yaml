@@ -194,11 +194,10 @@ spec:
               value: "{{ .Release.Name }}-redis-cluster"
             - name: REDIS_PORT
               value: "6379"
-            {{- if .Values.redisCluster.celeryRedisUrl }}
-            {{- /* Celery/kombu is not cluster-aware; use a standalone Redis. */}}
+            {{- /* Celery/kombu is not cluster-aware, so cluster installs must
+                   point it at a standalone Redis or the app fails at startup. */}}
             - name: CELERY_REDIS_URL
-              value: {{ .Values.redisCluster.celeryRedisUrl | quote }}
-            {{- end }}
+              value: {{ required "redisCluster.enabled=true requires redisCluster.celeryRedisUrl (Celery/kombu is not cluster-aware; set it to a standalone Redis URL, e.g. redis://host:6379/0)" .Values.redisCluster.celeryRedisUrl | quote }}
             {{- if .Values.redisCluster.usePassword }}
             - name: REDIS_PASSWORD
               valueFrom:

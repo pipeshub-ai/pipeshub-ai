@@ -43,11 +43,16 @@ def _parse_port(port_str: str, entry: str) -> int:
     offending entry, mirroring the Node.js parser.
     """
     try:
-        return int(port_str or 6379)
+        port = int(port_str or 6379)
     except (TypeError, ValueError):
-        raise ValueError(
+        raise ValueError(  # noqa: B904
             f"REDIS_NODES entry has non-numeric port: '{entry}'"
         )
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"REDIS_NODES entry has out-of-range port: '{entry}'"
+        )
+    return port
 
 
 def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
@@ -59,15 +64,23 @@ def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
         entry = entry.strip()
         if not entry:
             continue
-        if ':' in entry:
+        if entry.startswith('['):
+            # A bracketed IPv6 literal ends at `]`, so the address must be
+            # matched before splitting on the last colon — otherwise `[::1]`
+            # splits inside the address itself.
+            close = entry.find(']')
+            if close == -1:
+                raise ValueError(
+                    f"REDIS_NODES entry has an unclosed '[': '{entry}'"
+                )
+            host = entry[1:close]
+            rest = entry[close + 1:]
+            port = _parse_port(rest[1:], entry) if rest.startswith(':') else 6379
+        elif ':' in entry:
             host, port_str = entry.rsplit(':', 1)
             port = _parse_port(port_str, entry)
         else:
             host, port = entry, 6379
-        # Strip brackets from an IPv6 literal (`[::1]` -> `::1`); the socket
-        # layer wants the raw address, not the URL-style bracketed form.
-        if host.startswith('[') and host.endswith(']'):
-            host = host[1:-1]
         nodes.append((host, port))
     return nodes
 

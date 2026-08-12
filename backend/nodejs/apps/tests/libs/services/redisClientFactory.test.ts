@@ -113,8 +113,18 @@ describe('redisClientFactory', () => {
       ]);
     });
 
+    it('parses a bracketed IPv6 literal with no port', () => {
+      expect(parseRedisNodes('[::1]')).to.deep.equal([
+        { host: '::1', port: 6379 },
+      ]);
+    });
+
     it('throws on a non-numeric port', () => {
       expect(() => parseRedisNodes('host:abc')).to.throw(/non-numeric port/);
+    });
+
+    it('throws on an out-of-range port', () => {
+      expect(() => parseRedisNodes('host:99999')).to.throw(/out-of-range port/);
     });
   });
 });

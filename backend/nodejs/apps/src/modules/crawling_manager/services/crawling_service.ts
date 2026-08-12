@@ -36,6 +36,9 @@ interface PausedJobInfo {
 @injectable()
 export class CrawlingSchedulerService {
   private queue: Queue;
+  // BullMQ treats a supplied client as shared and never quits it, so in
+  // cluster mode we hold the Cluster we created and close it ourselves.
+  private ownedConnection: { quit(): Promise<unknown> } | null = null;
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
@@ -48,8 +51,13 @@ export class CrawlingSchedulerService {
     // name with `{...}` in cluster mode. Standalone mode passes through.
     // We also pass a real Cluster client when in cluster mode — BullMQ would
     // otherwise build a standalone Redis pointed at one node and CROSSSLOT.
+    const bullConnection = buildBullConnection(redisConfig);
+    this.ownedConnection =
+      typeof (bullConnection as { quit?: unknown }).quit === 'function'
+        ? (bullConnection as { quit(): Promise<unknown> })
+        : null;
     const queueOptions: QueueOptions = {
-      connection: buildBullConnection(redisConfig) as QueueOptions['connection'],
+      connection: bullConnection as QueueOptions['connection'],
       defaultJobOptions: {
         removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
         removeOnFail: 10, // Keep only last 10 failed jobs per connector type
@@ -978,6 +986,7 @@ export class CrawlingSchedulerService {
 
     try {
       await this.queue.close();
+      await this.ownedConnection?.quit();
       this.repeatableJobMap.clear();
       this.pausedJobs.clear();
       this.logger.info('CrawlingSchedulerService closed successfully');

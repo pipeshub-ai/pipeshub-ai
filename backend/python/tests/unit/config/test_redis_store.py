@@ -54,6 +54,14 @@ def _make_store(key_prefix="pipeshub:kv:"):
     return store
 
 
+@pytest.fixture(autouse=True)
+def _stop_started_patches():
+    """_make_store starts a process-wide patch; without this it leaks into
+    every later test in the session."""
+    yield
+    patch.stopall()
+
+
 # ============================================================================
 # _build_key / _strip_prefix
 # ============================================================================

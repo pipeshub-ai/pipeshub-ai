@@ -135,15 +135,18 @@ class ConfigurationService:
             redis_host = os.getenv(RedisEnv.HOST)
             if redis_host:
                 redis_password = os.getenv(RedisEnv.PASSWORD, "")
-                redis_mode = os.getenv(RedisEnv.MODE, RedisDefaults.MODE).lower()
+                # Reject a typo like `cluser` instead of silently falling back to
+                # standalone, which would point the app at the wrong topology.
+                # The cluster/nodes pairing itself is validated in
+                # get_redis_config(); raising here would surface as a store
+                # failure because get_config() calls this from its except block.
+                redis_mode = os.getenv(RedisEnv.MODE, RedisDefaults.MODE).strip().lower()
                 if redis_mode not in ("standalone", "cluster"):
-                    redis_mode = "standalone"
-                redis_nodes_raw = os.getenv(RedisEnv.NODES, "")
-                if redis_mode == "cluster" and not redis_nodes_raw.strip():
                     raise ValueError(
-                        "REDIS_MODE=cluster requires REDIS_NODES "
-                        "(comma-separated host:port list)."
+                        f"Invalid REDIS_MODE '{redis_mode}'. "
+                        "Must be 'standalone' or 'cluster'."
                     )
+                redis_nodes_raw = os.getenv(RedisEnv.NODES, "")
                 return {
                     "host": redis_host,
                     "port": int(os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),

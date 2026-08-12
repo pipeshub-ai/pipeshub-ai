@@ -17,18 +17,33 @@ export const parseRedisNodes = (raw?: string): RedisClusterNode[] => {
   for (const rawEntry of (raw ?? '').split(',')) {
     const entry = rawEntry.trim();
     if (!entry) continue;
-    const lastColon = entry.lastIndexOf(':');
-    let host = lastColon === -1 ? entry : entry.slice(0, lastColon);
-    const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
+    let host: string;
+    let portStr: string;
+    if (entry.startsWith('[')) {
+      // A bracketed IPv6 literal ends at `]`, so the address must be matched
+      // before splitting on the last colon — otherwise `[::1]` splits inside
+      // the address itself.
+      const close = entry.indexOf(']');
+      if (close === -1) {
+        throw new Error(`REDIS_NODES entry has an unclosed '[': '${entry}'`);
+      }
+      host = entry.slice(1, close);
+      const rest = entry.slice(close + 1);
+      portStr = rest.startsWith(':') ? rest.slice(1) : '6379';
+    } else {
+      const lastColon = entry.lastIndexOf(':');
+      host = lastColon === -1 ? entry : entry.slice(0, lastColon);
+      portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
+    }
     if (!host) continue;
-    const port = parseInt(portStr || '6379', 10);
+    // parseInt is lenient ("1]" -> 1), so require the whole string to be digits.
+    const raw = portStr || '6379';
+    const port = /^\d+$/.test(raw) ? parseInt(raw, 10) : NaN;
     if (Number.isNaN(port)) {
       throw new Error(`REDIS_NODES entry has non-numeric port: '${entry}'`);
     }
-    // Strip brackets from an IPv6 literal (`[::1]` -> `::1`); net.connect wants
-    // the raw address, not the URL-style bracketed form.
-    if (host.startsWith('[') && host.endsWith(']')) {
-      host = host.slice(1, -1);
+    if (port < 1 || port > 65535) {
+      throw new Error(`REDIS_NODES entry has out-of-range port: '${entry}'`);
     }
     nodes.push({ host, port });
   }
@@ -133,6 +148,9 @@ export const buildRedisClient = (
       // consistency, which replica reads break under replication lag.
       scaleReads: 'master',
       clusterRetryStrategy: retryDelay(retry),
+      // ioredis omits enableOfflineQueue from ClusterOptions["redisOptions"],
+      // so it has to be set here or the cluster silently keeps its own default.
+      enableOfflineQueue: config.enableOfflineQueue ?? true,
     };
     return new Cluster(nodes, clusterOptions);
   }

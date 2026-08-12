@@ -62,9 +62,6 @@ class FakeRedis extends EventEmitter {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Fake Cluster class — same command surface as FakeRedis plus `nodes()`.
-// ---------------------------------------------------------------------------
 class FakeCluster extends FakeRedis {
   private _seedNodes: Array<{ host: string; port: number }>;
 

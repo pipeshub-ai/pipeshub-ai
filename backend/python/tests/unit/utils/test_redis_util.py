@@ -141,6 +141,22 @@ class TestParseRedisNodes:
 
         assert parse_redis_nodes("host-only") == [("host-only", 6379)]
 
+    def test_bracketed_ipv6_with_and_without_port(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        assert parse_redis_nodes("[::1]") == [("::1", 6379)]
+        assert parse_redis_nodes("[::1]:7000") == [("::1", 7000)]
+        assert parse_redis_nodes("[fe80::1]:7000,[::1]") == [
+            ("fe80::1", 7000),
+            ("::1", 6379),
+        ]
+
+    def test_rejects_out_of_range_port(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        with pytest.raises(ValueError, match="out-of-range port"):
+            parse_redis_nodes("host:99999")
+
     def test_strips_ipv6_brackets(self):
         from app.utils.redis_util import parse_redis_nodes
 
