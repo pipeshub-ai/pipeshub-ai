@@ -2321,6 +2321,7 @@ class TestProcessImageEmbeddingsOpenAICompatible:
             {"data": [None]},
             {"data": [{}]},
             {"data": [{"embedding": []}]},
+            {"data": [{"embedding": [True]}]},
             {"data": [{"embedding": [0.1, "invalid"]}]},
         ],
     )

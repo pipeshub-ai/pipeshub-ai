@@ -960,7 +960,8 @@ class VectorStore(Transformer):
                         not isinstance(embedding, list)
                         or not embedding
                         or not all(
-                            isinstance(value, (int, float)) for value in embedding
+                            isinstance(value, (int, float)) and not isinstance(value, bool)
+                            for value in embedding
                         )
                     ):
                         raise ValueError("response contains no embedding vector")
