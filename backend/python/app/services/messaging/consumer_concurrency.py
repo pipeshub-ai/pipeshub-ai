@@ -24,11 +24,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
-from app.services.resource_governor import gate_pool, parse_cost
+from app.services.resource_governor import classify, gate_pool, parse_cost
 from app.services.resource_governor.models import ParseTier
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from logging import Logger
 
     from app.services.messaging.distributed_concurrency import (
@@ -298,13 +298,34 @@ async def increment_retry_and_check(
 # ---------------------------------------------------------------------------
 
 
-def index_ceiling(host: ConcurrencyHost) -> int:
-    """Cluster-wide indexing lease limit: the resolved INDEX ceiling when a
-    governor is present, else the legacy static env var."""
+def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
+    """Cluster-wide indexing lease limit for *tier*'s active-pipeline pool
+    (INDEX for heavy/unknown, LIGHT_INDEX for light) when a governor is
+    present, else the legacy static env var — which was never split by
+    tier, so it stays a single shared limit regardless of *tier*."""
     governor = host.governor
     if governor is not None:
+        if tier is ParseTier.LIGHT:
+            return governor.ceilings.light_index
         return governor.ceilings.index
     return messaging_env.max_concurrent_indexing
+
+
+def classify_index_tier(payload: "Mapping[str, Any]") -> ParseTier:
+    """Classify a message's parse tier straight from its raw payload
+    (``extension``/``mimeType``), before the handler's own DB-fetch-then-
+    classify path runs.
+
+    The INDEX/LIGHT_INDEX gate is acquired *ahead of* the handler (so up to
+    the resolved ceiling can be ``IN_PROGRESS`` at once) — waiting for the
+    handler to report ``tier`` via ``START_PARSING`` (as parsing admission
+    already does) would mean every record serialises on one shared gate
+    before tier-aware routing ever applies. The raw Kafka/Redis payload
+    already carries the same ``extension``/``mimeType`` fields the handler
+    reads for this (see ``events.py``'s ``event_data.get("extension"...)``),
+    so this is the same classification, just run earlier.
+    """
+    return classify(payload.get("extension"), payload.get("mimeType"))
 
 
 def parse_ceiling(host: ConcurrencyHost) -> int:

@@ -85,5 +85,18 @@ def parse_cost(tier: ParseTier, size_bytes: int | None) -> int:
 
 
 def gate_pool(tier: ParseTier) -> Pool:
-    """Which admission pool a tier routes to."""
+    """Which parse admission pool a tier routes to."""
     return Pool.HEAVY_PARSE if tier is ParseTier.HEAVY else Pool.LIGHT_PARSE
+
+
+def index_pool(tier: ParseTier) -> Pool:
+    """Which active-pipeline (INDEX) admission pool a tier routes to.
+
+    Mirrors ``gate_pool``, one level up: the INDEX gate is held for a
+    record's whole lifetime (download through vector upsert), not just its
+    parse phase, and is acquired *before* parsing even starts — so it needs
+    the same heavy/light split, checked this early, or a light record
+    queues behind a heavy one for the gate neither of them actually needs
+    to share.
+    """
+    return Pool.LIGHT_INDEX if tier is ParseTier.LIGHT else Pool.INDEX

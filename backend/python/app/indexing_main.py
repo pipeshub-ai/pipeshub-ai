@@ -780,6 +780,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
+        env_light=messaging_env.env_max_concurrent_light_parsing,
+        env_light_index=messaging_env.env_max_concurrent_light_indexing,
         worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
     )
     app.state.governor = governor

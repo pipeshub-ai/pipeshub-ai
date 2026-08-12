@@ -96,6 +96,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     governor = ResourceGovernor(
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
+        env_light=messaging_env.env_max_concurrent_light_parsing,
         worker_count=worker_count,
     )
     app.state.governor = governor

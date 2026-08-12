@@ -17,6 +17,7 @@ class Pool(StrEnum):
     """Admission pools governed independently by the ResourceGovernor."""
 
     INDEX = "index"
+    LIGHT_INDEX = "light_index"
     DOWNLOAD_BYTES = "download_bytes"
     HEAVY_PARSE = "heavy_parse"
     LIGHT_PARSE = "light_parse"
@@ -131,12 +132,16 @@ class Ceilings:
 
     ``light`` is sized independently of ``heavy`` (plan section 4.2) — light
     parses are milliseconds of CPU on a few KB and must never be capped by
-    heavy-parse memory sizing.
+    heavy-parse memory sizing. ``light_index`` is the same split one level
+    up: the active-pipeline gate a record holds from admission through
+    indexing completion must not make a Jira/Slack/Markdown record queue
+    behind a Docling PDF that holds ``index`` for minutes.
     """
 
     heavy: int
     light: int
     index: int
+    light_index: int
     bytes_max: int
 
 

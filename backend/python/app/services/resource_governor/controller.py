@@ -57,6 +57,8 @@ class ResourceGovernor:
         logger: logging.Logger,
         env_parse: int | None = None,
         env_index: int | None = None,
+        env_light: int | None = None,
+        env_light_index: int | None = None,
         worker_count: int = 1,
         probe: ResourceProbe | None = None,
         sample_interval: float = SAMPLE_INTERVAL_SECONDS,
@@ -75,10 +77,12 @@ class ResourceGovernor:
         self._worker_count = max(1, worker_count)
 
         initial_snapshot = self._probe.snapshot()
-        self._ceilings: Ceilings = resolve_ceilings(initial_snapshot, env_parse, env_index, self._worker_count)
+        self._ceilings: Ceilings = resolve_ceilings(
+            initial_snapshot, env_parse, env_index, self._worker_count, env_light, env_light_index,
+        )
 
         self._state_lock = threading.Lock()
-        self._registry = LimitRegistry(warm_start_limits(self._ceilings, env_parse, env_index))
+        self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
 
         self._gates_lock = threading.Lock()
@@ -107,15 +111,23 @@ class ResourceGovernor:
 
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
-            "ceilings(heavy_parse=%d light_parse=%d index=%d download_bytes=%s) worker_count=%d",
+            "ceilings(heavy_parse=%d light_parse=%d index=%d light_index=%d download_bytes=%s) "
+            "worker_count=%d start_limits(heavy_parse=%d light_parse=%d index=%d light_index=%d) "
+            "— every pool ramps from its floor toward the ceiling, so an explicit "
+            "MAX_CONCURRENT_* raises the target rather than the starting point",
             initial_snapshot.source,
             initial_snapshot.cpu_quota,
             _fmt_bytes(initial_snapshot.mem_limit_bytes),
             self._ceilings.heavy,
             self._ceilings.light,
             self._ceilings.index,
+            self._ceilings.light_index,
             _fmt_bytes(self._ceilings.bytes_max),
             self._worker_count,
+            self._registry.get(Pool.HEAVY_PARSE),
+            self._registry.get(Pool.LIGHT_PARSE),
+            self._registry.get(Pool.INDEX),
+            self._registry.get(Pool.LIGHT_INDEX),
         )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
@@ -360,6 +372,7 @@ class ResourceGovernor:
                 "heavy_parse": self._ceilings.heavy,
                 "light_parse": self._ceilings.light,
                 "index": self._ceilings.index,
+                "light_index": self._ceilings.light_index,
                 "download_bytes": self._ceilings.bytes_max,
             },
             "limits": {pool.value: limits.get(pool) for pool in Pool},

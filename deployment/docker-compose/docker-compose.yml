@@ -172,9 +172,23 @@ services:
 
       # Indexing concurrency — leave unset (empty) to let each service derive
       # its ceiling from this container's own cgroup/CPU limits at startup.
-      # Set an explicit integer only to pin a hard ceiling.
+      # Set an explicit integer only to pin a hard ceiling. These are ceilings,
+      # not starting points: every pool ramps up from a floor of 2 as samples
+      # prove the headroom, so a large value raises the target rather than
+      # admitting that much work immediately.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+      # By default an explicit MAX_CONCURRENT_PARSING caps the light tier too.
+      # Set this to decouple them when heavy parses (PDFs through Docling)
+      # need pinning low but small records (Jira/Slack/Markdown) should keep
+      # flowing.
+      - MAX_CONCURRENT_LIGHT_PARSING=${MAX_CONCURRENT_LIGHT_PARSING:-}
+      # Same decoupling one level up: by default an explicit
+      # MAX_CONCURRENT_INDEXING also caps how many light records (Jira/Slack/
+      # Markdown) can be actively IN_PROGRESS at once, which otherwise queues
+      # them behind whatever PDFs are already holding that shared gate. Set
+      # this to give light records their own, independently-sized allowance.
+      - MAX_CONCURRENT_LIGHT_INDEXING=${MAX_CONCURRENT_LIGHT_INDEXING:-}
       # Memory the governor should credit to co-located idle services (all 7
       # run in this one container) rather than to parse/index workload, so a
       # large resident footprint doesn't hold every pool at its floor. Leave

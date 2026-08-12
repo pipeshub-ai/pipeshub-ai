@@ -103,7 +103,12 @@ _PARSE_CEILING_MIN, _PARSE_CEILING_MAX = 2, 12
 _INDEX_CEILING_MIN, _INDEX_CEILING_MAX = 4, 48
 _LIGHT_CEILING_MIN, _LIGHT_CEILING_MAX = 8, 64
 _LIGHT_CPU_MULTIPLIER = 8
-_INDEX_CEILING_PARSE_MULTIPLIER = 3
+_INDEX_CEILING_MULTIPLIER = 3
+# Lighter than heavy's 3x: a light record's active-pipeline hold is still
+# mostly downstream (extraction/embedding/vectordb), same reasoning as
+# _INDEX_CEILING_PARSE_MULTIPLIER, but light parses are cheap enough that
+# doubling the parse-tier ceiling is already generous headroom.
+_LIGHT_INDEX_CEILING_MULTIPLIER = 2
 
 _BYTES_FLOOR = 256 * 1024 * 1024
 _BYTES_BUDGET_FRACTION = 0.25
@@ -141,17 +146,29 @@ def resolve_ceilings(
     env_parse: int | None,
     env_index: int | None,
     worker_count: int = 1,
+    env_light: int | None = None,
+    env_light_index: int | None = None,
 ) -> Ceilings:
     """Resolve operator ceilings once at startup.
 
-    ``env_parse``/``env_index`` are the resolved ``MAX_CONCURRENT_PARSING`` /
-    ``MAX_CONCURRENT_INDEXING`` values — ``None`` means "derive". Explicit
-    operator values are honoured exactly as the process-wide total,
-    including 1 or an intentionally very high number (see corner-case
-    table); when ``worker_count > 1`` that total is then divided across
-    workers below, since each worker process runs its own governor.
+    ``env_parse``/``env_index``/``env_light``/``env_light_index`` are the
+    resolved ``MAX_CONCURRENT_PARSING`` / ``MAX_CONCURRENT_INDEXING`` /
+    ``MAX_CONCURRENT_LIGHT_PARSING`` / ``MAX_CONCURRENT_LIGHT_INDEXING``
+    values — ``None`` means "derive".
+    Explicit operator values are honoured as the process-wide total (see
+    corner-case table), but heavy is still capped at the CPU quota: heavy
+    parses are CPU-bound, so admitting more of them than there are cores
+    only adds contention, never throughput. ``MAX_CONCURRENT_LIGHT_PARSING``
+    has no such cap since light parses are not CPU-bound. When
+    ``worker_count > 1`` the (already CPU-capped) total is then divided
+    across workers below, since each worker process runs its own governor.
     """
     workers = max(1, worker_count)
+    # Never hand out more heavy-parse slots than CPUs actually available —
+    # a sub-2-core cgroup (fractional cpu.max, e.g. cpu_quota=1.0) would
+    # otherwise oversubscribe CPU-bound work. Floored at 1 so there's always
+    # room for at least one heavy-parse slot even below 1 CPU.
+    cpu_cap = max(1, math.floor(snap.cpu_quota))
     # Sized from memory that is actually free at startup, not the whole
     # limit: in the all-in-one container six other services (including
     # Docling's and the embedding server's model weights) are already
@@ -160,11 +177,11 @@ def resolve_ceilings(
     free_gb = _free_memory_gb(snap)
 
     if env_parse is not None:
-        parse_ceiling = max(1, env_parse)
+        parse_ceiling = min(max(1, env_parse), cpu_cap)
         # An explicit heavy ceiling caps light too: an operator pinning
         # MAX_CONCURRENT_PARSING=1 wants one parse in flight, not one heavy
-        # parse plus a burst of light ones.
-        light_ceiling = min(parse_ceiling, int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER))
+        # parse plus a burst of light ones. MAX_CONCURRENT_LIGHT_PARSING
+        # (below) is the escape hatch when they want the opposite.
     else:
         if free_gb is not None:
             derived = min(snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
@@ -172,24 +189,38 @@ def resolve_ceilings(
             derived = snap.cpu_quota
         # _PARSE_CEILING_MIN guarantees useful concurrency on a derived
         # (non-overridden) ceiling, but must never hand out more heavy-parse
-        # slots than CPUs actually available — a sub-2-core cgroup (fractional
-        # cpu.max, e.g. cpu_quota=1.0) would otherwise get a floor of 2 for 1
-        # CPU. Cap the floor itself by the CPU-derived bound (never below 1,
-        # so there's always room for at least one heavy-parse slot).
-        cpu_cap = max(1, math.floor(snap.cpu_quota))
-        parse_floor = min(_PARSE_CEILING_MIN, cpu_cap)
-        parse_ceiling = int(_clamp(math.floor(derived), parse_floor, _PARSE_CEILING_MAX))
+        # slots than CPUs actually available — cap the floor itself by the
+        # CPU-derived bound.
+        parse_ceiling = int(derived)
         # Sized off CPU alone, never off heavy: a light parse is milliseconds
         # on a few KB, so heavy-parse memory sizing must not cap it.
-        light_ceiling = int(
-            snap.cpu_quota * _LIGHT_CPU_MULTIPLIER
-        )
+
+    # Last word, so "few heavy parses, many light ones" is expressible without
+    # dropping MAX_CONCURRENT_PARSING back to the derived path: the two tiers
+    # cost wildly different amounts of memory, and the coupling above only
+    # makes sense as a default. Not re-capped by the derived/heavy-coupled
+    # light_ceiling above — that would make this override a no-op whenever
+    # the operator's intent is exactly to raise light past it.
+    if env_light is not None:
+        light_ceiling = min(max(1, env_light),int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER))
+    else:
+        light_ceiling = int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER)
 
     if env_index is not None:
         index_ceiling = max(1, env_index)
     else:
-        derived_index = parse_ceiling * _INDEX_CEILING_PARSE_MULTIPLIER
-        index_ceiling = int(_clamp(derived_index, _INDEX_CEILING_MIN, _INDEX_CEILING_MAX))
+        derived_index = parse_ceiling * _INDEX_CEILING_MULTIPLIER
+        index_ceiling = int(derived_index)
+
+    # Independent of index_ceiling for the same reason light is independent
+    # of heavy: a light record's active-pipeline hold must never be capped
+    # by the heavy-parse-derived sizing above, or a Jira/Slack/Markdown
+    # record queues for the same gate a Docling PDF is holding for minutes.
+    if env_light_index is not None:
+        light_index_ceiling = max(1, env_light_index)
+    else:
+        derived_light_index = light_ceiling * _LIGHT_CPU_MULTIPLIER
+        light_index_ceiling = int(derived_light_index)
 
     if snap.mem_limit_bytes is not None:
         bytes_max = max(_BYTES_FLOOR, int(snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION))
@@ -200,9 +231,16 @@ def resolve_ceilings(
         parse_ceiling = max(1, parse_ceiling // workers)
         index_ceiling = max(1, index_ceiling // workers)
         light_ceiling = max(1, light_ceiling // workers)
+        light_index_ceiling = max(1, light_index_ceiling // workers)
         bytes_max = max(_BYTES_FLOOR, bytes_max // workers)
 
-    return Ceilings(heavy=parse_ceiling, light=light_ceiling, index=index_ceiling, bytes_max=bytes_max)
+    return Ceilings(
+        heavy=parse_ceiling,
+        light=light_ceiling,
+        index=index_ceiling,
+        light_index=light_index_ceiling,
+        bytes_max=bytes_max,
+    )
 
 
 def start_rate_limiter_params(reference_ceiling: int) -> tuple[float, int]:
@@ -238,36 +276,32 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     """
     if pool is Pool.DOWNLOAD_BYTES:
         return min(_BYTES_FLOOR, ceiling)
+    if pool is Pool.LIGHT_PARSE:
+        return min(10, ceiling)
+    if pool is Pool.LIGHT_INDEX:
+        return min(20, ceiling)
     return min(COUNT_POOL_FLOOR, ceiling)
 
 
-def warm_start_limits(
-    ceilings: Ceilings,
-    env_parse: int | None = None,
-    env_index: int | None = None,
-) -> Limits:
-    """Starting limits: explicit operator values start at the ceiling (the
-    operator expressed informed intent and expects that throughput immediately);
-    derived ceilings start at the conservative floor and ramp up adaptively.
+def warm_start_limits(ceilings: Ceilings) -> Limits:
+    """Starting limits: every pool begins at its conservative floor and ramps
+    toward its ceiling as samples prove the headroom is real.
 
-    This preserves the pre-ResourceGovernor behaviour where
-    ``MAX_CONCURRENT_INDEXING=N`` immediately gave N-slot semaphores, while
-    still allowing the governor to shrink from that starting point if real
-    memory/CPU pressure materialises.
+    An explicit ``MAX_CONCURRENT_*`` used to start *at* the ceiling, on the
+    grounds that the operator had expressed informed intent. But a limit only
+    bounds new admissions — the governor cannot revoke a permit it already
+    granted — so starting wide open lets the first burst commit more memory
+    than the cgroup can hold before the first sample even runs, and the OOM
+    killer wins that race (``MAX_CONCURRENT_PARSING=1000`` admitted a
+    thousand Docling parses and took the container down). An explicit value
+    still raises the ceiling the ramp climbs toward; it no longer skips the
+    ramp.
     """
-    if env_parse is not None:
-        heavy_start = ceilings.heavy
-        light_start = ceilings.light
-    else:
-        heavy_start = floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
-        light_start = floor_for(Pool.LIGHT_PARSE, ceilings.light)
-
-    index_start = ceilings.index if env_index is not None else floor_for(Pool.INDEX, ceilings.index)
-
     return Limits(values={
-        Pool.HEAVY_PARSE: heavy_start,
-        Pool.LIGHT_PARSE: light_start,
-        Pool.INDEX: index_start,
+        Pool.HEAVY_PARSE: floor_for(Pool.HEAVY_PARSE, ceilings.heavy),
+        Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
+        Pool.INDEX: floor_for(Pool.INDEX, ceilings.index),
+        Pool.LIGHT_INDEX: floor_for(Pool.LIGHT_INDEX, ceilings.light_index),
         Pool.DOWNLOAD_BYTES: floor_for(Pool.DOWNLOAD_BYTES, ceilings.bytes_max),
     })
 
@@ -277,6 +311,7 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
         Pool.HEAVY_PARSE: ceilings.heavy,
         Pool.LIGHT_PARSE: ceilings.light,
         Pool.INDEX: ceilings.index,
+        Pool.LIGHT_INDEX: ceilings.light_index,
         Pool.DOWNLOAD_BYTES: ceilings.bytes_max,
     }[pool]
 
@@ -301,11 +336,11 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
         # ceiling.
         return ceilings.light
 
-    if pool is Pool.INDEX:
+    if pool is Pool.INDEX or pool is Pool.LIGHT_INDEX:
         # Deliberately just the ceiling, not a cpu_quota expression (section
         # 4.2). The growth precondition (pressure/demand/gradient), not this
-        # target, is what actually stops INDEX from reaching it.
-        return ceilings.index
+        # target, is what actually stops INDEX/LIGHT_INDEX from reaching it.
+        return ceilings.light_index if pool is Pool.LIGHT_INDEX else ceilings.index
 
     if pool is Pool.DOWNLOAD_BYTES:
         if avail_bytes is not None and snap.mem_limit_bytes:
@@ -430,15 +465,17 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
 def _gradient_permits_growth(
     pool: Pool, demand: PoolDemand, state: PoolState, interval: float,
 ) -> tuple[bool, bool, PoolState]:
-    """Throughput-gradient gate for INDEX (plan section 4.2).
+    """Throughput-gradient gate for INDEX/LIGHT_INDEX (plan section 4.2).
 
     Returns ``(may_grow, must_shrink, updated_state)``. Every other pool is
     unconditionally allowed to grow — the gradient only matters for a pool
     whose bottleneck can be a *downstream* service (embeddings, vector
     upserts, LLM table enrichment) rather than local CPU/RAM, where blindly
     growing to the ceiling would just move the queue instead of clearing it.
+    LIGHT_INDEX shares this: light records still compete for the same
+    downstream embedding/vectordb services as heavy ones.
     """
-    if pool is not Pool.INDEX:
+    if pool is not Pool.INDEX and pool is not Pool.LIGHT_INDEX:
         return True, False, state
 
     completions_per_sec = demand.completions_per_second(interval)

@@ -137,7 +137,12 @@ class TestAdaptiveConcurrencyPressure:
             clock=clock,
         )
         index_gate = governor.gate(Pool.INDEX)
-        assert index_gate.limit == 1000  # explicit ceiling: warm-starts at the ceiling
+        # Every pool warm-starts at its floor now — an explicit ceiling raises
+        # the target the ramp climbs toward, not the starting point — so put
+        # the pool where a finished ramp would have left it. The halve below
+        # needs a large limit to open the 500-permit gap this test measures.
+        governor._registry.set(Pool.INDEX, 1000)
+        assert index_gate.limit == 1000
 
         probe.snapshots = [make_snapshot(mem_pressure=0.9)]  # >= MEM_HARD
         clock.now += SAMPLE_INTERVAL_SECONDS
@@ -196,6 +201,10 @@ class TestAdaptiveConcurrencyPressure:
             clock=clock,
         )
         heavy_gate = governor.gate(Pool.HEAVY_PARSE)
+        # Warm start is the floor, so lift the pool to its ceiling first —
+        # otherwise the repeated halving below has nowhere to fall from and
+        # the assertion passes vacuously.
+        governor._registry.set(Pool.HEAVY_PARSE, 8)
 
         probe.snapshots = [make_snapshot(mem_pressure=0.95)]
         for _ in range(10):

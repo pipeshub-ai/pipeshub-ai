@@ -215,7 +215,9 @@ class TestResourceGovernorController:
             "worker_count", "ceilings", "limits", "in_use", "demand",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
-        assert set(stats["ceilings"].keys()) == {"heavy_parse", "light_parse", "index", "download_bytes"}
+        assert set(stats["ceilings"].keys()) == {
+            "heavy_parse", "light_parse", "index", "light_index", "download_bytes",
+        }
         assert set(stats["demand"][Pool.HEAVY_PARSE.value].keys()) == {
             "utilisation", "blocked_acquires", "completions", "rate_limited_acquires",
         }
