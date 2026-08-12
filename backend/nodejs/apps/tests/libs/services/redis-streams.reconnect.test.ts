@@ -16,6 +16,11 @@ describe('Redis Streams reconnect after disconnect', () => {
   const svcPath = require.resolve(
     '../../../src/libs/services/redis-streams.service',
   );
+  // The service builds its clients through redisClientFactory, so that module
+  // must be re-required too or it keeps a reference to the real ioredis.
+  const factoryPath = require.resolve(
+    '../../../src/libs/services/redisClientFactory',
+  );
   let original: NodeJS.Module | undefined;
   let clients: any[];
 
@@ -56,6 +61,7 @@ describe('Redis Streams reconnect after disconnect', () => {
       ...original!,
       exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
     } as any;
+    delete require.cache[factoryPath];
     delete require.cache[svcPath];
     svc = require('../../../src/libs/services/redis-streams.service');
   });
@@ -63,6 +69,7 @@ describe('Redis Streams reconnect after disconnect', () => {
   afterEach(() => {
     if (original) require.cache[ioredisPath] = original;
     else delete require.cache[ioredisPath];
+    delete require.cache[factoryPath];
     delete require.cache[svcPath];
     sinon.restore();
   });

@@ -155,7 +155,7 @@ export abstract class BaseRedisStreamsProducerConnection
     }
     this.initialized = false;
     const closing = this.redis;
-    this.redis = new Redis(buildRedisOptions(this.config));
+    this.redis = buildStreamsClient(this.config);
     try {
       await closing.quit();
       this.logger.info('Successfully disconnected Redis Streams producer');
@@ -350,8 +350,8 @@ export abstract class BaseRedisStreamsConsumerConnection
       }
       this.initialized = false;
       const closing = [this.redis, this.ackRedis];
-      this.redis = new Redis(buildRedisOptions(this.config));
-      this.ackRedis = new Redis(buildRedisOptions(this.config));
+      this.redis = buildStreamsClient(this.config);
+      this.ackRedis = buildStreamsClient(this.config);
       await Promise.all(closing.map((client) => client.quit()));
       this.logger.info('Successfully disconnected Redis Streams consumer');
     } catch (error) {
