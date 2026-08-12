@@ -506,6 +506,57 @@ class TestCreateAgent(AgentsTestBase):
         resp = self._create_agent_raw(payload)
         assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
+    def test_create_agent_without_models_field_succeeds_and_uses_org_default(
+        self,
+        created_agent_keys: list[str],
+    ) -> None:
+        """Omitting `models` entirely is valid — the agent falls back to the
+        organization's default LLM at chat time (see `get_llm_for_chat`)."""
+        payload: dict[str, Any] = {"name": f"it-agent-no-models-field-{uuid4().hex[:8]}"}
+        assert_request_body_matches_openapi_operation(payload, "createAgent")
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = self._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+
+        agent = body["agent"]
+        assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
+        assert agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {agent!r}"
+        assert_response_matches_openapi_operation(body, "createAgent", status_code="201")
+
+    def test_create_agent_empty_models_array_succeeds_and_uses_org_default(
+        self,
+        created_agent_keys: list[str],
+    ) -> None:
+        """An explicit empty `models: []` array behaves identically to
+        omitting the field."""
+        payload: dict[str, Any] = {
+            "name": f"it-agent-empty-models-{uuid4().hex[:8]}",
+            "models": [],
+        }
+        assert_request_body_matches_openapi_operation(payload, "createAgent")
+
+        resp = self._create_agent_raw(payload)
+        assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
+
+        body = _response_json(resp)
+        agent_key = self._created_agent_key(body)
+        created_agent_keys.append(agent_key)
+
+        agent = body["agent"]
+        assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
+        assert agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {agent!r}"
+
+        # A subsequent GET reflects the same model-free state.
+        get_resp = self.agents.get_agent(agent_key)
+        assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
+        get_agent = _response_json(get_resp)["agent"]
+        assert get_agent.get("models") == []
+        assert get_agent.get("usesOrgDefault") is True
+
 
 @pytest.mark.integration
 class TestCreateAgentOpenApiRequestContract:
@@ -1200,29 +1251,72 @@ class TestUpdateAgent(AgentsTestBase):
             f"Expected 'No token provided', got {body['error']['message']!r}"
         )
 
-    def test_update_agent_returns_current_error_status_for_empty_models_array(
+    def test_update_agent_empty_models_array_clears_models_and_uses_org_default(
         self,
         reasoning_multimodal_llm_model: SeededAIModel,
         created_agent_keys: list[str],
     ) -> None:
+        """An empty `models: []` on update is valid — it clears the agent's
+        models, reverting it to the organization's default LLM."""
         agent_key = self._create_agent_for_update_test(
             name=f"it-agent-update-empty-models-{uuid4().hex[:8]}",
             seeded_model=reasoning_multimodal_llm_model,
             created_agent_keys=created_agent_keys,
         )
 
-        resp = self._update_agent_raw(agent_key, json_body={"models": []})
-        assert resp.status_code == 400, (
-            f"Expected 400 validation error for empty models array, got {resp.status_code}: {resp.text}"
-        )
+        payload = {"models": []}
+        assert_request_body_matches_openapi_operation(payload, "updateAgent")
+
+        resp = self._update_agent_raw(agent_key, json_body=payload)
+        assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
 
         body = _response_json(resp)
-        assert_response_matches_openapi_operation(body, "updateAgent", status_code="400")
+        assert_response_matches_openapi_operation(body, "updateAgent", status_code="200")
 
-        error_text = _response_text_fragments(resp)
-        assert "at least one" in error_text and "model" in error_text, (
-            f"unexpected error payload: {resp.text}"
+        get_resp = self._get_agent_raw(agent_key)
+        assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
+        get_body = _response_json(get_resp)
+        agent = get_body["agent"]
+        assert agent.get("models") == [], f"Expected cleared models, got: {agent!r}"
+        assert agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {agent!r}"
+
+    def test_update_agent_round_trip_add_then_remove_models(
+        self,
+        reasoning_multimodal_llm_model: SeededAIModel,
+        created_agent_keys: list[str],
+    ) -> None:
+        """An agent created with no models can have a model attached via
+        update, then cleared again — verifying `usesOrgDefault` flips
+        correctly both ways."""
+        create_payload: dict[str, Any] = {"name": f"it-agent-round-trip-{uuid4().hex[:8]}"}
+        create_resp = self._create_agent_raw(create_payload)
+        assert create_resp.status_code == 201, f"{create_resp.status_code}: {create_resp.text}"
+        create_body = _response_json(create_resp)
+        agent_key = self._created_agent_key(create_body)
+        created_agent_keys.append(agent_key)
+        assert create_body["agent"].get("usesOrgDefault") is True
+
+        # Add a model via update.
+        add_payload = _build_update_payload(seeded_model=reasoning_multimodal_llm_model)
+        add_resp = self._update_agent_raw(agent_key, json_body=add_payload)
+        assert add_resp.status_code == 200, f"{add_resp.status_code}: {add_resp.text}"
+
+        get_after_add = _response_json(self._get_agent_raw(agent_key))["agent"]
+        models_after_add = get_after_add.get("models")
+        assert isinstance(models_after_add, list) and models_after_add, (
+            f"Expected non-empty models after add, got: {get_after_add!r}"
         )
+        assert get_after_add.get("usesOrgDefault") is False
+
+        # Remove the model again via update.
+        remove_resp = self._update_agent_raw(agent_key, json_body={"models": []})
+        assert remove_resp.status_code == 200, f"{remove_resp.status_code}: {remove_resp.text}"
+
+        get_after_remove = _response_json(self._get_agent_raw(agent_key))["agent"]
+        assert get_after_remove.get("models") == [], (
+            f"Expected cleared models after remove, got: {get_after_remove!r}"
+        )
+        assert get_after_remove.get("usesOrgDefault") is True
 
     def test_update_agent_rejects_models_without_reasoning_flag(
         self,

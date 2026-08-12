@@ -10,7 +10,7 @@ import {
 } from '../display-utils';
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
-import { selectPreferredModel, llmNodeTypeSlug } from '../agent-model-utils';
+import { llmNodeTypeSlug } from '../agent-model-utils';
 import type {
   AgentConfiguredModel,
   AgentToolset,
@@ -125,7 +125,10 @@ export function useAgentBuilderReconstruction(): {
       }
 
       const counts = {
-        llm: agent.models?.length || (modelCatalog.length > 0 ? 1 : 0),
+        // Agents saved with no models render with zero LLM nodes — see the
+        // "Create LLM nodes" section below, which no longer injects a
+        // default node when `agent.models` is empty.
+        llm: agent.models?.length || 0,
         tools: 0,
         toolsets: toolsetsCount,
         knowledge: agent.knowledge?.length || 0,
@@ -424,42 +427,10 @@ export function useAgentBuilderReconstruction(): {
           nodes.push(llmNode);
           llmNodes.push(llmNode);
         });
-      } else if (modelCatalog.length > 0) {
-        const defaultModel = selectPreferredModel(modelCatalog);
-        const displayName =
-          defaultModel.modelFriendlyName || defaultModel.modelName || t('agentBuilder.placeholderAiModel');
-        nodeCounter += 1;
-        const nodeId = `llm-${nodeCounter}`;
-        const llmNode: Node<FlowNodeData> = {
-          id: nodeId,
-          type: 'flowNode',
-          position: calculateOptimalPosition('llm', 0, 1),
-          data: {
-            id: nodeId,
-            type: llmNodeTypeSlug(defaultModel.provider, defaultModel.modelKey, defaultModel.modelName),
-            label: displayName.trim(),
-            description: t('agentBuilder.llmLanguageModelSuffix', {
-              provider: formattedProvider(defaultModel.provider || 'AI'),
-            }),
-            icon: 'psychology',
-            config: {
-              modelKey: defaultModel.modelKey,
-              modelName: defaultModel.modelName,
-              modelFriendlyName: defaultModel.modelFriendlyName,
-              provider: defaultModel.provider,
-              modelType: defaultModel.modelType,
-              isMultimodal: defaultModel.isMultimodal,
-              isDefault: defaultModel.isDefault,
-              isReasoning: defaultModel.isReasoning,
-            },
-            inputs: [],
-            outputs: ['response'],
-            isConfigured: true,
-          },
-        };
-        nodes.push(llmNode);
-        llmNodes.push(llmNode);
       }
+      // Note: agents saved with no models intentionally render with no LLM
+      // node — they fall back to the organization's default LLM at chat
+      // time. We no longer inject a default LLM node on reconstruction.
 
       // 4. Create Toolset nodes
       const toolsetNodes: Node<FlowNodeData>[] = [];

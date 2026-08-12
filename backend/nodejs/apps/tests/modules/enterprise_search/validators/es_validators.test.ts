@@ -1734,26 +1734,28 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should reject empty models array', () => {
+    it('should accept an empty models array (agent falls back to org default LLM)', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'Agent', models: [] },
       })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject missing models without throwing', () => {
-      const result = createAgentSchema.safeParse({
-        body: { name: 'Agent' },
-      })
-      expect(result.success).to.be.false
-      if (!result.success) {
-        expect(result.error.issues.some((i) => i.path.join('.') === 'body.models')).to
-          .be.true
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.models).to.deep.equal([])
       }
     })
 
-    it('should reject invalid models types without throwing', () => {
-      for (const models of [undefined, null, 'not-an-array', 42]) {
+    it('should accept omitted models and default to an empty array', () => {
+      const result = createAgentSchema.safeParse({
+        body: { name: 'Agent' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.models).to.deep.equal([])
+      }
+    })
+
+    it('should reject non-array models values without throwing', () => {
+      for (const models of [null, 'not-an-array', 42]) {
         const result = createAgentSchema.safeParse({
           body: { name: 'Agent', models },
         })
@@ -1968,6 +1970,17 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should leave models untouched (undefined) when omitted from a partial update', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'my-agent' },
+        body: { name: 'Renamed Agent' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.models).to.be.undefined
+      }
+    })
+
     it('should accept models with valid reasoning model', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
@@ -2021,12 +2034,15 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
-    it('should reject empty models array', () => {
+    it('should accept an empty models array (clears the agent back to org default LLM)', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
         body: { models: [] },
       })
-      expect(result.success).to.be.false
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.models).to.deep.equal([])
+      }
     })
 
     it('should reject models without isReasoning true', () => {

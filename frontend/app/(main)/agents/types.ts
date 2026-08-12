@@ -43,6 +43,8 @@ export interface AgentListRecord {
   name: string;
   description: string;
   models: string[];
+  /** True when `models` is empty; the agent uses the organization's default LLM at chat time. */
+  usesOrgDefault?: boolean;
   startMessage: string;
   systemPrompt: string;
   tags: string[];
@@ -155,6 +157,12 @@ export interface AgentMcpServer {
  */
 export interface AgentDetail {
   models: AgentConfiguredModel[];
+  /**
+   * True when `models` is empty and the agent falls back to the
+   * organization's default LLM at chat time. Derived by the backend from
+   * `models.length === 0` — not a separately persisted field.
+   */
+  usesOrgDefault?: boolean;
   /** Often `""` when unset */
   instructions?: string;
   startMessage: string;

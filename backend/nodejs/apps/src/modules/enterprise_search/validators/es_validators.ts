@@ -499,8 +499,6 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
-const AGENT_MODEL_REQUIRED_MESSAGE =
-  'At least one AI model is required. Please add a model to your configuration.';
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
   'At least one reasoning model is required. Please add a reasoning model to your configuration.';
 
@@ -515,13 +513,16 @@ const hasReasoningModel = (
       model.isReasoning === true,
   );
 
-const agentModelsSchema = z
+/**
+ * Agent model list is optional: an agent with no models configured falls back
+ * to the organization's default LLM at execution time. When models ARE
+ * provided, at least one must be a reasoning model so reasoning-effort
+ * settings behave predictably.
+ */
+const agentModelsOptionalSchema = z
   .array(agentModelEntrySchema)
-  .min(1, {
-    message: AGENT_MODEL_REQUIRED_MESSAGE,
-  })
   .superRefine((models, ctx) => {
-    if (!hasReasoningModel(models)) {
+    if (models.length > 0 && !hasReasoningModel(models)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: AGENT_REASONING_MODEL_REQUIRED_MESSAGE,
@@ -536,7 +537,11 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
-    models: agentModelsSchema,
+    /**
+     * Optional: an agent created without models uses the organization's
+     * default LLM at chat time (see get_llm_for_chat fallback chain).
+     */
+    models: agentModelsOptionalSchema.optional().default([]),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -571,7 +576,9 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
-    models: agentModelsSchema.optional(),
+    /** Optional; when present, an empty array clears the agent's models
+     * and reverts it to the organization default LLM. */
+    models: agentModelsOptionalSchema.optional(),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),

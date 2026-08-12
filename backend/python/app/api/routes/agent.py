@@ -1342,11 +1342,21 @@ async def _create_skill_edges(
 
 
 async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
-    """Enrich agent models with full configurations from etcd"""
+    """Enrich agent models with full configurations from etcd.
+
+    Agents may be created/updated with no models, in which case they fall
+    back to the organization's default LLM at chat time (see
+    `get_llm_for_chat`). `usesOrgDefault` surfaces that state to API
+    consumers without persisting it as a separate field on the agent doc.
+    """
     model_entries = agent.get("models", [])
 
     if not model_entries or not isinstance(model_entries, list):
+        agent["models"] = []
+        agent["usesOrgDefault"] = True
         return
+
+    agent["usesOrgDefault"] = False
 
     try:
         ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
@@ -1683,14 +1693,13 @@ async def create_agent(request: Request) -> JSONResponse:
         model_entries, has_reasoning_model = _parse_models(raw_models, logger)
         default_reasoning_effort = _parse_default_reasoning_effort(body.get("defaultReasoningEffort"))
 
-        if not model_entries:
+        # Models are optional: an agent created without any models falls back
+        # to the organization's default LLM at chat time (see get_llm_for_chat).
+        # When models ARE specified, at least one must be a reasoning model so
+        # reasoning-effort settings behave predictably.
+        if model_entries and not has_reasoning_model:
             raise InvalidRequestError(
-                "At least one AI model is required. Please add a model to your configuration."
-            )
-
-        if not has_reasoning_model:
-            raise InvalidRequestError(
-                "At least one reasoning model is required. Please add a reasoning model to your configuration."
+                "When models are specified, at least one reasoning model is required."
             )
 
         # Parse toolsets, knowledge, skills, and MCP servers BEFORE starting transaction
@@ -2260,6 +2269,9 @@ async def get_agents(
             if not isinstance(agent, dict):
                 continue
             agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
+            # Cheap derived flag (no etcd lookup needed here); full model
+            # enrichment only happens on the single-agent GET endpoint.
+            agent["usesOrgDefault"] = not agent.get("models")
             creator_key = agent.get("createdBy")
             if creator_key and creator_key != "system":
                 creator_doc = creators_by_key.get(str(creator_key))
@@ -2310,19 +2322,17 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         user_key = user_doc["_key"]
         org_key = user_context["orgId"]
 
-        # Validate models if provided in update body
+        # Validate models if provided in update body. An empty array is valid
+        # and clears the agent's models, reverting it to the organization's
+        # default LLM at chat time. When a non-empty array is provided, at
+        # least one entry must be a reasoning model.
         if "models" in body:
             raw_models = body.get("models", [])
             model_entries, has_reasoning_model = _parse_models(raw_models, logger)
 
-            if not model_entries:
+            if model_entries and not has_reasoning_model:
                 raise InvalidRequestError(
-                    "At least one AI model is required. Please add a model to your configuration."
-                )
-
-            if not has_reasoning_model:
-                raise InvalidRequestError(
-                    "At least one reasoning model is required. Please add a reasoning model to your configuration."
+                    "When models are specified, at least one reasoning model is required."
                 )
 
         if "defaultReasoningEffort" in body:
@@ -3349,7 +3359,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         agent.update(perm)
 
-        # Determine model key/name: prefer explicit query params, then agent's first model
+        # Determine model key/name: prefer explicit query params, then agent's first model.
+        # If neither is available, model_key/model_name stay None and
+        # get_llm_for_chat() below resolves the organization's default LLM.
         model_key = chat_query.modelKey
         model_name = chat_query.modelName
         if not model_key and not model_name:
@@ -3367,6 +3379,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     model_name = first_model.get("modelName")
             if model_key:
                 logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
+            else:
+                logger.info(
+                    f"Agent {agent_id} has no configured models; falling back to organization default LLM"
+                )
 
         # Get LLM for chat. Explicit per-request effort wins; otherwise fall back
         # to the agent's configured default (if any).

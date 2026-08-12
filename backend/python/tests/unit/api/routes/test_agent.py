@@ -1114,6 +1114,49 @@ class TestEnrichAgentModels:
         # With None config, llm_configs = [], model not found -> fallback
         assert agent["models"][0]["provider"] == "unknown"
 
+    @pytest.mark.asyncio
+    async def test_usesOrgDefault_true_when_no_models(self) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {"models": []}
+        config_service = AsyncMock()
+        log = logging.getLogger("test")
+
+        await _enrich_agent_models(agent, config_service, log)
+        assert agent["usesOrgDefault"] is True
+        assert agent["models"] == []
+
+    @pytest.mark.asyncio
+    async def test_usesOrgDefault_true_when_models_key_missing(self) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {}
+        config_service = AsyncMock()
+        log = logging.getLogger("test")
+
+        await _enrich_agent_models(agent, config_service, log)
+        assert agent["usesOrgDefault"] is True
+        assert agent["models"] == []
+
+    @pytest.mark.asyncio
+    async def test_usesOrgDefault_false_when_models_present(self) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {"models": ["mk1_gpt-4o"]}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={
+            "llm": [{
+                "modelKey": "mk1",
+                "configuration": {"model": "gpt-4o"},
+                "provider": "openai",
+                "isReasoning": True,
+            }]
+        })
+        log = logging.getLogger("test")
+
+        await _enrich_agent_models(agent, config_service, log)
+        assert agent["usesOrgDefault"] is False
+
 
 # ---------------------------------------------------------------------------
 # _parse_toolsets (extended)
@@ -2565,6 +2608,40 @@ class TestGetAgents:
         assert call is not None
         assert call.kwargs.get("is_deleted") is True
 
+    @pytest.mark.asyncio
+    async def test_usesOrgDefault_flag_derived_per_agent(self) -> None:
+        """Each listed agent gets a cheap `usesOrgDefault` flag derived from
+        whether its `models` array is empty — no etcd lookup involved."""
+        from app.api.routes.agent import get_agents
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_all_agents = AsyncMock(return_value=[
+            {"name": "HasModel", "models": ["mk1_mn1"]},
+            {"name": "NoModel", "models": []},
+            {"name": "MissingKey"},
+        ])
+
+        request = MagicMock()
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            result = await get_agents(
+                request,
+                page=1,
+                limit=20,
+                search=None,
+                sort_by="updatedAtTimestamp",
+                sort_order="desc",
+                is_deleted=False,
+            )
+            body = json.loads(result.body)
+            agents_by_name = {a["name"]: a for a in body["agents"]}
+            assert agents_by_name["HasModel"]["usesOrgDefault"] is False
+            assert agents_by_name["NoModel"]["usesOrgDefault"] is True
+            assert agents_by_name["MissingKey"]["usesOrgDefault"] is True
+
 
 class TestDeleteAgent:
     @pytest.mark.asyncio
@@ -2773,10 +2850,16 @@ class TestUpdateAgentPermission:
 
 class TestCreateAgent:
     @pytest.mark.asyncio
-    async def test_missing_models_raises(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, create_agent
+    async def test_empty_models_allowed_falls_back_to_org_default(self) -> None:
+        """An agent created with no models is valid — it uses the
+        organization's default LLM at chat time (see `get_llm_for_chat`)."""
+        from app.api.routes.agent import create_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
 
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"name":"A1","models":[]}')
@@ -2785,8 +2868,30 @@ class TestCreateAgent:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            with pytest.raises(InvalidRequestError, match="At least one AI model"):
-                await create_agent(request)
+            result = await create_agent(request)
+            assert result.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_omitted_models_allowed_falls_back_to_org_default(self) -> None:
+        """Omitting `models` entirely from the create payload is equivalent
+        to sending an empty array."""
+        from app.api.routes.agent import create_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"name":"A1"}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            result = await create_agent(request)
+            assert result.status_code == 200
 
     @pytest.mark.asyncio
     async def test_no_reasoning_model_raises(self) -> None:
@@ -3000,10 +3105,15 @@ class TestUpdateAgent:
             assert result.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_update_models_validation(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, update_agent
+    async def test_update_empty_models_clears_agent_models(self) -> None:
+        """An empty `models` array on update is valid — it clears the
+        agent's models, reverting it to the organization's default LLM."""
+        from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True})
+        services["graph_provider"].update_agent = AsyncMock(return_value=True)
 
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"models":[]}')
@@ -3012,7 +3122,25 @@ class TestUpdateAgent:
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
 
-            with pytest.raises(InvalidRequestError, match="At least one AI model"):
+            result = await update_agent(request, "a1")
+            assert result.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_update_models_without_reasoning_still_rejected(self) -> None:
+        """When `models` is provided and non-empty, at least one entry must
+        still be flagged `isReasoning: true`."""
+        from app.api.routes.agent import InvalidRequestError, update_agent
+
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"models":[{"modelKey":"mk1","modelName":"mn1"}]}')
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+
+            with pytest.raises(InvalidRequestError, match="reasoning model"):
                 await update_agent(request, "a1")
 
 
@@ -3283,6 +3411,50 @@ class TestChatStream:
 
             result = await chat_stream(request, "a1")
             assert isinstance(result, StreamingResponse)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_no_agent_models_falls_back_to_org_default(self) -> None:
+        """An agent with no configured models resolves modelKey/modelName as
+        None, which `get_llm_for_chat` interprets as "use the organization's
+        default LLM" (see `get_model_config`'s `isDefault` lookup)."""
+        from fastapi.responses import StreamingResponse
+
+        from app.api.routes.agent import chat_stream
+
+        services = {
+            "graph_provider": AsyncMock(),
+            "retrieval_service": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": AsyncMock(),
+            "logger": MagicMock(),
+            "llm": MagicMock(),
+        }
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].get_agent = AsyncMock(return_value={
+            "name": "A1", "knowledge": [], "toolsets": [],
+            "models": [],
+        })
+        services["config_service"].get_config = AsyncMock(return_value={"llm": []})
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=b'{"query":"hello"}')
+
+        mock_get_llm_for_chat = AsyncMock(return_value=(MagicMock(), {"isReasoning": True}, {}))
+
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent.get_llm_for_chat", mock_get_llm_for_chat):
+
+            result = await chat_stream(request, "a1")
+            assert isinstance(result, StreamingResponse)
+
+        mock_get_llm_for_chat.assert_awaited_once()
+        call_args = mock_get_llm_for_chat.await_args
+        assert call_args.args[1] is None  # model_key
+        assert call_args.args[2] is None  # model_name
 
     @pytest.mark.asyncio
     async def test_chat_stream_with_toolsets(self) -> None:

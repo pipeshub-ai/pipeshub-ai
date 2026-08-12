@@ -105,7 +105,13 @@ export async function fetchModelsForContext(
       models = await ChatApi.fetchAvailableLlms();
     } else {
       const { agent } = await AgentsApi.getAgent(ctxKey);
-      models = (agent?.models ?? []).map(mapAgentModelToAvailable);
+      const agentModels = agent?.models ?? [];
+      // An agent with no models configured falls back to the organization's
+      // default LLM at chat time (see `usesOrgDefault` in the agent API), so
+      // show that same org-wide list here instead of an empty/error state.
+      models = agentModels.length > 0
+        ? agentModels.map(mapAgentModelToAvailable)
+        : await ChatApi.fetchAvailableLlms();
     }
 
     const s = useChatStore.getState();

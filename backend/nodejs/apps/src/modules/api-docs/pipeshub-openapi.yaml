@@ -9023,6 +9023,13 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         toolsets:
           type: array
           description: |
@@ -9406,8 +9413,11 @@ components:
         The gateway accepts either a non-empty string model entry or an object entry
         with a required `modelKey`.
 
-        The `models` array must include at least one object entry with `isReasoning: true`.
-        String-only entries are schema-valid but are rejected at the gateway with HTTP 400.
+        The `models` array itself is optional and may be empty (the agent then uses
+        the organization's default LLM). When the array is non-empty, it must include
+        at least one object entry with `isReasoning: true`. String-only entries are
+        schema-valid but, if present without any reasoning-flagged object entry, are
+        rejected at the gateway with HTTP 400.
       oneOf:
         - type: string
           minLength: 1
@@ -9548,7 +9558,6 @@ components:
       additionalProperties: false
       required:
         - name
-        - models
       properties:
         name:
           type: string
@@ -9574,11 +9583,15 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
+          default: []
           description: |
-            Agent model configuration entries. The gateway requires at least one
-            object entry with `isReasoning: true`. String-only arrays are schema-valid
-            but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional — an agent created without
+            any models (an empty array or an omitted field) uses the organization's
+            default LLM at chat time. When at least one model entry IS provided, the
+            gateway requires at least one object entry with `isReasoning: true`.
+            String-only arrays are schema-valid but rejected at runtime with HTTP 400
+            unless the array is empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -9861,9 +9874,11 @@ components:
         Partial update payload for `PUT /agents/{agentKey}`.
 
         Every field is optional — only the fields present in the request body
-        are updated. When `models` is included, the gateway Zod middleware
-        (mirroring the Python backend) requires at least one model entry and
-        at least one object entry with `isReasoning: true`.
+        are updated. `models` may be omitted, set to an empty array to clear
+        the agent's models (reverting it to the organization's default LLM at
+        chat time), or set to a non-empty array. When a non-empty array is
+        provided, the gateway Zod middleware (mirroring the Python backend)
+        requires at least one object entry with `isReasoning: true`.
       properties:
         name:
           type: string
@@ -9889,11 +9904,13 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
           description: |
-            Agent model configuration entries. When present, the Zod middleware
-            requires at least one object entry with `isReasoning: true`.
-            String-only arrays are schema-valid but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional. An empty array clears the
+            agent's models so it falls back to the organization's default LLM.
+            When a non-empty array is present, the Zod middleware requires at
+            least one object entry with `isReasoning: true`. String-only arrays
+            are schema-valid but rejected at runtime with HTTP 400 unless empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:

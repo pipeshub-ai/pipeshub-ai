@@ -518,7 +518,7 @@ export function AgentCoreNode({
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
-                {t('agentBuilder.connectModel')}
+                {t('agentBuilder.usingOrgDefault')}
               </Text>
             )}
           </Section>

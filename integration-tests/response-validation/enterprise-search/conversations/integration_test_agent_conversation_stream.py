@@ -340,6 +340,36 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             f"query={SEARCH_QUERY!r}: {outcome.answer[:500]!r}"
         )
 
+    def test_stream_agent_conversation_agent_without_models_uses_org_default(self) -> None:
+        """An agent created with no models resolves to the organization's
+        default LLM at chat time and still streams a normal completion.
+
+        Full round trip: create agent with no `models` -> stream a chat ->
+        expect RUN_FINISHED with a non-empty answer, proving `get_llm_for_chat`'s
+        default-model fallback (see `app.api.routes.chatbot.get_model_config`)
+        is reachable end-to-end through the agent chat pipeline.
+        """
+        create_resp = self.agents.create_agent(
+            name=f"integration-agent-no-models-{uuid.uuid4().hex[:8]}",
+        )
+        assert create_resp.status_code == 201, f"{create_resp.status_code}: {create_resp.text}"
+        agent = create_resp.json()["agent"]
+        assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
+        assert agent.get("usesOrgDefault") is True
+
+        agent_key = agent["_key"]
+        try:
+            outcome = self._stream_agent_conversation(
+                agent_key,
+                query="What is 2 + 2? Answer with just the number.",
+            )
+
+            assert outcome.finished, "stream ended without a RUN_FINISHED event"
+            assert outcome.conversation_id, "stream did not yield a conversation id"
+            assert outcome.answer.strip(), "stream finished but answer text was empty"
+        finally:
+            self.agents.delete_agent(agent_key, timeout=self.timeout)
+
     # ------------------------------------------------------------------------
     # Negative tests
     # ------------------------------------------------------------------------

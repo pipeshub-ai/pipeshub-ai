@@ -111,12 +111,12 @@ export function ModelSelectorPanel({
     fetchModelsForContext(ctxKey, { force: true })
       .then((fresh) => {
         if (cancelled) return;
+        // An agent with no models of its own now falls back to fetching the
+        // org-wide list (see `fetchModelsForContext`), so an empty result
+        // here always means the organization has no LLMs configured at all
+        // — not that this particular agent is missing a model.
         if (fresh.length === 0) {
-          setError(
-            ctxKey === ASSISTANT_CTX
-              ? t('chat.noModelsAvailable')
-              : t('chat.agentNoModelsConfigured'),
-          );
+          setError(t('chat.noModelsAvailable'));
         }
       })
       .catch((err) => {
@@ -254,16 +254,16 @@ export function ModelSelectorPanel({
             >
               {error}
             </Text>
-            {error === t('chat.agentNoModelsConfigured') && agentId && (
-              <Button 
-                variant="soft" 
+            {isAdmin && (
+              <Button
+                variant="soft"
                 size="2"
                 onClick={() => {
-                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`);
+                  router.push('/workspace/ai-models');
                 }}
               >
                 <MaterialIcon name="settings" size={16} />
-                {t('chat.configureModels')}
+                {t('chat.openModels', 'Open Models')}
               </Button>
             )}
           </Flex>
