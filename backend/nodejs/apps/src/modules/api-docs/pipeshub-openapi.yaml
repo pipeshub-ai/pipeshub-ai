@@ -9229,6 +9229,13 @@ components:
           type: string
           nullable: true
           description: User id of the last updater, if present.
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         webSearch:
           type: object
           additionalProperties: false

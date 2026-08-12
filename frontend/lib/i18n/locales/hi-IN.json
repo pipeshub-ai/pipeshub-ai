@@ -492,6 +492,7 @@
     "noModelsAvailable": "अभी तक कोई AI मॉडल कॉन्फ़िगर नहीं किया गया है",
     "failedToLoadModels": "AI मॉडल लोड करने में विफल",
     "failedToLoadAgentConfig": "इस एजेंट का मॉडल कॉन्फ़िगरेशन लोड करने में विफल",
+    "openModels": "मॉडल खोलें",
     "connectorsCollectionsTitle": "कनेक्टर्स और संग्रह",
     "connectorsTooltip": "कनेक्टर्स और संग्रह",
     "connectorsDefaultScopeHint": "डिफ़ॉल्ट रूप से सभी कनेक्टर्स और संग्रहों में खोज की जाती है। यदि आप दायरा सीमित करना चाहते हैं, तो नीचे विशिष्ट कनेक्टर्स या संग्रह चुनें।",

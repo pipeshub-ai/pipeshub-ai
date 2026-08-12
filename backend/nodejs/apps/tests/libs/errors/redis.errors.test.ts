@@ -1,27 +1,13 @@
 import { expect } from 'chai';
 import { BaseError } from '../../../src/libs/errors/base.error';
-
-// Use dynamic require to ensure c8 tracks coverage in parallel mode.
-// Static imports can cause coverage to be "claimed" by a different worker
-// (e.g. redis.service.test.ts imports redis.errors transitively) without
-// executing all constructors, leaving some lines uncovered.
+import {
+  RedisError,
+  RedisServiceNotInitializedError,
+  RedisConnectionError,
+  RedisCacheError,
+} from '../../../src/libs/errors/redis.errors';
 
 describe('Redis Errors', () => {
-  let RedisError: any;
-  let RedisServiceNotInitializedError: any;
-  let RedisConnectionError: any;
-  let RedisCacheError: any;
-
-  before(() => {
-    const modulePath = require.resolve('../../../src/libs/errors/redis.errors');
-    delete require.cache[modulePath];
-    const mod = require('../../../src/libs/errors/redis.errors');
-    RedisError = mod.RedisError;
-    RedisServiceNotInitializedError = mod.RedisServiceNotInitializedError;
-    RedisConnectionError = mod.RedisConnectionError;
-    RedisCacheError = mod.RedisCacheError;
-  });
-
   describe('RedisError', () => {
     it('should have correct name', () => {
       const error = new RedisError('Redis failed');

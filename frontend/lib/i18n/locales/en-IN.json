@@ -492,6 +492,7 @@
     "noModelsAvailable": "No AI models are configured yet",
     "failedToLoadModels": "Failed to load AI models",
     "failedToLoadAgentConfig": "Failed to load this agent's model configuration",
+    "openModels": "Open Models",
     "connectorsCollectionsTitle": "Connectors and Collections",
     "connectorsTooltip": "Connectors and Collections",
     "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",

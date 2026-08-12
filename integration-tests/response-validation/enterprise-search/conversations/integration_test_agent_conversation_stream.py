@@ -354,11 +354,11 @@ class TestAgentConversationStream(_AgentStreamTestBase):
         )
         assert create_resp.status_code == 201, f"{create_resp.status_code}: {create_resp.text}"
         agent = create_resp.json()["agent"]
-        assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
-        assert agent.get("usesOrgDefault") is True
-
         agent_key = agent["_key"]
         try:
+            assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
+            assert agent.get("usesOrgDefault") is True
+
             outcome = self._stream_agent_conversation(
                 agent_key,
                 query="What is 2 + 2? Answer with just the number.",
@@ -368,7 +368,10 @@ class TestAgentConversationStream(_AgentStreamTestBase):
             assert outcome.conversation_id, "stream did not yield a conversation id"
             assert outcome.answer.strip(), "stream finished but answer text was empty"
         finally:
-            self.agents.delete_agent(agent_key, timeout=self.timeout)
+            delete_resp = self.agents.delete_agent(agent_key, timeout=self.timeout)
+            assert delete_resp.status_code < 300, (
+                f"agent delete failed: {delete_resp.status_code}: {delete_resp.text}"
+            )
 
     # ------------------------------------------------------------------------
     # Negative tests

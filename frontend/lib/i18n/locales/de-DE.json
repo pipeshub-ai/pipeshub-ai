@@ -492,6 +492,7 @@
     "noModelsAvailable": "Es sind noch keine KI-Modelle konfiguriert",
     "failedToLoadModels": "KI-Modelle konnten nicht geladen werden",
     "failedToLoadAgentConfig": "Die Modellkonfiguration dieses Agenten konnte nicht geladen werden",
+    "openModels": "Modelle öffnen",
     "connectorsCollectionsTitle": "Konnektoren und Sammlungen",
     "connectorsTooltip": "Konnektoren und Sammlungen",
     "connectorsDefaultScopeHint": "Standardmäßig werden alle Konnektoren und Sammlungen durchsucht. Wählen Sie unten spezifische aus, wenn Sie den Umfang einschränken möchten.",

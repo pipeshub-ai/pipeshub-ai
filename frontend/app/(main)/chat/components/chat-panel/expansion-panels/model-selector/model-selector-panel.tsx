@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
-import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { fetchModelsForContext, OrgModelsFetchError } from '@/chat/utils/fetch-models-for-context';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -122,8 +122,12 @@ export function ModelSelectorPanel({
       .catch((err) => {
         if (cancelled) return;
         console.error('Failed to fetch models:', err);
+        // An `OrgModelsFetchError` means the agent's own config fetch
+        // succeeded (it just has no models) and the org-wide fallback list
+        // failed — that's an org-models failure, not an agent-config one.
+        const isOrgModelsFailure = ctxKey === ASSISTANT_CTX || err instanceof OrgModelsFetchError;
         setError(
-          ctxKey === ASSISTANT_CTX
+          isOrgModelsFailure
             ? t('chat.failedToLoadModels')
             : t('chat.failedToLoadAgentConfig'),
         );
