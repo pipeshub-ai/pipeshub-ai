@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, RecordRelations
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
 from app.connectors.sources.zendesk.connector import (
     DEFAULT_INCREMENTAL_START_TIME,
@@ -296,6 +296,33 @@ class TestTicketToRecord:
         assert record.id == "rec-1"
         assert record.version == 4
 
+    async def test_submitter_drives_the_creator_fields(self, zendesk_connector):
+        """Zendesk's submitter is the person who opened the ticket, which is not the
+        requester when an agent files it for a customer. Feeds the CREATED_BY edge."""
+        zendesk_connector._user_id_to_data = {
+            "10": {"email": "customer@acme.com", "name": "Customer"},
+            "30": {"email": "agent@acme.com", "name": "Support Agent"},
+        }
+
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 555,
+            "subject": "Printer on fire",
+            "group_id": 7,
+            "requester_id": 10,
+            "submitter_id": 30,
+            "created_at": "2026-01-01T00:00:00Z",
+        })
+
+        assert record.creator_email == "agent@acme.com"
+        assert record.creator_name == "Support Agent"
+        assert record.reporter_email == "customer@acme.com"
+
+    async def test_no_creator_when_submitter_absent(self, zendesk_connector):
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 555, "subject": "No submitter", "group_id": 7,
+        })
+        assert record.creator_email is None
+
     async def test_group_filter_excludes_ticket(self, zendesk_connector):
         group_filter = MagicMock()
         group_filter.get_value.return_value = ["7"]
@@ -305,6 +332,65 @@ class TestTicketToRecord:
             "id": 1, "subject": "other group", "group_id": 99,
         })
         assert result is None
+
+
+# ===========================================================================
+# Ticket-to-ticket links
+# ===========================================================================
+
+
+class TestTicketLinks:
+    """Without these the graph holds no Record→Record edge, so "which ticket is
+    related to this problem" has nothing to traverse."""
+
+    def test_problem_id_becomes_a_causes_link(self, zendesk_connector):
+        related = zendesk_connector._parse_ticket_links({"id": 2, "problem_id": 9})
+
+        assert len(related) == 1
+        assert related[0].external_record_id == "9"
+        assert related[0].relation_type == RecordRelations.CAUSES
+        assert related[0].record_type == RecordType.TICKET
+
+    def test_followups_become_related_links(self, zendesk_connector):
+        related = zendesk_connector._parse_ticket_links({"id": 2, "followup_ids": [11, 12]})
+
+        assert [r.external_record_id for r in related] == ["11", "12"]
+        assert {r.relation_type for r in related} == {RecordRelations.RELATED}
+
+    def test_via_source_links_back_to_the_original(self, zendesk_connector):
+        related = zendesk_connector._parse_ticket_links({
+            "id": 2,
+            "via": {"channel": "follow_up", "source": {"from": {"ticket_id": 3}}},
+        })
+
+        assert related[0].external_record_id == "3"
+        assert related[0].relation_type == RecordRelations.RELATED
+
+    def test_no_links_yields_empty_list(self, zendesk_connector):
+        assert zendesk_connector._parse_ticket_links({"id": 2}) == []
+
+    def test_malformed_via_is_tolerated(self, zendesk_connector):
+        assert zendesk_connector._parse_ticket_links({"id": 2, "via": None}) == []
+        assert zendesk_connector._parse_ticket_links({"id": 2, "via": {"source": None}}) == []
+
+    def test_self_link_is_dropped(self, zendesk_connector):
+        """An edge from a ticket to itself is one a traversal never leaves."""
+        assert zendesk_connector._parse_ticket_links({"id": 2, "problem_id": 2}) == []
+
+    def test_duplicate_target_emitted_once(self, zendesk_connector):
+        related = zendesk_connector._parse_ticket_links({
+            "id": 2, "problem_id": 9, "followup_ids": [9],
+        })
+
+        assert len(related) == 1
+        assert related[0].relation_type == RecordRelations.CAUSES
+
+    async def test_links_reach_the_record(self, zendesk_connector):
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 2, "subject": "Incident", "group_id": 7, "problem_id": 9,
+        })
+
+        assert [r.external_record_id for r in record.related_external_records] == ["9"]
 
 
 # ===========================================================================
