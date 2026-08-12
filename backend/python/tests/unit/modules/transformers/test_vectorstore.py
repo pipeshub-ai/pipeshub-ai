@@ -2311,6 +2311,39 @@ class TestProcessImageEmbeddingsOpenAICompatible:
 
         assert points == []
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {},
+            {"data": []},
+            {"data": [None]},
+            {"data": [{}]},
+            {"data": [{"embedding": []}]},
+            {"data": [{"embedding": [0.1, "invalid"]}]},
+        ],
+    )
+    async def test_invalid_response_skips_image(self, payload):
+        vs = _make_vectorstore()
+        vs.embedding_endpoint = "http://embedding.test/v1"
+        vs.model_name = "vl-embedding"
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            points = await vs._process_image_embeddings_openai_compatible(
+                [{"metadata": {}, "image_uri": "aW1hZ2U="}], ["aW1hZ2U="]
+            )
+
+        assert points == []
+
 
 # ===================================================================
 # _process_document_chunks — remote concurrent batch failure (lines 826-843)

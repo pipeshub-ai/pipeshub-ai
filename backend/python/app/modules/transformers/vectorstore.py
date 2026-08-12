@@ -945,8 +945,24 @@ class VectorStore(Transformer):
                         },
                     )
                     response.raise_for_status()
-                    embedding = response.json()["data"][0]["embedding"]
-                    if not isinstance(embedding, list) or not embedding:
+                    payload = response.json()
+                    if not isinstance(payload, dict):
+                        raise ValueError("response payload is not an object")
+                    data = payload.get("data")
+                    if (
+                        not isinstance(data, list)
+                        or not data
+                        or not isinstance(data[0], dict)
+                    ):
+                        raise ValueError("response contains no embedding data")
+                    embedding = data[0].get("embedding")
+                    if (
+                        not isinstance(embedding, list)
+                        or not embedding
+                        or not all(
+                            isinstance(value, (int, float)) for value in embedding
+                        )
+                    ):
                         raise ValueError("response contains no embedding vector")
                     return VectorPoint(
                         id=str(uuid.uuid4()),
@@ -987,23 +1003,22 @@ class VectorStore(Transformer):
             )
             return []
 
-        if self.embedding_provider == EmbeddingProvider.COHERE.value:
-            return await self._process_image_embeddings_cohere(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
-            return await self._process_image_embeddings_voyage(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
-            return await self._process_image_embeddings_bedrock(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
-            return await self._process_image_embeddings_jina(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.OPENAI_COMPATIBLE.value:
-            return await self._process_image_embeddings_openai_compatible(
-                image_chunks, image_base64s
-            )
-        else:
+        processors = {
+            EmbeddingProvider.COHERE.value: self._process_image_embeddings_cohere,
+            EmbeddingProvider.VOYAGE.value: self._process_image_embeddings_voyage,
+            EmbeddingProvider.AWS_BEDROCK.value: self._process_image_embeddings_bedrock,
+            EmbeddingProvider.JINA_AI.value: self._process_image_embeddings_jina,
+            EmbeddingProvider.OPENAI_COMPATIBLE.value: (
+                self._process_image_embeddings_openai_compatible
+            ),
+        }
+        processor = processors.get(self.embedding_provider)
+        if processor is None:
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
             )
             return []
+        return await processor(image_chunks, image_base64s)
 
     async def _store_image_points(self, points: List[VectorPoint]) -> None:
         if not points:
