@@ -7,6 +7,7 @@ create an OAuth app with client_credentials grant, and return (client_id, client
 """
 
 import os
+import time
 from typing import Tuple
 
 import requests
@@ -33,8 +34,14 @@ def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> Tuple[st
 
     session_token = _init_auth(base_url, email, timeout)
     access_token = _authenticate(base_url, session_token, email, password, timeout)
-    client_id, client_secret = _create_oauth_app(base_url, access_token, timeout)
-    return client_id, client_secret
+
+    for attempt in range(3):
+        try:
+            return _create_oauth_app(base_url, access_token, timeout)
+        except RuntimeError:
+            if attempt == 2:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 def _init_auth(base_url: str, email: str, timeout: int) -> str:
