@@ -10,6 +10,7 @@ const authState = {
 
 vi.mock('@/config', () => ({
   useAuthStore: (fn: (s: typeof authState) => unknown) => fn(authState),
+  logoutAndRedirect: vi.fn(),
 }));
 
 const connectMock = vi.fn(() => ({

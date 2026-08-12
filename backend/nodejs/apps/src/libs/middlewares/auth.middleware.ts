@@ -7,7 +7,10 @@ import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import { userActivitiesType } from '../utils/userActivities.utils';
+import {
+  SESSION_INVALIDATING_ACTIVITIES,
+  userActivitiesType,
+} from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
@@ -17,9 +20,13 @@ import { resolveOAuthTokenService } from '../services/oauth-token-service.provid
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
-const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
+const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
 const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
+
+function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
+  return role === 'admin' || role === 'member';
+}
 
 @injectable()
 export class AuthMiddleware {
@@ -78,6 +85,12 @@ export class AuthMiddleware {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
 
+    // User session JWTs must carry role (admin|member). Legacy tokens without
+    // role are rejected so the client re-logins and receives a new token.
+    if (!hasValidJwtRole(decoded?.role)) {
+      throw new UnauthorizedError('Session expired, please login again');
+    }
+
     // search for user activities for this user
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
@@ -97,7 +110,7 @@ export class AuthMiddleware {
           userId: userId,
           orgId: orgId,
           isDeleted: false,
-          activityType: { $in: [LOGOUT, PASSWORD_CHANGED] },
+          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
         })
           .sort({ createdAt: -1 }) // sort by most recent first
           .lean()

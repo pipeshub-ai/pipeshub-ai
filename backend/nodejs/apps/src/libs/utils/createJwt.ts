@@ -124,17 +124,25 @@ export const authJwtGenerator = (
   orgId?: string | null,
   fullName?: string | null,
   accountType?: string | null,
+  role?: 'admin' | 'member' | null,
 ) => {
   // Read expiry time from environment variable, default to 24h if not set
   const expiryTime = (process.env.ACCESS_TOKEN_EXPIRY || '24h') as string;
-  
-  return jwt.sign(
-    { userId, orgId, email, fullName, accountType },
-    scopedJwtSecret,
-    {
-      expiresIn: expiryTime,
-    } as jwt.SignOptions,
-  );
+
+  const payload: Record<string, unknown> = {
+    userId,
+    orgId,
+    email,
+    fullName,
+    accountType,
+  };
+  if (role === 'admin' || role === 'member') {
+    payload.role = role;
+  }
+
+  return jwt.sign(payload, scopedJwtSecret, {
+    expiresIn: expiryTime,
+  } as jwt.SignOptions);
 };
 
 export const fetchConfigJwtGenerator = (

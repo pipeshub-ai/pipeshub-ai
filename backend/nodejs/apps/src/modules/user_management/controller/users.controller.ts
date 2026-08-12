@@ -47,6 +47,8 @@ import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
 import { Org } from '../schema/org.schema';
 import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { UserActivities } from '../../auth/schema/userActivities.schema';
+import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import * as XLSX from 'xlsx';
@@ -55,6 +57,7 @@ import {
   NotificationProducer,
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
+import { NotificationContainer } from '../../notification/container/notification.container';
 import { INotification } from '../../notification/schema/notification.schema';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
@@ -837,6 +840,10 @@ export class UserController {
       }
 
       const orgId = req.user.orgId;
+      const previousRole = user.role;
+      const roleChanging =
+        updateFields.role !== undefined &&
+        updateFields.role !== previousRole;
       const demotingAdmin =
         updateFields.role === 'member' &&
         (user.role === 'admin' ||
@@ -896,6 +903,32 @@ export class UserController {
         );
       } else {
         await user.save();
+      }
+
+      // Role change: invalidate prior JWTs (like password change) + force logout.
+      if (roleChanging && id && orgId) {
+        try {
+          await UserActivities.create({
+            userId: id,
+            orgId,
+            email: user.email,
+            activityType: userActivitiesType.ROLE_CHANGED,
+            ipAddress: req.ip || '',
+          });
+          NotificationContainer.getNotificationService()?.emitForceLogout(
+            String(id),
+            'role_changed',
+          );
+        } catch (invalidateError) {
+          this.logger.error('Failed to invalidate session after role change', {
+            userId: id,
+            orgId,
+            error:
+              invalidateError instanceof Error
+                ? invalidateError.message
+                : 'Unknown error',
+          });
+        }
       }
 
       await this.eventService.start();

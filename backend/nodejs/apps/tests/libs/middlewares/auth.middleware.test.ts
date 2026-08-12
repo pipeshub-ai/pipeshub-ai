@@ -154,7 +154,12 @@ describe('AuthMiddleware', () => {
     })
 
     it('should authenticate and call next() on valid regular token with no logout/password activity', async () => {
-      const decoded = { userId: 'user1', orgId: 'org1', iat: Math.floor(Date.now() / 1000) }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const mockQuery = createMockQuery(null)
@@ -173,7 +178,12 @@ describe('AuthMiddleware', () => {
 
     it('should reject token if logout activity is newer than token iat', async () => {
       const tokenIat = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
-      const decoded = { userId: 'user1', orgId: 'org1', iat: tokenIat }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: tokenIat,
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const logoutActivity = {
@@ -197,7 +207,12 @@ describe('AuthMiddleware', () => {
 
     it('should allow token if activity timestamp is before token iat + delay', async () => {
       const tokenIat = Math.floor(Date.now() / 1000)
-      const decoded = { userId: 'user1', orgId: 'org1', iat: tokenIat }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'admin',
+        iat: tokenIat,
+      }
       tokenService.verifyToken.resolves(decoded)
 
       // Activity happened before token issuance
@@ -218,6 +233,59 @@ describe('AuthMiddleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('should reject token when JWT role claim is missing', async () => {
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        iat: Math.floor(Date.now() / 1000),
+      }
+      tokenService.verifyToken.resolves(decoded)
+
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${validToken}` },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Session expired, please login again')
+    })
+
+    it('should reject token if role-changed activity is newer than token iat', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: tokenIat,
+      }
+      tokenService.verifyToken.resolves(decoded)
+
+      const roleChangedActivity = {
+        activityType: 'ROLE CHANGED',
+        createdAt: { getTime: () => Date.now() },
+      }
+      const mockQuery = createMockQuery(roleChangedActivity)
+      sinon.stub(UserActivities, 'findOne').returns(mockQuery)
+
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${validToken}` },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Session expired, please login again')
+    })
+
     it('should call next with error when tokenService.verifyToken throws', async () => {
       tokenService.verifyToken.rejects(new UnauthorizedError('Invalid token'))
 
@@ -233,7 +301,12 @@ describe('AuthMiddleware', () => {
     })
 
     it('should still authenticate if UserActivities.findOne throws (non-fatal)', async () => {
-      const decoded = { userId: 'user1', orgId: 'org1', iat: Math.floor(Date.now() / 1000) }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const mockQuery = createMockQuery(null)
@@ -252,7 +325,7 @@ describe('AuthMiddleware', () => {
     })
 
     it('should skip activity check when userId or orgId are missing', async () => {
-      const decoded = { iat: Math.floor(Date.now() / 1000) }
+      const decoded = { role: 'member', iat: Math.floor(Date.now() / 1000) }
       tokenService.verifyToken.resolves(decoded)
 
       const findOneStub = sinon.stub(UserActivities, 'findOne')

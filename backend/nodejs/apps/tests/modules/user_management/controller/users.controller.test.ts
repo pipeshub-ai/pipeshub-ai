@@ -7,7 +7,10 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
+import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import {
   OAuthApp,
   OAuthAppStatus,
@@ -926,12 +929,18 @@ describe('UserController', () => {
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
 
+      const activityCreate = sinon
+        .stub(UserActivities, 'create')
+        .resolves({} as any);
+      sinon.stub(NotificationContainer, 'getNotificationService').returns(null);
+
       await controller.updateUser(req, res, next);
 
       expect(next.called).to.be.false;
       expect(mockUser.role).to.equal('admin');
       expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
+      expect(activityCreate.calledOnce).to.be.true;
     });
 
     it('should reject demoting the last admin before saving', async () => {
@@ -1055,6 +1064,14 @@ describe('UserController', () => {
         session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
 
+      const activityCreate = sinon
+        .stub(UserActivities, 'create')
+        .resolves({} as any);
+      const emitForceLogout = sinon.stub().returns(true);
+      sinon
+        .stub(NotificationContainer, 'getNotificationService')
+        .returns({ emitForceLogout } as any);
+
       await controller.updateUser(req, res, next);
 
       expect(next.called).to.be.false;
@@ -1062,6 +1079,12 @@ describe('UserController', () => {
       expect(withTransaction.calledOnce).to.be.true;
       expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
+      expect(activityCreate.calledOnce).to.be.true;
+      expect(activityCreate.firstCall.args[0].activityType).to.equal(
+        userActivitiesType.ROLE_CHANGED,
+      );
+      expect(emitForceLogout.calledOnceWith(targetId, 'role_changed')).to.be
+        .true;
     });
 
     it('should reject duplicate email when updating email', async () => {
