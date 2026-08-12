@@ -868,17 +868,21 @@ class JiraConnector(BaseConnector):
     # Initialization & Configuration
     # ============================================================================
 
+    async def _build_jira_client(self):
+        """EE override point: swap to EE JiraClient for org-scoped OAuth inheritance."""
+        return await JiraClient.build_from_services(
+            logger=self.logger,
+            config_service=self.config_service,
+            connector_instance_id=self.connector_id,
+        )
+
     async def init(self) -> bool:
         """
         Initialize Jira client using proper Client + DataSource architecture
         """
         try:
             # Use JiraClient.build_from_services() to create client with proper auth
-            client = await JiraClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id
-            )
+            client = await self._build_jira_client()
 
             # Store client for token updates
             self.external_client = client
@@ -5221,7 +5225,7 @@ class JiraConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return JiraConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

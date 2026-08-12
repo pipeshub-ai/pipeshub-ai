@@ -449,17 +449,21 @@ class ConfluenceConnector(BaseConnector):
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
 
+    async def _build_confluence_client(self):
+        """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
+        return await ExternalConfluenceClient.build_from_services(
+            logger=self.logger,
+            config_service=self.config_service,
+            connector_instance_id=self.connector_id,
+        )
+
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
         try:
             self.logger.info("🔧 Initializing Confluence Cloud Connector...")
 
             # Build client from services (handles config loading, token, base URL internally)
-            self.external_client = await ExternalConfluenceClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id
-            )
+            self.external_client = await self._build_confluence_client()
 
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)

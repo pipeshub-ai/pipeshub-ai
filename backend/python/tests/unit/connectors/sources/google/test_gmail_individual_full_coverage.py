@@ -191,7 +191,7 @@ class TestInit:
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(
@@ -224,7 +224,7 @@ class TestInit:
             "credentials": {},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -238,7 +238,7 @@ class TestInit:
             "credentials": {},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": None, "clientSecret": None}},
         ):
@@ -252,7 +252,7 @@ class TestInit:
             "credentials": {"access_token": "t", "refresh_token": "r"},
         })
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(
@@ -272,7 +272,7 @@ class TestInit:
         mock_client = MagicMock()
         mock_client.get_client.return_value = MagicMock()
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"clientId": "cid", "clientSecret": "cs"}},
         ), patch(

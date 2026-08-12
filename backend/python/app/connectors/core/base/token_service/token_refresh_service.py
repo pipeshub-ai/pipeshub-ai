@@ -523,8 +523,12 @@ class TokenRefreshService:
         connector_id: str,
         connector_type: str,
         refresh_token: str,
+        org_id: str | None = None,
     ) -> OAuthToken:
-        """Public entry point for an on-demand OAuth token refresh."""
+        """Public entry point for an on-demand OAuth token refresh.
+
+        ``org_id`` is accepted for EE call-site compatibility and ignored on OSS.
+        """
         try:
             return await self._perform_token_refresh(
                 connector_id, connector_type, refresh_token

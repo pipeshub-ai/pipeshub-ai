@@ -28,6 +28,7 @@ class NotificationType(str, Enum):
     CONNECTOR_INFO = "CONNECTOR_INFO"
     CONNECTOR_WARNING = "CONNECTOR_WARNING"
     CONNECTOR_SUCCESS = "CONNECTOR_SUCCESS"
+    OAUTH_APP_DELETED = "OAUTH_APP_DELETED"
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
 

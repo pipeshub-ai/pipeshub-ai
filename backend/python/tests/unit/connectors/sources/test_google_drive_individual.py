@@ -149,7 +149,7 @@ def connector():
 
 class TestInitFullPath:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success_full_path(self, MockGClient, MockDS, mock_fetch, connector):
@@ -171,7 +171,7 @@ class TestInitFullPath:
         assert connector.google_client is mock_client_inst
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -193,7 +193,7 @@ class TestInitFullPath:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -1779,7 +1779,7 @@ def connector():
 
 class TestInitFullPathFullCoverage:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success_full_path(self, MockGClient, MockDS, mock_fetch, connector):
@@ -1801,7 +1801,7 @@ class TestInitFullPathFullCoverage:
         assert connector.google_client is mock_client_inst
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -1823,7 +1823,7 @@ class TestInitFullPathFullCoverage:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {

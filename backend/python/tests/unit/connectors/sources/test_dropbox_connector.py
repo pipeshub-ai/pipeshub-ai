@@ -255,7 +255,7 @@ class TestDropboxConnectorInit:
         assert conn.batch_size == 100
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxDataSource")
     async def test_init_success(self, mock_ds_cls, mock_build, mock_fetch_oauth,
@@ -290,7 +290,7 @@ class TestDropboxConnectorInit:
         assert await conn.init() is False
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_no_oauth_config(self, mock_fetch_oauth, mock_app,
                                               mock_logger, mock_data_entities_processor,
                                               mock_data_store_provider, mock_config_service):
@@ -305,7 +305,7 @@ class TestDropboxConnectorInit:
         assert await conn.init() is False
 
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.dropbox.connector.DropboxClient.build_with_config", new_callable=AsyncMock)
     async def test_init_fails_client_exception(self, mock_build, mock_fetch_oauth,
                                                mock_app, mock_logger,
@@ -1690,7 +1690,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -1706,7 +1706,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:

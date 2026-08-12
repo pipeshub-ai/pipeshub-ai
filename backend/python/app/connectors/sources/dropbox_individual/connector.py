@@ -80,7 +80,6 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
@@ -291,12 +290,10 @@ class DropboxIndividualConnector(BaseConnector):
             self.logger.error("Dropbox Individual oauthConfigId not found in auth configuration.")
             return False
 
-        # Fetch OAuth config
-        oauth_config = await fetch_oauth_config_by_id(
+        oauth_config = await self._fetch_oauth_config_by_id(
             oauth_config_id=oauth_config_id,
             connector_type=Connectors.DROPBOX_PERSONAL.value,
-            config_service=self.config_service,
-            logger=self.logger
+            auth_config=auth_config,
         )
 
         if not oauth_config:
@@ -1265,7 +1262,7 @@ class DropboxIndividualConnector(BaseConnector):
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
-        return DropboxIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

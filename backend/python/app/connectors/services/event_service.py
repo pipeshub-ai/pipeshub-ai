@@ -84,6 +84,14 @@ class EventService:
                 self.app_container.connectors_map = {}
             self.app_container.connectors_map[connector_id] = connector
 
+    def _resolve_org_id(self) -> str | None:
+        """Optional org id from request/event context (EE overrides)."""
+        return None
+
+    def _build_data_store(self, org_id: str | None = None) -> GraphDataStore:
+        """Build a graph data store. EE overrides to pass tenant org_id."""
+        return GraphDataStore(self.logger, self.graph_provider)
+
     async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
@@ -114,12 +122,13 @@ class EventService:
                 )
                 return None
             config_service = self.app_container.config_service()
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
             # Extract scope, createdBy and org from connector document
+            # (EE may supply org via context when the app doc has no orgId field)
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
-            org_id = connector_doc.get("orgId")
+            org_id = connector_doc.get("orgId") or self._resolve_org_id()
+            data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -194,7 +203,7 @@ class EventService:
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
-            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
+            data_store_provider = self._build_data_store(org_id)
             
             # Fetch scope and createdBy from database App node
             connector_doc = await self.graph_provider.get_document(

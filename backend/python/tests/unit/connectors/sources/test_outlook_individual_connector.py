@@ -899,7 +899,7 @@ class TestReindexInternalsAndCredentials:
         config = {"auth": {"oauthConfigId": "oauth-1"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(
                 return_value={
                     "config": {
@@ -928,7 +928,7 @@ class TestReindexInternalsAndCredentials:
         config = {"auth": {"oauthConfigId": "oauth-1"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value={"config": {"tenantId": "tenant"}}),
         ):
             with pytest.raises(ValueError, match="Incomplete Outlook Personal credentials"):
@@ -1238,7 +1238,7 @@ class TestCoverageBoostBranches:
         config = {"auth": {"oauthConfigId": "x"}}
         mock_config_service.get_config = AsyncMock(return_value=config)
         with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new=AsyncMock(return_value=None),
         ):
             with pytest.raises(ValueError, match="not found"):

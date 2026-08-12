@@ -94,7 +94,6 @@ from app.sources.external.servicenow.models import (
     TableAPIResponse,
     UserCriteria,
 )
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
 from app.connectors.sources.servicenow.servicenow.constants import (
@@ -312,12 +311,10 @@ class ServiceNowConnector(BaseConnector):
                 self.logger.error("ServiceNow oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=ServiceNowDefaults.CONNECTOR_TYPE,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:

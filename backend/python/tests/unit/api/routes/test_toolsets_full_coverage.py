@@ -578,7 +578,7 @@ class TestGetOauthCredentialsLegacyPath:
     @pytest.mark.asyncio
     async def test_inline_credentials_returned_directly(self):
         """Line 144-148 — legacy/override path returns entire auth config."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         config = {
             "toolsetType": "jira",
@@ -592,7 +592,7 @@ class TestGetOauthCredentialsLegacyPath:
     @pytest.mark.asyncio
     async def test_inline_credentials_with_logger(self):
         """Line 145-146 — debug log when returning inline creds."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         lgr = MagicMock()
         config = {
@@ -606,7 +606,7 @@ class TestGetOauthCredentialsLegacyPath:
     @pytest.mark.asyncio
     async def test_instance_fetch_exception_continues(self):
         """Line 190-193 — exception fetching instance to recover oauthConfigId."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         cs = AsyncMock()
         lgr = MagicMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
@@ -622,7 +622,7 @@ class TestGetOauthCredentialsLegacyPath:
     @pytest.mark.asyncio
     async def test_instance_fetch_recovers_oauth_config_id(self):
         """Line 172-188 — oauthConfigId recovered from instance list."""
-        from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+        from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
 
         cs = AsyncMock()
         call_count = 0
@@ -673,7 +673,7 @@ class TestCreateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=[]), \
              patch("app.api.routes.toolsets._check_instance_name_conflict", return_value=False):
             result = await create_toolset_instance(req, config_service=cs)
         assert result["status"] == "success"
@@ -703,7 +703,7 @@ class TestCreateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=[]), \
              patch("app.api.routes.toolsets._check_instance_name_conflict", return_value=False):
             result = await create_toolset_instance(req, config_service=cs)
         assert result["status"] == "success"
@@ -725,7 +725,7 @@ class TestCreateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=[]), \
              patch("app.api.routes.toolsets._check_instance_name_conflict", return_value=False):
             with pytest.raises(HTTPException) as exc:
                 await create_toolset_instance(req, config_service=cs)
@@ -823,7 +823,7 @@ class TestUpdateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances):
             result = await update_toolset_instance("i1", req, config_service=cs)
         assert result["status"] == "success"
 
@@ -843,7 +843,7 @@ class TestUpdateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances), \
              patch("app.api.routes.toolsets._create_or_update_toolset_oauth_config", new_callable=AsyncMock, return_value="cfg-2"), \
              patch("app.api.routes.toolsets._deauth_all_instance_users", new_callable=AsyncMock, return_value=3):
             result = await update_toolset_instance("i1", req, config_service=cs)
@@ -865,7 +865,7 @@ class TestUpdateToolsetInstanceEdgeCases:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances):
             result = await update_toolset_instance("i1", req, config_service=cs)
 
         assert result["instance"]["auth"]["username"] == "u"
@@ -896,7 +896,7 @@ class TestDeleteToolsetInstanceCredentialCleanup:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=gp), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(side_effect=RuntimeError("no service"))))}):
             result = await delete_toolset_instance("i1", req, config_service=cs)
@@ -922,7 +922,7 @@ class TestDeleteToolsetInstanceCredentialCleanup:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=gp), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
             result = await delete_toolset_instance("i1", req, config_service=cs)
@@ -947,7 +947,7 @@ class TestDeleteToolsetInstanceCredentialCleanup:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=gp), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
             result = await delete_toolset_instance("i1", req, config_service=cs)
@@ -968,7 +968,7 @@ class TestDeleteToolsetInstanceCredentialCleanup:
 
         with patch("app.api.routes.toolsets._check_user_is_admin", new_callable=AsyncMock, return_value=True), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=gp), \
              patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
             result = await delete_toolset_instance("i1", req, config_service=cs)
