@@ -26,8 +26,14 @@ from app.sources.external.linear.linear import LinearDataSource  # type: ignore[
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
-from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
-from connectors.linear.constants import LINEAR_REFERENCE_ISSUE_IDENTIFIER  # type: ignore[import-not-found]
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    count_owned_records,
+    wait_for_sync_completion,
+)
+from connectors.linear.constants import (  # type: ignore[import-not-found]
+    LINEAR_IT_ARTIFACT_PREFIX,
+    LINEAR_REFERENCE_ISSUE_IDENTIFIER,
+)
 from connectors.linear.linear_test_utils import (  # type: ignore[import-not-found]
     _api_call_with_retry,
     assert_linear_issues_match_graph_records,
@@ -117,7 +123,6 @@ async def linear_connector(
         "reference_file_parent_weburl": None,
         "reference_file_parent_created_at": 0,
         "reference_file_parent_updated_at": 0,
-        "full_sync_count": 0,
         "expected_ticket_count": 0,
         "expected_project_count": 0,
         "expected_total_records": 0,
@@ -167,7 +172,7 @@ async def linear_connector(
     state["primary_team_id"] = primary.get("id")
     state["primary_team_key"] = primary.get("key")
 
-    # 3. Count existing issues + projects per team (API baseline).
+    # 3. Count existing issues + projects per team (API baseline, IT artifacts excluded).
     total_api_tickets = 0
     for tid in team_ids:
         tc = await count_linear_team_issues(linear_datasource, tid)
@@ -283,8 +288,8 @@ async def linear_connector(
 
     pipeshub_client.toggle_sync(connector_id, enable=True)
 
-    # 7. Wait for sync to absorb existing data.
-    full_count = await wait_for_sync_completion(
+    # 6. Wait for sync to absorb existing data.
+    await wait_for_sync_completion(
         pipeshub_client,
         graph_provider,
         connector_id,
@@ -292,7 +297,7 @@ async def linear_connector(
         timeout=240,
     )
 
-    # 8. Reconcile API issue IDs vs fully synced graph tickets (excludes placeholders).
+    # 7. Reconcile API issue IDs vs fully synced graph tickets (excludes placeholders).
     await assert_linear_issues_match_graph_records(
         linear_datasource,
         graph_provider,
@@ -320,15 +325,20 @@ async def linear_connector(
         assert rec is not None, (
             f"SETUP: reference FILE {state['reference_file_url']} missing after sync")
 
-    state["full_sync_count"] = full_count
-
-    # 9. Compute expected counts from post-sync graph state.
-    ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET")
+    # 8. Snapshot expected counts from post-sync graph state. Record baselines count only
+    #    records this run owns: a concurrently running leg's mutation issue may be inside
+    #    this sync window and gone by the time later tests read the graph, which would
+    #    otherwise look like records having disappeared.
+    ticket_count = await count_owned_records(
+        graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX, record_type="TICKET",
+    )
+    total_records = await count_owned_records(
+        graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX,
+    )
     project_count = await graph_provider.count_records_by_type(connector_id, "PROJECT")
     link_count = await graph_provider.count_records_by_type(connector_id, "LINK")
     webpage_count = await graph_provider.count_records_by_type(connector_id, "WEBPAGE")
     file_count = await graph_provider.count_records_by_type(connector_id, "FILE")
-    total_records = await graph_provider.count_records(connector_id)
     record_groups = await graph_provider.count_record_groups(connector_id)
     parent_child_edges = await graph_provider.count_parent_child_edges(connector_id)
     record_group_edges = await graph_provider.count_record_group_edges(connector_id)

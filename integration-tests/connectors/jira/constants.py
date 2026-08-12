@@ -13,6 +13,12 @@ JIRA_TEST_SETTLE_WAIT_SEC = int(os.getenv("JIRA_TEST_SETTLE_WAIT_SEC", "600"))
 # Poll timeout for graph ``Record.indexing_status == COMPLETED`` (indexing pipeline). Max 180s unless overridden.
 JIRA_INDEXING_WAIT_SEC = int(os.getenv("JIRA_INDEXING_WAIT_SEC", "180"))
 
+# Summary prefix carried by every ticket the mutation tests create on the primary project.
+# The CI matrix runs the arango and neo4j legs against the *same* Jira site, so a run sees
+# the other leg's in-flight tickets; both the live-Jira baselines and the graph counts skip
+# anything carrying this marker so each run only measures data it owns.
+JIRA_IT_ARTIFACT_PREFIX = "PHIT-"
+
 # Frozen blocks expected-snapshot ticket on the primary project (rich ADF description + comments;
 # add an inline image in the UI to also cover media embedding). Bootstrap the snapshot once.
 JIRA_BLOCKS_ISSUE_KEY = "KAN-13"
@@ -21,7 +27,8 @@ JIRA_BLOCKS_ISSUE_KEY = "KAN-13"
 # TC-JIRA-LINKS-001 (seeded with ``blocks`` + ``relates to`` links).
 JIRA_LINK_SOURCE_ISSUE_KEY = "KAN-12"
 
-# Reference issue on the primary project for TC-JIRA-004 / IDX-001 / ENTITY-001 / UPDATE-001.
+# Reference issue on the primary project for TC-JIRA-004 / IDX-001 / ENTITY-001.
+# Read-only: the mutation tests create and delete their own tickets, so nothing edits this one.
 JIRA_REFERENCE_ISSUE_KEY = "KAN-4"
 
 # Default site users group (``jira-users-<site>``). TC-JIRA-002 validates that its members

@@ -26,9 +26,13 @@ from app.sources.external.jira.jira import (
 )
 from connectors.jira.constants import (  # type: ignore[import-not-found]
     JIRA_INDEXING_WAIT_SEC,
+    JIRA_IT_ARTIFACT_PREFIX,
     JIRA_TEST_SETTLE_WAIT_SEC,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    owned_record_external_ids,
+)
 
 logger = logging.getLogger("jira-test-utils")
 
@@ -558,44 +562,6 @@ async def preview_jira_browse_projects_permission_edges_to_record_group(
 # =============================================================================
 
 
-async def count_jira_project_issues_via_jql(
-    datasource: JiraDataSource, project_key: str
-) -> int:
-    """Count issues in ``project_key`` via JQL (paginated).
-
-    Uses the enhanced ``/rest/api/3/search/jql`` endpoint. The legacy
-    ``/rest/api/3/search`` endpoint was retired by Atlassian in May 2025 and now
-    returns HTTP 410 Gone. The new endpoint uses cursor-based pagination
-    (``nextPageToken`` / ``isLast``) rather than ``startAt`` / ``total``.
-    """
-    jql = f'project = "{project_key}"'
-    total_seen = 0
-    next_token: Optional[str] = None
-    page_size = 100
-
-    while True:
-        resp = await datasource.search_and_reconsile_issues_using_jql_post(
-            jql=jql,
-            maxResults=page_size,
-            fields=["summary"],
-            nextPageToken=next_token,
-        )
-        if resp.status != 200:
-            _raise_on_auth_error(resp.status, "count_jira_project_issues_via_jql")
-            raise RuntimeError(
-                f"Jira JQL search failed for project={project_key!r}: HTTP {resp.status}"
-            )
-        data = resp.json() or {}
-        issues = data.get("issues") or []
-        total_seen += len(issues)
-        next_token = data.get("nextPageToken")
-        # New endpoint signals end-of-page via ``isLast`` or absence of ``nextPageToken``.
-        if data.get("isLast") or not next_token:
-            return total_seen
-        if not issues:
-            return total_seen
-
-
 async def assert_jira_issues_match_graph_records(
     datasource: JiraDataSource,
     graph_provider: GraphProviderProtocol,
@@ -604,15 +570,38 @@ async def assert_jira_issues_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert JQL issue count for the project equals graph TICKET-record count for the connector."""
-    api_count = await count_jira_project_issues_via_jql(datasource, project_key)
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET", scoped=True)
-    if api_count != graph_ticket_count:
+    """Assert the project's live issues and the graph's TICKETs are the same set.
+
+    Sets, not counts, so a failure names the offending issues. IT artifacts are skipped on
+    both sides: a concurrently running leg shares this Jira site, so its mutation tickets are
+    live for a few minutes and may or may not have landed inside our sync window.
+
+    The graph side is *not* ``BELONGS_TO``-guarded, so call this only before a narrowing
+    filter sync — records that lost their edge would otherwise read as unexpected extras.
+    """
+    live = await fetch_jira_project_issue_ids(datasource, project_key)
+    graph_ids = await owned_record_external_ids(
+        graph_provider, connector_id, prefix=JIRA_IT_ARTIFACT_PREFIX, record_type="TICKET",
+    )
+    missing = live - graph_ids
+    extra = graph_ids - live
+    if missing or extra:
         raise AssertionError(
-            f"{phase}: Jira JQL issue count ({api_count}) != "
-            f"graph TICKET count ({graph_ticket_count}) for connector {connector_id} "
-            f"project_key={project_key!r}"
+            f"{phase}: graph TICKETs != live Jira issues for connector {connector_id} "
+            f"project_key={project_key!r} (IT artifacts excluded from both sides). "
+            f"missing_from_graph={sorted(missing)} unexpected_in_graph={sorted(extra)}"
         )
+
+
+async def fetch_jira_project_issue_ids(datasource: JiraDataSource, project_key: str) -> set[str]:
+    """Live issue ids for ``project_key``, excluding IT artifacts."""
+    issues = await search_issues_jql(datasource, f'project = "{project_key}"', ["summary"])
+    return {str(it["id"]) for it in issues if it.get("id") and not is_jira_it_artifact(it)}
+
+
+def is_jira_it_artifact(issue: dict[str, Any]) -> bool:
+    """True if a search-result issue was created by an integration test."""
+    return JIRA_IT_ARTIFACT_PREFIX in ((issue.get("fields") or {}).get("summary") or "")
 
 
 # =============================================================================
@@ -1222,16 +1211,22 @@ async def derive_jira_scope_counts(
         comment bodies are not on the issue-search payload, same as production sync).
       - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
         epic child; attachments use ATTACHMENT, not PARENT_CHILD).
+
+    IT artifacts are skipped: this project is shared with any concurrently running leg,
+    whose in-flight tickets would otherwise land in the baseline.
     """
     issues = await search_issues_jql(
         datasource,
         f'project = "{project_key}"',
-        ["parent", "attachment", "description"],
+        ["parent", "attachment", "description", "summary"],
     )
-    ticket = len(issues)
+    ticket = 0
     files = 0
     parent_child = 0
     for it in issues:
+        if is_jira_it_artifact(it):
+            continue
+        ticket += 1
         f = it.get("fields") or {}
         if f.get("parent"):
             parent_child += 1

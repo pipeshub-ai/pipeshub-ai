@@ -13,9 +13,9 @@ Counts are BELONGS_TO-guarded (see the IT graph providers).
   order 4  TC-JIRA-ROLE-001   — all primary-project AppRoles + synced User→Role members
   order 5  TC-JIRA-003        — project RecordGroup
   order 6  TC-JIRA-004        — reference issue TICKET properties
-  order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED
+  order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED; then manual indexing on
   order 8  TC-INCR-001        — create + incremental + delete/full-sync cleanup
-  order 9  TC-UPDATE-001      — edit + restore
+  order 9  TC-UPDATE-001      — create + edit + delete (test-owned ticket)
   order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
   order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_RELATION
@@ -53,6 +53,8 @@ from helper.assertions import ConnectorAssertions  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
+    count_owned_records,
+    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
@@ -64,6 +66,7 @@ from validation.graph_entity_validator import (  # noqa: E402
 from connectors.jira.constants import (  # noqa: E402
     JIRA_FILTER_DATE_CUT_MS,
     JIRA_INDEXING_WAIT_SEC,
+    JIRA_IT_ARTIFACT_PREFIX,
     JIRA_PH_CHILD_KEY,
     JIRA_PH_CREATED_CUT_MS,
     JIRA_USERS_GROUP_NAME,
@@ -113,15 +116,58 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(8)
 
 
+async def _delete_issue_and_resync(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    jira_datasource: JiraDataSource,
+    *,
+    connector_id: str,
+    issue_id: str,
+    context: str,
+) -> None:
+    """Delete a test-owned issue in Jira, then full-sync so it leaves the connector's scope.
+
+    The Record node itself survives: a full sync wipes the connector's sync points, and Jira's
+    audit-log deletion pass is skipped without a checkpoint (``_handle_issue_deletions``). The
+    node loses its ``BELONGS_TO`` edge, and its IT prefix keeps it out of owned counts, so it
+    is inert either way — but do not expect it to disappear.
+
+    Failures are logged, not raised: this runs in a ``finally`` and would otherwise mask a
+    real assertion failure from the test body.
+    """
+    try:
+        del_resp = await jira_api_call_with_retry(
+            jira_datasource.delete_issue, issueIdOrKey=issue_id,
+            context=f"{context} delete_issue", retry_server_errors=True,
+        )
+        # 404 (already gone) is acceptable.
+        if getattr(del_resp, "status", 204) not in (200, 202, 204, 404):
+            logger.warning("%s cleanup: delete HTTP %s", context, del_resp.status)
+        pipeshub_client.resync_connector(connector_id, full_sync=True)
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+    except Exception as e:
+        logger.error("%s cleanup failed — issue %s may be leaked: %s", context, issue_id, e)
+
+
+# Indexing is proven once, in TC-JIRA-IDX-001, which then switches the shared connector over
+# to this. Every later test only reads the graph, so the ~8 syncs they trigger have no reason
+# to run records through extraction/embedding. ``FilterCollection.from_dict`` drops any entry
+# missing ``operator``/``type``, so both are required for the switch to take effect.
+_MANUAL_INDEXING = {
+    "values": {"enable_manual_sync": {"operator": "is", "type": "boolean", "value": True}},
+}
+
+
 def _sync_filters(**values: Any) -> dict[str, Any]:
-    """Wrap filter fields into the connector's ``config.filters.sync.values`` shape.
+    """Build the connector's full ``config.filters`` payload: sync scope + manual indexing.
 
     The connector reads ``config.filters.sync.values.<key>`` (see load_connector_filters);
     the filters-sync endpoint stores the request ``filters`` verbatim, so the payload must
     already carry the ``sync.values`` nesting — a flat ``{"project_keys": ...}`` is written
-    to the wrong path and silently ignored.
+    to the wrong path and silently ignored. "Verbatim" also means the indexing block has to
+    be repeated on every call: omitting it would silently switch auto-indexing back on.
     """
-    return {"sync": {"values": values}}
+    return {"sync": {"values": values}, "indexing": _MANUAL_INDEXING}
 
 
 def _pk(operator: str, values: list[str]) -> dict[str, Any]:
@@ -158,17 +204,14 @@ class TestJiraConnector:
         file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value, scoped=True)
         total = await graph_provider.count_records(connector_id, scoped=True)
 
-        # Independent (live Jira): TICKET / FILE counts, attachment + parent-child edges.
-        assert ticket_count == jira_connector["expected_ticket_count"], (
-            f"graph TICKET {ticket_count} != Jira JQL {jira_connector['expected_ticket_count']}"
-        )
+        # TICKET count is not asserted here: the live-Jira reconciliation at the end of this
+        # test compares the same thing as id sets, which survives a concurrently running leg
+        # creating mutation tickets in this shared project and names the offender on failure.
+        # Attachments and parents only ever hang off pre-provisioned tickets, so FILE and
+        # PARENT_CHILD counts need no such tolerance.
         assert file_count == jira_connector["expected_file_count"], (
             f"graph FILE {file_count} != synced Jira attachments "
             f"(excl. new inline images) {jira_connector['expected_file_count']}"
-        )
-        assert total == jira_connector["expected_total_records"], (
-            f"graph records {total} != Jira tickets+synced attachments "
-            f"{jira_connector['expected_total_records']}"
         )
         attach = await graph_provider.count_record_relation_edges(connector_id, "ATTACHMENT")
         assert attach == jira_connector["expected_attachment_edges"], (
@@ -236,7 +279,7 @@ class TestJiraConnector:
         issue_type = jira_connector.get("default_issue_type") or "Task"
         base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
 
-        title = f"PHIT-IncrTest-{uuid.uuid4().hex[:8]}"
+        title = f"{JIRA_IT_ARTIFACT_PREFIX}IncrTest-{uuid.uuid4().hex[:8]}"
         new_id: str | None = None
         try:
             # create_issue: retry 429 only; 5xx/timeout/transport → fail (no duplicate ticket).
@@ -280,18 +323,10 @@ class TestJiraConnector:
             logger.info("TC-INCR-001 passed: %s synced", new_key)
         finally:
             if new_id:
-                try:
-                    del_resp = await jira_api_call_with_retry(
-                        jira_datasource.delete_issue, issueIdOrKey=new_id,
-                        context="TC-INCR-001 delete_issue", retry_server_errors=True,
-                    )
-                    # 404 (already gone) is acceptable.
-                    if getattr(del_resp, "status", 204) not in (200, 202, 204, 404):
-                        logger.warning("TC-INCR-001 cleanup: delete HTTP %s", del_resp.status)
-                    pipeshub_client.resync_connector(connector_id, full_sync=True)
-                    await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
-                except Exception as e:
-                    logger.warning("TC-INCR-001 cleanup failed: %s", e)
+                await _delete_issue_and_resync(
+                    pipeshub_client, graph_provider, jira_datasource,
+                    connector_id=connector_id, issue_id=new_id, context="TC-INCR-001",
+                )
 
     @pytest.mark.order(9)
     async def test_tc_update_001_content_and_summary_revision(
@@ -301,26 +336,51 @@ class TestJiraConnector:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-UPDATE-001: edit reference issue summary+description; version += 1; revision = Jira updated ms; restore."""
+        """TC-UPDATE-001: edit a test-owned ticket; version += 1; revision = Jira updated ms.
+
+        The ticket is created here rather than reusing the pinned reference issue: this Jira
+        site is shared with any concurrently running leg, so editing a shared ticket made each
+        run assert against the other's summary and restore the other's value permanently.
+        """
         connector_id = jira_connector["connector_id"]
-        target_key = jira_connector.get("reference_issue_key")
-        if not target_key:
-            pytest.skip("No reference issue discovered on primary — skipping")
-        target_id = jira_connector["reference_issue_id"]
+        primary_key = jira_connector["primary_key"]
+        issue_type = jira_connector.get("default_issue_type") or "Task"
 
-        # Capture original summary + description to restore.
-        orig_resp = await jira_datasource.get_issue(issueIdOrKey=target_key, fields="summary,description")
-        assert orig_resp.status == 200
-        orig_fields = (orig_resp.json() or {}).get("fields") or {}
-        orig_summary = orig_fields.get("summary") or ""
-        orig_description = orig_fields.get("description")
-
-        record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
-        assert record_before is not None, f"Issue {target_key} not in graph"
-        old_version = int(record_before.version)
-
-        new_summary = f"PHIT-Edited-{uuid.uuid4().hex[:8]}"
+        target_key: str | None = None
+        target_id: str | None = None
         try:
+            resp = await jira_api_call_with_retry(
+                jira_datasource.create_issue,
+                fields={
+                    "project": {"key": primary_key},
+                    "summary": f"{JIRA_IT_ARTIFACT_PREFIX}UpdTest-{uuid.uuid4().hex[:8]}",
+                    "issuetype": {"name": issue_type},
+                    "description": _adf("Update test issue."),
+                },
+                context="TC-UPDATE-001 create_issue",
+                retry_server_errors=False,
+            )
+            assert resp.status in (200, 201), f"create failed: HTTP {resp.status}"
+            data = resp.json()
+            target_key = data["key"]
+            target_id = str(data["id"])
+
+            await wait_until_jira_condition(
+                check_fn=lambda: check_issue_exists_bool(jira_datasource, target_key),
+                description=f"TC-UPDATE-001: new issue fetchable ({target_key})",
+                timeout=120,
+            )
+
+            _restart_sync(pipeshub_client, connector_id)
+            await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+
+            record_before = await wait_for_record_by_external_id(
+                graph_provider, connector_id, target_id,
+                timeout=120, description="TC-UPDATE-001 baseline record",
+            )
+            old_version = int(record_before.version)
+
+            new_summary = f"{JIRA_IT_ARTIFACT_PREFIX}Edited-{uuid.uuid4().hex[:8]}"
             edit_resp = await jira_api_call_with_retry(
                 jira_datasource.edit_issue, issueIdOrKey=target_key,
                 fields={"summary": new_summary, "description": _adf("Edited via TC-UPDATE-001.")},
@@ -342,16 +402,11 @@ class TestJiraConnector:
             assert new_summary in (record_after.record_name or "")
             logger.info("TC-UPDATE-001 passed: version %s -> %s", old_version, record_after.version)
         finally:
-            restore_fields: dict[str, Any] = {"summary": orig_summary}
-            if orig_description is not None:
-                restore_fields["description"] = orig_description
-            try:
-                await jira_api_call_with_retry(
-                    jira_datasource.edit_issue, issueIdOrKey=target_key, fields=restore_fields,
-                    context="TC-UPDATE-001 restore", retry_server_errors=True,
+            if target_id:
+                await _delete_issue_and_resync(
+                    pipeshub_client, graph_provider, jira_datasource,
+                    connector_id=connector_id, issue_id=target_id, context="TC-UPDATE-001",
                 )
-            except Exception as e:
-                logger.warning("TC-UPDATE-001 restore failed: %s", e)
 
 
 # =============================================================================
@@ -511,9 +566,17 @@ class TestJiraValidation:
         self,
         jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
+        pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-004: reference issue has correct TICKET record properties + edges."""
+        """TC-JIRA-004: reference issue has correct TICKET record properties + edges.
+
+        The reference ticket is shared and read-only to this suite, but nothing stops an
+        outside editor (a Jira UI session, another IT run) from changing it after the
+        fixture synced. That drifts ``record_name`` / ``updated_at`` / revision against a
+        snapshot this test did not take, which says nothing about the connector — so on
+        drift, resync once and compare against the state both sides then agree on.
+        """
         connector_id = jira_connector["connector_id"]
         target_key = jira_connector.get("reference_issue_key")
         if not target_key:
@@ -521,12 +584,26 @@ class TestJiraValidation:
         target_id = jira_connector["reference_issue_id"]
         base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
 
-        actual = await graph_provider.get_typed_record_by_external_id(connector_id, target_id)
-        assert actual is not None, f"typed TICKET record missing for external id {target_id}"
-        expected = await JiraExpected.ticket_record(
-            target_key, connector_id=connector_id, datasource=jira_datasource,
-            site_base_url=base_url or None,
-        )
+        async def _live_and_graph() -> tuple[Any, Any]:
+            live = await JiraExpected.ticket_record(
+                target_key, connector_id=connector_id, datasource=jira_datasource,
+                site_base_url=base_url or None,
+            )
+            graph = await graph_provider.get_typed_record_by_external_id(connector_id, target_id)
+            assert graph is not None, f"typed TICKET record missing for external id {target_id}"
+            return live, graph
+
+        expected, actual = await _live_and_graph()
+        if str(expected.external_revision_id) != str(actual.external_revision_id):
+            logger.warning(
+                "TC-JIRA-004: %s changed in Jira after the fixture sync "
+                "(live revision %s != graph %s) — resyncing once",
+                target_key, expected.external_revision_id, actual.external_revision_id,
+            )
+            _restart_sync(pipeshub_client, connector_id)
+            await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+            expected, actual = await _live_and_graph()
+
         await assert_graph_entity_with_edges(
             expected, actual, entity="ticket_record",
             connector_id=connector_id, graph_provider=graph_provider,
@@ -643,7 +720,11 @@ class TestJiraIndexing:
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
     ) -> None:
-        """TC-JIRA-IDX-001: reference issue reaches indexing_status == COMPLETED."""
+        """TC-JIRA-IDX-001: reference issue reaches indexing_status == COMPLETED.
+
+        Last test that needs the indexing pipeline, so it hands the connector over to manual
+        indexing on the way out (see ``_sync_filters``).
+        """
         connector_id = jira_connector["connector_id"]
         project_id = jira_connector["primary_project_id"]
         key = jira_connector.get("reference_issue_key")
@@ -661,6 +742,15 @@ class TestJiraIndexing:
         assert rec.external_record_group_id == project_id
         assert rec.virtual_record_id
         logger.info("TC-JIRA-IDX-001 passed: %s", key)
+
+        # Every later test asserts on the graph only. Records synced from here on get
+        # AUTO_INDEX_OFF and publish no indexing event — which also keeps their counts from
+        # drifting after the connector reports IDLE.
+        await apply_filter_full_sync(
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("in", [jira_connector["primary_key"]])),
+        )
+        logger.info("TC-JIRA-IDX-001: connector switched to manual indexing")
 
 
 # =============================================================================
@@ -909,13 +999,17 @@ class TestJiraFilters:
         primary_key = jira_connector["primary_key"]
         cut = JIRA_FILTER_DATE_CUT_MS
 
-        # Pre-flight: query Jira to confirm the cut partitions the project.
+        # Pre-flight: query Jira to confirm the cut partitions the project. IT artifacts are
+        # excluded — a concurrently running leg's mutation tickets are created "now", i.e.
+        # always on the after-cut side, and are deleted again within the same run.
         issues = await search_issues_jql(
-            jira_datasource, f'project = "{primary_key}"', ["created"],
+            jira_datasource, f'project = "{primary_key}"', ["created", "summary"],
         )
         created_by_id = {
             str(it["id"]): parse_jira_timestamp((it.get("fields") or {}).get("created"))
-            for it in issues if (it.get("fields") or {}).get("created")
+            for it in issues
+            if (it.get("fields") or {}).get("created")
+            and JIRA_IT_ARTIFACT_PREFIX not in ((it.get("fields") or {}).get("summary") or "")
         }
         preflight_after = {i for i, c in created_by_id.items() if c >= cut}
         preflight_before = {i for i, c in created_by_id.items() if c <= cut}
@@ -940,10 +1034,23 @@ class TestJiraFilters:
             1. Re-verify each pre-flight ticket via GET /issue/{id} (no search index).
             2. Assert each verified live ticket is present in the graph.
             3. Assert graph count does not exceed live count by more than 1
-               (tolerates a single ghost ticket from Jira search index lag).
+               (tolerates a single ghost ticket from Jira search index lag), plus any
+               IT-artifact tickets a concurrently running leg has in flight.
             """
             count = await _count()
             assert count > 0, f"{label}: no scoped tickets after sync"
+
+            # A concurrent leg's mutation tickets are created "now", so they sync into the
+            # after-cut scope. Counted unscoped, which can only over-state them — the
+            # tolerance is never too tight.
+            all_tickets = await graph_provider.count_records_by_type(
+                connector_id, RecordType.TICKET.value,
+            )
+            owned_tickets = await count_owned_records(
+                graph_provider, connector_id,
+                prefix=JIRA_IT_ARTIFACT_PREFIX, record_type=RecordType.TICKET.value,
+            )
+            artifacts = all_tickets - owned_tickets
 
             live_ids: set[str] = set()
             for eid in preflight_ids:
@@ -965,9 +1072,10 @@ class TestJiraFilters:
                     f"{label}: ticket {eid} exists in Jira and matches filter but is absent from graph"
                 )
 
-            assert count <= len(live_ids) + 1, (
+            assert count <= len(live_ids) + 1 + artifacts, (
                 f"{label}: graph has {count} scoped tickets but only {len(live_ids)} "
-                f"verified live — difference exceeds ghost tolerance of 1"
+                f"verified live — difference exceeds ghost tolerance of 1 "
+                f"(+{artifacts} IT artifacts)"
             )
 
         # ── created >= cut ──
@@ -1161,7 +1269,7 @@ class TestJiraPlaceholders:
                 stub_node_ids[ancestor_id] = stub.id
 
             # Phase 2 — widen filter; stubs promote in place
-            await _apply_filter_full_sync(
+            await apply_filter_full_sync(
                 pipeshub_client, graph_provider, connector_id,
                 _sync_filters(project_keys=_pk("in", [primary_key])),
             )

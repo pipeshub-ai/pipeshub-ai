@@ -26,9 +26,13 @@ from app.sources.external.linear.linear import (
 )
 from connectors.linear.constants import (  # type: ignore[import-not-found]
     LINEAR_INDEXING_WAIT_SEC,
+    LINEAR_IT_ARTIFACT_PREFIX,
     LINEAR_TEST_SETTLE_WAIT_SEC,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    owned_record_external_ids,
+)
 
 logger = logging.getLogger("linear-test-utils")
 
@@ -121,7 +125,7 @@ async def fetch_linear_team_issue_ids(
     page_size: int = 100,
     max_pages: int = 200,
 ) -> set[str]:
-    """Return all issue IDs belonging to ``team_id`` via paginated GraphQL query."""
+    """Return issue IDs belonging to ``team_id``, excluding IT artifacts."""
     issue_ids: set[str] = set()
     cursor: Optional[str] = None
 
@@ -136,7 +140,7 @@ async def fetch_linear_team_issue_ids(
         nodes = issues_data.get("nodes", [])
         for node in nodes:
             issue_id = node.get("id")
-            if issue_id:
+            if issue_id and LINEAR_IT_ARTIFACT_PREFIX not in (node.get("title") or ""):
                 issue_ids.add(issue_id)
 
         page_info = issues_data.get("pageInfo", {})
@@ -154,7 +158,7 @@ async def count_linear_team_issues(
     page_size: int = 100,
     max_pages: int = 200,
 ) -> int:
-    """Count all issues belonging to ``team_id`` via paginated GraphQL query."""
+    """Count issues belonging to ``team_id``, excluding IT artifacts."""
     return len(
         await fetch_linear_team_issue_ids(
             datasource, team_id, page_size=page_size, max_pages=max_pages,
@@ -583,24 +587,25 @@ async def assert_linear_issues_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert graph TICKET count >= Linear API issue count for the filtered teams.
+    """Assert every live issue in the filtered teams reached the graph.
 
-    The graph legitimately has more TICKET nodes than the API issue count because the
-    connector creates placeholder stubs for parent/related issues referenced by synced
-    issues. The connector's team_ids filter already scopes all graph records to the
-    correct teams, so we only need to verify the graph captured at least every issue
-    the API reports.
+    Inclusion, not equality: the graph legitimately holds *more* TICKETs than the API reports,
+    because the connector mints placeholder stubs for referenced parents. Compared as id sets
+    so a failure names the missing issues, and IT artifacts are skipped on both sides — a
+    concurrently running leg shares this workspace and its mutation issues come and go.
     """
-    api_total = 0
+    api_ids: Set[str] = set()
     for tid in team_ids:
-        api_total += await count_linear_team_issues(datasource, tid)
+        api_ids |= await fetch_linear_team_issue_ids(datasource, tid)
 
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET")
-    if graph_ticket_count < api_total:
+    graph_ids = await owned_record_external_ids(
+        graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX, record_type="TICKET",
+    )
+    missing = api_ids - graph_ids
+    if missing:
         raise AssertionError(
-            f"{phase}: graph TICKET count ({graph_ticket_count}) < "
-            f"Linear API issue count ({api_total}) for connector {connector_id}. "
-            "Expected graph count to be >= API count (placeholders are additive)."
+            f"{phase}: {len(missing)} live Linear issue(s) absent from the graph for "
+            f"connector {connector_id} (IT artifacts excluded): {sorted(missing)}"
         )
 
 
