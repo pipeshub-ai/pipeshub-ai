@@ -64,8 +64,8 @@ HEAVY_PARSE_WORKING_SET_GB = 1.5
 # read (not just via _env_float's low/high) so the invariant MEM_HARD >
 # MEM_SOFT > MEM_SOFT - GROW_BAND holds even when only one of the three is
 # overridden and the others fall back to their un-clamped defaults.
-MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.75, low=0.10, high=0.95)
-MEM_HARD = max(_env_float("GOVERNOR_MEM_HARD", 0.85, low=0.11, high=0.99), MEM_SOFT + 0.01)
+MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
+MEM_HARD = max(_env_float("GOVERNOR_MEM_HARD", 0.80, low=0.11, high=0.99), MEM_SOFT + 0.01)
 GROW_BAND = min(_env_float("GOVERNOR_GROW_BAND", 0.05, low=0.0, high=0.90), MEM_SOFT - 0.01)
 GROW_CONFIRM_SAMPLES = 3
 SHRINK_COOLDOWN_SECONDS = 30.0
