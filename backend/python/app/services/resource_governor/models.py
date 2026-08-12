@@ -79,6 +79,11 @@ class ResourceSnapshot:
         all-in-one container that ceiling falls below MEM_SOFT, and no
         amount of real pressure could ever trip the brake before the kernel
         OOM-kills the container.
+
+        Governs *growth* only. Because the baseline is credited to both
+        sides, this reads lower than the cgroup's true occupancy, so the
+        shrink brake reads ``mem_pressure_raw`` instead — see
+        ``policy._next_pool_limit``.
         """
         if self.mem_working_set_bytes is None:
             return None
@@ -93,6 +98,31 @@ class ResourceSnapshot:
             raw = self.mem_working_set_raw_bytes
             return (raw if raw is not None else self.mem_working_set_bytes) / self.mem_limit_bytes
         return self.mem_working_set_bytes / usable
+
+    @property
+    def mem_pressure_raw(self) -> float | None:
+        """Fraction of the cgroup limit in use with no baseline credited —
+        the occupancy the kernel OOM killer actually acts on.
+
+        Always greater than or equal to ``mem_pressure``, and the gap widens
+        with the baseline: crediting 3GiB of a 12GiB container reports 70%
+        pressure only once the cgroup is genuinely 78% full. Growth needs
+        that credit (otherwise a co-located service's idle footprint pins
+        every pool at its floor forever), but a shrink decision must not
+        inherit it — the container has to be able to brake while there is
+        still headroom left to brake into.
+        """
+        if self.mem_limit_bytes is None or self.mem_limit_bytes <= 0:
+            return None
+        # Pre-baseline callers/tests leave the raw field unset, in which case
+        # mem_working_set_bytes is itself unadjusted (mirrors
+        # policy._free_memory_gb).
+        resident = self.mem_working_set_raw_bytes
+        if resident is None:
+            resident = self.mem_working_set_bytes
+        if resident is None:
+            return None
+        return resident / self.mem_limit_bytes
 
 
 @dataclass(frozen=True)

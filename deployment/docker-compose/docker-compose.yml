@@ -175,6 +175,13 @@ services:
       # Set an explicit integer only to pin a hard ceiling.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+      # Memory the governor should credit to co-located idle services (all 7
+      # run in this one container) rather than to parse/index workload, so a
+      # large resident footprint doesn't hold every pool at its floor. Leave
+      # unset to auto-calibrate from the lowest working set observed; set an
+      # explicit MiB figure when the idle footprint is known. Growth-side
+      # only — the shrink brake always reads true cgroup occupancy.
+      - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}

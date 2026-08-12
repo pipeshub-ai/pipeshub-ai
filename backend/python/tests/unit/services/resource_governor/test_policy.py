@@ -253,6 +253,77 @@ class TestNextLimitsPressure:
             assert new_limits.get(pool) == current.get(pool)
 
 
+class TestBrakeUsesRawPressure:
+    """The all-in-one container OOM: crediting a co-located service's idle
+    footprint to ``mem_pressure`` also pushed the shrink brake's trip points
+    up by the baseline's share of the limit, so the governor kept admitting
+    heavy parses while the cgroup was already within one Docling page batch
+    of its cap. Shrink reads the uncredited occupancy; growth still reads the
+    credited one.
+    """
+
+    LIMIT = 12 * 1024 ** 3
+    BASELINE = 3 * 1024 ** 3
+
+    def _ceilings(self) -> Ceilings:
+        return Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)
+
+    def _limits(self) -> Limits:
+        return Limits(values={
+            Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16,
+            Pool.DOWNLOAD_BYTES: 1024 ** 3,
+        })
+
+    def _snap_at_raw_pressure(self, raw_pressure: float) -> ResourceSnapshot:
+        raw_working_set = int(raw_pressure * self.LIMIT)
+        return _snapshot(
+            mem_limit_bytes=self.LIMIT,
+            mem_working_set_bytes=raw_working_set - self.BASELINE,
+            mem_working_set_raw_bytes=raw_working_set,
+            mem_baseline_bytes=self.BASELINE,
+        )
+
+    def test_soft_brake_trips_on_occupancy_the_baseline_hides(self) -> None:
+        snap = self._snap_at_raw_pressure(MEM_SOFT + 0.06)
+        assert snap.mem_pressure < MEM_SOFT, "precondition: credited reading looks healthy"
+
+        new_limits, _ = next_limits(
+            self._limits(), snap, self._ceilings(), ControllerState.initial(),
+            _no_demand(), now=0.0, interval=INTERVAL,
+        )
+
+        assert new_limits.get(Pool.HEAVY_PARSE) == 7
+
+    def test_hard_brake_trips_on_occupancy_the_baseline_hides(self) -> None:
+        snap = self._snap_at_raw_pressure(policy_mod.MEM_HARD + 0.02)
+        assert snap.mem_pressure < policy_mod.MEM_HARD, "precondition: credited reading is below MEM_HARD"
+
+        new_limits, _ = next_limits(
+            self._limits(), snap, self._ceilings(), ControllerState.initial(),
+            _no_demand(), now=0.0, interval=INTERVAL,
+        )
+
+        assert new_limits.get(Pool.HEAVY_PARSE) == 4
+
+    def test_growth_still_credits_the_baseline(self) -> None:
+        """The baseline's actual purpose: a container holding a large but idle
+        co-located footprint must still be able to grow, rather than sitting
+        pinned at its floor."""
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._snap_at_raw_pressure(MEM_SOFT - 0.1)
+        assert snap.mem_pressure_raw < MEM_SOFT, "precondition: brake must stay off"
+
+        for i in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=float(i) * INTERVAL, interval=INTERVAL,
+            )
+
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy) + 1
+
+
 class TestNextLimitsGrowth:
     def _ceilings(self) -> Ceilings:
         return Ceilings(heavy=8, light=32, index=24, bytes_max=2 * 1024 ** 3)

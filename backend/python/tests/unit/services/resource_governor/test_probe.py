@@ -395,15 +395,17 @@ class TestSystemResourceProbeBaselineIntegration:
     ) -> None:
         monkeypatch.setenv("GOVERNOR_BASELINE_MEMORY_MB", "3000")  # 3000 MiB
         _write(tmp_path / "memory.max", "12884901888")  # 12 GiB
-        _write(tmp_path / "memory.current", "10000000000")  # ~9.31 GiB raw -> ~78% raw pressure
+        _write(tmp_path / "memory.current", "9700000000")  # ~9.03 GiB raw -> ~75% raw pressure
 
         sut = SystemResourceProbe()
         snap = sut.snapshot()
 
         raw_pressure = snap.mem_working_set_raw_bytes / snap.mem_limit_bytes
-        assert raw_pressure > MEM_SOFT  # would have forced a shrink pre-baseline
-        # Crediting the co-located 3000 MiB pulls this back under the shrink
-        # threshold, which is the whole point of the baseline...
+        assert raw_pressure > MEM_SOFT
+        # Crediting the co-located 3000 MiB pulls the growth reading back
+        # under MEM_SOFT, which is the whole point of the baseline (the
+        # shrink brake reads mem_pressure_raw and still trips here — see
+        # test_policy.TestBrakeUsesRawPressure)...
         assert snap.mem_pressure < MEM_SOFT
         # ...but only just: the container really is ~78% full, so the reading
         # must stay well clear of idle rather than collapsing toward zero.

@@ -161,7 +161,10 @@ def resolve_ceilings(
 
     if env_parse is not None:
         parse_ceiling = max(1, env_parse)
-        light_ceiling = parse_ceiling
+        # An explicit heavy ceiling caps light too: an operator pinning
+        # MAX_CONCURRENT_PARSING=1 wants one parse in flight, not one heavy
+        # parse plus a burst of light ones.
+        light_ceiling = min(parse_ceiling, int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER))
     else:
         if free_gb is not None:
             derived = min(snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
@@ -176,16 +179,17 @@ def resolve_ceilings(
         cpu_cap = max(1, math.floor(snap.cpu_quota))
         parse_floor = min(_PARSE_CEILING_MIN, cpu_cap)
         parse_ceiling = int(_clamp(math.floor(derived), parse_floor, _PARSE_CEILING_MAX))
+        # Sized off CPU alone, never off heavy: a light parse is milliseconds
+        # on a few KB, so heavy-parse memory sizing must not cap it.
+        light_ceiling = int(
+            snap.cpu_quota * _LIGHT_CPU_MULTIPLIER
+        )
 
     if env_index is not None:
         index_ceiling = max(1, env_index)
     else:
         derived_index = parse_ceiling * _INDEX_CEILING_PARSE_MULTIPLIER
         index_ceiling = int(_clamp(derived_index, _INDEX_CEILING_MIN, _INDEX_CEILING_MAX))
-
-    light_ceiling = min(light_ceiling, int(
-        snap.cpu_quota * _LIGHT_CPU_MULTIPLIER
-    ))
 
     if snap.mem_limit_bytes is not None:
         bytes_max = max(_BYTES_FLOOR, int(snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION))
@@ -493,14 +497,23 @@ def _next_pool_limit(
     shrink_step = _step_for(pool, ceiling)
     target = _target_for(pool, snap, ceilings)
     pressure = snap.mem_pressure
+    # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on
+    # the baseline-credited reading. Braking on the credited reading pushes
+    # the effective MEM_SOFT/MEM_HARD trip points up by the baseline's share
+    # of the limit (a 3GiB baseline in a 12GiB container turns 70%/80% into
+    # 78%/85% real), which leaves too little headroom for the brake to matter:
+    # one Docling batch can cover the remaining gap well inside a sample
+    # interval, and an OOM kill is unrecoverable. Growth still needs the
+    # credit — see ResourceSnapshot.mem_pressure_raw.
+    brake_pressure = snap.mem_pressure_raw
     cooling_down = now < state.cooldown_until
 
-    if pressure is not None and pressure >= MEM_HARD:
+    if brake_pressure is not None and brake_pressure >= MEM_HARD:
         return max(floor, current // 2), _reset_for_shrink(
             state, cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
         )
 
-    if (pressure is not None and pressure >= MEM_SOFT) or _cpu_brake_active(snap):
+    if (brake_pressure is not None and brake_pressure >= MEM_SOFT) or _cpu_brake_active(snap):
         return max(floor, current - shrink_step), _reset_for_shrink(
             state, cooldown_until=max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS),
         )

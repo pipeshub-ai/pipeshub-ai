@@ -215,7 +215,8 @@ class DoclingProcessor():
         content: bytes,
         batch_size: int = PAGE_BATCH_SIZE,
     ) -> BlocksContainer:
-        """Parse the PDF in page-range batches to cap peak memory, then convert it as one document."""
+        """Parse the PDF in page-range batches to cap peak memory, converting each
+        batch to blocks before the next one is parsed."""
         page_count = await asyncio.to_thread(get_pdf_page_count, content)
 
         if page_count <= batch_size:
@@ -225,22 +226,23 @@ class DoclingProcessor():
         self.logger.info(
             f"Parsing '{doc_name}' ({page_count} pages) in batches of {batch_size} pages"
         )
-        docs: list[DoclingDocument] = []
+        # Accumulates blocks, not DoclingDocuments. Retaining every batch's
+        # document to DoclingDocument.concatenate them at the end held the whole
+        # parsed PDF twice at peak — page images included, since the pipeline
+        # runs with generate_picture_images — so page batching bounded only the
+        # converter's in-flight pages and not the memory this call needs
+        # overall, which is what let a long PDF OOM the container.
+        merged = BlocksContainer()
         for start in range(1, page_count + 1, batch_size):
             end = min(start + batch_size - 1, page_count)
-            docs.append(
-                await self.parse_document(doc_name, content, page_range=(start, end))
-            )
+            doc = await self.parse_document(doc_name, content, page_range=(start, end))
+            batch_blocks = await self.create_blocks(doc)
+            del doc
+            merged.extend(batch_blocks)
             self.logger.info(f"Parsed pages {start}-{end} of {page_count} for '{doc_name}'")
             gc.collect()
 
-        merged = await asyncio.to_thread(DoclingDocument.concatenate, docs)
-        # concatenate() names the result by joining every input name with " + ".
-        merged.name = doc_name
-        docs.clear()
-        gc.collect()
-
-        return await self.create_blocks(merged)
+        return merged
 
     async def load_document(self, doc_name: str, content: bytes, page_number: int | None = None) -> BlocksContainer|bool:
         """Parse document and create blocks in one call (legacy method).
