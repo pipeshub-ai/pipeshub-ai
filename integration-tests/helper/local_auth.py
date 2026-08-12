@@ -12,6 +12,12 @@ from typing import Tuple
 
 import requests
 
+_RETRYABLE_STATUS = {429}
+
+
+class _RetryableBackendError(RuntimeError):
+    """A backend failure worth another attempt, such as 429 or any 5xx."""
+
 
 def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> Tuple[str, str]:
     """
@@ -38,7 +44,7 @@ def obtain_local_oauth_credentials(base_url: str, timeout: int = 30) -> Tuple[st
     for attempt in range(3):
         try:
             return _create_oauth_app(base_url, access_token, timeout)
-        except RuntimeError:
+        except _RetryableBackendError:
             if attempt == 2:
                 raise
             time.sleep(0.5 * (attempt + 1))
@@ -144,13 +150,17 @@ def _create_oauth_app(base_url: str, access_token: str, timeout: int) -> Tuple[s
         timeout=timeout,
     )
     if resp.status_code >= 400:
-        raise RuntimeError(
+        retryable = resp.status_code >= 500 or resp.status_code in _RETRYABLE_STATUS
+        error = _RetryableBackendError if retryable else RuntimeError
+        raise error(
             f"create OAuth app failed: HTTP {resp.status_code} (user may not be org admin)"
         )
     try:
         data = resp.json()
     except ValueError:
         raise RuntimeError("oauth-clients returned non-JSON response")
+    if not isinstance(data, dict):
+        raise RuntimeError("oauth-clients returned a non-object JSON response")
     app = data.get("app") or {}
     client_id = app.get("clientId")
     client_secret = app.get("clientSecret")
