@@ -8,7 +8,7 @@ import {
   toDisplayUserRole,
   isUserOrgAdmin,
   findOrgAdminUserIds,
-  ensureOrgRetainsAdminAfterDemotion,
+  assertCanDemoteAdmin,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -116,26 +116,14 @@ describe('user-admin.service', () => {
       expect(groupsStub.called).to.equal(false);
     });
 
-    it('falls back to admin group membership when role is unset', async () => {
+    it('returns false when role is unset', async () => {
       stubUsersFindOne(null);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }, { type: 'everyone' }]),
-      } as any);
-
-      const result = await isUserOrgAdmin(userId, orgId);
-
-      expect(result).to.equal(true);
-    });
-
-    it('returns false when role is unset and user is not in admin group', async () => {
-      stubUsersFindOne(null);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'everyone' }, { type: 'standard' }]),
-      } as any);
+      const groupsStub = sinon.stub(UserGroups, 'find');
 
       const result = await isUserOrgAdmin(userId, orgId);
 
       expect(result).to.equal(false);
+      expect(groupsStub.called).to.equal(false);
     });
 
     it('returns false for missing/deleted users without querying groups', async () => {
@@ -160,16 +148,6 @@ describe('user-admin.service', () => {
         isDeleted: { $ne: true },
       });
     });
-    it('ignores null/non-object group entries during legacy fallback', async () => {
-      stubUsersFindOne(null);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([null, { type: 'everyone' }, { type: 'admin' }]),
-      } as any);
-
-      const result = await isUserOrgAdmin(userId, orgId);
-
-      expect(result).to.equal(true);
-    });
   });
 
   describe('findOrgAdminUserIds', () => {
@@ -178,9 +156,6 @@ describe('user-admin.service', () => {
       const lean = sinon.stub().resolves([{ _id: adminId }]);
       const select = sinon.stub().returns({ lean });
       const findStub = sinon.stub(Users, 'find').returns({ select } as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().returns({ lean: sinon.stub().resolves([]) }),
-      } as any);
 
       const result = await findOrgAdminUserIds(orgId);
 
@@ -192,33 +167,23 @@ describe('user-admin.service', () => {
       });
     });
 
-    it('unions and dedupes legacy admin-group members', async () => {
+    it('does not include legacy admin-group members', async () => {
       const roleAdmin = new mongoose.Types.ObjectId();
-      const groupOnlyAdmin = new mongoose.Types.ObjectId();
+      const groupsFind = sinon.stub(UserGroups, 'find');
 
       sinon.stub(Users, 'find').returns({
         select: sinon.stub().returns({
           lean: sinon.stub().resolves([{ _id: roleAdmin }]),
         }),
       } as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().returns({
-          lean: sinon.stub().resolves([
-            { users: [roleAdmin, groupOnlyAdmin] },
-          ]),
-        }),
-      } as any);
 
       const result = await findOrgAdminUserIds(orgId);
 
-      expect(result).to.have.members([
-        roleAdmin.toString(),
-        groupOnlyAdmin.toString(),
-      ]);
-      expect(result).to.have.length(2);
+      expect(result).to.deep.equal([roleAdmin.toString()]);
+      expect(groupsFind.called).to.equal(false);
     });
 
-    it('skips malformed users/groups and invalid ids', async () => {
+    it('skips malformed users and invalid ids', async () => {
       const validId = new mongoose.Types.ObjectId();
 
       sinon.stub(Users, 'find').returns({
@@ -231,15 +196,6 @@ describe('user-admin.service', () => {
           ]),
         }),
       } as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().returns({
-          lean: sinon.stub().resolves([
-            null,
-            { users: 'not-an-array' },
-            { users: [null, 'bad', validId] },
-          ]),
-        }),
-      } as any);
 
       const result = await findOrgAdminUserIds(orgId);
 
@@ -247,71 +203,51 @@ describe('user-admin.service', () => {
     });
   });
 
-  describe('ensureOrgRetainsAdminAfterDemotion', () => {
-    it('allows demotion when at least one admin remains', async () => {
-      const countStub = sinon.stub(Users, 'countDocuments').resolves(1);
-      const updateStub = sinon.stub(Users, 'updateOne');
+  describe('assertCanDemoteAdmin', () => {
+    it('allows demotion when more than one admin exists', async () => {
+      const countStub = sinon.stub(Users, 'countDocuments').resolves(2);
 
-      await ensureOrgRetainsAdminAfterDemotion(userId, orgId);
+      await assertCanDemoteAdmin(orgId);
 
       expect(countStub.calledOnce).to.equal(true);
-      expect(updateStub.called).to.equal(false);
     });
 
-    it('restores the user and rejects when zero admins remain', async () => {
-      sinon.stub(Users, 'countDocuments').resolves(0);
-      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+    it('rejects when only one admin remains', async () => {
+      sinon.stub(Users, 'countDocuments').resolves(1);
 
       try {
-        await ensureOrgRetainsAdminAfterDemotion(userId, orgId);
+        await assertCanDemoteAdmin(orgId);
         expect.fail('expected BadRequestError');
       } catch (error: any) {
         expect(error.message).to.equal(
           'Cannot demote the last admin. Promote another user to admin first.',
         );
       }
-
-      expect(updateStub.calledOnce).to.equal(true);
-      expect(updateStub.firstCall.args[0]).to.deep.equal({
-        _id: userId,
-        orgId,
-        isDeleted: { $ne: true },
-      });
-      expect(updateStub.firstCall.args[1]).to.deep.equal({
-        $set: { role: 'admin' },
-      });
     });
 
-    it('passes the session through to count and restore when provided', async () => {
+    it('passes the session through to count when provided', async () => {
       const session = { id: 'test-session' } as any;
+      const sessionStub = sinon.stub().callsFake(() => Promise.resolve(2));
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(0)),
+        session: sessionStub,
       } as any);
-      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
 
-      try {
-        await ensureOrgRetainsAdminAfterDemotion(userId, orgId, session);
-        expect.fail('expected BadRequestError');
-      } catch (error: any) {
-        expect(error.message).to.equal(
-          'Cannot demote the last admin. Promote another user to admin first.',
-        );
-      }
+      await assertCanDemoteAdmin(orgId, session);
 
-      expect(updateStub.calledOnce).to.equal(true);
-      expect(updateStub.firstCall.args[2]).to.deep.equal({ session });
+      expect(sessionStub.calledOnce).to.equal(true);
+      expect(sessionStub.firstCall.args[0]).to.equal(session);
     });
   });
 
   describe('saveUserEnsuringOrgRetainsAdmin', () => {
-    it('saves then enforces restore path when replica set is unavailable', async () => {
+    it('checks then saves when replica set is unavailable', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
         orgId,
         save,
       };
-      sinon.stub(Users, 'countDocuments').resolves(1);
+      sinon.stub(Users, 'countDocuments').resolves(2);
 
       await saveUserEnsuringOrgRetainsAdmin(user as any, false);
 
@@ -319,7 +255,7 @@ describe('user-admin.service', () => {
       expect(save.firstCall.args[0]).to.equal(undefined);
     });
 
-    it('runs save and admin count inside a transaction when RS is available', async () => {
+    it('checks then saves inside a transaction when RS is available', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
@@ -335,7 +271,7 @@ describe('user-admin.service', () => {
         endSession,
       } as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(1)),
+        session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
 
       await saveUserEnsuringOrgRetainsAdmin(user as any, true);
@@ -346,7 +282,7 @@ describe('user-admin.service', () => {
       expect(endSession.calledOnce).to.equal(true);
     });
 
-    it('aborts transactional demotion when zero admins would remain', async () => {
+    it('does not save when pre-check finds this would demote the last admin', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
@@ -361,7 +297,7 @@ describe('user-admin.service', () => {
         endSession: sinon.stub().resolves(),
       } as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(0)),
+        session: sinon.stub().callsFake(() => Promise.resolve(1)),
       } as any);
 
       try {
@@ -372,6 +308,8 @@ describe('user-admin.service', () => {
           'Cannot demote the last admin. Promote another user to admin first.',
         );
       }
+
+      expect(save.called).to.equal(false);
     });
   });
 });

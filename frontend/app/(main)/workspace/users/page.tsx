@@ -33,6 +33,7 @@ import { GroupType, type Group } from '../groups/types';
 import { useUsersStore } from './store';
 import { UsersApi } from './api';
 import { GroupsApi } from '../groups/api';
+import { ProfileApi } from '../profile/api';
 import type { User } from './types';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
 import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
@@ -178,7 +179,7 @@ function UsersPageContent() {
   const groupOptions = useMemo(
     () => groupFilter.options.filter((o) => {
       const group = groupsRef.current.find((g) => g._id === o.value);
-      return !group || (group.type !== GroupType.EVERYONE && group.type !== GroupType.ADMIN);
+      return !group || group.type !== GroupType.EVERYONE;
     }),
     [groupFilter.options]
   );
@@ -792,7 +793,7 @@ function UsersPageContent() {
       if (newRole === currentRole) return;
 
       try {
-        await UsersApi.updateUser(user.userId, {
+        await ProfileApi.updateUser(user.userId, {
           role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
         });
 

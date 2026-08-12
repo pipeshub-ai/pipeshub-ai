@@ -153,13 +153,11 @@ export function InviteUsersSidebar({
     inviteRole === USER_ROLES.ADMIN ||
     Boolean(adminGroupId && inviteGroupIds.includes(adminGroupId));
 
-  // Group options for dropdown — hide legacy admin + everyone system groups
-  const groupOptions: CheckboxOption[] = groups
-    .filter((g) => g.type !== GroupType.EVERYONE && g.type !== GroupType.ADMIN)
-    .map((g) => ({
-      id: g._id,
-      label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
-    }));
+  // Group options for dropdown (everyone already excluded when groups are fetched)
+  const groupOptions: CheckboxOption[] = groups.map((g) => ({
+    id: g._id,
+    label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
+  }));
 
   // Handle submit — create invite or update existing invite
   const handleSubmit = useCallback(async () => {

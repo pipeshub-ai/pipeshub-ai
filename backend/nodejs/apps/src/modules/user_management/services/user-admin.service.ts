@@ -45,45 +45,19 @@ function addValidObjectId(ids: Set<string>, value: unknown): void {
 }
 
 /**
- * Org admin check: prefers User.role after migration; falls back to legacy
- * admin UserGroup membership when role is not yet set.
+ * Org admin check based on User.role (admin groups are no longer supported).
  */
 export const isUserOrgAdmin = async (
   userId: string,
   orgId: string,
 ): Promise<boolean> => {
   const user = await UserAdminRepository.findActiveUserRole(userId, orgId);
-
-  if (user?.role === 'admin') {
-    return true;
-  }
-  if (user?.role === 'member') {
-    return false;
-  }
-
-  // Missing/deleted users must not inherit admin via stale group membership
-  if (!user) {
-    return false;
-  }
-
-  // Pre-migration fallback: membership in type=admin group
-  const groups = await UserAdminRepository.findActiveGroupTypesForUser(
-    userId,
-    orgId,
-  );
-
-  return groups.some(
-    (userGroup) =>
-      userGroup != null &&
-      typeof userGroup === 'object' &&
-      userGroup.type === 'admin',
-  );
+  return user?.role === 'admin';
 };
 
 /**
  * Active org admin user IDs for notifications / internal APIs.
- * Prefers User.role === 'admin', and unions members of any still-active
- * legacy type=admin UserGroup (partial migration / retry safety).
+ * Uses User.role === 'admin' only (admin groups are no longer supported).
  */
 export const findOrgAdminUserIds = async (
   orgId: string | { toString(): string },
@@ -96,67 +70,43 @@ export const findOrgAdminUserIds = async (
     addValidObjectId(ids, user._id);
   }
 
-  const adminGroups = await UserAdminRepository.findActiveAdminGroupUsers(orgId);
-  for (const group of adminGroups) {
-    if (group == null || typeof group !== 'object') continue;
-    if (!Array.isArray(group.users)) continue;
-    for (const userId of group.users) {
-      addValidObjectId(ids, userId);
-    }
-  }
-
   return [...ids];
 };
 
 /**
- * After an admin→member write, ensure the org still has an admin.
- * If concurrent demotions left zero admins, restore this user and fail.
- * Prefer {@link saveUserEnsuringOrgRetainsAdmin} when a replica set is available.
+ * Pre-update check: reject demoting when this would remove the org's last admin.
  */
-export const ensureOrgRetainsAdminAfterDemotion = async (
-  userId: string,
+export const assertCanDemoteAdmin = async (
   orgId: string,
   session?: ClientSession | null,
 ): Promise<void> => {
   const adminCount = await UserAdminRepository.countActiveAdmins(orgId, session);
-
-  if (adminCount > 0) {
-    return;
+  if (adminCount <= 1) {
+    throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
   }
-
-  await UserAdminRepository.restoreAdminRole(userId, orgId, session);
-  throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
 };
 
 /**
  * Persist a user update that may demote an admin.
- * With a replica set: save + admin-count check in one transaction (rollback on zero admins).
- * Without: save then restore+reject if zero admins remain.
+ * Checks that another admin remains, then saves (transactional when RS is available).
  */
 export const saveUserEnsuringOrgRetainsAdmin = async (
   user: User,
   rsAvailable: boolean,
 ): Promise<void> => {
-  const userId = String(user._id);
   const orgId = String(user.orgId);
 
   if (!rsAvailable) {
+    await assertCanDemoteAdmin(orgId);
     await user.save();
-    await ensureOrgRetainsAdminAfterDemotion(userId, orgId);
     return;
   }
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      await assertCanDemoteAdmin(orgId, session);
       await user.save({ session });
-      const adminCount = await UserAdminRepository.countActiveAdmins(
-        orgId,
-        session,
-      );
-      if (adminCount === 0) {
-        throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
-      }
     });
   } finally {
     await session.endSession();

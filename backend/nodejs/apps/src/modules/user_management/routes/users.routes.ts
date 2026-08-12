@@ -62,7 +62,7 @@ const createUserBody = z.object({
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
-  role: z.enum(['admin', 'member', 'Admin', 'Member']).optional(),
+  role: z.enum(['admin', 'member']),
 });
 
 const updateUserBody = z.object({
@@ -89,11 +89,26 @@ const updateUserBody = z.object({
     .optional(),
   dataCollectionConsent: z.boolean().optional(),
   hasLoggedIn: z.boolean().optional(),
-  role: z.enum(['admin', 'member', 'Admin', 'Member']).optional(),
+  role: z.enum(['admin', 'member']).optional(),
 }).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
   body: createUserBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const bulkInviteBody = z.object({
+  emails: z
+    .array(z.string())
+    .min(1, 'emails are required'),
+  groupIds: z.array(z.string()).optional(),
+  role: z.enum(['admin', 'member']).optional(),
+});
+
+const bulkInviteValidationSchema = z.object({
+  body: bulkInviteBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
@@ -697,6 +712,7 @@ export function createUserRouter(container: Container) {
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
     accountTypeCheck,
+    ValidationMiddleware.validate(bulkInviteValidationSchema),
     // attachContainerMiddleware(container),
     async (
       req: AuthenticatedUserRequest,

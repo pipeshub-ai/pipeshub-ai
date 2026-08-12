@@ -427,6 +427,7 @@ describe('UserController', () => {
                     fullName: 'John Admin',
                     email: 'john@acme.com',
                     hasLoggedIn: true,
+                    role: 'admin',
                     createdAt: new Date('2025-01-01T00:00:00.000Z'),
                     updatedAt: new Date('2025-01-02T00:00:00.000Z'),
                   },
@@ -795,6 +796,7 @@ describe('UserController', () => {
       req.body = {
         fullName: 'New User',
         email: 'new@test.com',
+        role: 'member',
       };
 
       const mockSave = sinon.stub().resolves();
@@ -901,7 +903,7 @@ describe('UserController', () => {
     it('should update role when actor is admin', async () => {
       const targetId = '507f1f77bcf86cd799439013';
       req.params.id = targetId;
-      req.body = { role: 'Admin' };
+      req.body = { role: 'admin' };
 
       const mockUser = {
         _id: targetId,
@@ -932,7 +934,7 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
     });
 
-    it('should reject demoting the last admin', async () => {
+    it('should reject demoting the last admin before saving', async () => {
       const targetId = '507f1f77bcf86cd799439013';
       req.params.id = targetId;
       req.body = { role: 'member' };
@@ -953,8 +955,7 @@ describe('UserController', () => {
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
-      sinon.stub(Users, 'countDocuments').resolves(0);
-      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+      sinon.stub(Users, 'countDocuments').resolves(1);
 
       await controller.updateUser(req, res, next);
 
@@ -963,8 +964,7 @@ describe('UserController', () => {
       expect(error.message).to.equal(
         'Cannot demote the last admin. Promote another user to admin first.',
       );
-      expect(mockUser.save.calledOnce).to.be.true;
-      expect(updateStub.calledOnce).to.be.true;
+      expect(mockUser.save.called).to.be.false;
       expect(res.json.called).to.be.false;
     });
 
@@ -1001,14 +1001,13 @@ describe('UserController', () => {
         endSession: sinon.stub().resolves(),
       } as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(0)),
+        session: sinon.stub().callsFake(() => Promise.resolve(1)),
       } as any);
 
       await controller.updateUser(req, res, next);
 
       expect(withTransaction.calledOnce).to.be.true;
-      expect(mockUser.save.calledOnce).to.be.true;
-      expect(mockUser.save.firstCall.args[0]).to.have.property('session');
+      expect(mockUser.save.called).to.be.false;
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
         'Cannot demote the last admin. Promote another user to admin first.',
@@ -1053,7 +1052,7 @@ describe('UserController', () => {
         endSession: sinon.stub().resolves(),
       } as any);
       sinon.stub(Users, 'countDocuments').returns({
-        session: sinon.stub().callsFake(() => Promise.resolve(1)),
+        session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
 
       await controller.updateUser(req, res, next);
@@ -1061,6 +1060,7 @@ describe('UserController', () => {
       expect(next.called).to.be.false;
       expect(mockUser.role).to.equal('member');
       expect(withTransaction.calledOnce).to.be.true;
+      expect(mockUser.save.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
     });
 
@@ -1272,12 +1272,10 @@ describe('UserController', () => {
       const mockUser = {
         _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
         orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        role: 'admin',
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any);
 
       await controller.deleteUser(req, res, next);
 
@@ -1295,13 +1293,11 @@ describe('UserController', () => {
         email: 'test@test.com',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
@@ -1697,15 +1693,6 @@ describe('UserController', () => {
       expect(error.message).to.equal('Invalid emails are found');
     });
 
-    it('should call next with BadRequestError for invalid invite role', async () => {
-      req.body = { emails: ['valid@test.com'], role: 'admn' };
-
-      await controller.addManyUsers(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      const error = next.firstCall.args[0];
-      expect(error.message).to.equal('Invalid role. Must be admin or member');
-    });
   });
 
   describe('listUsers', () => {
@@ -2597,6 +2584,111 @@ describe('UserController', () => {
     });
   });
 
+  describe('addManyUsers - promote restored/pending to admin', () => {
+    it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+      const deletedId = new mongoose.Types.ObjectId();
+      const pendingId = new mongoose.Types.ObjectId();
+
+      req.body = {
+        emails: ['deleted@test.com', 'pending@test.com'],
+        role: 'admin',
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org', shortName: 'TO' } as any);
+
+      const deletedUser = {
+        _id: deletedId,
+        email: 'deleted@test.com',
+        isDeleted: true,
+        hasLoggedIn: false,
+      };
+      const pendingUser = {
+        _id: pendingId,
+        email: 'pending@test.com',
+        isDeleted: false,
+        hasLoggedIn: false,
+      };
+
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([deletedUser, pendingUser] as any)
+        .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
+
+      const updateManyStub = sinon.stub(Users, 'updateMany').resolves({} as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([]),
+          }),
+        }),
+      } as any);
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      const promoteCall = updateManyStub.getCalls().find(
+        (call) => call.args[1]?.$set?.role === 'admin',
+      );
+      expect(promoteCall).to.exist;
+      const promotedIds = promoteCall!.args[0]._id.$in.map((id: mongoose.Types.ObjectId) =>
+        id.toString(),
+      );
+      expect(promotedIds).to.include.members([deletedId.toString(), pendingId.toString()]);
+      expect(promoteCall!.args[0].orgId).to.equal(req.user.orgId);
+    });
+
+    it('should not promote users to admin when inviteRole is member', async () => {
+      const deletedId = new mongoose.Types.ObjectId();
+
+      req.body = {
+        emails: ['deleted@test.com'],
+        role: 'member',
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org', shortName: 'TO' } as any);
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([{
+          _id: deletedId,
+          email: 'deleted@test.com',
+          isDeleted: true,
+          hasLoggedIn: false,
+        }] as any)
+        .onSecondCall().resolves([{
+          _id: deletedId,
+          email: 'deleted@test.com',
+          isDeleted: false,
+          hasLoggedIn: false,
+        }] as any);
+
+      const updateManyStub = sinon.stub(Users, 'updateMany').resolves({} as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: true },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.called).to.be.false;
+      const promoteCall = updateManyStub.getCalls().find(
+        (call) => call.args[1]?.$set?.role === 'admin',
+      );
+      expect(promoteCall).to.equal(undefined);
+    });
+  });
+
   describe('getUserById - hideEmail', () => {
     it('should hide email when HIDE_EMAIL is true', async () => {
       process.env.HIDE_EMAIL = 'true';
@@ -2632,10 +2724,7 @@ describe('UserController', () => {
       sinon.stub(Users, 'findOne').resolves({
         _id: '507f1f77bcf86cd799439011',
         orgId: req.user.orgId,
-      } as any);
-
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
+        role: 'admin',
       } as any);
 
       await controller.deleteUser(req, res, next);
@@ -2999,6 +3088,7 @@ describe('UserController', () => {
       req.body = {
         email: 'newuser@test.com',
         fullName: 'New User',
+        role: 'member',
       };
 
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
@@ -3065,16 +3155,11 @@ describe('UserController', () => {
         fullName: 'Delete Me',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([
-          { type: 'everyone' },
-          { type: 'engineering' },
-        ]),
-      } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);

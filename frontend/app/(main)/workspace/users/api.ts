@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { USER_ROLES } from '../constants';
 import type {
   User,
   UserByIdsDoc,
@@ -144,7 +145,8 @@ export const UsersApi = {
       payload.groupIds = groupIds;
     }
     if (role) {
-      payload.role = role === 'Admin' || role === 'admin' ? 'admin' : 'member';
+      payload.role =
+        role === USER_ROLES.ADMIN || role === 'admin' ? 'admin' : 'member';
     }
     await apiClient.post(`${BASE_URL}/bulk/invite`, payload);
   },

@@ -40,7 +40,6 @@ import {
   isUserOrgAdmin,
   toDisplayUserRole,
   normalizeUserRole,
-  resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
@@ -238,10 +237,7 @@ export class UserController {
         createdAtTimestamp: timestamps.createdAt ? new Date(timestamps.createdAt).getTime() : undefined,
         updatedAtTimestamp: timestamps.updatedAt ? new Date(timestamps.updatedAt).getTime() : undefined,
         profilePicture: dpMap.get(uid),
-        role: toDisplayUserRole(
-          (u as { role?: string }).role ??
-            (groups.some((g) => g.type === 'admin') ? 'admin' : 'member'),
-        ),
+        role: toDisplayUserRole(u.role),
         groupCount: groups.filter((g) => g.type !== 'everyone').length,
         userGroups: groups,
       };
@@ -520,7 +516,7 @@ export class UserController {
       const newUser = new Users({
         ...req.body,
         orgId: req.user?.orgId,
-        role: resolveOptionalUserRole(req.body?.role),
+        role: req.body.role,
       });
 
       await UserGroups.updateOne(
@@ -1253,17 +1249,7 @@ export class UserController {
         throw new NotFoundError('Account not found');
       }
 
-      const groups = await UserGroups.find({
-        orgId,
-        users: { $in: [userId] },
-        isDeleted: false,
-      }).select('type');
-
-      const isAdmin =
-        user.role === 'admin' ||
-        groups.some((userGroup: { type: string }) => userGroup.type === 'admin');
-
-      if (isAdmin) {
+      if (user.role === 'admin') {
         throw new BadRequestError('User cannot be deleted. Please demote the user from admin first.');
       }
 
@@ -1508,7 +1494,7 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { emails, groupIds, role: rawRole } = req.body;
+      const { emails, groupIds, role } = req.body;
 
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -1525,7 +1511,8 @@ export class UserController {
         throw new BadRequestError('Invalid emails are found');
       }
 
-      const inviteRole = resolveOptionalUserRole(rawRole);
+      // role is validated by bulkInviteValidationSchema when present
+      const inviteRole = role === 'admin' ? 'admin' : 'member';
 
       const orgId = req.user.orgId;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });
@@ -2189,7 +2176,7 @@ export class UserController {
           mongoUserMap.set(mu._id.toString(), {
             hasLoggedIn: mu.hasLoggedIn,
             fullName: mu.fullName,
-            role: (mu as { role?: string }).role,
+            role: mu.role,
           });
         }
 
@@ -2223,9 +2210,7 @@ export class UserController {
           user.userGroups = groups;
           user.groupCount = groups.filter((g) => g.type !== 'everyone').length;
           const mongoRole = mongoUserMap.get(uid)?.role;
-          user.role = toDisplayUserRole(
-            mongoRole ?? (groups.some((g) => g.type === 'admin') ? 'admin' : 'member'),
-          );
+          user.role = toDisplayUserRole(mongoRole);
         }
       }
 
