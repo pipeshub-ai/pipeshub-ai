@@ -15,7 +15,12 @@ from fastapi.responses import StreamingResponse
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, ProgressStatus
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    ProgressStatus,
+    RecordRelations,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -74,6 +79,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    RelatedExternalRecord,
     Status,
     TicketRecord,
     WebpageRecord,
@@ -675,6 +681,7 @@ class ZendeskConnector(BaseConnector):
         version = 0 if existing_record is None else existing_record.version + 1
         requester = self._user_id_to_data.get(str(ticket_data.get("requester_id")), {})
         assignee = self._user_id_to_data.get(str(ticket_data.get("assignee_id")), {})
+        submitter = self._user_id_to_data.get(str(ticket_data.get("submitter_id")), {})
         status = self.value_mapper.map_status(ticket_data.get("status")) or Status.UNKNOWN
         priority = self.value_mapper.map_priority(ticket_data.get("priority")) or Priority.UNKNOWN
         item_type = self.value_mapper.map_type(ticket_data.get("type")) or ItemType.UNKNOWN
@@ -708,6 +715,10 @@ class ZendeskConnector(BaseConnector):
             assignee=assignee.get("name"),
             assignee_email=assignee.get("email"),
             assignee_source_id=[str(ticket_data.get("assignee_id"))] if ticket_data.get("assignee_id") else [],
+            creator_email=submitter.get("email"),
+            creator_name=submitter.get("name"),
+            creator_source_timestamp=created_at,
+            related_external_records=self._parse_ticket_links(ticket_data),
             labels=ticket_data.get("tags") or [],
             indexing_status=ProgressStatus.NOT_STARTED.value,
         )
@@ -715,6 +726,39 @@ class ZendeskConnector(BaseConnector):
             group_id, requester, ticket_data.get("organization_id")
         )
         return record, permissions
+
+    def _parse_ticket_links(self, ticket_data: Dict[str, Any]) -> List[RelatedExternalRecord]:
+        """Map Zendesk's ticket-to-ticket links onto RecordRelations.
+
+        Zendesk names its link types structurally rather than as free text, so these
+        map directly instead of going through ``map_relationship_type``. Targets that
+        have not synced yet are fine — the processor stands up a placeholder record.
+        """
+        links: List[Tuple[Any, RecordRelations]] = [
+            (ticket_data.get("problem_id"), RecordRelations.CAUSES),
+            # Only populated once the source ticket is closed.
+            *((fid, RecordRelations.RELATED) for fid in ticket_data.get("followup_ids") or []),
+        ]
+        via_source = ((ticket_data.get("via") or {}).get("source") or {}).get("from") or {}
+        links.append((via_source.get("ticket_id"), RecordRelations.RELATED))
+
+        related: List[RelatedExternalRecord] = []
+        seen: set[str] = set()
+        self_id = str(ticket_data.get("id"))
+        for target_id, relation_type in links:
+            if not target_id:
+                continue
+            external_id = str(target_id)
+            # A ticket linking to itself would be an edge the traversal never leaves.
+            if external_id == self_id or external_id in seen:
+                continue
+            seen.add(external_id)
+            related.append(RelatedExternalRecord(
+                external_record_id=external_id,
+                record_type=RecordType.TICKET,
+                relation_type=relation_type,
+            ))
+        return related
 
     async def _sync_help_center_articles(self) -> int:
         if not self._is_indexing_enabled(IndexingFilterKey.KNOWLEDGE_BASE.value):
