@@ -7,27 +7,31 @@ import pytest
 
 from app.agents.chat_modes.prefetch import (
     PrefetchResult,
-    _select_image_blocks,
+    _select_prefetch_content,
     prefetch_retrieval,
 )
 
 LOGGER = logging.getLogger("test")
 
 
-def test_select_image_blocks_enforces_combined_byte_budget() -> None:
+def test_select_prefetch_content_enforces_budget_and_marker_pairing() -> None:
     png = (
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
         "x8AAusB9Wl0bQAAAABJRU5ErkJggg=="
     )
     parts = [
+        {"type": "text", "text": "[1|ref1]"},
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+        {"type": "text", "text": "[2|ref2]"},
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
     ]
 
     with patch("app.agents.chat_modes.prefetch._MAX_PREFETCH_IMAGE_BYTES", 100):
-        selected = _select_image_blocks(parts)
+        context, selected = _select_prefetch_content(parts)
 
-    assert selected == parts[:1]
+    assert selected == [parts[1]]
+    assert "[1|ref1]" in context
+    assert "[2|ref2]" not in context
 
 
 def _make_kwargs(**overrides):
@@ -82,6 +86,15 @@ class TestFollowUpSkip:
 
 
 class TestRetrievalFailureModes:
+    async def test_malformed_search_response_returns_empty_error_result(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = []
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.is_empty is True
+        assert result.error_message == "Invalid search response"
+
     async def test_exception_from_search_returns_empty_error_result(self) -> None:
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters.side_effect = RuntimeError("qdrant unavailable")
@@ -215,6 +228,8 @@ class TestSuccessfulPrefetch:
         retrieval_service.search_with_filters.return_value = {
             "status_code": 200,
             "searchResults": [
+                None,
+                {"content": "malformed", "metadata": "not-a-mapping"},
                 {
                     "content": "OCR text from the image",
                     "metadata": {
@@ -222,6 +237,14 @@ class TestSuccessfulPrefetch:
                         "recordId": "r-image",
                         "mimeType": "image/jpeg",
                         "blockIndex": 1,
+                    },
+                },
+                {
+                    "content": "Unclassified text result",
+                    "metadata": {
+                        "virtualRecordId": "vr-image",
+                        "recordId": "r-image",
+                        "mimeType": "image/jpeg",
                     },
                 },
                 {
@@ -260,6 +283,9 @@ class TestSuccessfulPrefetch:
             ))
 
         hydrated = get_flattened.await_args.args[0][-1]
+        passed_results = get_flattened.await_args.args[0]
+        assert all(isinstance(item.get("metadata"), dict) for item in passed_results)
+        assert sum(item["content"] == "Unclassified text result" for item in passed_results) == 1
         assert hydrated["content"] == "A coastal photograph"
         assert hydrated["metadata"]["virtualRecordId"] == "vr-image"
         assert hydrated["metadata"]["blockIndex"] == 0

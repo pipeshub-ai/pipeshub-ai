@@ -17,6 +17,7 @@ markers used by text results. Citation numbering stays on one
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,7 @@ __all__ = ["PrefetchResult", "prefetch_retrieval"]
 
 _MAX_PREFETCH_IMAGES = 4
 _MAX_PREFETCH_IMAGE_BYTES = 16 * 1024 * 1024
+_IMAGE_MARKER_RE = re.compile(r"(?:^|\n)\[[^\]\n]*\|[^\]\n]+\]\s*$")
 
 # Statuses `RetrievalService.search_with_filters()` uses for "the backend
 # itself failed/is unavailable" -- as opposed to "ran fine, found nothing"
@@ -65,12 +67,25 @@ class PrefetchResult:
     error_message: str | None = field(default=None)
 
 
-def _select_image_blocks(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    selected = []
+def _select_prefetch_content(
+    parts: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Apply image limits while keeping accepted images paired with their citation markers."""
+    selected_images = []
+    selected_marker_indexes = set()
+    image_marker_indexes = set()
+    current_marker_index = None
     total_bytes = 0
-    for part in parts:
+    for index, part in enumerate(parts):
+        if part.get("type") == "text":
+            text = part.get("text")
+            if isinstance(text, str) and _IMAGE_MARKER_RE.search(text):
+                current_marker_index = index
+            continue
         if part.get("type") != "image_url":
             continue
+        if current_marker_index is not None:
+            image_marker_indexes.add(current_marker_index)
         image_url = part.get("image_url") or {}
         uri = image_url.get("url") if isinstance(image_url, dict) else None
         if not isinstance(uri, str) or "," not in uri or not is_base64_image(uri):
@@ -78,13 +93,26 @@ def _select_image_blocks(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         payload = uri.split(",", 1)[1]
         padding = len(payload) - len(payload.rstrip("="))
         decoded_bytes = max(0, (len(payload) * 3) // 4 - padding)
-        if decoded_bytes > _MAX_PREFETCH_IMAGE_BYTES - total_bytes:
+        if (
+            len(selected_images) >= _MAX_PREFETCH_IMAGES
+            or decoded_bytes > _MAX_PREFETCH_IMAGE_BYTES - total_bytes
+        ):
             continue
-        selected.append(part)
+        selected_images.append(part)
+        if current_marker_index is not None:
+            selected_marker_indexes.add(current_marker_index)
         total_bytes += decoded_bytes
-        if len(selected) == _MAX_PREFETCH_IMAGES:
-            break
-    return selected
+
+    text_parts = []
+    for index, part in enumerate(parts):
+        text = part.get("text") if part.get("type") == "text" else None
+        if not isinstance(text, str) or not text:
+            continue
+        if index in image_marker_indexes and index not in selected_marker_indexes:
+            text = _IMAGE_MARKER_RE.sub("", text).strip()
+        if text:
+            text_parts.append(text)
+    return "\n".join(text_parts), selected_images
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -153,6 +181,17 @@ async def prefetch_retrieval(
             error_message=str(exc),
         )
 
+    if not isinstance(result, dict):
+        return PrefetchResult(
+            formatted_context="",
+            final_results=[],
+            virtual_record_id_to_result={},
+            tool_records=[],
+            citation_ref_mapper=ref_mapper,
+            is_empty=True,
+            error_message="Invalid search response",
+        )
+
     status_code = result.get("status_code", 500)
     if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
         return PrefetchResult(
@@ -165,13 +204,29 @@ async def prefetch_retrieval(
             error_message=result.get("message", "Search failed"),
         )
 
-    search_results = result.get("searchResults", [])
-    virtual_to_record_map = result.get("virtual_to_record_map", {})
+    raw_search_results = result.get("searchResults", [])
+    search_results = (
+        [
+            item for item in raw_search_results
+            if isinstance(item, dict) and isinstance(item.get("metadata"), dict)
+        ]
+        if isinstance(raw_search_results, list)
+        else []
+    )
+    raw_virtual_to_record_map = result.get("virtual_to_record_map", {})
+    virtual_to_record_map = (
+        {
+            key: value for key, value in raw_virtual_to_record_map.items()
+            if isinstance(value, dict)
+        }
+        if isinstance(raw_virtual_to_record_map, dict)
+        else {}
+    )
     if is_multimodal_llm:
         hydrated_image_records = []
         seen_image_records = set()
         for item in search_results:
-            metadata = item.get("metadata") or {}
+            metadata = item.get("metadata")
             virtual_record_id = metadata.get("virtualRecordId")
             record = virtual_to_record_map.get(virtual_record_id) or {}
             mime_type = str(metadata.get("mimeType") or record.get("mimeType") or "")
@@ -179,6 +234,7 @@ async def prefetch_retrieval(
                 virtual_record_id
                 and virtual_record_id not in seen_image_records
                 and metadata.get("blockIndex") is None
+                and metadata.get("isRecordSummary") is True
                 and mime_type.lower().startswith("image/")
                 and not is_base64_image(item.get("content"))
             ):
@@ -231,10 +287,7 @@ async def prefetch_retrieval(
         is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=False,
     )
     flat_parts = [item for sublist in message_content_array for item in sublist]
-    formatted_context = "\n".join(
-        part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
-    )
-    image_blocks = _select_image_blocks(flat_parts)
+    formatted_context, image_blocks = _select_prefetch_content(flat_parts)
     logger.info(
         "prefetch_retrieval: prepared %d text part(s) and %d image part(s)",
         sum(1 for part in flat_parts if part.get("type") == "text"),
