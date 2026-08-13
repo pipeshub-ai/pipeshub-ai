@@ -123,6 +123,7 @@ async def prefetch_retrieval(
             user_id=user_id,
             limit=limit,
             filter_groups=filters,
+            include_image_content=is_multimodal_llm,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
         logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)
