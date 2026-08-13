@@ -114,33 +114,8 @@ IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IG
     .with_categories(["Help Desk", "Knowledge Base"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.API_TOKEN).fields([
-            AuthField(
-                name="apiToken",
-                display_name="API Token",
-                placeholder="Enter your API Token",
-                description="The API Token from Zendesk instance",
-                field_type="PASSWORD",
-                max_length=2000,
-                is_secret=True,
-            ),
-            AuthField(
-                name="email",
-                display_name="Email",
-                placeholder="Enter your Email",
-                description="The Email from Zendesk instance",
-                field_type="TEXT",
-                max_length=2000,
-            ),
-            AuthField(
-                name="subdomain",
-                display_name="Subdomain",
-                placeholder="Enter your Subdomain",
-                description="The Subdomain from Zendesk instance",
-                field_type="TEXT",
-                max_length=2000,
-            ),
-        ]),
+        # OAuth only: Zendesk no longer issues API tokens and stops honouring the
+        # existing ones on 2027-04-30.
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Zendesk",
             # Per-subdomain endpoints, but the registry takes literal URLs — the real
@@ -191,8 +166,8 @@ IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IG
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.ZENDESK.value.lower()))
         .add_documentation_link(DocumentationLink(
-            "Zendesk API Token Setup",
-            "https://developer.zendesk.com/documentation/ticketing/introduction/authentication/",
+            "Zendesk OAuth Setup",
+            "https://developer.zendesk.com/documentation/ticketing/working-with-oauth/creating-and-using-oauth-tokens-with-the-api/",
             "setup",
         ))
         .add_documentation_link(DocumentationLink(
@@ -319,10 +294,9 @@ class ZendeskConnector(BaseConnector):
         return self.data_source
 
     async def _oauth_token_rotated(self) -> bool:
-        # True when the stored access token differs from the one the client holds.
         client = self.external_client.get_client()
         in_use = getattr(client, "access_token", None)
-        if not in_use:  # API-token auth carries no rotating credential
+        if not in_use:
             return False
         try:
             config = await self.config_service.get_config(
@@ -1025,7 +999,6 @@ class ZendeskConnector(BaseConnector):
         return BlocksContainer(blocks=[], block_groups=[block_group]).model_dump_json(indent=2).encode("utf-8")
 
     async def _inline_images_as_base64(self, html: str) -> str:
-        # Rewrite ``<img src>`` to base64 data URIs so inline images get indexed.
         if not html or "<img" not in html.lower():
             return html
         datasource = await self._get_fresh_datasource()

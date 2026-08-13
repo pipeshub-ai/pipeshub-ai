@@ -890,7 +890,7 @@ class ZendeskDataSource:
         per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
-        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List comments for a ticket
 
         Args:
@@ -3043,7 +3043,7 @@ class ZendeskDataSource:
         per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
-        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List all groups
 
         Args:
@@ -3308,7 +3308,7 @@ class ZendeskDataSource:
         per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
-        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List all group memberships
 
         Args:
@@ -7827,7 +7827,7 @@ class ZendeskDataSource:
         per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
-        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List all articles
 
         Args:
@@ -8251,7 +8251,7 @@ class ZendeskDataSource:
         per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
-        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
+        # Hand-edited generated file; regenerating zendesk.py will drop pagination.
         """List all sections
 
         Args:
@@ -9435,7 +9435,7 @@ class ZendeskDataSource:
             _headers = dict(headers or {})
             _params = {}
             _data = {}
-            # Ponytail: generated datasource patch; regenerating zendesk.py will drop
+            # Hand-edited generated file; regenerating zendesk.py will drop
             # the cursor endpoint. tickets.json is the time-based export — it pages
             # with next_page/end_time and never returns after_cursor, so a cursor
             # loop against it silently stops after the first 1000 records.
@@ -9493,7 +9493,7 @@ class ZendeskDataSource:
             _headers = dict(headers or {})
             _params = {}
             _data = {}
-            # Ponytail: generated datasource patch; see incremental_tickets — the
+            # Hand-edited generated file; see incremental_tickets — the
             # time-based export never returns after_cursor, capping this at one page.
             url = f"{self.base_url}/incremental/users/cursor.json"
 
@@ -9542,7 +9542,7 @@ class ZendeskDataSource:
         try:
             _headers = dict(headers or {})
             _data = {}
-            # Ponytail: generated datasource patch. Zendesk exposes cursor incremental
+            # Hand-edited generated file. Zendesk exposes cursor incremental
             # exports for tickets and users only; /incremental/organizations/cursor.json
             # 404s as InvalidEndpoint. Time-based export pages on end_time instead.
             url = f"{self.base_url}/incremental/organizations.json"

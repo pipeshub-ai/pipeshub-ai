@@ -412,17 +412,11 @@ class ZendeskClient(IClient):
             if not config:
                 raise ValueError("Failed to get Zendesk connector configuration")
             auth_config = config.get("auth", {}) or {}
-            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            # Zendesk stopped issuing API tokens and retires the existing ones on
+            # 2027-04-30, so the connector only offers OAuth.
+            auth_type = auth_config.get("authType", "OAUTH")
 
-            if auth_type == "API_TOKEN":
-                client = ZendeskRESTClientViaToken(
-                    subdomain=auth_config.get("subdomain", ""),
-                    token=auth_config.get("apiToken", ""),
-                    email=auth_config.get("email", "")
-                )
-
-
-            elif auth_type == "OAUTH":
+            if auth_type == "OAUTH":
                 # handle_callback stores the token at the config root, not under "auth".
                 credentials_config = config.get("credentials", {}) or {}
                 access_token = credentials_config.get("access_token", "")
