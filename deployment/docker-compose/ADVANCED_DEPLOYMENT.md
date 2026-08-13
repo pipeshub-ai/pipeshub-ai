@@ -139,10 +139,17 @@ Override the base images with `PYTHON_DEPS_IMAGE` / `RUNTIME_BASE_IMAGE` environ
 ## Soak-testing adaptive concurrency
 
 The indexing/parsing pipeline sizes its own concurrency from the
-`pipeshub-ai` container's cgroup memory/CPU limits (the resource governor —
-see `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` in
-[`env.template`](env.template)). These two runs are a manual regression
-check for that behaviour before a release; they are not part of CI.
+`pipeshub-ai` container's CPU quota — one heavy-parse slot per CPU, three
+light-parse slots per CPU, and twice the wider parse tier for indexing —
+capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` (see
+[`env.template`](env.template)). The indexing figure is the budget for
+heavy and light records *combined*: the two are admitted through separate
+pools so a Jira record never queues behind a PDF holding its slot for
+minutes, but either may use the whole budget while the other is idle.
+Heavy parsing is held further back whenever free memory can't hold that
+many Docling working sets at once.
+These two runs are a manual regression check for that behaviour before a
+release; they are not part of CI.
 
 Both commands below assume the compose project is up (`docker compose -p
 pipeshub-ai up -d`) and run against the always-on `pipeshub-ai` container —

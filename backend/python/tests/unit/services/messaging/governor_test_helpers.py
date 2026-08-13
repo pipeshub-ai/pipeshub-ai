@@ -13,10 +13,16 @@ from app.services.resource_governor.models import ResourceSnapshot
 
 
 def make_test_governor(
-    *, env_parse: int = 4, env_index: int = 8, logger_name: str = "test.governor",
+    *,
+    env_parse: int | None = None,
+    env_index: int | None = 8,
+    logger_name: str = "test.governor",
 ) -> ResourceGovernor:
-    """A governor with deterministic ceilings (explicit env values bypass
-    cgroup/CPU derivation entirely, see policy.resolve_ceilings)."""
+    """A governor with deterministic ceilings: the fixed 4-CPU probe below
+    derives heavy=4 and light=12, and ``env_index`` caps index at 8 (see
+    policy.resolve_ceilings). ``env_parse`` defaults to no cap because
+    MAX_CONCURRENT_PARSING caps *both* parse tiers, which would collapse
+    the heavy/light distinction most of these tests exist to check."""
     snapshot = ResourceSnapshot(
         cpu_quota=4.0,
         cpu_utilisation=0.1,

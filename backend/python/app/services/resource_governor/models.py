@@ -128,20 +128,22 @@ class ResourceSnapshot:
 
 @dataclass(frozen=True)
 class Ceilings:
-    """Operator/derived upper bounds, resolved once at startup.
+    """Derived upper bounds, resolved once at startup (policy.resolve_ceilings).
 
-    ``light`` is sized independently of ``heavy`` (plan section 4.2) — light
-    parses are milliseconds of CPU on a few KB and must never be capped by
-    heavy-parse memory sizing. ``light_index`` is the same split one level
-    up: the active-pipeline gate a record holds from admission through
-    indexing completion must not make a Jira/Slack/Markdown record queue
-    behind a Docling PDF that holds ``index`` for minutes.
+    ``light`` gets more slots per CPU than ``heavy``: a light parse is
+    milliseconds of CPU on a few KB and must not be limited to what a
+    Docling conversion costs.
+
+    ``index`` bounds both active-pipeline pools *and* their combined
+    in-flight total (see ``gate.SharedBudget``). INDEX and LIGHT_INDEX stay
+    separate pools so the control law can throttle heavy records without
+    throttling light ones, which needs two limits — but one budget, hence
+    deliberately no separate light-index ceiling.
     """
 
     heavy: int
     light: int
     index: int
-    light_index: int
     bytes_max: int
 
 

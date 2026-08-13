@@ -94,9 +94,10 @@ def index_pool(tier: ParseTier) -> Pool:
 
     Mirrors ``gate_pool``, one level up: the INDEX gate is held for a
     record's whole lifetime (download through vector upsert), not just its
-    parse phase, and is acquired *before* parsing even starts — so it needs
-    the same heavy/light split, checked this early, or a light record
-    queues behind a heavy one for the gate neither of them actually needs
-    to share.
+    parse phase, and is acquired *before* parsing even starts — so the
+    heavy/light split has to be resolved this early for the two tiers to be
+    throttled independently at all. Both pools draw on one shared budget
+    (``gate.SharedBudget``), so this routes admission, it does not reserve
+    capacity for light records.
     """
     return Pool.LIGHT_INDEX if tier is ParseTier.LIGHT else Pool.INDEX

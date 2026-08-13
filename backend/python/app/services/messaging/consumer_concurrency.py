@@ -301,12 +301,17 @@ async def increment_retry_and_check(
 def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     """Cluster-wide indexing lease limit for *tier*'s active-pipeline pool
     (INDEX for heavy/unknown, LIGHT_INDEX for light) when a governor is
-    present, else the legacy static env var — which was never split by
-    tier, so it stays a single shared limit regardless of *tier*."""
+    present, else the legacy static env var.
+
+    Both tiers get the same number. They still lease from separate Redis
+    pools (see ``parse_lease_pool``'s ``indexing``/``indexing:light``
+    counterpart) so neither tier can exhaust the other's leases, but the
+    node-local ceiling they're sized from is one budget — *tier* is kept in
+    the signature because callers route on it and the two could diverge
+    again without touching every call site.
+    """
     governor = host.governor
     if governor is not None:
-        if tier is ParseTier.LIGHT:
-            return governor.ceilings.light_index
         return governor.ceilings.index
     return messaging_env.max_concurrent_indexing
 

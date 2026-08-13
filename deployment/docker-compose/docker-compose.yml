@@ -170,25 +170,23 @@ services:
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # Indexing concurrency — leave unset (empty) to let each service derive
-      # its ceiling from this container's own cgroup/CPU limits at startup.
-      # Set an explicit integer only to pin a hard ceiling. These are ceilings,
-      # not starting points: every pool ramps up from a floor of 2 as samples
-      # prove the headroom, so a large value raises the target rather than
-      # admitting that much work immediately.
+      # Indexing concurrency — upper caps on the CPU-derived slot counts
+      # (heavy parse: 1 slot/CPU, light parse: 3 slots/CPU, indexing: 2x the
+      # wider parse tier, as one budget for heavy and light records
+      # together). Leave unset (empty) to use the derived numbers as is.
+      # These are ceilings, not starting points: every pool ramps up from
+      # its floor as samples prove the headroom, and heavy parsing is held
+      # further back whenever free memory can't hold that many at once.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
-      # By default an explicit MAX_CONCURRENT_PARSING caps the light tier too.
-      # Set this to decouple them when heavy parses (PDFs through Docling)
-      # need pinning low but small records (Jira/Slack/Markdown) should keep
-      # flowing.
-      - MAX_CONCURRENT_LIGHT_PARSING=${MAX_CONCURRENT_LIGHT_PARSING:-}
-      # Same decoupling one level up: by default an explicit
-      # MAX_CONCURRENT_INDEXING also caps how many light records (Jira/Slack/
-      # Markdown) can be actively IN_PROGRESS at once, which otherwise queues
-      # them behind whatever PDFs are already holding that shared gate. Set
-      # this to give light records their own, independently-sized allowance.
-      - MAX_CONCURRENT_LIGHT_INDEXING=${MAX_CONCURRENT_LIGHT_INDEXING:-}
+      # Slots-per-CPU and the indexing multiplier above, for a workload whose
+      # documents are unusually cheap or expensive. Leave unset for 1 / 3 / 2.
+      - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
+      - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
+      - GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=${GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT:-}
+      # Memory assumed resident per in-flight heavy parse (GiB); sizes the
+      # memory gate that holds heavy parsing below its CPU-derived ceiling.
+      - GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=${GOVERNOR_HEAVY_PARSE_WORKING_SET_GB:-}
       # Memory the governor should credit to co-located idle services (all 7
       # run in this one container) rather than to parse/index workload, so a
       # large resident footprint doesn't hold every pool at its floor. Leave

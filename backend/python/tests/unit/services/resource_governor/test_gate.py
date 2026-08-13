@@ -5,7 +5,11 @@ import time
 
 import pytest
 
-from app.services.resource_governor.gate import AdmissionGate
+from app.services.resource_governor.gate import (
+    AdmissionGate,
+    SharedBudget,
+    StartRateLimiter,
+)
 from app.services.resource_governor.models import Limits, Pool
 from app.services.resource_governor.registry import LimitRegistry
 
@@ -131,6 +135,96 @@ class TestAdmissionGateWaking:
 
         result = await asyncio.wait_for(task, timeout=0.5)
         assert result is True
+
+
+@pytest.mark.asyncio
+class TestSharedBudget:
+    """INDEX and LIGHT_INDEX are split for isolation, not to hand each tier
+    its own budget — the operator's indexing figure has to bound the two
+    together or it bounds nothing recognisable."""
+
+    @staticmethod
+    def _index_pair(
+        capacity: int, *, per_pool_limit: int
+    ) -> tuple[AdmissionGate, AdmissionGate, SharedBudget]:
+        registry = LimitRegistry(Limits(values=dict.fromkeys(Pool, per_pool_limit)))
+        budget = SharedBudget(capacity)
+        heavy = AdmissionGate(Pool.INDEX, registry, shared_budget=budget)
+        light = AdmissionGate(Pool.LIGHT_INDEX, registry, shared_budget=budget)
+        return heavy, light, budget
+
+    async def test_combined_in_flight_cannot_exceed_the_shared_capacity(self) -> None:
+        heavy, light, budget = self._index_pair(4, per_pool_limit=4)
+
+        assert await heavy.acquire() is True
+        assert await heavy.acquire() is True
+        assert await light.acquire() is True
+        assert await light.acquire() is True
+        assert budget.in_use == 4
+
+        # Both pools are individually under their limit of 4, but the
+        # active pipeline as a whole is full.
+        assert await heavy.acquire(timeout=0.01) is False
+        assert await light.acquire(timeout=0.01) is False
+        assert heavy.in_use == 2
+        assert light.in_use == 2
+
+    async def test_either_tier_may_use_the_whole_budget_while_the_other_idles(self) -> None:
+        heavy, light, budget = self._index_pair(4, per_pool_limit=4)
+
+        for _ in range(4):
+            assert await heavy.acquire() is True
+        assert budget.in_use == 4
+        assert light.in_use == 0
+
+    async def test_release_on_one_tier_wakes_a_waiter_on_the_other(self) -> None:
+        """The sibling's own release() never fires here, so without the
+        budget waking members a light record would sit until the safety-net
+        poll — or forever, if that were ever removed."""
+        heavy, light, _ = self._index_pair(1, per_pool_limit=1)
+        assert await heavy.acquire() is True
+
+        task = asyncio.create_task(light.acquire(timeout=5.0))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+
+        heavy.release()
+        assert await asyncio.wait_for(task, timeout=0.2) is True
+
+    async def test_oversized_request_admitted_when_the_pipeline_is_idle(self) -> None:
+        heavy, _light, budget = self._index_pair(2, per_pool_limit=8)
+
+        assert await heavy.acquire(cost=5) is True
+        assert budget.in_use == 5
+
+    async def test_rate_limited_acquire_does_not_leak_shared_capacity(self) -> None:
+        """A denied acquire must hand its reservation back, or the budget
+        leaks room on every burst and eventually admits nothing."""
+        registry = LimitRegistry(Limits(values=dict.fromkeys(Pool, 4)))
+        budget = SharedBudget(4)
+        limiter = StartRateLimiter(interval=3600.0, capacity=1)
+        gate = AdmissionGate(
+            Pool.INDEX, registry, rate_limiter=limiter, shared_budget=budget
+        )
+
+        assert await gate.acquire() is True
+        assert await gate.acquire(timeout=0.01) is False  # denied by the limiter
+        assert budget.in_use == 1
+
+    async def test_over_release_cannot_mint_shared_capacity(self) -> None:
+        heavy, _light, budget = self._index_pair(4, per_pool_limit=4)
+        await heavy.acquire(cost=1)
+
+        heavy.release(cost=3)
+        assert heavy.in_use == 0
+        assert budget.in_use == 0
+
+    async def test_pools_without_a_budget_are_unaffected(self) -> None:
+        registry = _registry(limit=2)
+        gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
+
+        assert await gate.acquire() is True
+        assert await gate.acquire() is True
 
 
 @pytest.mark.asyncio

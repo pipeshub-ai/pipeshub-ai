@@ -820,19 +820,20 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-# Left empty by default: the resource governor derives ceilings from this
-# container's own cgroup/CPU limits at startup. Set an explicit integer only
-# to pin a hard ceiling. These are ceilings, not starting points: every pool
-# ramps up from a floor of 2 as samples prove the headroom is real.
+# Left empty by default. Slot counts derive from this container's CPU quota —
+# heavy parse 1 slot per CPU, light parse 3 slots per CPU, indexing 2x the
+# wider parse tier — and these two vars cap those numbers. They are ceilings,
+# not starting points: every pool ramps up from its floor as samples prove the
+# headroom is real, and heavy parsing is additionally held back whenever free
+# memory can't hold that many at once.
 MAX_CONCURRENT_PARSING=
 MAX_CONCURRENT_INDEXING=
-# Decouples the light parse tier (Jira/Slack/Markdown records) from an
-# explicit MAX_CONCURRENT_PARSING, which otherwise caps it too.
-MAX_CONCURRENT_LIGHT_PARSING=
-# Same decoupling one level up: without this, an explicit
-# MAX_CONCURRENT_INDEXING also caps how many light records can be actively
-# IN_PROGRESS, queueing them behind whatever PDFs already hold that gate.
-MAX_CONCURRENT_LIGHT_INDEXING=
+# Retune the per-CPU slot counts / indexing multiplier themselves (defaults
+# 1, 3 and 2), and the memory assumed per in-flight heavy parse in GiB (1.5).
+GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
+GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
+GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
+GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
 MAX_PENDING_INDEXING_TASKS=
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1

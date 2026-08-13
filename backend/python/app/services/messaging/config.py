@@ -165,32 +165,6 @@ class MessagingEnvConfig:
         return int(raw) if raw else None
 
     @property
-    def env_max_concurrent_light_parsing(self) -> int | None:
-        """Raw ``MAX_CONCURRENT_LIGHT_PARSING``, or ``None`` when unset/empty
-        — see ``env_max_concurrent_parsing``.
-
-        Only needed to break the default coupling where an explicit
-        ``MAX_CONCURRENT_PARSING`` also caps the light tier: a Jira issue and
-        a 26MB scanned PDF are both "a parse" but differ by orders of
-        magnitude in memory, so pinning heavy low should not throttle light
-        with it."""
-        raw = os.getenv("MAX_CONCURRENT_LIGHT_PARSING")
-        return int(raw) if raw else None
-
-    @property
-    def env_max_concurrent_light_indexing(self) -> int | None:
-        """Raw ``MAX_CONCURRENT_LIGHT_INDEXING``, or ``None`` when
-        unset/empty — see ``env_max_concurrent_parsing``.
-
-        Breaks the same default coupling one level up: without this, a
-        light record and a heavy PDF compete for the same ``INDEX``
-        active-pipeline permit, which is acquired before either record's
-        tier is even known — so a small Jira/Slack/Markdown record queues
-        behind a PDF that holds that permit for minutes."""
-        raw = os.getenv("MAX_CONCURRENT_LIGHT_INDEXING")
-        return int(raw) if raw else None
-
-    @property
     def distributed_concurrency_enabled(self) -> bool:
         return os.getenv("DISTRIBUTED_INDEXING_CONCURRENCY", "true").lower() == "true"
 

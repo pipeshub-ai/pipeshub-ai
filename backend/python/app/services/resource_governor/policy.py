@@ -51,7 +51,32 @@ def _env_float(name: str, default: float, *, low: float, high: float) -> float:
 SAMPLE_INTERVAL_SECONDS = 15.0
 SAMPLE_JITTER_SECONDS = 1.0
 
-HEAVY_PARSE_WORKING_SET_GB = 1.5
+# Resident memory one heavy parse is assumed to hold. Sizes the dynamic
+# heavy-parse memory gate (``heavy_memory_cap``), so a deployment whose
+# documents are much larger or smaller than the assumed Docling working set
+# can retune the gate without touching the CPU-derived ceiling.
+HEAVY_PARSE_WORKING_SET_GB = _env_float(
+    "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB", 1.5, low=0.1, high=64.0
+)
+
+# Slots per CPU per tier. A heavy parse is CPU-bound end to end (Docling
+# layout analysis, OCR, LibreOffice), so one per core is the most that adds
+# throughput. A light parse is milliseconds of CPU on a few KB and spends
+# most of its wall time on I/O, so several per core keep the cores busy.
+HEAVY_PARSE_SLOTS_PER_CPU = _env_float(
+    "GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU", 1.0, low=0.1, high=32.0
+)
+LIGHT_PARSE_SLOTS_PER_CPU = _env_float(
+    "GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", 3.0, low=0.1, high=64.0
+)
+
+# The INDEX/LIGHT_INDEX permit is held for a record's whole lifetime
+# (download through vector upsert), most of which is *not* parsing — so the
+# active-pipeline pools are sized as a multiple of the widest parse tier
+# rather than equal to it.
+INDEX_SLOTS_PER_PARSE_SLOT = _env_float(
+    "GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT", 100.0, low=0.1, high=1000.0
+)
 
 # Overridable per-deployment (plan: "Fix 3 — Make MEM_SOFT/MEM_HARD/GROW_BAND
 # configurable"): a shared-container deployment can carry a fixed baseline
@@ -84,12 +109,11 @@ HEAVY_START_BUCKET_CAPACITY = 2
 # StartRateLimiter's *sustained* admission rate is exactly 1/interval
 # (capacity only bounds burst size — see StartRateLimiter.try_consume), so a
 # fixed HEAVY_START_INTERVAL_SECONDS caps admissions at 0.5/sec forever no
-# matter how high an operator sets MAX_CONCURRENT_PARSING/INDEXING. Dividing
-# the pool's own ceiling by this constant scales the sustained rate with
-# that ceiling instead — small/derived ceilings (2-12) stay close to the
-# original conservative rate, while an explicit ceiling of 1000 yields ~50
-# admits/sec so real resource pressure (not this burst smoother) becomes the
-# actual bottleneck.
+# matter how large a pool's ceiling is. Dividing the pool's own ceiling by
+# this constant scales the sustained rate with that ceiling instead — small
+# ceilings (2-12) stay close to the original conservative rate, while a
+# 1000-permit ceiling yields ~50 admits/sec so real resource pressure (not
+# this burst smoother) becomes the actual bottleneck.
 HEAVY_START_RATE_CEILING_DIVISOR = 20.0
 
 DEMAND_UTILISATION_THRESHOLD = 0.7
@@ -102,18 +126,6 @@ GRADIENT_LATENCY_REGRESSION_RATIO = 1.5
 # grow step and this sample.
 RESOURCE_DELTA_LOW = 0.05
 RESOURCE_DELTA_MODERATE = 0.20
-
-# Startup ceiling bounds (plan section 4, "Ceiling resolution").
-_PARSE_CEILING_MIN, _PARSE_CEILING_MAX = 2, 12
-_INDEX_CEILING_MIN, _INDEX_CEILING_MAX = 4, 48
-_LIGHT_CEILING_MIN, _LIGHT_CEILING_MAX = 8, 64
-_LIGHT_CPU_MULTIPLIER = 8
-_INDEX_CEILING_MULTIPLIER = 3
-# Lighter than heavy's 3x: a light record's active-pipeline hold is still
-# mostly downstream (extraction/embedding/vectordb), same reasoning as
-# _INDEX_CEILING_PARSE_MULTIPLIER, but light parses are cheap enough that
-# doubling the parse-tier ceiling is already generous headroom.
-_LIGHT_INDEX_CEILING_MULTIPLIER = 2
 
 _BYTES_FLOOR = 256 * 1024 * 1024
 _BYTES_BUDGET_FRACTION = 0.25
@@ -145,6 +157,25 @@ def _free_memory_gb(snap: ResourceSnapshot) -> float | None:
     return max(0.0, (snap.mem_limit_bytes - resident) / (1024 ** 3))
 
 
+def heavy_memory_cap(snap: ResourceSnapshot) -> int | None:
+    """How many heavy parses the *currently free* memory can hold, or
+    ``None`` when the cgroup limit is unknown.
+
+    The heavy ceiling is sized off CPU alone (``resolve_ceilings``), which
+    is the right steady-state number but says nothing about whether the
+    memory to run that many Docling conversions exists right now — in a
+    shared container it usually doesn't at startup, and may stop existing
+    mid-batch. This is the gate that holds the heavy limit below its
+    ceiling until the memory is actually there. Floored at 1 so heavy
+    parsing can always make forward progress (a cap of 0 would stall every
+    PDF indefinitely rather than slowly).
+    """
+    free_gb = _free_memory_gb(snap)
+    if free_gb is None:
+        return None
+    return max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB))
+
+
 # ---------------------------------------------------------------------------
 # Ceilings — resolved once at startup
 # ---------------------------------------------------------------------------
@@ -155,81 +186,48 @@ def resolve_ceilings(
     env_parse: int | None,
     env_index: int | None,
     worker_count: int = 1,
-    env_light: int | None = None,
-    env_light_index: int | None = None,
 ) -> Ceilings:
     """Resolve operator ceilings once at startup.
 
-    ``env_parse``/``env_index``/``env_light``/``env_light_index`` are the
-    resolved ``MAX_CONCURRENT_PARSING`` / ``MAX_CONCURRENT_INDEXING`` /
-    ``MAX_CONCURRENT_LIGHT_PARSING`` / ``MAX_CONCURRENT_LIGHT_INDEXING``
-    values — ``None`` means "derive".
-    Explicit operator values are honoured as the process-wide total (see
-    corner-case table), but heavy is still capped at the CPU quota: heavy
-    parses are CPU-bound, so admitting more of them than there are cores
-    only adds contention, never throughput. ``MAX_CONCURRENT_LIGHT_PARSING``
-    has no such cap since light parses are not CPU-bound. When
-    ``worker_count > 1`` the (already CPU-capped) total is then divided
-    across workers below, since each worker process runs its own governor.
+    Every ceiling derives from the CPU quota and is then capped by the
+    operator's ``MAX_CONCURRENT_PARSING`` / ``MAX_CONCURRENT_INDEXING``
+    (``None`` means "no cap"):
+
+    * heavy parse — ``min(cpus * HEAVY_PARSE_SLOTS_PER_CPU, env_parse)``
+    * index —
+      ``min(INDEX_SLOTS_PER_PARSE_SLOT * max(heavy, light), env_index)``,
+      the cap on each active-pipeline pool *and* on their combined
+      in-flight total (``gate.SharedBudget``)
+    * light parse — ``min(cpus * LIGHT_PARSE_SLOTS_PER_CPU, env_parse)``
+
+    Memory deliberately plays no part here. It is not a startup constant:
+    the free memory at process start (before any model is loaded, or with
+    six sibling services already resident) is a poor predictor of what is
+    free five minutes into a batch. The heavy tier — the only one whose
+    per-slot cost is measured in GiB — is instead gated against live free
+    memory on every sample (``heavy_memory_cap``), so it holds below this
+    ceiling exactly as long as the memory isn't there and no longer.
+
+    ``worker_count > 1`` divides the result, since each worker process runs
+    its own governor against the same cgroup.
     """
     workers = max(1, worker_count)
-    # Never hand out more heavy-parse slots than CPUs actually available —
-    # a sub-2-core cgroup (fractional cpu.max, e.g. cpu_quota=1.0) would
-    # otherwise oversubscribe CPU-bound work. Floored at 1 so there's always
-    # room for at least one heavy-parse slot even below 1 CPU.
-    cpu_cap = max(1, math.floor(snap.cpu_quota))
-    # Sized from memory that is actually free at startup, not the whole
-    # limit: in the all-in-one container six other services (including
-    # Docling's and the embedding server's model weights) are already
-    # resident before the first document arrives, so limit / per-parse cost
-    # would hand the parse pool a budget the cgroup cannot honour.
-    free_gb = _free_memory_gb(snap)
+    cpus = max(0.0, snap.cpu_quota)
+    # Floored at 1 throughout: a sub-1-CPU cgroup (fractional cpu.max) must
+    # still be able to run one parse at a time rather than none.
+    parse_cap = max(1, env_parse) if env_parse is not None else None
 
-    if env_parse is not None:
-        parse_ceiling = min(max(1, env_parse), cpu_cap)
-        # An explicit heavy ceiling caps light too: an operator pinning
-        # MAX_CONCURRENT_PARSING=1 wants one parse in flight, not one heavy
-        # parse plus a burst of light ones. MAX_CONCURRENT_LIGHT_PARSING
-        # (below) is the escape hatch when they want the opposite.
-    else:
-        if free_gb is not None:
-            derived = min(snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
-        else:
-            derived = snap.cpu_quota
-        # _PARSE_CEILING_MIN guarantees useful concurrency on a derived
-        # (non-overridden) ceiling, but must never hand out more heavy-parse
-        # slots than CPUs actually available — cap the floor itself by the
-        # CPU-derived bound.
-        parse_ceiling = int(derived)
-        # Sized off CPU alone, never off heavy: a light parse is milliseconds
-        # on a few KB, so heavy-parse memory sizing must not cap it.
+    heavy_parse_ceiling = max(1, math.floor(cpus * HEAVY_PARSE_SLOTS_PER_CPU))
+    light_parse_ceiling = max(1, math.floor(cpus * LIGHT_PARSE_SLOTS_PER_CPU))
+    if parse_cap is not None:
+        heavy_parse_ceiling = min(heavy_parse_ceiling, parse_cap)
+        light_parse_ceiling = min(light_parse_ceiling, parse_cap)
 
-    # Last word, so "few heavy parses, many light ones" is expressible without
-    # dropping MAX_CONCURRENT_PARSING back to the derived path: the two tiers
-    # cost wildly different amounts of memory, and the coupling above only
-    # makes sense as a default. Not re-capped by the derived/heavy-coupled
-    # light_ceiling above — that would make this override a no-op whenever
-    # the operator's intent is exactly to raise light past it.
-    if env_light is not None:
-        light_ceiling = min(max(1, env_light),int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER))
-    else:
-        light_ceiling = int(snap.cpu_quota * _LIGHT_CPU_MULTIPLIER)
-
+    index_ceiling = max(
+        1, math.floor(INDEX_SLOTS_PER_PARSE_SLOT * max(heavy_parse_ceiling, light_parse_ceiling))
+    )
     if env_index is not None:
-        index_ceiling = max(1, env_index)
-    else:
-        derived_index = parse_ceiling * _INDEX_CEILING_MULTIPLIER
-        index_ceiling = int(derived_index)
-
-    # Independent of index_ceiling for the same reason light is independent
-    # of heavy: a light record's active-pipeline hold must never be capped
-    # by the heavy-parse-derived sizing above, or a Jira/Slack/Markdown
-    # record queues for the same gate a Docling PDF is holding for minutes.
-    if env_light_index is not None:
-        light_index_ceiling = max(1, env_light_index)
-    else:
-        derived_light_index = light_ceiling * _LIGHT_CPU_MULTIPLIER
-        light_index_ceiling = int(derived_light_index)
+        index_ceiling = min(index_ceiling, max(1, env_index))
 
     if snap.mem_limit_bytes is not None:
         bytes_max = max(_BYTES_FLOOR, int(snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION))
@@ -237,17 +235,15 @@ def resolve_ceilings(
         bytes_max = _BYTES_FLOOR
 
     if workers > 1:
-        parse_ceiling = max(1, parse_ceiling // workers)
+        heavy_parse_ceiling = max(1, heavy_parse_ceiling // workers)
+        light_parse_ceiling = max(1, light_parse_ceiling // workers)
         index_ceiling = max(1, index_ceiling // workers)
-        light_ceiling = max(1, light_ceiling // workers)
-        light_index_ceiling = max(1, light_index_ceiling // workers)
         bytes_max = max(_BYTES_FLOOR, bytes_max // workers)
 
     return Ceilings(
-        heavy=parse_ceiling,
-        light=light_ceiling,
+        heavy=heavy_parse_ceiling,
+        light=light_parse_ceiling,
         index=index_ceiling,
-        light_index=light_index_ceiling,
         bytes_max=bytes_max,
     )
 
@@ -282,13 +278,16 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     Count pools floor at ``min(2, ceiling)`` so an explicit ceiling of 1 is
     honoured exactly (never forced up to 2). The bytes pool floors at a
     fixed minimum useful budget.
+
+    Light pools start at half their ceiling instead: their per-slot cost is
+    negligible, so ramping a Jira/Slack sync one permit at a time from 2
+    only adds latency. Half, not the full ceiling — a floor equal to the
+    ceiling would leave the memory brake nothing to shrink.
     """
     if pool is Pool.DOWNLOAD_BYTES:
         return min(_BYTES_FLOOR, ceiling)
-    if pool is Pool.LIGHT_PARSE:
-        return min(50, ceiling)
-    if pool is Pool.LIGHT_INDEX:
-        return min(100, ceiling)
+    if _is_light_pool(pool):
+        return min(max(COUNT_POOL_FLOOR, ceiling // 2), ceiling)
     return min(COUNT_POOL_FLOOR, ceiling)
 
 
@@ -310,7 +309,7 @@ def warm_start_limits(ceilings: Ceilings) -> Limits:
         Pool.HEAVY_PARSE: floor_for(Pool.HEAVY_PARSE, ceilings.heavy),
         Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
         Pool.INDEX: floor_for(Pool.INDEX, ceilings.index),
-        Pool.LIGHT_INDEX: floor_for(Pool.LIGHT_INDEX, ceilings.light_index),
+        Pool.LIGHT_INDEX: floor_for(Pool.LIGHT_INDEX, ceilings.index),
         Pool.DOWNLOAD_BYTES: floor_for(Pool.DOWNLOAD_BYTES, ceilings.bytes_max),
     })
 
@@ -320,7 +319,7 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
         Pool.HEAVY_PARSE: ceilings.heavy,
         Pool.LIGHT_PARSE: ceilings.light,
         Pool.INDEX: ceilings.index,
-        Pool.LIGHT_INDEX: ceilings.light_index,
+        Pool.LIGHT_INDEX: ceilings.index,
         Pool.DOWNLOAD_BYTES: ceilings.bytes_max,
     }[pool]
 
@@ -332,12 +331,12 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
     avail_bytes = None if free_gb is None else int(free_gb * 1024 ** 3)
 
     if pool is Pool.HEAVY_PARSE:
-        if free_gb is not None:
-            bound = min(ceilings.heavy, snap.cpu_quota, free_gb / HEAVY_PARSE_WORKING_SET_GB)
-        else:
-            bound = min(ceilings.heavy, snap.cpu_quota)
-        floor = floor_for(pool, ceilings.heavy)
-        return int(_clamp(math.floor(bound), floor, ceilings.heavy))
+        mem_cap = heavy_memory_cap(snap)
+        bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
+        # Clamped to 1, not to floor_for: the memory gate must be able to
+        # hold heavy *below* its warm-start floor when the cgroup genuinely
+        # cannot hold that many concurrent Docling working sets.
+        return int(_clamp(bound, 1, ceilings.heavy))
 
     if pool is Pool.LIGHT_PARSE:
         # Not derived from heavy_target — see plan section 4.2. This is a
@@ -348,8 +347,10 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
     if pool is Pool.INDEX or pool is Pool.LIGHT_INDEX:
         # Deliberately just the ceiling, not a cpu_quota expression (section
         # 4.2). INDEX is stopped by the growth preconditions (pressure /
-        # demand / gradient); LIGHT_INDEX uses the looser light gates.
-        return ceilings.light_index if pool is Pool.LIGHT_INDEX else ceilings.index
+        # demand / gradient); LIGHT_INDEX uses the looser light gates. Both
+        # may reach the full ceiling — their *combined* in-flight total is
+        # what the shared budget bounds (gate.SharedBudget).
+        return ceilings.index
 
     if pool is Pool.DOWNLOAD_BYTES:
         if avail_bytes is not None and snap.mem_limit_bytes:
@@ -570,6 +571,17 @@ def _next_pool_limit(
     cpu_brake = (not _is_light_pool(pool)) and _cpu_brake_active(snap)
     if (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
         return max(floor, current - shrink_step), _reset_for_shrink(
+            state, cooldown_until=max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS),
+        )
+
+    # Heavy's target is the CPU-derived ceiling gated by live free memory
+    # (_target_for). Overall pressure can sit well under MEM_SOFT while
+    # what's left is still too small for another Docling working set, so
+    # this walks heavy down to what memory can actually hold — below the
+    # warm-start floor if that's what it takes — without waiting for a
+    # brake that, by definition, only trips once it is nearly too late.
+    if pool is Pool.HEAVY_PARSE and current > target:
+        return max(target, current - shrink_step), _reset_for_shrink(
             state, cooldown_until=max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS),
         )
 

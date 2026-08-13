@@ -21,7 +21,7 @@ from app.services.resource_governor.tiers import XL_HEAVY_BYTES
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 
-def _make_governor(*, env_parse: int = 4, env_index: int = 8):
+def _make_governor(*, env_parse: int | None = None, env_index: int = 8):
     return make_test_governor(
         env_parse=env_parse, env_index=env_index, logger_name="test.consumer_concurrency.governor",
     )
@@ -57,10 +57,19 @@ class TestIndexAndParseCeiling:
         for every tier, so a cluster-wide Redis lease of 4 (Docling-sized)
         serialized Jira/Slack parses and the local LIGHT_PARSE gate never
         saw demand."""
-        governor = _make_governor(env_parse=4, env_index=8)
+        governor = _make_governor()
         host = _host(governor=governor)
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) > concurrency.parse_ceiling(host, ParseTier.HEAVY)
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
+
+    def test_explicit_max_concurrent_parsing_caps_both_tiers(self) -> None:
+        """MAX_CONCURRENT_PARSING is a cap on parsing, not on heavy parsing:
+        an operator pinning it to 2 wants two parses in flight, not two
+        Docling conversions plus a burst of light ones."""
+        governor = _make_governor(env_parse=2)
+        host = _host(governor=governor)
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 2
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 2
 
     def test_ceiling_unaffected_by_adaptive_shrink(self) -> None:
         """The resolved ceiling is fixed at startup; index_ceiling/

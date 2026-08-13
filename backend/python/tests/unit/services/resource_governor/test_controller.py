@@ -31,9 +31,14 @@ class ScriptedProbe:
         return snap
 
 
-def _snap(mem_pressure_working_set_gb: float, mem_limit_gb: float = 4.0, cpu_utilisation: float = 0.1) -> ResourceSnapshot:
+def _snap(
+    mem_pressure_working_set_gb: float,
+    mem_limit_gb: float = 4.0,
+    cpu_utilisation: float = 0.1,
+    cpu_quota: float = 8.0,
+) -> ResourceSnapshot:
     return ResourceSnapshot(
-        cpu_quota=8.0,
+        cpu_quota=cpu_quota,
         cpu_utilisation=cpu_utilisation,
         cpu_throttled_ratio=0.0,
         cpu_pressure=0.0,
@@ -74,16 +79,19 @@ class TestResourceGovernorController:
         # parses are never rate-limited"), which keeps this test's demand
         # accounting simple: every holder that fits under the limit is
         # admitted immediately, and the rest count as blocked_acquires.
-        # env_parse/env_index are left as None (derived) so the system
-        # warm-starts at floor=2, giving room for the ramp to demonstrate.
+        # env_parse/env_index are left as None (derived) so the ceiling
+        # comes from the CPU quota, leaving room above the warm-start floor
+        # for the ramp to demonstrate.
         gate = governor.gate(Pool.LIGHT_PARSE)
-        assert gate.limit == 2  # warm start (derived ceiling → floor)
+        light_floor = floor_for(Pool.LIGHT_PARSE, governor.ceilings.light)
+        assert gate.limit == light_floor
+        assert light_floor < governor.ceilings.light
 
         # Hard pressure -> halve (already at floor, stays clamped at floor).
         probe._snapshots = [_snap(mem_pressure_working_set_gb=3.6)]  # 0.9 of 4GiB
         clock.now += 1.0
         await governor._sample_once()
-        assert gate.limit == 2
+        assert gate.limit == light_floor
 
         # Healthy again, with proven demand each interval -> ramps up by
         # exactly one permit per sample once past the confirm window. Clear
@@ -92,7 +100,10 @@ class TestResourceGovernorController:
         probe._snapshots = [_snap(mem_pressure_working_set_gb=0.5)]
         clock.now += 61.0
         for _ in range(6):
-            holders = [asyncio.create_task(_hold_gate(gate)) for _ in range(8)]
+            holders = [
+                asyncio.create_task(_hold_gate(gate))
+                for _ in range(governor.ceilings.light + 4)
+            ]
             await asyncio.sleep(0)  # let holders that fit actually acquire
             clock.now += 1.0
             await governor._sample_once()
@@ -102,7 +113,7 @@ class TestResourceGovernorController:
                 with contextlib.suppress(asyncio.CancelledError):
                     await holder
 
-        assert gate.limit > 2
+        assert gate.limit > light_floor
 
     async def test_report_memory_incident_halves_immediately_without_waiting_for_sample(self) -> None:
         clock = ManualClock()
@@ -134,16 +145,16 @@ class TestResourceGovernorController:
             floor_for(Pool.DOWNLOAD_BYTES, governor.ceilings.bytes_max), before_bytes // 2
         )
 
-    async def test_start_rate_limiters_scale_with_explicit_high_ceiling(self) -> None:
-        """Regression guard: setting MAX_CONCURRENT_PARSING/INDEXING to a
-        large value must raise how fast HEAVY_PARSE/DOWNLOAD_BYTES admit new
-        work, not leave them throttled at the fixed ~0.5/s default forever
-        (the root cause of "5-10 docs at a time regardless of MAX_CONCURRENT_*")."""
-        probe = ScriptedProbe([_snap(mem_pressure_working_set_gb=0.5)])
+    async def test_start_rate_limiters_scale_with_a_high_ceiling(self) -> None:
+        """Regression guard: a large resolved ceiling must raise how fast
+        HEAVY_PARSE/DOWNLOAD_BYTES admit new work, not leave them throttled
+        at the fixed ~0.5/s default forever (the root cause of "5-10 docs at
+        a time regardless of MAX_CONCURRENT_*"). Driven by a CPU-rich host
+        rather than by MAX_CONCURRENT_PARSING, which can only cap the
+        CPU-derived ceiling, never raise it."""
+        probe = ScriptedProbe([_snap(mem_pressure_working_set_gb=0.5, cpu_quota=64.0)])
         governor = ResourceGovernor(
             logger=logging.getLogger("test.governor"),
-            env_parse=1000,
-            env_index=1000,
             probe=probe,
         )
         heavy_gate = governor.gate(Pool.HEAVY_PARSE)
@@ -212,11 +223,14 @@ class TestResourceGovernorController:
         assert set(stats.keys()) == {
             "probe_source", "cpu_quota", "cpu_utilisation", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
-            "worker_count", "ceilings", "limits", "in_use", "demand",
+            "worker_count", "ceilings", "limits", "in_use", "index_budget", "demand",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
-            "heavy_parse", "light_parse", "index", "light_index", "download_bytes",
+            "heavy_parse", "light_parse", "index", "download_bytes",
+        }
+        assert stats["index_budget"] == {
+            "capacity": governor.ceilings.index, "in_use": 0,
         }
         assert set(stats["demand"][Pool.HEAVY_PARSE.value].keys()) == {
             "utilisation", "blocked_acquires", "completions", "rate_limited_acquires",

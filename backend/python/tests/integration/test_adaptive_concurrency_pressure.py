@@ -20,10 +20,11 @@ import logging
 import pytest
 
 from app.services.resource_governor.controller import ResourceGovernor
-from app.services.resource_governor.models import Pool
+from app.services.resource_governor.models import Pool, ResourceSnapshot
 from app.services.resource_governor.policy import (
     INCIDENT_COOLDOWN_SECONDS,
     SAMPLE_INTERVAL_SECONDS,
+    floor_for,
 )
 from tests.integration.resource_governor_helpers import (
     ManualClock,
@@ -51,15 +52,19 @@ class TestAdaptiveConcurrencyPressure:
         )
         heavy_gate = governor.gate(Pool.HEAVY_PARSE)
         light_gate = governor.gate(Pool.LIGHT_PARSE)
-        assert heavy_gate.limit == 2  # warm-start floor (derived ceiling)
-        assert light_gate.limit == 2  # warm-start floor (derived ceiling)
+        heavy_floor = floor_for(Pool.HEAVY_PARSE, governor.ceilings.heavy)
+        light_floor = floor_for(Pool.LIGHT_PARSE, governor.ceilings.light)
+        assert heavy_gate.limit == heavy_floor  # warm-start floor (derived ceiling)
+        assert light_gate.limit == light_floor
 
         # Saturate heavy at its current limit; light gets only one holder, so
-        # it still has headroom under its own (equal) limit.
-        heavy_holders = [asyncio.create_task(_hold_gate(heavy_gate)) for _ in range(2)]
+        # it still has headroom under its own limit.
+        heavy_holders = [
+            asyncio.create_task(_hold_gate(heavy_gate)) for _ in range(heavy_floor)
+        ]
         light_holder = asyncio.create_task(_hold_gate(light_gate))
         await asyncio.sleep(0)  # let the admitted holders actually acquire
-        assert heavy_gate.in_use == 2
+        assert heavy_gate.in_use == heavy_floor
         assert light_gate.in_use == 1
 
         # ── Hard pressure hits ────────────────────────────────────────────
@@ -69,11 +74,11 @@ class TestAdaptiveConcurrencyPressure:
 
         # Both pools are independently re-evaluated against the same
         # pressure signal; already at the floor, they stay clamped there
-        # rather than going lower (floor_for == min(2, ceiling)).
-        assert heavy_gate.limit == 2
-        assert light_gate.limit == 2
+        # rather than going lower.
+        assert heavy_gate.limit == heavy_floor
+        assert light_gate.limit == light_floor
 
-        # New heavy admission blocks: in_use(2) + cost(1) > limit(2), and
+        # New heavy admission blocks: in_use == limit, and
         # in_use != 0, so it must wait rather than being admitted alongside
         # the existing holders. AdmissionGate's own timeout deadline is
         # computed from the (manual) clock, which never advances on its own,
@@ -89,7 +94,7 @@ class TestAdaptiveConcurrencyPressure:
         with contextlib.suppress(asyncio.CancelledError):
             await blocked_task
 
-        # New light admission is NOT blocked: in_use(1) + cost(1) <= limit(2).
+        # New light admission is NOT blocked: in_use(1) + cost(1) <= limit.
         admitted = await light_gate.acquire(timeout=0.1)
         assert admitted is True
         light_gate.release()
@@ -116,7 +121,9 @@ class TestAdaptiveConcurrencyPressure:
             await governor._sample_once()
             await cancel_all(holders)
 
-        assert heavy_gate.limit > 2, "heavy_parse ceiling must recover once memory pressure clears"
+        assert heavy_gate.limit > heavy_floor, (
+            "heavy_parse ceiling must recover once memory pressure clears"
+        )
 
     async def test_exponential_recovery_reaches_near_ceiling_within_a_dozen_intervals(self) -> None:
         """Plan section 4 (TCP-slow-start growth): recovering from a
@@ -128,7 +135,15 @@ class TestAdaptiveConcurrencyPressure:
         *happens*; this proves it's fast enough to matter operationally.
         """
         clock = ManualClock()
-        probe = ScriptedProbe([make_snapshot(mem_pressure=0.1)])
+        # A 256-CPU host: index ceilings derive from the CPU quota
+        # (INDEX_SLOTS_PER_PARSE_SLOT x the light parse tier), so the
+        # 1000-permit ceiling this test measures a recovery across only
+        # exists on a box that large — MAX_CONCURRENT_INDEXING can cap that
+        # derivation but never raise it.
+        def snapshot(mem_pressure: float) -> ResourceSnapshot:
+            return make_snapshot(mem_pressure, cpu_quota=256.0)
+
+        probe = ScriptedProbe([snapshot(0.1)])
         governor = ResourceGovernor(
             logger=logging.getLogger("test.integration.pressure.exponential_recovery"),
             env_index=1000,
@@ -136,6 +151,7 @@ class TestAdaptiveConcurrencyPressure:
             sample_interval=SAMPLE_INTERVAL_SECONDS,
             clock=clock,
         )
+        assert governor.ceilings.index == 1000
         index_gate = governor.gate(Pool.INDEX)
         # Every pool warm-starts at its floor now — an explicit ceiling raises
         # the target the ramp climbs toward, not the starting point — so put
@@ -144,12 +160,12 @@ class TestAdaptiveConcurrencyPressure:
         governor._registry.set(Pool.INDEX, 1000)
         assert index_gate.limit == 1000
 
-        probe.snapshots = [make_snapshot(mem_pressure=0.9)]  # >= MEM_HARD
+        probe.snapshots = [snapshot(0.9)]  # >= MEM_HARD
         clock.now += SAMPLE_INTERVAL_SECONDS
         await governor._sample_once()
         assert index_gate.limit == 500
 
-        probe.snapshots = [make_snapshot(mem_pressure=0.1)]
+        probe.snapshots = [snapshot(0.1)]
         clock.now += INCIDENT_COOLDOWN_SECONDS + SAMPLE_INTERVAL_SECONDS  # clear the incident cooldown
 
         # Held for the whole recovery loop and never released until the

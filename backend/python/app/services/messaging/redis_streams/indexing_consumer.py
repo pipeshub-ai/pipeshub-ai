@@ -183,10 +183,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.light_indexing_semaphore = self.governor.gate(Pool.LIGHT_INDEX)
                 self.logger.info(
                     "Worker thread event loop started; using ResourceGovernor "
-                    "gates (index_ceiling=%d light_index_ceiling=%d "
+                    "gates (index_ceiling=%d — shared by index+light_index, "
                     "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
                     self.governor.ceilings.index,
-                    self.governor.ceilings.light_index,
                     self.governor.ceilings.heavy,
                     self.governor.ceilings.light,
                 )
