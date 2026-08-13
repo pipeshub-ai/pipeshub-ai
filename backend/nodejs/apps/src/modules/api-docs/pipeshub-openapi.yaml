@@ -9766,7 +9766,6 @@ components:
         - systemPrompt
         - instructions
         - models
-        - usesOrgDefault
         - tags
         - webSearch
         - isActive
@@ -9798,13 +9797,6 @@ components:
           type: array
           items:
             type: string
-        usesOrgDefault:
-          type: boolean
-          description: |
-            True when this agent has no models configured and will use the
-            organization's default LLM (marked `isDefault: true` in the AI
-            models configuration) at chat time. Derived from `models` being
-            empty — not persisted separately.
         tags:
           type: array
           items:

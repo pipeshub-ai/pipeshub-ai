@@ -524,8 +524,14 @@ class TestCreateAgent(AgentsTestBase):
 
         agent = body["agent"]
         assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
-        assert agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {agent!r}"
         assert_response_matches_openapi_operation(body, "createAgent", status_code="201")
+
+        # `usesOrgDefault` is derived on read paths only, not on the create
+        # response — assert it via GET.
+        get_resp = self.agents.get_agent(agent_key)
+        assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
+        get_agent = _response_json(get_resp)["agent"]
+        assert get_agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {get_agent!r}"
 
     def test_create_agent_empty_models_array_succeeds_and_uses_org_default(
         self,
@@ -548,7 +554,6 @@ class TestCreateAgent(AgentsTestBase):
 
         agent = body["agent"]
         assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
-        assert agent.get("usesOrgDefault") is True, f"Expected usesOrgDefault=True, got: {agent!r}"
 
         # A subsequent GET reflects the same model-free state.
         get_resp = self.agents.get_agent(agent_key)
@@ -1294,7 +1299,10 @@ class TestUpdateAgent(AgentsTestBase):
         create_body = _response_json(create_resp)
         agent_key = self._created_agent_key(create_body)
         created_agent_keys.append(agent_key)
-        assert create_body["agent"].get("usesOrgDefault") is True
+
+        # Baseline: no models yet, so the read path reports the org-default fallback.
+        baseline_agent = _response_json(self._get_agent_raw(agent_key))["agent"]
+        assert baseline_agent.get("usesOrgDefault") is True
 
         # Add a model via update.
         add_payload = _build_update_payload(seeded_model=reasoning_multimodal_llm_model)
