@@ -150,3 +150,17 @@ class TestCapturedConfigReachesTheTransport:
         t = build_direct_transport(_gemini(), model_name="gemini-3-flash-preview")
         assert t._thinking_level == "high"
         assert t._temperature == 0.2
+
+    def test_unknown_value_falls_back_instead_of_failing_every_turn(
+        self, monkeypatch
+    ) -> None:
+        """The registry holds only langchain and direct, so an unrecognised value
+        used to reach TransportRegistry.resolve and raise RegistryError -- a typo
+        in a deployment env var took the service down rather than costing it an
+        optimisation."""
+        monkeypatch.setenv("PIPESHUB_AGENT_TRANSPORT", "typo-transport")
+        assert _transport_provider() == LANGCHAIN_TRANSPORT
+
+    def test_case_is_normalised(self, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_AGENT_TRANSPORT", "DIRECT")
+        assert _transport_provider() == DIRECT_TRANSPORT

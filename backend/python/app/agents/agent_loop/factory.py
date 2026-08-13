@@ -218,10 +218,18 @@ def _transport_provider() -> str:
     Read per call rather than cached so an arm can be switched by restarting the
     service, without a rebuild.
     """
-    raw = os.getenv("PIPESHUB_AGENT_TRANSPORT", LANGCHAIN_TRANSPORT).strip()
+    raw = os.getenv("PIPESHUB_AGENT_TRANSPORT", LANGCHAIN_TRANSPORT).strip().lower()
     if raw in ("azure_direct", DIRECT_TRANSPORT):
         return DIRECT_TRANSPORT
-    return raw or LANGCHAIN_TRANSPORT
+    if raw and raw != LANGCHAIN_TRANSPORT:
+        # Anything else -- a typo, a stale value, different casing -- would reach
+        # TransportRegistry.resolve and raise RegistryError, failing every turn.
+        # A misconfigured env var should cost the optimisation, not the service.
+        logger.warning(
+            "PIPESHUB_AGENT_TRANSPORT=%r is not a known transport; using %s",
+            raw, LANGCHAIN_TRANSPORT,
+        )
+    return LANGCHAIN_TRANSPORT
 
 # Phase-1 auto-compact (gentle): protects up to 70% of budget in the tail,
 # summarizes only the oldest portion. Phase-2 (aggressive): if still over

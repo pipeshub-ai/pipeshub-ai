@@ -36,6 +36,19 @@ MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
 # path). Note this differs from MimeTypes.FOLDER ("text/directory").
 KB_FOLDER_MIME_TYPE = "application/vnd.folder"
 
+def _mutation_succeeded(result: object) -> bool:
+    """Did a graph-provider permission mutation actually succeed?
+
+    The providers disagree on the return contract: arango's
+    `remove_kb_permission` returns a bare bool, every other path returns a dict
+    carrying `success`. A failure dict is still truthy, so a plain
+    `if result:` reported provider failures to the caller as success.
+    """
+    if isinstance(result, dict):
+        return bool(result.get("success"))
+    return bool(result)
+
+
 class KnowledgeBaseService:
     """Data handler for knowledge base operations."""
 
@@ -1290,6 +1303,11 @@ class KnowledgeBaseService:
 
             if result.get("success"):
                 self.logger.info(f"✅ Permissions created: {result['grantedCount']} granted")
+                # A revoked user keeps reading this KB until the entry
+                # expires otherwise: the cache is only invalidated on
+                # record-set changes, and a permission edit changes no
+                # records. Rare enough that the extra DEL costs nothing.
+                await notify_kb_records_changed(kb_id)
                 return result
             else:
                 self.logger.error(f"❌ Permission creation failed: {result.get('reason')}")
@@ -1491,12 +1509,17 @@ class KnowledgeBaseService:
                 new_role=new_role
             )
 
-            if result:
+            if _mutation_succeeded(result):
                 success_msg = f"✅ Permission updated successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
                 if skipped_users or skipped_teams:
                     success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
                 self.logger.info(success_msg)
 
+                # A revoked user keeps reading this KB until the entry
+                # expires otherwise: the cache is only invalidated on
+                # record-set changes, and a permission edit changes no
+                # records. Rare enough that the extra DEL costs nothing.
+                await notify_kb_records_changed(kb_id)
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
@@ -1504,12 +1527,15 @@ class KnowledgeBaseService:
                     "newRole": new_role,
                     "kbId": kb_id,
                 }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to update permission",
-                    "code": 500
-                }
+            # Propagate the provider's own reason when it gave one; the
+            # generic message is only for the bare-bool contract.
+            if isinstance(result, dict):
+                return result
+            return {
+                "success": False,
+                "reason": "Failed to update permission",
+                "code": 500
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
@@ -1666,25 +1692,33 @@ class KnowledgeBaseService:
                 team_ids=valid_team_ids
             )
 
-            if result:
+            if _mutation_succeeded(result):
                 success_msg = f"✅ Permission removed successfully for {len(valid_user_ids)} users and {len(valid_team_ids)} teams"
                 if skipped_users or skipped_teams:
                     success_msg += f" (skipped {len(skipped_users)} users and {len(skipped_teams)} teams without permissions)"
                 self.logger.info(success_msg)
 
 
+                # A revoked user keeps reading this KB until the entry
+                # expires otherwise: the cache is only invalidated on
+                # record-set changes, and a permission edit changes no
+                # records. Rare enough that the extra DEL costs nothing.
+                await notify_kb_records_changed(kb_id)
                 return {
                     "success": True,
                     "userIds": valid_user_ids,
                     "teamIds": valid_team_ids,
                     "kbId": kb_id,
                 }
-            else:
-                return {
-                    "success": False,
-                    "reason": "Failed to remove permissions",
-                    "code": 500
-                }
+            # Propagate the provider's own reason when it gave one; the
+            # generic message is only for the bare-bool contract.
+            if isinstance(result, dict):
+                return result
+            return {
+                "success": False,
+                "reason": "Failed to remove permissions",
+                "code": 500
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to remove KB permission: {str(e)}")

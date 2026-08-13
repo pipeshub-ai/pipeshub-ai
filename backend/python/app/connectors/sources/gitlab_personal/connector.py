@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, PermissionModel
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -98,7 +98,12 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     .with_description("Sync content from your personal GitLab account")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.PERSONAL.value])
-    .with_permission_model(PermissionModel.APP_LEVEL)
+    # RECORD_LEVEL (the default) rather than APP_LEVEL: reviewers disagreed on
+    # whether a non-creator can hold a USER_APP_RELATION to a personal instance,
+    # and APP_LEVEL answers with one connector-wide scan that never checks the
+    # per-user ACL. The only cost of being wrong the safe way is losing the cache
+    # shortcut for this connector; the cost of being wrong the other way is one
+    # user reading another's records.
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, TypedDict
 
@@ -156,7 +157,23 @@ async def close_shared_session() -> None:
 # `None` is a cached "unavailable" verdict, so an outage costs one failed
 # connect per loop instead of one per record fetch.
 _shared_redis: "dict[asyncio.AbstractEventLoop, Any]" = {}
-_shared_redis_lock = asyncio.Lock()
+# One lock per loop, not one shared lock: agent action tools run background loops
+# in this process (see agents/actions/*, asyncio.new_event_loop in a thread), and
+# a single asyncio.Lock contended from two loops parks a waiter on one loop that
+# the other's release() never wakes -- a hang, not an error. The threading.Lock
+# only guards creating the per-loop lock, which is not awaited.
+_shared_redis_locks: "dict[asyncio.AbstractEventLoop, asyncio.Lock]" = {}
+_shared_redis_locks_guard = threading.Lock()
+
+
+def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
+    with _shared_redis_locks_guard:
+        for stale in [lp for lp in _shared_redis_locks if lp.is_closed()]:
+            _shared_redis_locks.pop(stale, None)
+        lock = _shared_redis_locks.get(loop)
+        if lock is None:
+            lock = _shared_redis_locks[loop] = asyncio.Lock()
+        return lock
 
 
 async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: ANN401
@@ -171,7 +188,7 @@ async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: AN
     if loop in _shared_redis:
         return _shared_redis[loop]
 
-    async with _shared_redis_lock:
+    async with _redis_lock_for(loop):
         if loop in _shared_redis:
             return _shared_redis[loop]
         for stale_loop in [lp for lp in _shared_redis if lp.is_closed()]:

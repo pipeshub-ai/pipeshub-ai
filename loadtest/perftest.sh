@@ -254,6 +254,13 @@ else
 fi
 
 say ""
+# The sampler runs SECS+10 so it covers the drain; without waiting, the report
+# could aggregate a CSV still being appended to and the numbers would change
+# after they were printed.
+if [ -n "${RES_PID:-}" ]; then
+    wait "$RES_PID" 2>/dev/null || true
+fi
+
 say "==================== RESOURCES (CPU %, RAM MB) ===================="
 if [ -s "$OUTDIR/resources.csv" ]; then
     "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" 2>/dev/null | tee -a "$REPORT"

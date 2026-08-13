@@ -44,7 +44,10 @@ export class AuthTokenService {
 
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
-      const decoded = jwt.verify(token, this.jwtVerificationKey) as TokenPayload;
+      const decoded = jwt.verify(
+        token,
+        this.jwtVerificationKey,
+      ) as TokenPayload;
 
       return decoded;
     } catch (error) {
@@ -56,7 +59,10 @@ export class AuthTokenService {
   async verifyScopedToken(token: string, scope: string): Promise<TokenPayload> {
     let decoded: TokenPayload;
     try {
-      decoded = jwt.verify(token, this.scopedJwtVerificationKey) as TokenPayload;
+      decoded = jwt.verify(
+        token,
+        this.scopedJwtVerificationKey,
+      ) as TokenPayload;
     } catch (error) {
       this.logger.error('Token verification failed', { error });
       throw new UnauthorizedError('Invalid token');

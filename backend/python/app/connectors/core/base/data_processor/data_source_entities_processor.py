@@ -1451,11 +1451,18 @@ class DataSourceEntitiesProcessor:
             }
         async with self.data_store_provider.transaction() as tx_store:
             result = await tx_store.delete_records_recursive(record_ids, connector_id)
-        await self._publish_delete_events((result or {}).get("eventData"))
         if (result or {}).get("successfully_deleted"):
+            # Before publishing: the transaction has committed, so the records are
+            # already gone, and _publish_delete_events can fail. Invalidating
+            # afterwards would leave the cache serving deleted records until the
+            # TTL expired whenever publication threw. A concurrent read that
+            # repopulates between these two lines reads post-delete state, so
+            # moving this earlier cannot cache anything stale.
+            #
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
             await notify_kb_records_changed(connector_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
         return result
 
 

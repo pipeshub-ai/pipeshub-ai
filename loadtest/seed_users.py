@@ -24,7 +24,9 @@ Giving that account a password, in order of preference:
     export PIPESHUB_SCOPED_JWT_SECRET='...'
     ./seed_users.py --count 8
 
-Prints the `PIPESHUB_USERS` line to paste into `.env`. Local stacks only.
+Writes the `PIPESHUB_USERS` line to a 0600 file to paste into `.env` --
+not to stdout, which reaches scrollback, CI logs and shell history.
+Local stacks only.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import argparse
 import datetime
 import os
 import subprocess
+from pathlib import Path
 import sys
 import uuid
 
@@ -181,6 +184,8 @@ def main() -> int:
                         help="needs 8+ chars with upper, lower, digit and symbol")
     parser.add_argument("--prefix", default="loadtest", help="email local-part prefix")
     parser.add_argument("--domain", default=DEFAULT_EMAIL_DOMAIN)
+    parser.add_argument("--credentials-out", default="loadtest_users.env",
+                        help="file the PIPESHUB_USERS line is written to (mode 0600)")
     args = parser.parse_args()
 
     admin_email = os.environ.get("PIPESHUB_ADMIN_EMAIL", "").strip()
@@ -214,8 +219,18 @@ def main() -> int:
             print(f"ERROR provisioning {email}: {e}", file=sys.stderr)
             return 1
 
-    print(f"\nProvisioned {len(created)} users. Add to loadtest/.env:\n")
-    print("PIPESHUB_USERS=" + ",".join(f"{email}:{password}" for email, password in created))
+    # Written to a 0600 file rather than stdout: these are real (if disposable)
+    # credentials, and stdout ends up in terminal scrollback, CI logs and shell
+    # history. The caller gets a path to paste from instead.
+    line = "PIPESHUB_USERS=" + ",".join(f"{email}:{password}" for email, password in created)
+    out_path = Path(args.credentials_out).expanduser()
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(line + "\n")
+
+    print(f"\nProvisioned {len(created)} users.")
+    print(f"Credentials written to {out_path} (mode 0600).")
+    print(f"Add them to loadtest/.env:\n  cat {out_path} >> .env")
     print(
         "\nNote: these users see only what the org shares with them. Give them KB "
         "access if the run should search the same corpus."

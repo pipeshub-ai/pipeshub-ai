@@ -566,7 +566,7 @@ class GeminiTransport(LLMTransport):
     async def complete_structured(
         self,
         messages: list[Message],
-        schema: dict[str, Any],
+        output_schema: dict[str, Any],
         system: str | None = None,
         model: str | None = None,
         system_blocks: list[str] | None = None,
@@ -578,7 +578,7 @@ class GeminiTransport(LLMTransport):
 
         tool = _ToolSchema(
             name="respond", description="Respond with the required structure.",
-            input_schema=schema,
+            input_schema=output_schema,
         )
         response = await self.complete(
             messages=messages, tools=[tool], system=system, model=model,

@@ -439,7 +439,7 @@ class TestStructuredOutput:
         with pytest.raises(Exception, match="no structured response"):
             await t.complete_structured(
                 messages=[UserMessage(content="hi")],
-                schema={"type": "object", "properties": {}},
+                output_schema={"type": "object", "properties": {}},
             )
 
     @pytest.mark.asyncio
@@ -456,8 +456,59 @@ class TestStructuredOutput:
         t._client.aio.models.generate_content = _create
         result = await t.complete_structured(
             messages=[UserMessage(content="hi")],
-            schema={"type": "object", "properties": {"a": {"type": "integer"}}},
+            output_schema={"type": "object", "properties": {"a": {"type": "integer"}}},
         )
         assert result.data == {"a": 1}
         cfg = captured["config"]
         assert cfg.tool_config.function_calling_config.mode.name == "ANY"
+
+
+class TestInterfaceConformance:
+    """Every transport is called through `LLMTransport`, and callers pass by
+    keyword (`models/transport.py` uses `output_schema=`). A renamed parameter
+    is therefore a TypeError at the call site, not a type-checker warning --
+    which is exactly how Gemini's structured output shipped broken while its own
+    tests passed, because they used the wrong name too.
+
+    Covers every implementation, including the tracing decorator, since that is
+    what the factory actually hands to the agent loop.
+    """
+
+    @staticmethod
+    def _implementations() -> list:
+        from app.agent_loop_lib.transport.anthropic import AnthropicTransport
+        from app.agent_loop_lib.transport.azure_openai import AzureOpenAITransport
+        from app.agent_loop_lib.transport.ollama import OllamaTransport
+        from app.agent_loop_lib.transport.openai import OpenAITransport
+        from app.agent_loop_lib.transport.opik_tracing import OpikTracingTransport
+
+        return [
+            GeminiTransport, OpenAITransport, AzureOpenAITransport,
+            AnthropicTransport, OllamaTransport, OpikTracingTransport,
+        ]
+
+    @pytest.mark.parametrize("method", ["complete", "complete_structured", "stream"])
+    def test_every_transport_accepts_the_base_call(self, method: str) -> None:
+        """`bind` rather than a name comparison: it also catches a parameter that
+        became positional-only or a new required argument, neither of which a
+        set-difference on names would see."""
+        import inspect
+
+        from app.agent_loop_lib.transport.base import LLMTransport
+
+        base = inspect.signature(getattr(LLMTransport, method))
+        call_kwargs = {
+            name: object()
+            for name, p in base.parameters.items()
+            if name != "self" and p.kind is not inspect.Parameter.VAR_KEYWORD
+        }
+
+        for transport in self._implementations():
+            signature = inspect.signature(getattr(transport, method))
+            try:
+                signature.bind(object(), **call_kwargs)
+            except TypeError as exc:
+                pytest.fail(
+                    f"{transport.__name__}.{method} cannot accept the base call: "
+                    f"{exc} -- a keyword call through LLMTransport raises TypeError"
+                )
