@@ -221,7 +221,8 @@ class TestResourceGovernorController:
         stats = governor.stats()
 
         assert set(stats.keys()) == {
-            "probe_source", "cpu_quota", "cpu_utilisation", "mem_pressure", "mem_limit_bytes",
+            "probe_source", "cpu_quota", "cpu_utilisation", "cpu_pressure",
+            "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "limits", "in_use", "index_budget", "demand",
         }

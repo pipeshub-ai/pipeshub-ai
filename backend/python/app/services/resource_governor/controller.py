@@ -382,6 +382,10 @@ class ResourceGovernor:
             "probe_source": snapshot.source,
             "cpu_quota": snapshot.cpu_quota,
             "cpu_utilisation": snapshot.cpu_utilisation,
+            # Both can trip the CPU brake on their own, so a pool pinned at
+            # its floor is unexplainable from cpu_utilisation alone.
+            "cpu_pressure": snapshot.cpu_pressure,
+            "cpu_throttled_ratio": snapshot.cpu_throttled_ratio,
             "mem_pressure": snapshot.mem_pressure,
             "mem_limit_bytes": snapshot.mem_limit_bytes,
             "mem_usable_bytes": snapshot.mem_usable_bytes,

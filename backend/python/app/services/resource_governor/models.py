@@ -229,12 +229,21 @@ class PoolState:
     resource snapshot recorded at the *previous* grow step — the baseline
     ``_growth_step`` diffs against to size the *next* step (plan section 4,
     "resource-delta probing").
+
+    ``gradient_window_*`` accumulate across samples until enough records
+    have finished to compare throughput rates (policy.py
+    ``_gradient_permits_growth``); ``gradient_baseline_*`` hold the previous
+    closed window's rates.
     """
 
     healthy_streak: int = 0
     cooldown_until: float = 0.0
     gradient_baseline_completions_per_sec: float | None = None
     gradient_baseline_wait_seconds: float | None = None
+    gradient_window_completions: int = 0
+    gradient_window_seconds: float = 0.0
+    gradient_window_blocked_acquires: int = 0
+    gradient_window_wait_seconds: float = 0.0
     in_slow_start: bool = True
     slow_start_step: int = 1
     prev_grow_mem_pressure: float | None = None

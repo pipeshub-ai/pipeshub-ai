@@ -120,6 +120,20 @@ DEMAND_UTILISATION_THRESHOLD = 0.7
 LIGHT_DEMAND_UTILISATION_THRESHOLD = 0.3
 GRADIENT_IMPROVEMENT_THRESHOLD = 0.05
 GRADIENT_LATENCY_REGRESSION_RATIO = 1.5
+# A throughput gradient needs a measurement window long enough to contain
+# several finished records, not one fixed sample interval. A Docling PDF or
+# an LLM-enriched ticket can hold an INDEX permit for minutes, so at a 15s
+# interval most samples complete nothing and the few that do make the rate
+# swing between 0 and n/interval. The gradient reads that quantisation
+# noise as "growth is not improving throughput" and holds for most samples,
+# stretching a ramp that should take a couple of minutes into tens of
+# minutes. Closing the window on a completion count instead of a duration
+# sizes it to observed completion latency automatically: a fast pool closes
+# windows in one or two samples, a slow one takes as long as it takes. The
+# duration cap only bounds how long a pool with (near-)zero throughput
+# waits before being judged at all.
+GRADIENT_MIN_WINDOW_COMPLETIONS = 4
+GRADIENT_WINDOW_MAX_SECONDS = 300.0
 
 # Resource-delta thresholds for slow-start step sizing (plan section 4,
 # "resource-delta probing"): how much mem/cpu moved between the previous
@@ -452,7 +466,11 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
     comparing against no longer describes this pool (the limit just moved),
     and fast exponential recovery back toward the last healthy level is
     preferable to a linear +1/interval crawl (plan section 4, "Reset to
-    slow-start")."""
+    slow-start").
+
+    The in-progress gradient window goes with it — half of it was measured
+    at the old limit, so closing it would compare two different pools.
+    """
     return replace(
         state,
         healthy_streak=0,
@@ -461,6 +479,10 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
         slow_start_step=1,
         prev_grow_mem_pressure=None,
         prev_grow_cpu_utilisation=None,
+        gradient_window_completions=0,
+        gradient_window_seconds=0.0,
+        gradient_window_blocked_acquires=0,
+        gradient_window_wait_seconds=0.0,
     )
 
 
@@ -489,49 +511,81 @@ def _gradient_permits_growth(
     LIGHT_INDEX is excluded: a light record's local cost is negligible, and
     sharing this gate with INDEX pins Jira/Slack/Markdown at the floor
     whenever embeddings are already the heavy-path bottleneck.
+
+    Rates are compared between *windows*, not between single samples — see
+    ``GRADIENT_MIN_WINDOW_COMPLETIONS``. Only samples that reach this
+    function accumulate, so the denominator is time spent under confirmed
+    demand rather than wall time; an idle interval neither adds elapsed
+    seconds nor dilutes the rate.
     """
     if pool is not Pool.INDEX:
         return True, False, state
 
-    completions_per_sec = demand.completions_per_second(interval)
-    mean_wait = demand.mean_wait_seconds()
+    window = replace(
+        state,
+        gradient_window_completions=state.gradient_window_completions + demand.completions,
+        gradient_window_seconds=state.gradient_window_seconds + interval,
+        gradient_window_blocked_acquires=(
+            state.gradient_window_blocked_acquires + demand.blocked_acquires
+        ),
+        gradient_window_wait_seconds=(
+            state.gradient_window_wait_seconds + demand.total_wait_seconds
+        ),
+    )
+    if (
+        window.gradient_window_completions < GRADIENT_MIN_WINDOW_COMPLETIONS
+        and window.gradient_window_seconds < GRADIENT_WINDOW_MAX_SECONDS
+    ):
+        # Too little finished work to compare rates. Absence of a
+        # measurement is not evidence of harm (the models.py convention for
+        # unknowns), so the ramp continues under the memory/CPU brakes.
+        return True, False, window
+
+    elapsed = max(window.gradient_window_seconds, interval)
+    completions_per_sec = window.gradient_window_completions / elapsed
+    # None, not 0.0, when nothing ever blocked: a pool with no contention
+    # has no measurable wait, and recording that as a zero baseline would
+    # disable the latency check permanently (0 is falsy, and any ratio
+    # against it is undefined).
+    mean_wait = (
+        window.gradient_window_wait_seconds / window.gradient_window_blocked_acquires
+        if window.gradient_window_blocked_acquires > 0
+        else None
+    )
     baseline_completions = state.gradient_baseline_completions_per_sec
     baseline_wait = state.gradient_baseline_wait_seconds
 
-    if baseline_completions is None:
-        # No prior grow-step to compare against yet — bootstrap the
-        # baseline and allow this first growth unconditionally.
-        return True, False, replace(
-            state,
-            gradient_baseline_completions_per_sec=completions_per_sec,
-            gradient_baseline_wait_seconds=mean_wait,
-        )
+    closed = replace(
+        window,
+        gradient_window_completions=0,
+        gradient_window_seconds=0.0,
+        gradient_window_blocked_acquires=0,
+        gradient_window_wait_seconds=0.0,
+    )
+    rebaselined = replace(
+        closed,
+        gradient_baseline_completions_per_sec=completions_per_sec,
+        gradient_baseline_wait_seconds=mean_wait if mean_wait is not None else baseline_wait,
+    )
 
-    if baseline_wait and baseline_wait > 0 and mean_wait / baseline_wait > GRADIENT_LATENCY_REGRESSION_RATIO:
-        return False, True, replace(
-            state,
-            gradient_baseline_completions_per_sec=completions_per_sec,
-            gradient_baseline_wait_seconds=mean_wait,
-        )
+    if (
+        baseline_wait is not None
+        and baseline_wait > 0
+        and mean_wait is not None
+        and mean_wait / baseline_wait > GRADIENT_LATENCY_REGRESSION_RATIO
+    ):
+        return False, True, rebaselined
 
-    if baseline_completions <= 0:
-        return True, False, replace(
-            state,
-            gradient_baseline_completions_per_sec=completions_per_sec,
-            gradient_baseline_wait_seconds=mean_wait,
-        )
+    if baseline_completions is None or baseline_completions <= 0:
+        return True, False, rebaselined
 
     improvement = (completions_per_sec - baseline_completions) / baseline_completions
     if improvement > GRADIENT_IMPROVEMENT_THRESHOLD:
-        return True, False, replace(
-            state,
-            gradient_baseline_completions_per_sec=completions_per_sec,
-            gradient_baseline_wait_seconds=mean_wait,
-        )
+        return True, False, rebaselined
     # Flat: hold at the current limit, but keep the existing baseline so a
-    # later interval that does show improvement is measured against the
-    # same reference point rather than a moving target.
-    return False, False, state
+    # later window that does show improvement is measured against the same
+    # reference point rather than a moving target.
+    return False, False, closed
 
 
 def _next_pool_limit(

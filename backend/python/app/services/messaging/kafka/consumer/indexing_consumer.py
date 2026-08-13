@@ -1031,7 +1031,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # MAX_CONCURRENT_INDEXING is also the active-pipeline bound. Without
             # this outer permit, parsed records can accumulate while waiting for
             # an indexing permit and every one can remain IN_PROGRESS in the DB.
+            await active_indexing_gate.acquire()
+            indexing_held = True
+            if waiter_token is not None:
+                waiter_token.admit()
+
             if self.concurrency_manager is not None:
+                # Taken only once the local permit is held: stale-record
+                # recovery reads this lease as proof of active processing, so
+                # a task still queued on the gate must not own one.
                 if not await self._acquire_distributed_slot(
                     index_lease_pool,
                     lease_owner,
@@ -1039,18 +1047,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 ):
                     return False
                 distributed_leases.add(index_lease_pool, lease_owner)
-                # Recovery treats this lease as proof of active processing, so
-                # queued tasks must not own it before entering the indexing gate.
                 renewal_task = self._start_distributed_renewal(
                     distributed_leases
                 )
 
-            await active_indexing_gate.acquire()
-            indexing_held = True
-            if waiter_token is not None:
-                waiter_token.admit()
-
-            if self.concurrency_manager is not None:
                 if not await self._acquire_distributed_slot(
                     record_pool,
                     lease_owner,

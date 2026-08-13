@@ -646,6 +646,44 @@ class TestNextLimitsGrowth:
 
         assert limits.get(Pool.INDEX) == grown_to
 
+    def test_index_ramps_when_records_outlast_the_sample_interval(self) -> None:
+        """A record holding an INDEX permit for minutes completes in only
+        one sample out of many, so a per-sample rate swings between 0 and
+        n/interval. Judged per sample that noise reads as a flat gradient
+        and holds growth on most samples (~66 permits over these 64
+        samples); judged per window of finished records the ramp reaches
+        the ceiling instead."""
+        ceilings = Ceilings(heavy=4, light=12, index=1000, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=4.0, cpu_utilisation=0.2,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=4 * 1024 ** 3,
+        )
+
+        now = 0.0
+        # ~117s per record against a 15s interval: one completion every
+        # eighth sample, none in between.
+        for i in range(64):
+            in_use = limits.get(Pool.INDEX)
+            limits, state = next_limits(
+                limits, snap, ceilings, state,
+                {
+                    Pool.INDEX: PoolDemand(
+                        permit_seconds=in_use * INTERVAL,
+                        blocked_acquires=0,
+                        completions=in_use if i % 8 == 7 else 0,
+                    ),
+                    Pool.HEAVY_PARSE: PoolDemand.empty(),
+                    Pool.LIGHT_PARSE: PoolDemand.empty(),
+                    Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+                },
+                now=now, interval=INTERVAL,
+            )
+            now += INTERVAL
+
+        assert limits.get(Pool.INDEX) == ceilings.index
+
     def test_light_grows_after_one_healthy_sample(self) -> None:
         ceilings = self._ceilings()
         limits = warm_start_limits(ceilings)
