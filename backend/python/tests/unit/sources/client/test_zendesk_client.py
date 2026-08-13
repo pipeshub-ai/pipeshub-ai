@@ -38,6 +38,19 @@ TOKEN = "test-api-token"
 BASE_URL = "https://acme.zendesk.com/api/v2"
 
 
+def _oauth_config():
+    return {
+        "auth": {
+            "authType": "OAUTH",
+            "subdomain": SUBDOMAIN,
+            "clientId": "cid",
+            "clientSecret": "secret",
+            "redirectUri": "https://cb",
+        },
+        "credentials": {"access_token": "tok"},
+    }
+
+
 # ---------------------------------------------------------------------------
 # ZendeskResponse
 # ---------------------------------------------------------------------------
@@ -166,34 +179,10 @@ class TestZendeskClient:
         client = ZendeskClient.build_with_config(config)
         assert isinstance(client.get_client(), ZendeskRESTClientViaToken)
 
-    async def test_build_from_services_api_token(self, logger, mock_config_service):
-        mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {
-                "authType": "API_TOKEN",
-                "subdomain": SUBDOMAIN,
-                "apiToken": TOKEN,
-                "email": EMAIL,
-            }
-        })
-        client = await ZendeskClient.build_from_services(
-            logger=logger,
-            config_service=mock_config_service,
-            connector_instance_id="zd-1",
-        )
-        assert isinstance(client.get_client(), ZendeskRESTClientViaToken)
-        assert client.get_subdomain() == SUBDOMAIN
-
     async def test_build_from_services_reads_connector_scoped_config_path(
         self, logger, mock_config_service
     ):
-        mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {
-                "authType": "API_TOKEN",
-                "subdomain": SUBDOMAIN,
-                "apiToken": TOKEN,
-                "email": EMAIL,
-            }
-        })
+        mock_config_service.get_config = AsyncMock(return_value=_oauth_config())
         await ZendeskClient.build_from_services(
             logger=logger,
             config_service=mock_config_service,
@@ -246,17 +235,32 @@ class TestZendeskClient:
                 connector_instance_id="zd-1",
             )
 
-    async def test_build_from_services_defaults_to_api_token(self, logger, mock_config_service):
-        """authType absent must not raise — the connector's declared auth is API_TOKEN."""
-        mock_config_service.get_config = AsyncMock(return_value={
-            "auth": {"subdomain": SUBDOMAIN, "apiToken": TOKEN, "email": EMAIL}
-        })
+    async def test_build_from_services_defaults_to_oauth(self, logger, mock_config_service):
+        """Zendesk retires API tokens on 2027-04-30, so an absent authType is OAuth."""
+        config = _oauth_config()
+        config["auth"].pop("authType")
+        mock_config_service.get_config = AsyncMock(return_value=config)
+
         client = await ZendeskClient.build_from_services(
             logger=logger,
             config_service=mock_config_service,
             connector_instance_id="zd-1",
         )
-        assert isinstance(client.get_client(), ZendeskRESTClientViaToken)
+        assert isinstance(client.get_client(), ZendeskRESTClientViaOAuth)
+
+    async def test_build_from_services_rejects_api_token(self, logger, mock_config_service):
+        """The auth option is gone from the registry; a stale stored config must fail
+        loudly rather than build a client on a credential Zendesk is retiring."""
+        mock_config_service.get_config = AsyncMock(return_value={
+            "auth": {"authType": "API_TOKEN", "subdomain": SUBDOMAIN,
+                     "apiToken": TOKEN, "email": EMAIL}
+        })
+        with pytest.raises(ValueError, match="Invalid auth type"):
+            await ZendeskClient.build_from_services(
+                logger=logger,
+                config_service=mock_config_service,
+                connector_instance_id="zd-1",
+            )
 
     async def test_build_from_services_rejects_unknown_auth_type(self, logger, mock_config_service):
         mock_config_service.get_config = AsyncMock(return_value={

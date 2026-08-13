@@ -69,11 +69,13 @@ def mock_config_service():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "authType": "API_TOKEN",
+            "authType": "OAUTH",
             "subdomain": "acme",
-            "apiToken": "test-token",
-            "email": "agent@acme.com",
+            "clientId": "cid",
+            "clientSecret": "secret",
+            "redirectUri": "https://cb",
         },
+        "credentials": {"access_token": "tok"},
     })
     return svc
 
@@ -778,9 +780,14 @@ def _app_user(source_user_id="1", email="a@acme.com", name="A"):
 
 
 def _ready(connector):
-    """Mark the connector initialised so `_get_fresh_datasource` succeeds."""
+    """Mark the connector initialised so `_get_fresh_datasource` succeeds.
+
+    The in-use token has to match the one `mock_config_service` stores, or every call
+    looks like a rotation and rebuilds the client.
+    """
     connector.external_client = MagicMock()
     connector.external_client.get_subdomain.return_value = "acme"
+    connector.external_client.get_client.return_value.access_token = "tok"
     connector.data_source = MagicMock()
     return connector.data_source
 
@@ -1767,8 +1774,6 @@ class TestInlineImages:
     async def test_tenant_image_becomes_data_uri(self, zendesk_connector):
         self._ds(zendesk_connector)
         html = '<p>x</p><img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
-        zendesk_connector.external_client = MagicMock()
-        zendesk_connector.external_client.get_subdomain.return_value = "acme"
 
         out = await zendesk_connector._inline_images_as_base64(html)
 
@@ -1788,16 +1793,12 @@ class TestInlineImages:
     async def test_oversized_image_is_skipped(self, zendesk_connector):
         big = _img_response(body=b"x" * (MAX_INLINE_IMAGE_BYTES + 1))
         self._ds(zendesk_connector, big)
-        zendesk_connector.external_client = MagicMock()
-        zendesk_connector.external_client.get_subdomain.return_value = "acme"
         html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
 
         assert await zendesk_connector._inline_images_as_base64(html) == html
 
     async def test_non_image_content_type_is_skipped(self, zendesk_connector):
         self._ds(zendesk_connector, _img_response(content_type="text/html"))
-        zendesk_connector.external_client = MagicMock()
-        zendesk_connector.external_client.get_subdomain.return_value = "acme"
         html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
 
         assert await zendesk_connector._inline_images_as_base64(html) == html
@@ -1805,16 +1806,12 @@ class TestInlineImages:
     async def test_fetch_failure_leaves_url_for_the_pipeline(self, zendesk_connector):
         """A URL we cannot fetch stays put so the unauthenticated pipeline can retry."""
         self._ds(zendesk_connector, _img_response(status=404))
-        zendesk_connector.external_client = MagicMock()
-        zendesk_connector.external_client.get_subdomain.return_value = "acme"
         html = '<img src="https://acme.zendesk.com/attachments/token/a/?name=s.png">'
 
         assert await zendesk_connector._inline_images_as_base64(html) == html
 
     async def test_repeated_url_fetched_once(self, zendesk_connector):
         datasource = self._ds(zendesk_connector)
-        zendesk_connector.external_client = MagicMock()
-        zendesk_connector.external_client.get_subdomain.return_value = "acme"
         url = "https://acme.zendesk.com/attachments/token/a/?name=s.png"
         html = f'<img src="{url}"><p>y</p><img src="{url}">'
 
