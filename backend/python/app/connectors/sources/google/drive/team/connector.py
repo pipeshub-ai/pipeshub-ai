@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -89,6 +89,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
@@ -3014,6 +3015,110 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info("Using service account drive client")
         return self.drive_client.get_client()
 
+    async def _resolve_explicit_user(self, user_id: Optional[str]) -> Optional[User]:
+        """
+        Resolve an explicitly-requested user_id straight to a User, with no permission-
+        holder lookup involved. Callers that already know exactly who to impersonate
+        (e.g. the public /api/v1/stream/record route, which passes the actual
+        authenticated caller from request.state.user) don't need — and shouldn't pay
+        the cost of — the broader candidate search in _get_impersonation_candidates;
+        that search exists only for callers that don't have a user_id at all (e.g. the
+        internal indexing stream route, whose JWT carries no user identity).
+        """
+        if not user_id or user_id == "None":
+            return None
+        async with self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_user_id(user_id)
+        email = user.get("email") if user else None
+        if not email:
+            self.logger.warning(f"User not found for user_id {user_id}, falling back to users with permission to node")
+            return None
+        self.logger.info(f"Retrieved user email {email} for user_id {user_id}")
+        return User(email=email, is_active=user.get("isActive"))
+
+    async def _get_impersonation_candidates(self, record_id: str) -> List[User]:
+        """
+        Build an ordered list of every user with permission to a record, to try
+        impersonating for domain-wide-delegation access, sorted so users this
+        connector's own workspace sync has confirmed exist (self.synced_user_emails)
+        come first — a record can be shared with users outside this Workspace/tenant
+        whose credentials this connector's service account can never be delegated to
+        impersonate (e.g. an external owner who shared the file with one of our synced
+        users).
+
+        When self.synced_user_emails is empty — right after a restart, or for a
+        connector instance that was lazily created just to stream and never ran a full
+        user sync — every permission holder is left as an equally-ranked candidate
+        rather than excluded. The caller (_get_drive_service_with_fallback) tries them
+        one by one, so an unpopulated cache degrades to "try everyone" instead of
+        failing outright.
+        """
+        
+        async with self.data_store_provider.transaction() as tx_store:
+            permission_holders = await tx_store.get_users_with_permission_to_node(
+                record_id, CollectionNames.RECORDS.value
+            )
+
+        def sort_key(user: User) -> Tuple[int, int]:
+            email_lower = (user.email or "").lower()
+            in_synced_workspace = 0 if email_lower in self.synced_user_emails else 1
+            inactive = 1 if user.is_active is False else 0
+            return (in_synced_workspace, inactive)
+
+        ordered: List[User] = []
+        seen_emails: set[str] = set()
+        for user in sorted(permission_holders, key=sort_key):
+            email_lower = (user.email or "").lower()
+            if not email_lower or email_lower in seen_emails:
+                continue
+            seen_emails.add(email_lower)
+            ordered.append(user)
+
+        return ordered
+
+    async def _get_drive_service_with_fallback(
+        self,
+        candidates: List[User],
+        call: Callable[[object], Awaitable[object]],
+    ) -> Tuple[object, Optional[str], object]:
+        """
+        Try `call(drive_service)` for each candidate (in order), impersonating that
+        user's email. Moves on to the next candidate only when the failure is a
+        domain-wide-delegation authorization error — Drive surfaces this as
+        'unauthorized_client' when the impersonated user isn't covered by this
+        connector's service-account delegation (e.g. they belong to a different
+        Workspace/tenant than the one this connector syncs). Any other failure (file
+        not found, transient network error, etc.) is raised immediately since trying
+        another user wouldn't help and would misrepresent the real error.
+
+        Falls back to the service account once every candidate has failed with a
+        delegation error. Returns (drive_service, resolved_email, call_result) — the
+        latter is None for resolved_email when it fell back to the service account.
+        """
+        for user in candidates:
+            email = user.email
+            if not email:
+                continue
+            drive_service = await self._get_drive_service_for_user(email)
+            try:
+                result = await call(drive_service)
+                return drive_service, email, result
+            except Exception as e:
+                if "unauthorized_client" not in str(e):
+                    raise
+                self.logger.warning(
+                    f"Domain-wide delegation not authorized for {email}; trying next impersonation candidate"
+                )
+                continue
+
+        if candidates:
+            self.logger.warning(
+                f"All {len(candidates)} impersonation candidate(s) failed delegation for record; falling back to service account"
+            )
+        drive_service = await self._get_drive_service_for_user(None)
+        result = await call(drive_service)
+        return drive_service, None, result
+
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """
         Stream a record from Google Drive.
@@ -3037,37 +3142,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
 
-            # Get user email from user_id if provided, otherwise get user with permission to node
-            user_email = None
-            if user_id and user_id != "None":
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_user_id(user_id)
-                    if user:
-                        user_email = user.get("email")
-                        self.logger.info(f"Retrieved user email {user_email} for user_id {user_id}")
-                    else:
-                        self.logger.warning(f"User not found for user_id {user_id}, trying to get user with permission to node")
-                        # Fall through to get user with permission
+            # If the caller already told us exactly who to impersonate, use that
+            # directly — no need to search permission holders.
+            preferred_user = await self._resolve_explicit_user(user_id)
+            if preferred_user:
+                candidates = [preferred_user]
             else:
-                self.logger.info("user_id not provided or is None, getting user with permission to node")
-
-            # If we don't have user_email yet, get user with permission to the node
-            if not user_email:
-                user_with_permission = None
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                        record.id, CollectionNames.RECORDS.value
-                    )
-                if user_with_permission:
-                    user_email = user_with_permission.email
-                    self.logger.info(f"Retrieved user email {user_email} from user with permission to node")
-                else:
+                candidates = await self._get_impersonation_candidates(record.id)
+                if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
-            drive_service = await self._get_drive_service_for_user(user_email)
-
-            # Get file metadata with Shared Drive support
-            file_metadata = await self._get_file_metadata_from_drive(file_id, drive_service)
+            drive_service, resolved_email, file_metadata = await self._get_drive_service_with_fallback(
+                candidates,
+                lambda service: self._get_file_metadata_from_drive(file_id, service),
+            )
+            if resolved_email:
+                self.logger.info(f"Streaming Drive file {file_id} as {resolved_email}")
             mime_type = file_metadata.get("mimeType", "application/octet-stream")
 
             google_workspace_export_formats = {
@@ -3257,58 +3347,49 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing file_id for record {record.id}")
                 return None
 
-            # Get user with permission to the node
-            user_with_permission = None
-            async with self.data_store_provider.transaction() as tx_store:
-                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                    record.id, CollectionNames.RECORDS.value
-                )
-
-            if not user_with_permission:
+            candidates = await self._get_impersonation_candidates(record.id)
+            if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
 
-            user_email = user_with_permission.email
-            if not user_email:
-                self.logger.warning(f"User found but email is missing for record {record.id}")
-                return None
-
-            # Create drive service with user impersonation
-            drive_service = await self._get_drive_service_for_user(user_email)
-
-            # Wrap drive service in GoogleDriveDataSource to use files_get method
-            user_drive_data_source = GoogleDriveDataSource(drive_service)
-
-            # Get user information (permissionId) from the user-specific drive service
-            fields = 'user(displayName,emailAddress,permissionId)'
-            user_about = await user_drive_data_source.about_get(fields=fields)
-            user_id = user_about.get('user', {}).get('permissionId')
-            user_email_from_api = user_about.get('user', {}).get('emailAddress')
-
-            if not user_id:
-                self.logger.warning(f"Failed to get user permissionId for {user_email}")
-                # Fallback to using source_user_id if available
-                user_id = user_with_permission.source_user_id
-                if not user_id:
-                    self.logger.warning(f"Could not determine user_id for record {record.id}")
-                    return None
-
-            # Use user_email from API if available, otherwise use the one from database
-            if user_email_from_api:
-                user_email = user_email_from_api
-
-            # Fetch fresh file from Google Drive API
-            try:
-                file_metadata = await user_drive_data_source.files_get(
+            async def _fetch_as_user(drive_service: object) -> Tuple[Optional[str], Optional[str], Dict]:
+                user_drive_data_source = GoogleDriveDataSource(drive_service)
+                fields = 'user(displayName,emailAddress,permissionId)'
+                user_about = await user_drive_data_source.about_get(fields=fields)
+                api_user_id = user_about.get('user', {}).get('permissionId')
+                api_user_email = user_about.get('user', {}).get('emailAddress')
+                metadata = await user_drive_data_source.files_get(
                     fileId=file_id,
                     supportsAllDrives=True,
                     fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+                )
+                return api_user_id, api_user_email, metadata
+
+            try:
+                drive_service, resolved_email, fetch_result = await self._get_drive_service_with_fallback(
+                    candidates, _fetch_as_user
                 )
             except HttpError as e:
                 if e.resp.status == HttpStatusCode.NOT_FOUND.value:
                     self.logger.warning(f"File {file_id} not found at source")
                     return None
                 raise
+
+            api_user_id, api_user_email, file_metadata = fetch_result
+
+            # Wrap drive service in GoogleDriveDataSource to use with _process_drive_item
+            user_drive_data_source = GoogleDriveDataSource(drive_service)
+            user_email = api_user_email or resolved_email
+            user_id = api_user_id
+
+            if not user_id:
+                self.logger.warning(f"Failed to get user permissionId for {user_email}")
+                # Fallback to using source_user_id if available
+                resolved_user = next((u for u in candidates if u.email == resolved_email), None)
+                user_id = resolved_user.source_user_id if resolved_user else None
+                if not user_id:
+                    self.logger.warning(f"Could not determine user_id for record {record.id}")
+                    return None
 
             if not file_metadata:
                 self.logger.warning(f"File {file_id} not found at source")
