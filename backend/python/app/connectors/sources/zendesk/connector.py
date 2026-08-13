@@ -101,6 +101,8 @@ BATCH_PROCESSING_SIZE = 100
 # Zendesk rejects an incremental start_time inside the last minute.
 INCREMENTAL_SAFETY_LAG_SECONDS = 60
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# Zendesk reports trashed tickets in the incremental export under this status.
+DELETED_TICKET_STATUS = "deleted"
 # Base64 inflates by a third and the result is held in the record body.
 MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
 IMG_SRC_PATTERN = re.compile(r'(<img\b[^>]*?\bsrc=["\'])([^"\']+)(["\'])', re.IGNORECASE)
@@ -591,6 +593,7 @@ class ZendeskConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         synced = 0
+        deleted = 0
         start_time = await self._get_start_time()
         cursor: Optional[str] = None
         max_end_time = start_time
@@ -613,6 +616,16 @@ class ZendeskConnector(BaseConnector):
             payload = response.data
             self._cache_sideloads(payload)
             tickets = self._extract_list(payload, "tickets")
+
+            removed_ids = await self._resolve_deleted_record_ids(tickets)
+            if removed_ids:
+                # Cascade, not on_record_deleted: attachments are child records, and only
+                # the cascade path emits the events that purge the vectors from Qdrant.
+                await self.data_entities_processor.on_records_deleted_cascade(
+                    removed_ids, self.connector_id
+                )
+                deleted += len(removed_ids)
+
             records_with_permissions: List[Tuple[Record, List[Permission]]] = []
             for ticket_data in tickets:
                 record_tuple = await self._ticket_to_record(ticket_data)
@@ -648,12 +661,38 @@ class ZendeskConnector(BaseConnector):
             SYNC_POINT_KEY,
             {"lastEndTime": max_end_time, "updatedAt": get_epoch_timestamp_in_ms()},
         )
+        if deleted:
+            self.logger.info(f"Zendesk: removed {deleted} tickets deleted at source")
         return synced
+
+    def _is_deleted_ticket(self, ticket_data: Dict[str, Any]) -> bool:
+        return str(ticket_data.get("status") or "").lower() == DELETED_TICKET_STATUS
+
+    async def _resolve_deleted_record_ids(self, tickets: List[Dict[str, Any]]) -> List[str]:
+        """Record ids for tickets Zendesk reports as deleted.
+        """
+        record_ids: List[str] = []
+        deleted_tickets = [t for t in tickets if self._is_deleted_ticket(t) and t.get("id")]
+        if not deleted_tickets:
+            return record_ids
+        async with self.data_store_provider.transaction() as tx_store:
+            for ticket_data in deleted_tickets:
+                existing = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=str(ticket_data["id"]),
+                )
+                if existing:
+                    record_ids.append(existing.id)
+        return record_ids
 
     async def _ticket_to_record(self, ticket_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
         ticket_id = ticket_data.get("id")
         group_id = ticket_data.get("group_id")
         if not ticket_id:
+            return None
+        # Guarded here rather than only at the call site so no caller can resurrect a
+        # ticket the same page just deleted.
+        if self._is_deleted_ticket(ticket_data):
             return None
         if group_id and not self._is_group_allowed_by_filter(str(group_id)):
             return None
