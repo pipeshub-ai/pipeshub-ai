@@ -135,56 +135,46 @@ class TestAdaptiveConcurrencyPressure:
         *happens*; this proves it's fast enough to matter operationally.
         """
         clock = ManualClock()
-        # A 256-CPU host: index ceilings derive from the CPU quota
-        # (INDEX_SLOTS_PER_PARSE_SLOT x the light parse tier), so the
-        # 1000-permit ceiling this test measures a recovery across only
-        # exists on a box that large — MAX_CONCURRENT_INDEXING can cap that
-        # derivation but never raise it.
+        # LIGHT_PARSE, because it is the widest *adapted* pool: the index
+        # pools hold their ceiling for the life of the process, and heavy's
+        # target is additionally clamped by heavy_memory_cap, which would cap
+        # this at ~20 permits on any believable mem_limit. A 334-CPU host is
+        # what a 1000-permit light ceiling (3/CPU, capped by
+        # MAX_CONCURRENT_PARSING) implies — the cap can lower that
+        # derivation, never raise it.
         def snapshot(mem_pressure: float) -> ResourceSnapshot:
-            return make_snapshot(mem_pressure, cpu_quota=256.0)
+            return make_snapshot(mem_pressure, cpu_quota=334.0)
 
         probe = ScriptedProbe([snapshot(0.1)])
         governor = ResourceGovernor(
             logger=logging.getLogger("test.integration.pressure.exponential_recovery"),
-            env_index=1000,
+            env_parse=1000,
             probe=probe,
             sample_interval=SAMPLE_INTERVAL_SECONDS,
             clock=clock,
         )
-        assert governor.ceilings.index == 1000
-        index_gate = governor.gate(Pool.INDEX)
-        # Every pool warm-starts at its floor now — an explicit ceiling raises
-        # the target the ramp climbs toward, not the starting point — so put
-        # the pool where a finished ramp would have left it. The halve below
+        assert governor.ceilings.light == 1000
+        light_gate = governor.gate(Pool.LIGHT_PARSE)
+        # Warm start is the floor (half the ceiling for light), so put the
+        # pool where a finished ramp would have left it — the halve below
         # needs a large limit to open the 500-permit gap this test measures.
-        governor._registry.set(Pool.INDEX, 1000)
-        assert index_gate.limit == 1000
+        governor._registry.set(Pool.LIGHT_PARSE, 1000)
+        assert light_gate.limit == 1000
 
         probe.snapshots = [snapshot(0.9)]  # >= MEM_HARD
         clock.now += SAMPLE_INTERVAL_SECONDS
         await governor._sample_once()
-        assert index_gate.limit == 500
+        assert light_gate.limit == 500
 
         probe.snapshots = [snapshot(0.1)]
         clock.now += INCIDENT_COOLDOWN_SECONDS + SAMPLE_INTERVAL_SECONDS  # clear the incident cooldown
 
-        # Held for the whole recovery loop and never released until the
-        # end: INDEX's throughput-gradient gate (_gradient_permits_growth)
-        # would otherwise see a stream of small "completions" from
-        # cancel-and-recreate-every-interval holders and correctly (but
-        # unhelpfully for this test) call a +1-out-of-500 step "flat" —
-        # that gradient-hold behavior is exercised on its own terms by
-        # test_index_exits_slow_start_when_gradient_flattens in
-        # test_policy.py. Holding without releasing keeps completions at 0,
-        # so the gradient's baseline<=0 bypass always allows growth here,
-        # isolating this test to the growth-*step* mechanism.
-        #
         # timeout=None: a blocked holder's finite-timeout deadline is
         # measured against this same manual clock (see ManualClock's
         # docstring) — a single SAMPLE_INTERVAL_SECONDS jump would blow
         # past any finite deadline immediately and the holder would give up
         # for good instead of staying queued for the next growth step.
-        holders = [asyncio.create_task(_hold_gate(index_gate, cost=1, timeout=None)) for _ in range(1000)]
+        holders = [asyncio.create_task(_hold_gate(light_gate, cost=1, timeout=None)) for _ in range(1000)]
         try:
             # 12 intervals (60s simulated) is 3 to confirm-healthy plus 9
             # doubling grows (+1,+2,+4,...,+256, clamped at the 1000
@@ -198,9 +188,9 @@ class TestAdaptiveConcurrencyPressure:
         finally:
             await cancel_all(holders)
 
-        assert index_gate.limit == 1000, (
+        assert light_gate.limit == 1000, (
             f"exponential recovery should fully close a 500-permit gap within "
-            f"12 intervals (60s), got {index_gate.limit}"
+            f"12 intervals (60s), got {light_gate.limit}"
         )
 
     async def test_limits_never_go_below_floor_under_repeated_hard_pressure(self) -> None:

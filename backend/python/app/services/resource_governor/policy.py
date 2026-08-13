@@ -73,7 +73,11 @@ LIGHT_PARSE_SLOTS_PER_CPU = _env_float(
 # The INDEX/LIGHT_INDEX permit is held for a record's whole lifetime
 # (download through vector upsert), most of which is *not* parsing — so the
 # active-pipeline pools are sized as a multiple of the widest parse tier
-# rather than equal to it.
+# rather than equal to it. This figure is the *effective* in-flight width
+# from the first sample, not a ceiling something else ramps toward
+# (``_is_index_pool``), so it must stay a small multiple: it is how many
+# records may hold a downloaded buffer and their post-parse chunk/embedding
+# state at once.
 INDEX_SLOTS_PER_PARSE_SLOT = _env_float(
     "GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT", 100.0, low=0.1, high=1000.0
 )
@@ -118,22 +122,6 @@ HEAVY_START_RATE_CEILING_DIVISOR = 20.0
 
 DEMAND_UTILISATION_THRESHOLD = 0.7
 LIGHT_DEMAND_UTILISATION_THRESHOLD = 0.3
-GRADIENT_IMPROVEMENT_THRESHOLD = 0.05
-GRADIENT_LATENCY_REGRESSION_RATIO = 1.5
-# A throughput gradient needs a measurement window long enough to contain
-# several finished records, not one fixed sample interval. A Docling PDF or
-# an LLM-enriched ticket can hold an INDEX permit for minutes, so at a 15s
-# interval most samples complete nothing and the few that do make the rate
-# swing between 0 and n/interval. The gradient reads that quantisation
-# noise as "growth is not improving throughput" and holds for most samples,
-# stretching a ramp that should take a couple of minutes into tens of
-# minutes. Closing the window on a completion count instead of a duration
-# sizes it to observed completion latency automatically: a fast pool closes
-# windows in one or two samples, a slow one takes as long as it takes. The
-# duration cap only bounds how long a pool with (near-)zero throughput
-# waits before being judged at all.
-GRADIENT_MIN_WINDOW_COMPLETIONS = 4
-GRADIENT_WINDOW_MAX_SECONDS = 300.0
 
 # Resource-delta thresholds for slow-start step sizing (plan section 4,
 # "resource-delta probing"): how much mem/cpu moved between the previous
@@ -149,6 +137,22 @@ COUNT_POOL_FLOOR = 2
 
 def _is_light_pool(pool: Pool) -> bool:
     return pool is Pool.LIGHT_PARSE or pool is Pool.LIGHT_INDEX
+
+
+def _is_index_pool(pool: Pool) -> bool:
+    """The active-pipeline pools, which the control law does not adapt.
+
+    An INDEX permit is pipeline width, not a resource reservation: what a
+    record actually consumes is gated elsewhere — buffered download bytes by
+    DOWNLOAD_BYTES, parse CPU/RSS by HEAVY_PARSE/LIGHT_PARSE, embedding and
+    LLM fan-out by MAX_CONCURRENT_INDEXING_LLM_CALLS. Adapting it as well
+    throttled the one stage whose cost is mostly waiting on those gates and
+    on downstream services, and cost ~45s of near-serial startup (floor of 2
+    plus the confirm window) on every deploy. Both pools therefore sit at
+    ``ceilings.index`` for the life of the process, with ``gate.SharedBudget``
+    bounding their combined in-flight total to that same figure.
+    """
+    return pool is Pool.INDEX or pool is Pool.LIGHT_INDEX
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -293,21 +297,27 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     honoured exactly (never forced up to 2). The bytes pool floors at a
     fixed minimum useful budget.
 
-    Light pools start at half their ceiling instead: their per-slot cost is
+    Light parse floors at half its ceiling instead: its per-slot cost is
     negligible, so ramping a Jira/Slack sync one permit at a time from 2
     only adds latency. Half, not the full ceiling — a floor equal to the
     ceiling would leave the memory brake nothing to shrink.
+
+    The index pools floor *at* their ceiling: they are never adapted (see
+    ``_is_index_pool``), so their minimum and maximum are the same value.
     """
     if pool is Pool.DOWNLOAD_BYTES:
         return min(_BYTES_FLOOR, ceiling)
+    if _is_index_pool(pool):
+        return ceiling
     if _is_light_pool(pool):
         return min(max(COUNT_POOL_FLOOR, ceiling // 2), ceiling)
     return min(COUNT_POOL_FLOOR, ceiling)
 
 
 def warm_start_limits(ceilings: Ceilings) -> Limits:
-    """Starting limits: every pool begins at its conservative floor and ramps
-    toward its ceiling as samples prove the headroom is real.
+    """Starting limits: every adapted pool begins at its conservative floor
+    and ramps toward its ceiling as samples prove the headroom is real. The
+    index pools, which are never adapted, start at their ceiling.
 
     An explicit ``MAX_CONCURRENT_*`` used to start *at* the ceiling, on the
     grounds that the operator had expressed informed intent. But a limit only
@@ -358,12 +368,7 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
         # ceiling.
         return ceilings.light
 
-    if pool is Pool.INDEX or pool is Pool.LIGHT_INDEX:
-        # Deliberately just the ceiling, not a cpu_quota expression (section
-        # 4.2). INDEX is stopped by the growth preconditions (pressure /
-        # demand / gradient); LIGHT_INDEX uses the looser light gates. Both
-        # may reach the full ceiling — their *combined* in-flight total is
-        # what the shared budget bounds (gate.SharedBudget).
+    if _is_index_pool(pool):
         return ceilings.index
 
     if pool is Pool.DOWNLOAD_BYTES:
@@ -424,8 +429,8 @@ def _growth_step(
         return linear_step, state
 
     # Light cost is noise next to a co-located heavy parse; a process-wide
-    # mem/cpu delta would otherwise freeze LIGHT_PARSE/LIGHT_INDEX whenever
-    # Docling happens to allocate in the same interval.
+    # mem/cpu delta would otherwise freeze LIGHT_PARSE whenever Docling
+    # happens to allocate in the same interval.
     if not _is_light_pool(pool):
         prev_mem = state.prev_grow_mem_pressure
         mem_now = snap.mem_pressure
@@ -467,9 +472,6 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
     and fast exponential recovery back toward the last healthy level is
     preferable to a linear +1/interval crawl (plan section 4, "Reset to
     slow-start").
-
-    The in-progress gradient window goes with it — half of it was measured
-    at the old limit, so closing it would compare two different pools.
     """
     return replace(
         state,
@@ -479,10 +481,6 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
         slow_start_step=1,
         prev_grow_mem_pressure=None,
         prev_grow_cpu_utilisation=None,
-        gradient_window_completions=0,
-        gradient_window_seconds=0.0,
-        gradient_window_blocked_acquires=0,
-        gradient_window_wait_seconds=0.0,
     )
 
 
@@ -498,96 +496,6 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
     return False
 
 
-def _gradient_permits_growth(
-    pool: Pool, demand: PoolDemand, state: PoolState, interval: float,
-) -> tuple[bool, bool, PoolState]:
-    """Throughput-gradient gate for INDEX (plan section 4.2).
-
-    Returns ``(may_grow, must_shrink, updated_state)``. Every other pool is
-    unconditionally allowed to grow — the gradient only matters for a pool
-    whose bottleneck can be a *downstream* service (embeddings, vector
-    upserts, LLM table enrichment) rather than local CPU/RAM, where blindly
-    growing to the ceiling would just move the queue instead of clearing it.
-    LIGHT_INDEX is excluded: a light record's local cost is negligible, and
-    sharing this gate with INDEX pins Jira/Slack/Markdown at the floor
-    whenever embeddings are already the heavy-path bottleneck.
-
-    Rates are compared between *windows*, not between single samples — see
-    ``GRADIENT_MIN_WINDOW_COMPLETIONS``. Only samples that reach this
-    function accumulate, so the denominator is time spent under confirmed
-    demand rather than wall time; an idle interval neither adds elapsed
-    seconds nor dilutes the rate.
-    """
-    if pool is not Pool.INDEX:
-        return True, False, state
-
-    window = replace(
-        state,
-        gradient_window_completions=state.gradient_window_completions + demand.completions,
-        gradient_window_seconds=state.gradient_window_seconds + interval,
-        gradient_window_blocked_acquires=(
-            state.gradient_window_blocked_acquires + demand.blocked_acquires
-        ),
-        gradient_window_wait_seconds=(
-            state.gradient_window_wait_seconds + demand.total_wait_seconds
-        ),
-    )
-    if (
-        window.gradient_window_completions < GRADIENT_MIN_WINDOW_COMPLETIONS
-        and window.gradient_window_seconds < GRADIENT_WINDOW_MAX_SECONDS
-    ):
-        # Too little finished work to compare rates. Absence of a
-        # measurement is not evidence of harm (the models.py convention for
-        # unknowns), so the ramp continues under the memory/CPU brakes.
-        return True, False, window
-
-    elapsed = max(window.gradient_window_seconds, interval)
-    completions_per_sec = window.gradient_window_completions / elapsed
-    # None, not 0.0, when nothing ever blocked: a pool with no contention
-    # has no measurable wait, and recording that as a zero baseline would
-    # disable the latency check permanently (0 is falsy, and any ratio
-    # against it is undefined).
-    mean_wait = (
-        window.gradient_window_wait_seconds / window.gradient_window_blocked_acquires
-        if window.gradient_window_blocked_acquires > 0
-        else None
-    )
-    baseline_completions = state.gradient_baseline_completions_per_sec
-    baseline_wait = state.gradient_baseline_wait_seconds
-
-    closed = replace(
-        window,
-        gradient_window_completions=0,
-        gradient_window_seconds=0.0,
-        gradient_window_blocked_acquires=0,
-        gradient_window_wait_seconds=0.0,
-    )
-    rebaselined = replace(
-        closed,
-        gradient_baseline_completions_per_sec=completions_per_sec,
-        gradient_baseline_wait_seconds=mean_wait if mean_wait is not None else baseline_wait,
-    )
-
-    if (
-        baseline_wait is not None
-        and baseline_wait > 0
-        and mean_wait is not None
-        and mean_wait / baseline_wait > GRADIENT_LATENCY_REGRESSION_RATIO
-    ):
-        return False, True, rebaselined
-
-    if baseline_completions is None or baseline_completions <= 0:
-        return True, False, rebaselined
-
-    improvement = (completions_per_sec - baseline_completions) / baseline_completions
-    if improvement > GRADIENT_IMPROVEMENT_THRESHOLD:
-        return True, False, rebaselined
-    # Flat: hold at the current limit, but keep the existing baseline so a
-    # later window that does show improvement is measured against the same
-    # reference point rather than a moving target.
-    return False, False, closed
-
-
 def _next_pool_limit(
     pool: Pool,
     current: int,
@@ -599,6 +507,9 @@ def _next_pool_limit(
     interval: float,
 ) -> tuple[int, PoolState]:
     ceiling = _ceiling_for(pool, ceilings)
+    if _is_index_pool(pool):
+        return ceiling, state
+
     floor = floor_for(pool, ceiling)
     shrink_step = _step_for(pool, ceiling)
     target = _target_for(pool, snap, ceilings)
@@ -657,23 +568,13 @@ def _next_pool_limit(
         if healthy_streak >= confirm_samples and demand.has_demand(
             current, interval, threshold=demand_threshold
         ):
-            may_grow, must_shrink, gradient_state = _gradient_permits_growth(pool, demand, state, interval)
-            next_state = replace(gradient_state, healthy_streak=healthy_streak)
-            if must_shrink:
-                return max(floor, current - shrink_step), _reset_for_shrink(
-                    next_state, cooldown_until=max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS),
-                )
-            if may_grow:
-                grow_step, grow_state = _growth_step(pool, ceiling, next_state, snap)
-                if grow_step <= 0:
-                    # Large resource impact from the last grow — hold this
-                    # round without abandoning slow start.
-                    return current, grow_state
-                return min(target, current + grow_step), _record_grow(grow_state, snap)
-            # Gradient flat: throughput isn't improving as this pool grows
-            # (its bottleneck is downstream) — hold, and fall back to
-            # linear probing since slow start already found the knee.
-            return current, replace(next_state, in_slow_start=False, slow_start_step=1)
+            next_state = replace(state, healthy_streak=healthy_streak)
+            grow_step, grow_state = _growth_step(pool, ceiling, next_state, snap)
+            if grow_step <= 0:
+                # Large resource impact from the last grow — hold this
+                # round without abandoning slow start.
+                return current, grow_state
+            return min(target, current + grow_step), _record_grow(grow_state, snap)
         return current, replace(state, healthy_streak=healthy_streak)
 
     # Pressure is fine but not yet confirmed-healthy, or still cooling down.
@@ -689,7 +590,8 @@ def next_limits(
     now: float,
     interval: float = SAMPLE_INTERVAL_SECONDS,
 ) -> tuple[Limits, ControllerState]:
-    """Advance every pool's limit by at most one step toward its target.
+    """Advance every adapted pool's limit by at most one step toward its
+    target, and hold the index pools at their ceiling (``_is_index_pool``).
 
     Pure and deterministic given its inputs — the caller supplies ``now``
     and the sampled ``demand`` so this can be exercised in tests without a

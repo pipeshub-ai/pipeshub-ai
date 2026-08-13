@@ -62,19 +62,17 @@ class SharedBudget:
     """A single in-flight cap spanning several pools that keep their own
     separate limits.
 
-    INDEX and LIGHT_INDEX are separate pools so their *limits* can adapt by
-    different rules, not so each tier gets its own budget: two pools sized
-    at N each would admit 2N records at once and the operator's indexing
-    figure would bound nothing recognisable.
+    INDEX and LIGHT_INDEX are separate pools for routing and per-tier
+    accounting, not so each tier gets its own budget: both sit at the same
+    limit (``policy._is_index_pool``), so without a shared total they would
+    admit 2N records at once and the operator's indexing figure would bound
+    nothing recognisable. This is what actually enforces it.
 
     Work-conserving, with the consequence that follows from it: either tier
     may use the whole budget while the other is idle, so a saturated heavy
     tier can hold every permit and a light record then waits for a Docling
-    conversion to finish. What the split still buys is that throttling
-    heavy does not throttle light — when the control law shrinks INDEX, the
-    room it gives up is immediately available to LIGHT_INDEX, whose own
-    limit is unaffected. Closing the saturation case as well would mean
-    reserving part of the budget per tier.
+    conversion to finish. Closing that case would mean reserving part of the
+    budget per tier.
 
     Thread-safe. Members are typically bound to one worker-loop, but the
     counter is guarded anyway — same reasoning as ``LimitRegistry``: the

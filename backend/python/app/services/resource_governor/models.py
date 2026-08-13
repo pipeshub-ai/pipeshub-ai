@@ -135,10 +135,11 @@ class Ceilings:
     Docling conversion costs.
 
     ``index`` bounds both active-pipeline pools *and* their combined
-    in-flight total (see ``gate.SharedBudget``). INDEX and LIGHT_INDEX stay
-    separate pools so the control law can throttle heavy records without
-    throttling light ones, which needs two limits — but one budget, hence
-    deliberately no separate light-index ceiling.
+    in-flight total (see ``gate.SharedBudget``), and — unlike the parse
+    ceilings — is also their effective limit for the life of the process,
+    since the control law does not adapt them (policy ``_is_index_pool``).
+    The two pools stay separate for routing and per-tier demand accounting,
+    not to divide that budget, hence deliberately no light-index ceiling.
     """
 
     heavy: int
@@ -203,16 +204,6 @@ class PoolDemand:
         """Whether this pool showed real contention during the interval."""
         return self.blocked_acquires > 0 or self.utilisation(limit, interval) >= threshold
 
-    def mean_wait_seconds(self) -> float:
-        if self.blocked_acquires <= 0:
-            return 0.0
-        return self.total_wait_seconds / self.blocked_acquires
-
-    def completions_per_second(self, interval: float) -> float:
-        if interval <= 0:
-            return 0.0
-        return self.completions / interval
-
 
 @dataclass(frozen=True)
 class PoolState:
@@ -230,20 +221,13 @@ class PoolState:
     ``_growth_step`` diffs against to size the *next* step (plan section 4,
     "resource-delta probing").
 
-    ``gradient_window_*`` accumulate across samples until enough records
-    have finished to compare throughput rates (policy.py
-    ``_gradient_permits_growth``); ``gradient_baseline_*`` hold the previous
-    closed window's rates.
+    Carried for every pool, but only read for the adapted ones: the index
+    pools hold their limit for the life of the process (policy.py
+    ``_is_index_pool``), so their state is never advanced.
     """
 
     healthy_streak: int = 0
     cooldown_until: float = 0.0
-    gradient_baseline_completions_per_sec: float | None = None
-    gradient_baseline_wait_seconds: float | None = None
-    gradient_window_completions: int = 0
-    gradient_window_seconds: float = 0.0
-    gradient_window_blocked_acquires: int = 0
-    gradient_window_wait_seconds: float = 0.0
     in_slow_start: bool = True
     slow_start_step: int = 1
     prev_grow_mem_pressure: float | None = None

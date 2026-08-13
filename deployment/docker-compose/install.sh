@@ -822,10 +822,11 @@ QDRANT_API_KEY=${QDRANT_API_KEY}
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Left empty by default. Slot counts derive from this container's CPU quota —
 # heavy parse 1 slot per CPU, light parse 3 slots per CPU, indexing 2x the
-# wider parse tier — and these two vars cap those numbers. They are ceilings,
-# not starting points: every pool ramps up from its floor as samples prove the
-# headroom is real, and heavy parsing is additionally held back whenever free
-# memory can't hold that many at once.
+# wider parse tier — and these two vars cap those numbers. The parse numbers
+# are ceilings, not starting points: parsing ramps up from its floor as samples
+# prove the headroom is real, and heavy parsing is additionally held back
+# whenever free memory can't hold that many at once. The indexing budget is
+# fixed at startup.
 MAX_CONCURRENT_PARSING=
 MAX_CONCURRENT_INDEXING=
 # Retune the per-CPU slot counts / indexing multiplier themselves (defaults

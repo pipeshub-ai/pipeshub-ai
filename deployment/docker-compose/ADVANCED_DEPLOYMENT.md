@@ -143,11 +143,13 @@ The indexing/parsing pipeline sizes its own concurrency from the
 light-parse slots per CPU, and twice the wider parse tier for indexing —
 capped by `MAX_CONCURRENT_PARSING` / `MAX_CONCURRENT_INDEXING` (see
 [`env.template`](env.template)). The indexing figure is the budget for
-heavy and light records *combined*: the two are admitted through separate
-pools so a Jira record never queues behind a PDF holding its slot for
-minutes, but either may use the whole budget while the other is idle.
-Heavy parsing is held further back whenever free memory can't hold that
-many Docling working sets at once.
+heavy and light records *combined*, and it is fixed for the life of the
+process: an indexing slot is pipeline width, not a resource reservation —
+what a record actually consumes is bounded by the parse slots, the download
+byte budget and the LLM-call limit. Only parsing and downloads adapt at
+runtime: they ramp toward their ceiling while resources allow and shrink
+under memory or CPU pressure, and heavy parsing is held further back
+whenever free memory can't hold that many Docling working sets at once.
 These two runs are a manual regression check for that behaviour before a
 release; they are not part of CI.
 
@@ -205,20 +207,20 @@ operator-pinned `MAX_CONCURRENT_INDEXING`.
 
 Reproduces plan section 10.2 and is the operational proof for the
 regression tests in `tests/integration/test_small_record_scaling.py`: many
-millisecond-scale records must ramp `INDEX` concurrency up on an idle-CPU
-host, rather than aliasing to "no demand" or capping on `cpu_quota`.
+millisecond-scale records must ramp `LIGHT_PARSE` concurrency up on an
+idle-CPU host, rather than aliasing to "no demand" or capping on
+`cpu_quota`.
 
 1. On a host with idle/low background CPU load, run a Confluence or Jira
    sync of at least 5,000 records (a full-space/project backfill, or a
    connector's reindex action).
-2. Poll `.resource_governor.limits.index` and `.resource_governor.demand.index`
-   from the indexing `/health` snapshot (command above) every few seconds
-   for the duration of the sync.
-3. **Expect:** `limits.index` ramps up from the floor (2) over the first
-   several samples rather than sitting there for the whole sync;
-   `resource_governor.cpu_utilisation` in the same snapshot reads as a
-   real interval mean (comparable to what `top`/`docker stats` shows for
-   the container), not ~0%, even though each record is milliseconds of
-   work; the ramp stops and holds once `demand.index.completions` per
-   interval stops increasing between samples, instead of climbing all the
-   way to `ceilings.index` regardless of downstream throughput.
+2. Poll `.resource_governor.limits` and `.resource_governor.demand` from the
+   indexing `/health` snapshot (command above) every few seconds for the
+   duration of the sync.
+3. **Expect:** `limits.light_parse` ramps up from its floor (half the
+   ceiling) over the first several samples rather than sitting there for the
+   whole sync; `limits.index` and `limits.light_index` sit at
+   `ceilings.index` from the first sample and never move;
+   `resource_governor.cpu_utilisation` in the same snapshot reads as a real
+   interval mean (comparable to what `top`/`docker stats` shows for the
+   container), not ~0%, even though each record is milliseconds of work.

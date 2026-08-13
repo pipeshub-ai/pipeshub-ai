@@ -174,9 +174,10 @@ services:
       # (heavy parse: 1 slot/CPU, light parse: 3 slots/CPU, indexing: 2x the
       # wider parse tier, as one budget for heavy and light records
       # together). Leave unset (empty) to use the derived numbers as is.
-      # These are ceilings, not starting points: every pool ramps up from
-      # its floor as samples prove the headroom, and heavy parsing is held
-      # further back whenever free memory can't hold that many at once.
+      # The parse numbers are ceilings, not starting points: parsing ramps
+      # up from its floor as samples prove the headroom, and heavy parsing
+      # is held further back whenever free memory can't hold that many at
+      # once. The indexing budget is fixed at startup.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
       # Slots-per-CPU and the indexing multiplier above, for a workload whose
