@@ -286,9 +286,9 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     if pool is Pool.DOWNLOAD_BYTES:
         return min(_BYTES_FLOOR, ceiling)
     if pool is Pool.LIGHT_PARSE:
-        return min(10, ceiling)
+        return min(50, ceiling)
     if pool is Pool.LIGHT_INDEX:
-        return min(20, ceiling)
+        return min(100, ceiling)
     return min(COUNT_POOL_FLOOR, ceiling)
 
 
