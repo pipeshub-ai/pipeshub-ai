@@ -224,14 +224,11 @@ class TestResourceGovernorController:
             "probe_source", "cpu_quota", "cpu_utilisation", "cpu_pressure",
             "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
-            "worker_count", "ceilings", "limits", "in_use", "index_budget", "demand",
+            "worker_count", "ceilings", "limits", "in_use", "demand",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
             "heavy_parse", "light_parse", "index", "download_bytes",
-        }
-        assert stats["index_budget"] == {
-            "capacity": governor.ceilings.index, "in_use": 0,
         }
         assert set(stats["demand"][Pool.HEAVY_PARSE.value].keys()) == {
             "utilisation", "blocked_acquires", "completions", "rate_limited_acquires",

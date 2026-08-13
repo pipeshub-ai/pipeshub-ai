@@ -196,10 +196,9 @@ class TestFloorFor:
     def test_light_parse_starts_at_half_its_ceiling(self) -> None:
         assert floor_for(Pool.LIGHT_PARSE, 24) == 12
 
-    def test_index_pools_floor_at_their_ceiling(self) -> None:
-        """They are never adapted, so minimum and maximum are one value."""
+    def test_index_pool_floors_at_its_ceiling(self) -> None:
+        """It is never adapted, so minimum and maximum are one value."""
         assert floor_for(Pool.INDEX, 48) == 48
-        assert floor_for(Pool.LIGHT_INDEX, 48) == 48
 
     def test_light_floor_never_exceeds_a_tiny_ceiling(self) -> None:
         assert floor_for(Pool.LIGHT_PARSE, 1) == 1
@@ -220,14 +219,13 @@ class TestWarmStartLimits:
             Pool.DOWNLOAD_BYTES, ceilings.bytes_max
         )
 
-    def test_index_pools_start_at_their_ceiling(self) -> None:
-        """Nothing ramps them, so a floor start would simply be a permanent
+    def test_index_pool_starts_at_its_ceiling(self) -> None:
+        """Nothing ramps it, so a floor start would simply be a permanent
         under-provision of the active pipeline."""
         ceilings = Ceilings(heavy=12, light=64, index=48, bytes_max=4 * 1024 ** 3)
         limits = warm_start_limits(ceilings)
 
         assert limits.get(Pool.INDEX) == ceilings.index
-        assert limits.get(Pool.LIGHT_INDEX) == ceilings.index
 
     def test_explicit_high_ceiling_does_not_start_wide_open(self) -> None:
         """The OOM this fixes: MAX_CONCURRENT_PARSING/INDEXING=1000 used to
@@ -241,7 +239,7 @@ class TestWarmStartLimits:
         assert ceilings.heavy == 8
         assert ceilings.index == 48
         assert limits.get(Pool.HEAVY_PARSE) == 2
-        # The index pools do start at their ceiling, but that ceiling is the
+        # The index pool does start at its ceiling, but that ceiling is the
         # CPU-derived 48 — the operator's 1000 raises nothing.
         assert limits.get(Pool.INDEX) == 48
 
@@ -293,7 +291,7 @@ class TestNextLimitsPressure:
 
     def test_hard_pressure_halves_and_starts_cooldown(self) -> None:
         ceilings = self._ceilings()
-        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.LIGHT_INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
         snap = _snapshot(mem_working_set_bytes=int(0.9 * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
         state = ControllerState.initial()
 
@@ -307,7 +305,7 @@ class TestNextLimitsPressure:
 
     def test_soft_pressure_decrements_by_one(self) -> None:
         ceilings = self._ceilings()
-        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.LIGHT_INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
         snap = _snapshot(mem_working_set_bytes=int((MEM_SOFT + 0.02) * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
         state = ControllerState.initial()
 
@@ -319,7 +317,7 @@ class TestNextLimitsPressure:
 
     def test_cpu_brake_decrements_even_when_memory_is_fine(self) -> None:
         ceilings = self._ceilings()
-        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.LIGHT_INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        current = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3})
         snap = _snapshot(cpu_utilisation=0.95, mem_working_set_bytes=int(0.1 * 4 * 1024 ** 3))
         state = ControllerState.initial()
 
@@ -335,7 +333,7 @@ class TestNextLimitsPressure:
         ceilings = self._ceilings()
         current = Limits(values={
             Pool.HEAVY_PARSE: 3, Pool.LIGHT_PARSE: 10,
-            Pool.INDEX: ceilings.index, Pool.LIGHT_INDEX: ceilings.index,
+            Pool.INDEX: ceilings.index,
             Pool.DOWNLOAD_BYTES: 1024 ** 3,
         })
         snap = _snapshot(mem_limit_bytes=None, mem_working_set_bytes=None, cpu_utilisation=0.1)
@@ -365,7 +363,7 @@ class TestBrakeUsesRawPressure:
     def _limits(self) -> Limits:
         return Limits(values={
             Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 32, Pool.INDEX: 16,
-            Pool.LIGHT_INDEX: 16, Pool.DOWNLOAD_BYTES: 1024 ** 3,
+            Pool.DOWNLOAD_BYTES: 1024 ** 3,
         })
 
     def _snap_at_raw_pressure(self, raw_pressure: float) -> ResourceSnapshot:
@@ -430,7 +428,7 @@ class TestHeavyMemoryGate:
     def _limits(self, heavy: int) -> Limits:
         return Limits(values={
             Pool.HEAVY_PARSE: heavy, Pool.LIGHT_PARSE: 12, Pool.INDEX: 4,
-            Pool.LIGHT_INDEX: 24, Pool.DOWNLOAD_BYTES: 1024 ** 3,
+            Pool.DOWNLOAD_BYTES: 1024 ** 3,
         })
 
     def _snap_with_free_gb(self, free_gb: float) -> ResourceSnapshot:
@@ -533,11 +531,6 @@ class TestNextLimitsGrowth:
                 blocked_acquires=5,
                 completions=100,
             ),
-            Pool.LIGHT_INDEX: PoolDemand(
-                permit_seconds=limits.get(Pool.LIGHT_INDEX) * INTERVAL,
-                blocked_acquires=5,
-                completions=100,
-            ),
             Pool.HEAVY_PARSE: PoolDemand.empty(),
             Pool.INDEX: PoolDemand.empty(),
             Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
@@ -593,7 +586,7 @@ class TestNextLimitsGrowth:
 
     def test_growth_cooldown_blocks_regrowth_after_shrink(self) -> None:
         ceilings = self._ceilings()
-        limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 10, Pool.INDEX: 8, Pool.LIGHT_INDEX: 8, Pool.DOWNLOAD_BYTES: 1024 ** 3})
+        limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 10, Pool.INDEX: 8, Pool.DOWNLOAD_BYTES: 1024 ** 3})
         state = ControllerState.initial()
 
         hard_snap = _snapshot(mem_working_set_bytes=int(0.9 * 4 * 1024 ** 3), mem_limit_bytes=4 * 1024 ** 3)
@@ -608,11 +601,11 @@ class TestNextLimitsGrowth:
         # Still inside the 60s incident cooldown at these small `now` values.
         assert limits.get(Pool.HEAVY_PARSE) == 2
 
-    def test_index_pools_hold_their_ceiling_through_pressure_and_idleness(self) -> None:
+    def test_index_pool_holds_its_ceiling_through_pressure_and_idleness(self) -> None:
         """Pipeline width is not a resource reservation (policy
         ``_is_index_pool``): what a record actually consumes is gated by
         DOWNLOAD_BYTES, the parse pools and the LLM-call semaphore, so
-        neither a hard-pressure sample nor a fully idle one moves these."""
+        neither a hard-pressure sample nor a fully idle one moves it."""
         ceilings = Ceilings(heavy=2, light=16, index=24, bytes_max=2 * 1024 ** 3)
         limits = warm_start_limits(ceilings)
         state = ControllerState.initial()
@@ -632,7 +625,6 @@ class TestNextLimitsGrowth:
                 )
                 now += INTERVAL
                 assert limits.get(Pool.INDEX) == ceilings.index
-                assert limits.get(Pool.LIGHT_INDEX) == ceilings.index
 
     def test_light_grows_after_one_healthy_sample(self) -> None:
         ceilings = self._ceilings()
@@ -682,7 +674,6 @@ class TestNextLimitsGrowth:
             Pool.HEAVY_PARSE: 8,
             Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
             Pool.INDEX: ceilings.index,
-            Pool.LIGHT_INDEX: ceilings.index,
             Pool.DOWNLOAD_BYTES: 1024 ** 3,
         })
         state = ControllerState.initial()
@@ -713,7 +704,6 @@ class TestNextLimitsGrowth:
                     permit_seconds=limit * INTERVAL, blocked_acquires=50, completions=100,
                 ),
                 Pool.INDEX: PoolDemand.empty(),
-                Pool.LIGHT_INDEX: PoolDemand.empty(),
                 Pool.HEAVY_PARSE: PoolDemand.empty(),
                 Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
             }

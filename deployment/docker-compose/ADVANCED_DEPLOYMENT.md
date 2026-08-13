@@ -219,8 +219,8 @@ idle-CPU host, rather than aliasing to "no demand" or capping on
    duration of the sync.
 3. **Expect:** `limits.light_parse` ramps up from its floor (half the
    ceiling) over the first several samples rather than sitting there for the
-   whole sync; `limits.index` and `limits.light_index` sit at
-   `ceilings.index` from the first sample and never move;
+   whole sync; `limits.index` sits at `ceilings.index` from the first
+   sample and never moves;
    `resource_governor.cpu_utilisation` in the same snapshot reads as a real
    interval mean (comparable to what `top`/`docker stats` shows for the
    container), not ~0%, even though each record is milliseconds of work.

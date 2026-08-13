@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -58,70 +57,6 @@ class StartRateLimiter:
         return False
 
 
-class SharedBudget:
-    """A single in-flight cap spanning several pools that keep their own
-    separate limits.
-
-    INDEX and LIGHT_INDEX are separate pools for routing and per-tier
-    accounting, not so each tier gets its own budget: both sit at the same
-    limit (``policy._is_index_pool``), so without a shared total they would
-    admit 2N records at once and the operator's indexing figure would bound
-    nothing recognisable. This is what actually enforces it.
-
-    Work-conserving, with the consequence that follows from it: either tier
-    may use the whole budget while the other is idle, so a saturated heavy
-    tier can hold every permit and a light record then waits for a Docling
-    conversion to finish. Closing that case would mean reserving part of the
-    budget per tier.
-
-    Thread-safe. Members are typically bound to one worker-loop, but the
-    counter is guarded anyway — same reasoning as ``LimitRegistry``: the
-    cost is nil at these rates and it removes a whole class of assumption.
-    """
-
-    def __init__(self, capacity: int) -> None:
-        self._lock = threading.Lock()
-        self._capacity = max(1, capacity)
-        self._in_use = 0
-        self._members: list[AdmissionGate] = []
-
-    def register(self, gate: "AdmissionGate") -> None:
-        with self._lock:
-            if gate not in self._members:
-                self._members.append(gate)
-
-    def try_reserve(self, cost: int) -> bool:
-        """Reserve *cost* against the shared total, or return False.
-
-        Mirrors ``AdmissionGate._try_admit``'s deadlock guard: when nothing
-        at all is in flight, an oversized request is admitted alone rather
-        than waiting for room that can never appear.
-        """
-        with self._lock:
-            if self._in_use != 0 and self._in_use + cost > self._capacity:
-                return False
-            self._in_use += cost
-            return True
-
-    def release(self, cost: int) -> None:
-        with self._lock:
-            self._in_use = max(0, self._in_use - cost)
-            members = list(self._members)
-        # Freeing shared room can unblock a waiter on a *sibling* pool,
-        # which its own release() would never wake.
-        for gate in members:
-            gate.wake()
-
-    @property
-    def capacity(self) -> int:
-        return self._capacity
-
-    @property
-    def in_use(self) -> int:
-        with self._lock:
-            return self._in_use
-
-
 class AdmissionGate:
     """Weighted admission control bound to the event loop that first uses it.
 
@@ -137,16 +72,12 @@ class AdmissionGate:
         registry: LimitRegistry,
         *,
         rate_limiter: StartRateLimiter | None = None,
-        shared_budget: SharedBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._pool = pool
         self._registry = registry
         self._rate_limiter = rate_limiter
-        self._shared_budget = shared_budget
         self._clock = clock
-        if shared_budget is not None:
-            shared_budget.register(self)
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._event: asyncio.Event | None = None
@@ -206,18 +137,11 @@ class AdmissionGate:
         has_room = self._in_use == 0 or (self._in_use + cost <= limit)
         if not has_room:
             return False
-        # Reserved before the rate limiter so a rejection here costs nothing;
-        # the limiter's consumed token, by contrast, cannot be handed back,
-        # so it must be the last thing that can fail.
-        if self._shared_budget is not None and not self._shared_budget.try_reserve(cost):
-            return False
         if self._rate_limiter is not None and not self._rate_limiter.try_consume():
             # Distinct from "no room": capacity was free, this acquire was
             # denied purely by the start-rate limiter. Tracked separately so
             # operators can tell "throttled by the burst smoother" apart
             # from "genuinely at the concurrency limit" (drain_demand/stats).
-            if self._shared_budget is not None:
-                self._shared_budget.release(cost)
             self._rate_limited_acquires += 1
             return False
         now = self._clock()
@@ -266,11 +190,6 @@ class AdmissionGate:
         released = min(cost, self._in_use)
         self._in_use -= released
         self._completions += 1
-        if self._shared_budget is not None and released:
-            # Only what this gate actually held: releasing the requested
-            # cost after an over-release would hand the shared budget room
-            # nobody ever reserved.
-            self._shared_budget.release(released)
         if self._event is not None:
             self._event.set()
 

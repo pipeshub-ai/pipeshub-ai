@@ -24,11 +24,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
-from app.services.resource_governor import classify, gate_pool, parse_cost
+from app.services.resource_governor import gate_pool, parse_cost
 from app.services.resource_governor.models import ParseTier
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
     from logging import Logger
 
     from app.services.messaging.distributed_concurrency import (
@@ -298,39 +298,19 @@ async def increment_retry_and_check(
 # ---------------------------------------------------------------------------
 
 
-def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
-    """Cluster-wide indexing lease limit for *tier*'s active-pipeline pool
-    (INDEX for heavy/unknown, LIGHT_INDEX for light) when a governor is
-    present, else the legacy static env var.
+def index_ceiling(host: ConcurrencyHost) -> int:
+    """Cluster-wide indexing lease limit when a governor is present, else the
+    legacy static env var.
 
-    Both tiers get the same number. They still lease from separate Redis
-    pools (see ``parse_lease_pool``'s ``indexing``/``indexing:light``
-    counterpart) so neither tier can exhaust the other's leases, but the
-    node-local ceiling they're sized from is one budget — *tier* is kept in
-    the signature because callers route on it and the two could diverge
-    again without touching every call site.
+    One number for heavy and light records together: the active-pipeline
+    permit bounds how many records are in flight, not what any of them
+    costs, so there is nothing to split by tier (see policy
+    ``_is_index_pool``).
     """
     governor = host.governor
     if governor is not None:
         return governor.ceilings.index
     return messaging_env.max_concurrent_indexing
-
-
-def classify_index_tier(payload: "Mapping[str, Any]") -> ParseTier:
-    """Classify a message's parse tier straight from its raw payload
-    (``extension``/``mimeType``), before the handler's own DB-fetch-then-
-    classify path runs.
-
-    The INDEX/LIGHT_INDEX gate is acquired *ahead of* the handler (so up to
-    the resolved ceiling can be ``IN_PROGRESS`` at once) — waiting for the
-    handler to report ``tier`` via ``START_PARSING`` (as parsing admission
-    already does) would mean every record serialises on one shared gate
-    before tier-aware routing ever applies. The raw Kafka/Redis payload
-    already carries the same ``extension``/``mimeType`` fields the handler
-    reads for this (see ``events.py``'s ``event_data.get("extension"...)``),
-    so this is the same classification, just run earlier.
-    """
-    return classify(payload.get("extension"), payload.get("mimeType"))
 
 
 def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
@@ -354,7 +334,7 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
 def parse_lease_pool(tier: ParseTier | None) -> str:
     """Redis pool name for the cluster-wide parsing lease of *tier*.
 
-    Mirrors ``indexing`` / ``indexing:light``: a light record must not
+    Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
     minutes.
     """

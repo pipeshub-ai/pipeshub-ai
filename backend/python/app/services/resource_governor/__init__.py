@@ -24,12 +24,7 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.probe import ResourceProbe, build_probe
-from app.services.resource_governor.tiers import (
-    classify,
-    gate_pool,
-    index_pool,
-    parse_cost,
-)
+from app.services.resource_governor.tiers import classify, gate_pool, parse_cost
 
 __all__ = [
     "AdmissionGate",
@@ -50,6 +45,5 @@ __all__ = [
     "build_probe",
     "classify",
     "gate_pool",
-    "index_pool",
     "parse_cost",
 ]

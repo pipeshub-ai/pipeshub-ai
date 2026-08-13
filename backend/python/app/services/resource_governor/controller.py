@@ -11,11 +11,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from app.services.resource_governor.gate import (
-    AdmissionGate,
-    SharedBudget,
-    StartRateLimiter,
-)
+from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
@@ -93,9 +89,6 @@ class ResourceGovernor:
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}
-        # Two pools for routing and per-tier accounting, one budget so the
-        # operator's indexing figure bounds the active pipeline.
-        self._index_budget = SharedBudget(self._ceilings.index)
         # HEAVY_PARSE's admission rate scales with the heavy-parse ceiling;
         # DOWNLOAD_BYTES scales with the *index* ceiling (every record —
         # heavy or light tier — reserves a DOWNLOAD_BYTES permit before any
@@ -121,14 +114,14 @@ class ResourceGovernor:
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
             "ceilings(heavy_parse=%d light_parse=%d index=%d download_bytes=%s) "
-            "worker_count=%d start_limits(heavy_parse=%d light_parse=%d index=%d light_index=%d) "
+            "worker_count=%d start_limits(heavy_parse=%d light_parse=%d index=%d) "
             "— parse ceilings are %.2f (heavy) / %.2f (light) slots per CPU capped by "
             "MAX_CONCURRENT_PARSING, index is %.2fx the widest parse tier capped by "
-            "MAX_CONCURRENT_INDEXING and bounds index+light_index *together*; the "
-            "parse and download pools ramp from their floor toward their ceiling and "
-            "heavy_parse is additionally held to what free memory can hold "
-            "(~%.2fGiB per slot), while the index pools are fixed at their ceiling "
-            "and never adapt",
+            "MAX_CONCURRENT_INDEXING and bounds heavy and light records *together*; "
+            "the parse and download pools ramp from their floor toward their ceiling "
+            "and heavy_parse is additionally held to what free memory can hold "
+            "(~%.2fGiB per slot), while the index pool is fixed at its ceiling "
+            "and never adapts",
             initial_snapshot.source,
             initial_snapshot.cpu_quota,
             _fmt_bytes(initial_snapshot.mem_limit_bytes),
@@ -140,7 +133,6 @@ class ResourceGovernor:
             self._registry.get(Pool.HEAVY_PARSE),
             self._registry.get(Pool.LIGHT_PARSE),
             self._registry.get(Pool.INDEX),
-            self._registry.get(Pool.LIGHT_INDEX),
             HEAVY_PARSE_SLOTS_PER_CPU,
             LIGHT_PARSE_SLOTS_PER_CPU,
             INDEX_SLOTS_PER_PARSE_SLOT,
@@ -193,11 +185,6 @@ class ResourceGovernor:
                 pool,
                 self._registry,
                 rate_limiter=self._rate_limiters.get(pool),
-                shared_budget=(
-                    self._index_budget
-                    if pool is Pool.INDEX or pool is Pool.LIGHT_INDEX
-                    else None
-                ),
                 clock=self._clock,
             )
             self._gates[pool] = created
@@ -402,13 +389,6 @@ class ResourceGovernor:
             },
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
-            # index + light_index share one budget, so per-pool in_use alone
-            # can't tell an operator how close the active pipeline is to its
-            # cap.
-            "index_budget": {
-                "capacity": self._index_budget.capacity,
-                "in_use": self._index_budget.in_use,
-            },
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

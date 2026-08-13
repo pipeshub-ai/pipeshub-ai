@@ -17,7 +17,6 @@ class Pool(StrEnum):
     """Admission pools governed independently by the ResourceGovernor."""
 
     INDEX = "index"
-    LIGHT_INDEX = "light_index"
     DOWNLOAD_BYTES = "download_bytes"
     HEAVY_PARSE = "heavy_parse"
     LIGHT_PARSE = "light_parse"
@@ -134,12 +133,10 @@ class Ceilings:
     milliseconds of CPU on a few KB and must not be limited to what a
     Docling conversion costs.
 
-    ``index`` bounds both active-pipeline pools *and* their combined
-    in-flight total (see ``gate.SharedBudget``), and — unlike the parse
-    ceilings — is also their effective limit for the life of the process,
-    since the control law does not adapt them (policy ``_is_index_pool``).
-    The two pools stay separate for routing and per-tier demand accounting,
-    not to divide that budget, hence deliberately no light-index ceiling.
+    ``index`` bounds the active pipeline — heavy and light records together,
+    not one each — and, unlike the parse ceilings, is also the pool's
+    effective limit for the life of the process, since the control law does
+    not adapt it (policy ``_is_index_pool``).
     """
 
     heavy: int
@@ -222,8 +219,8 @@ class PoolState:
     "resource-delta probing").
 
     Carried for every pool, but only read for the adapted ones: the index
-    pools hold their limit for the life of the process (policy.py
-    ``_is_index_pool``), so their state is never advanced.
+    pool holds its limit for the life of the process (policy.py
+    ``_is_index_pool``), so its state is never advanced.
     """
 
     healthy_streak: int = 0

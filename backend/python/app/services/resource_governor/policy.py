@@ -67,17 +67,16 @@ HEAVY_PARSE_SLOTS_PER_CPU = _env_float(
     "GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU", 1.0, low=0.1, high=32.0
 )
 LIGHT_PARSE_SLOTS_PER_CPU = _env_float(
-    "GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", 3.0, low=0.1, high=64.0
+    "GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", 10.0, low=0.1, high=64.0
 )
 
-# The INDEX/LIGHT_INDEX permit is held for a record's whole lifetime
-# (download through vector upsert), most of which is *not* parsing — so the
-# active-pipeline pools are sized as a multiple of the widest parse tier
-# rather than equal to it. This figure is the *effective* in-flight width
-# from the first sample, not a ceiling something else ramps toward
-# (``_is_index_pool``), so it must stay a small multiple: it is how many
-# records may hold a downloaded buffer and their post-parse chunk/embedding
-# state at once.
+# The INDEX permit is held for a record's whole lifetime (download through
+# vector upsert), most of which is *not* parsing — so the active-pipeline
+# pool is sized as a multiple of the widest parse tier rather than equal to
+# it. This figure is the *effective* in-flight width from the first sample,
+# not a ceiling something else ramps toward (``_is_index_pool``), so it must
+# stay a small multiple: it is how many records may hold a downloaded buffer
+# and their post-parse chunk/embedding state at once.
 INDEX_SLOTS_PER_PARSE_SLOT = _env_float(
     "GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT", 100.0, low=0.1, high=1000.0
 )
@@ -136,11 +135,11 @@ COUNT_POOL_FLOOR = 2
 
 
 def _is_light_pool(pool: Pool) -> bool:
-    return pool is Pool.LIGHT_PARSE or pool is Pool.LIGHT_INDEX
+    return pool is Pool.LIGHT_PARSE
 
 
 def _is_index_pool(pool: Pool) -> bool:
-    """The active-pipeline pools, which the control law does not adapt.
+    """The active-pipeline pool, which the control law does not adapt.
 
     An INDEX permit is pipeline width, not a resource reservation: what a
     record actually consumes is gated elsewhere — buffered download bytes by
@@ -148,11 +147,10 @@ def _is_index_pool(pool: Pool) -> bool:
     LLM fan-out by MAX_CONCURRENT_INDEXING_LLM_CALLS. Adapting it as well
     throttled the one stage whose cost is mostly waiting on those gates and
     on downstream services, and cost ~45s of near-serial startup (floor of 2
-    plus the confirm window) on every deploy. Both pools therefore sit at
-    ``ceilings.index`` for the life of the process, with ``gate.SharedBudget``
-    bounding their combined in-flight total to that same figure.
+    plus the confirm window) on every deploy. It therefore sits at
+    ``ceilings.index`` for the life of the process.
     """
-    return pool is Pool.INDEX or pool is Pool.LIGHT_INDEX
+    return pool is Pool.INDEX
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -214,8 +212,7 @@ def resolve_ceilings(
     * heavy parse — ``min(cpus * HEAVY_PARSE_SLOTS_PER_CPU, env_parse)``
     * index —
       ``min(INDEX_SLOTS_PER_PARSE_SLOT * max(heavy, light), env_index)``,
-      the cap on each active-pipeline pool *and* on their combined
-      in-flight total (``gate.SharedBudget``)
+      the in-flight cap for heavy and light records together
     * light parse — ``min(cpus * LIGHT_PARSE_SLOTS_PER_CPU, env_parse)``
 
     Memory deliberately plays no part here. It is not a startup constant:
@@ -302,8 +299,8 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     only adds latency. Half, not the full ceiling — a floor equal to the
     ceiling would leave the memory brake nothing to shrink.
 
-    The index pools floor *at* their ceiling: they are never adapted (see
-    ``_is_index_pool``), so their minimum and maximum are the same value.
+    The index pool floors *at* its ceiling: it is never adapted (see
+    ``_is_index_pool``), so its minimum and maximum are the same value.
     """
     if pool is Pool.DOWNLOAD_BYTES:
         return min(_BYTES_FLOOR, ceiling)
@@ -317,7 +314,7 @@ def floor_for(pool: Pool, ceiling: int) -> int:
 def warm_start_limits(ceilings: Ceilings) -> Limits:
     """Starting limits: every adapted pool begins at its conservative floor
     and ramps toward its ceiling as samples prove the headroom is real. The
-    index pools, which are never adapted, start at their ceiling.
+    index pool, which is never adapted, starts at its ceiling.
 
     An explicit ``MAX_CONCURRENT_*`` used to start *at* the ceiling, on the
     grounds that the operator had expressed informed intent. But a limit only
@@ -333,7 +330,6 @@ def warm_start_limits(ceilings: Ceilings) -> Limits:
         Pool.HEAVY_PARSE: floor_for(Pool.HEAVY_PARSE, ceilings.heavy),
         Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
         Pool.INDEX: floor_for(Pool.INDEX, ceilings.index),
-        Pool.LIGHT_INDEX: floor_for(Pool.LIGHT_INDEX, ceilings.index),
         Pool.DOWNLOAD_BYTES: floor_for(Pool.DOWNLOAD_BYTES, ceilings.bytes_max),
     })
 
@@ -343,7 +339,6 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
         Pool.HEAVY_PARSE: ceilings.heavy,
         Pool.LIGHT_PARSE: ceilings.light,
         Pool.INDEX: ceilings.index,
-        Pool.LIGHT_INDEX: ceilings.index,
         Pool.DOWNLOAD_BYTES: ceilings.bytes_max,
     }[pool]
 
@@ -591,7 +586,7 @@ def next_limits(
     interval: float = SAMPLE_INTERVAL_SECONDS,
 ) -> tuple[Limits, ControllerState]:
     """Advance every adapted pool's limit by at most one step toward its
-    target, and hold the index pools at their ceiling (``_is_index_pool``).
+    target, and hold the index pool at its ceiling (``_is_index_pool``).
 
     Pure and deterministic given its inputs — the caller supplies ``now``
     and the sampled ``demand`` so this can be exercised in tests without a

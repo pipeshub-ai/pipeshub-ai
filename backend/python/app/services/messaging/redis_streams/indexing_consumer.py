@@ -108,10 +108,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # Legacy fallback only: unused (stay None) once a governor is set.
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Any = None
-        # Light-tier active-pipeline gate. Stays None without a governor —
-        # the legacy path never split indexing by tier either, so both tiers
-        # collapse onto indexing_semaphore there (see _process_message).
-        self.light_indexing_semaphore: Any = None
         self.message_handler: Optional[IndexingMessageHandler] = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
@@ -180,10 +176,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             asyncio.set_event_loop(self.worker_loop)
             if self.governor is not None:
                 self.indexing_semaphore = self.governor.gate(Pool.INDEX)
-                self.light_indexing_semaphore = self.governor.gate(Pool.LIGHT_INDEX)
                 self.logger.info(
                     "Worker thread event loop started; using ResourceGovernor "
-                    "gates (index_ceiling=%d — shared by index+light_index, "
+                    "gates (index_ceiling=%d — heavy and light records share it, "
                     "heavy_parse_ceiling=%d light_parse_ceiling=%d)",
                     self.governor.ceilings.index,
                     self.governor.ceilings.heavy,
@@ -237,11 +232,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.consume_task = asyncio.create_task(self._consume_loop())
             self.logger.info(
                 "Started Redis Streams consumer task with parsing_ceiling=%d, "
-                "light_parsing_ceiling=%d, indexing_ceiling=%d, light_indexing_ceiling=%d",
+                "light_parsing_ceiling=%d, indexing_ceiling=%d",
                 concurrency.parse_ceiling(self),
                 concurrency.parse_ceiling(self, ParseTier.LIGHT),
                 concurrency.index_ceiling(self),
-                concurrency.index_ceiling(self, ParseTier.LIGHT),
             )
         except Exception as e:
             self.logger.error("Failed to start Redis Streams consumer: %s", e)
@@ -1015,11 +1009,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Process a message under bounded pipeline and parsing concurrency.
 
         Semaphore lifecycle:
-        - active_indexing_gate (indexing_semaphore or light_indexing_semaphore,
-          chosen per-message from the raw payload's tier before either is
-          acquired — see concurrency.classify_index_tier): outer
-          active-pipeline gate, held from handler entry through
-          INDEXING_COMPLETE
+        - indexing_semaphore: outer active-pipeline gate, held from handler
+          entry through INDEXING_COMPLETE
         - parsing_semaphore: nested parse gate, acquired on START_PARSING and
           released on PARSING_COMPLETE
 
@@ -1091,24 +1082,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             return False
 
-        # Classified straight from the raw payload — see
-        # concurrency.classify_index_tier — so a Jira/Slack/Markdown record
-        # never queues on the same INDEX permit a multi-minute Docling PDF
-        # is holding. Falls back to the shared heavy gate/lease when no
-        # governor is configured (light_indexing_semaphore stays None then),
-        # matching the pre-split behaviour.
-        index_tier = concurrency.classify_index_tier(parsed_message.payload)
-        active_indexing_gate = self.indexing_semaphore
-        index_lease_pool = "indexing"
-        if index_tier is ParseTier.LIGHT and self.light_indexing_semaphore is not None:
-            active_indexing_gate = self.light_indexing_semaphore
-            index_lease_pool = "indexing:light"
-
         try:
             # MAX_CONCURRENT_INDEXING is also the active-pipeline bound. Without
             # this outer permit, parsed records can accumulate while waiting for
             # an indexing permit and every one can remain IN_PROGRESS in the DB.
-            await active_indexing_gate.acquire()
+            await self.indexing_semaphore.acquire()
             indexing_held = True
             if waiter_token is not None:
                 waiter_token.admit()
@@ -1118,12 +1096,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
                 if not await self._acquire_distributed_slot(
-                    index_lease_pool,
+                    "indexing",
                     lease_owner,
-                    concurrency.index_ceiling(self, index_tier),
+                    concurrency.index_ceiling(self),
                 ):
                     return False
-                distributed_leases.add(index_lease_pool, lease_owner)
+                distributed_leases.add("indexing", lease_owner)
                 renewal_task = self._start_distributed_renewal(
                     distributed_leases
                 )
@@ -1209,13 +1187,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 elif (
                                     event.event == IndexingEvent.INDEXING_COMPLETE
                                     and indexing_held
-                                    and active_indexing_gate is not None
                                 ):
-                                    distributed_leases.discard(index_lease_pool)
+                                    distributed_leases.discard("indexing")
                                     await self._release_distributed_slot(
-                                        index_lease_pool, lease_owner
+                                        "indexing", lease_owner
                                     )
-                                    active_indexing_gate.release()
+                                    self.indexing_semaphore.release()
                                     indexing_held = False
                                     indexing_complete = True
                         finally:
@@ -1384,10 +1361,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     await self._release_distributed_slot(parse_lease_pool, lease_owner)
                 concurrency.release_parsing_slot(parsing_admission)
                 parsing_admission = None
-            if indexing_held and active_indexing_gate is not None:
-                if distributed_leases.discard(index_lease_pool) is not None:
-                    await self._release_distributed_slot(index_lease_pool, lease_owner)
-                active_indexing_gate.release()
+            if indexing_held:
+                if distributed_leases.discard("indexing") is not None:
+                    await self._release_distributed_slot("indexing", lease_owner)
+                self.indexing_semaphore.release()
 
             for pool, owner in distributed_leases.snapshot():
                 distributed_leases.discard(pool)
