@@ -51,6 +51,12 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+from app.agent_loop_lib.transport.provider_conflicts import (
+    API_SHAPE_CONFLICT_MARKERS,
+    REASONING_MANDATORY_CONFLICT_MARKERS,
+    is_api_shape_conflict,
+    is_reasoning_mandatory_conflict,
+)
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
@@ -99,27 +105,12 @@ _NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout",
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
-_API_SHAPE_CONFLICT_MARKERS = (
-    "please use /v1/responses instead",
-    "please use /v1/chat/completions instead",
-    "tool_choice.function",
-)
-
-
-def _is_api_shape_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _API_SHAPE_CONFLICT_MARKERS)
-
-
-# Substring a provider/gateway emits when it refuses to let reasoning be
-# turned off at all — observed on some OpenRouter-proxied Gemini models:
-# "Reasoning is mandatory for this endpoint and cannot be disabled."
-_REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
-
-
-def _is_reasoning_mandatory_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _REASONING_MANDATORY_CONFLICT_MARKERS)
+# Markers and predicates live in transport/provider_conflicts.py so the direct
+# SDK transport recovers from exactly the same errors this one does.
+_API_SHAPE_CONFLICT_MARKERS = API_SHAPE_CONFLICT_MARKERS
+_REASONING_MANDATORY_CONFLICT_MARKERS = REASONING_MANDATORY_CONFLICT_MARKERS
+_is_api_shape_conflict = is_api_shape_conflict
+_is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
 
 
 def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
@@ -657,12 +648,23 @@ class LangChainTransport(LLMTransport):
                         if not isinstance(tc_chunk, dict):
                             continue
                         args_delta = tc_chunk.get("args") or ""
-                        if not args_delta:
+                        name = tc_chunk.get("name")
+                        tc_id = tc_chunk.get("id")
+                        # The agent loop reads `name` off the FIRST delta for an
+                        # index to decide whether the call is final_answer, and
+                        # OpenAI/Azure open a tool call with a metadata-only
+                        # fragment (name and id set, args "") -- verified against
+                        # the live deployment. Dropping it meant the first delta
+                        # the loop saw carried name=None, final_answer went
+                        # unrecognised, and the answer only appeared once the
+                        # turn had finished. A fragment carrying nothing at all
+                        # still tells the loop nothing, so it is still skipped.
+                        if not args_delta and not name and not tc_id:
                             continue
                         yield ToolCallDeltaEvent(
                             index=tc_chunk.get("index") or 0,
-                            id=tc_chunk.get("id"),
-                            name=tc_chunk.get("name"),
+                            id=tc_id,
+                            name=name,
                             arguments_delta=args_delta,
                         )
                 break

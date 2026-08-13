@@ -80,6 +80,18 @@ class ImageSource(BaseModel):
     data: str = ""                 # base64 string (type="base64") or URL (type="url")
 
 
+def image_data_url(source: "ImageSource") -> str:
+    """An `ImageSource` as a URL the OpenAI-family APIs accept.
+
+    They take one string for both cases: a plain URL, or a `data:` URI carrying
+    base64. Kept here next to the model so each transport does not re-derive it.
+    """
+    if source.type == "base64":
+        media_type = source.media_type or "image/jpeg"
+        return f"data:{media_type};base64,{source.data}"
+    return source.data
+
+
 class TextPart(BaseModel):
     type: Literal["text"] = "text"
     text: str

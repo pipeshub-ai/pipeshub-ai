@@ -29,7 +29,7 @@ Citation refs (`[source](refN)`) are resolved progressively via
 `CitationCollector` — the same function `AnswerFinalizer` uses for the
 authoritative `complete` event, so numbered citations appear live as the
 answer streams in. That resolution re-runs over the whole accumulated answer,
-so it is rate-limited (`PIPESHUB_ANSWER_DELTA_INTERVAL_MS`, default 100 ms)
+so it is rate-limited (`PIPESHUB_ANSWER_DELTA_INTERVAL_MS`, default 250 ms)
 rather than run per token, and forced once more at `AGENT_COMPLETE`; raw text
 still streams per token on its own channel. The citation state (`ref_to_url`,
 `final_results`, `web_records`) is snapshotted once per turn at
@@ -61,12 +61,12 @@ logger = logging.getLogger(__name__)
 
 def answer_delta_min_interval() -> float:
     """Seconds between live citation refreshes; 0 restores per-token emits."""
-    raw = os.getenv("PIPESHUB_ANSWER_DELTA_INTERVAL_MS", "100")
+    raw = os.getenv("PIPESHUB_ANSWER_DELTA_INTERVAL_MS", "250")
     try:
         value = float(raw)
     except ValueError:
-        logger.warning("Invalid PIPESHUB_ANSWER_DELTA_INTERVAL_MS=%r, falling back to 100", raw)
-        return 0.1
+        logger.warning("Invalid PIPESHUB_ANSWER_DELTA_INTERVAL_MS=%r, falling back to 250", raw)
+        return 0.25
     return max(value, 0.0) / 1000.0
 
 if TYPE_CHECKING:
