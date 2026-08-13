@@ -93,6 +93,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
@@ -1862,6 +1863,11 @@ async def delete_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+
+            # This route deletes directly, bypassing the processor's cascade
+            # path, so it owns its own cache invalidation.
+            if result.get("isKb") and result.get("connectorId"):
+                await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
 
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {

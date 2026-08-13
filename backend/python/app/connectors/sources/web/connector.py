@@ -26,6 +26,7 @@ from app.config.constants.arangodb import (
     FILE_MIME_TYPES,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -171,6 +172,7 @@ class WebApp(App):
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.WEB.value))
         .with_realtime_support(False)

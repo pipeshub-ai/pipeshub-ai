@@ -795,6 +795,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
 
+    # This service flips records to COMPLETED, which is when a KB record first
+    # becomes searchable — the query service's cached map must be dropped then.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        cache = await AccessibleRecordsCache.create(logger, app_container.config_service())
+        app.state.accessible_records_cache = cache
+        init_accessible_records_invalidator(logger, cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container, governor)

@@ -276,6 +276,17 @@ class ConnectorFactory:
 
         return None
 
+    @staticmethod
+    async def _run_sync_and_invalidate(connector: BaseConnector, connector_id: str) -> None:
+        """Run a sync started outside `EventService`, then drop the connector's
+        cached accessible-record map the same way that path does."""
+        from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+
+        try:
+            await connector.run_sync()
+        finally:
+            await notify_connector_sync_completed(connector_id)
+
     @classmethod
     async def create_and_start_sync(
         cls,
@@ -312,7 +323,7 @@ class ConnectorFactory:
                     )
                 else:
                     await sync_task_manager.start_sync(
-                        connector_id, connector.run_sync()
+                        connector_id, cls._run_sync_and_invalidate(connector, connector_id)
                     )
                     logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector

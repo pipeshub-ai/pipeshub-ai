@@ -20,6 +20,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -233,7 +234,12 @@ class RecordEventHandler(BaseEventService):
 
             doc = dict(record)
 
-            if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # The guard stops a replayed newRecord from re-running the pipeline over
+            # an indexed corpus. An explicit reindex is the one case that must run
+            # anyway, so it opts out rather than the guard being relaxed for
+            # everyone: without this, reindex reports success while doing nothing.
+            force_reindex = bool(payload.get("forceReindex"))
+            if (not force_reindex) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -743,6 +749,16 @@ class RecordEventHandler(BaseEventService):
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
                         await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                        if indexing_status == ProgressStatus.COMPLETED.value:
+                            # Duplicates just became searchable too. They can live in
+                            # a different KB than this record, which only the TTL
+                            # covers — the provider returns a count, not the ids.
+                            await notify_record_indexed(
+                                connector_name=record.get("connectorName"),
+                                connector_id=record.get("connectorId"),
+                                external_record_group_id=record.get("externalGroupId"),
+                                org_id=record.get("orgId"),
+                            )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
                         self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")

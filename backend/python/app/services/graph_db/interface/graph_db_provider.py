@@ -900,6 +900,40 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def get_record_relations_batch(
+        self,
+        record_ids: list[str],
+        relation_types: list[str],
+        transaction: Optional[str] = None,
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        """Edges for many records and relation types at once.
+
+        Returns {record_id: {"parents": [...], "children": [...]}} where the two
+        lists hold what `get_parent_record_ids_by_relation_type` and
+        `get_child_record_ids_by_relation_type` return, each entry additionally
+        carrying `relationType`.
+
+        Concrete by design: this default preserves behaviour for providers that
+        have not specialised it. Overriding it with a single query is what makes
+        it worth calling -- the default still costs one query per record per
+        relation type per direction.
+        """
+        out: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for record_id in record_ids:
+            parents: list[dict[str, Any]] = []
+            children: list[dict[str, Any]] = []
+            for relation_type in relation_types:
+                for edges, bucket in (
+                    (await self.get_parent_record_ids_by_relation_type(
+                        record_id, relation_type, transaction), parents),
+                    (await self.get_child_record_ids_by_relation_type(
+                        record_id, relation_type, transaction), children),
+                ):
+                    for edge in edges or []:
+                        bucket.append({**edge, "relationType": relation_type})
+            out[record_id] = {"parents": parents, "children": children}
+        return out
+
     @abstractmethod
     async def get_virtual_record_ids_for_record_ids(
         self,

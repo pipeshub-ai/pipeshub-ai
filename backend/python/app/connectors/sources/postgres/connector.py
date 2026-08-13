@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     RecordRelations,
 )
 from app.connectors.core.constants import IconPaths
@@ -150,6 +151,7 @@ class SyncStats:
     .with_description("Sync schemas and tables from PostgreSQL")\
     .with_categories(["Database"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         # Option 1: Individual connection fields
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([

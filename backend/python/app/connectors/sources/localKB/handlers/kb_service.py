@@ -13,6 +13,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import FileRecord, RecordType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -718,6 +719,10 @@ class KnowledgeBaseService:
                 kb_id, folder_id, name, org_id, parent_folder_id=None
             )
             await self.processor.on_new_records([(folder_record, [])])
+            # Folders are born COMPLETED, so they never pass through the indexing
+            # hook. They carry no virtualRecordId today and so cannot appear in an
+            # accessible-record map — this keeps the KB's entry honest if that changes.
+            await notify_kb_records_changed(kb_id, org_id)
 
             return {
                 "id": folder_id,
@@ -783,6 +788,10 @@ class KnowledgeBaseService:
                 kb_id, folder_id, name, org_id, parent_folder_id=parent_folder_id
             )
             await self.processor.on_new_records([(folder_record, [])])
+            # Folders are born COMPLETED, so they never pass through the indexing
+            # hook. They carry no virtualRecordId today and so cannot appear in an
+            # accessible-record map — this keeps the KB's entry honest if that changes.
+            await notify_kb_records_changed(kb_id, org_id)
 
             return {
                 "id": folder_id,

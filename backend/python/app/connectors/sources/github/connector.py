@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -109,7 +110,7 @@ class RecordUpdate:
     "Sync content from your Github instance"
 ).with_categories(["Knowledge Management"]).with_scopes(
     [ConnectorScope.PERSONAL.value]
-).with_auth(
+).with_permission_model(PermissionModel.APP_LEVEL).with_auth(
     [
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Github",

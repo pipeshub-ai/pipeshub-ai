@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
@@ -65,6 +66,7 @@ class RSSApp(App):
     .with_description("Subscribe to and sync content from RSS and Atom feeds")
     .with_categories(["Web", "Content"])
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .configure(
         lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.RSS.value))
         .with_realtime_support(False)

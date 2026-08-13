@@ -19,11 +19,20 @@ class QueryAppContainer(BaseAppContainer):
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
+    # Caches the accessible-record maps every search resolves; falls back to
+    # live queries when Redis is unavailable or the kill-switch is set.
+    accessible_records_cache = providers.Resource(
+        container_utils.create_accessible_records_cache,
+        logger=logger,
+        config_service=config_service,
+    )
+
     # Graph Database Provider via Factory (HTTP mode - fully async)
     graph_provider = providers.Resource(
         container_utils.create_graph_provider,
         logger=logger,
         config_service=config_service,
+        accessible_records_cache=accessible_records_cache,
     )
 
     vector_db_service =  providers.Resource(

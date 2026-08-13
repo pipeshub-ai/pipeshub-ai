@@ -168,6 +168,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # KB uploads made through chat index in this process, so it invalidates too.
+    try:
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        init_accessible_records_invalidator(
+            logger, await app_container.accessible_records_cache(), graph_provider
+        )
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -295,6 +306,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.modules.transformers.blob_storage import (
+            close_shared_redis,
+            close_shared_session,
+        )
+        await close_shared_session()
+        await close_shared_redis()
+        logger.info("✅ Blob storage session closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing blob storage session: {e}")
+
+    try:
+        accessible_records_cache = await app_container.accessible_records_cache()
+        await accessible_records_cache.close()
+        logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
 
 
 # Create FastAPI app with lifespan

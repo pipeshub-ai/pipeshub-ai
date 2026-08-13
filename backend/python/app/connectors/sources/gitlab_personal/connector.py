@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -98,6 +98,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     .with_description("Sync content from your personal GitLab account")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(

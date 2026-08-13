@@ -90,6 +90,22 @@ class Connectors(Enum):
     ATTACHMENTS = "ATTACHMENTS"
 
 
+class PermissionModel(Enum):
+    """How a connector's records derive their per-user visibility.
+
+    ``APP_LEVEL`` means access to the connector app implies access to every
+    record it syncs — the source has no per-record ACLs, so each connector
+    writes one blanket ORG (or single creator-USER) permission. ``RECORD_LEVEL``
+    means the source syncs real per-record ACLs and visibility must be resolved
+    per user. Declared per connector via ``ConnectorBuilder.configure(...)``;
+    ``RECORD_LEVEL`` is the default because assuming per-record ACLs can only
+    under-share, never over-share.
+    """
+
+    APP_LEVEL = "APP_LEVEL"
+    RECORD_LEVEL = "RECORD_LEVEL"
+
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"

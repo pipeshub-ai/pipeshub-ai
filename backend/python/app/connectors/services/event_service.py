@@ -19,6 +19,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import ConnectorAppContainer
+from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -388,6 +389,10 @@ class EventService:
                 self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
+
+            # The sync may have added or removed records; drop the query
+            # service's cached view of this connector so the next search sees them.
+            await notify_connector_sync_completed(connector_id)
 
     @staticmethod
     def _reindex_task_key(
