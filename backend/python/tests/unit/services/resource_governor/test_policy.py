@@ -15,11 +15,13 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.policy import (
+    GROW_BAND,
     GROW_CONFIRM_SAMPLES,
     HEAVY_START_BUCKET_CAPACITY,
     HEAVY_START_INTERVAL_SECONDS,
     HEAVY_START_RATE_CEILING_DIVISOR,
     INCIDENT_COOLDOWN_SECONDS,
+    LIGHT_GROW_CONFIRM_SAMPLES,
     MEM_SOFT,
     SAMPLE_INTERVAL_SECONDS,
     floor_for,
@@ -307,6 +309,11 @@ class TestNextLimitsPressure:
         new_limits, _ = next_limits(current, snap, ceilings, state, _no_demand(), now=0.0, interval=INTERVAL)
 
         assert new_limits.get(Pool.HEAVY_PARSE) == 7
+        assert new_limits.get(Pool.INDEX) == 15
+        # Light records are not CPU-bound — a saturated Docling host must
+        # not queue Jira/Slack behind the CPU brake.
+        assert new_limits.get(Pool.LIGHT_PARSE) == 32
+        assert new_limits.get(Pool.LIGHT_INDEX) == 16
 
     def test_memory_unknown_freezes_at_current(self) -> None:
         ceilings = self._ceilings()
@@ -400,6 +407,23 @@ class TestNextLimitsGrowth:
             cpu_quota=8.0, cpu_utilisation=0.1,
             mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
         )
+
+    def _light_demand(self, limits: Limits) -> dict[Pool, PoolDemand]:
+        return {
+            Pool.LIGHT_PARSE: PoolDemand(
+                permit_seconds=limits.get(Pool.LIGHT_PARSE) * INTERVAL,
+                blocked_acquires=5,
+                completions=100,
+            ),
+            Pool.LIGHT_INDEX: PoolDemand(
+                permit_seconds=limits.get(Pool.LIGHT_INDEX) * INTERVAL,
+                blocked_acquires=5,
+                completions=100,
+            ),
+            Pool.HEAVY_PARSE: PoolDemand.empty(),
+            Pool.INDEX: PoolDemand.empty(),
+            Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+        }
 
     def test_no_growth_without_demand(self) -> None:
         ceilings = self._ceilings()
@@ -522,6 +546,107 @@ class TestNextLimitsGrowth:
             now += INTERVAL
 
         assert limits.get(Pool.INDEX) == grown_to
+
+    def test_light_grows_after_one_healthy_sample(self) -> None:
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = self._healthy_snapshot()
+
+        for _ in range(LIGHT_GROW_CONFIRM_SAMPLES):
+            limits, state = next_limits(
+                limits, snap, ceilings, state, self._light_demand(limits), now=0.0, interval=INTERVAL,
+            )
+
+        assert limits.get(Pool.LIGHT_PARSE) == floor_for(Pool.LIGHT_PARSE, ceilings.light) + 1
+        assert limits.get(Pool.LIGHT_INDEX) == floor_for(Pool.LIGHT_INDEX, ceilings.light_index) + 1
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+
+    def test_light_grows_inside_the_heavy_grow_band(self) -> None:
+        """Heavy needs MEM_SOFT - GROW_BAND of headroom; light may grow
+        right up to MEM_SOFT, so a moderately full cgroup still admits
+        Jira/Slack rather than waiting for Docling-grade slack."""
+        ceilings = self._ceilings()
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        mem_limit = 16 * 1024 ** 3
+        # Midway through the heavy grow-band: too tight for heavy, open for light.
+        pressure = MEM_SOFT - (GROW_BAND / 2)
+        snap = _snapshot(
+            cpu_quota=8.0, cpu_utilisation=0.1,
+            mem_limit_bytes=mem_limit, mem_working_set_bytes=int(pressure * mem_limit),
+        )
+        assert MEM_SOFT - GROW_BAND <= snap.mem_pressure < MEM_SOFT
+
+        limits, state = next_limits(
+            limits, snap, ceilings, state, self._light_demand(limits), now=0.0, interval=INTERVAL,
+        )
+        heavy_demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+        heavy_limits, _ = next_limits(
+            warm_start_limits(ceilings), snap, ceilings, ControllerState.initial(),
+            heavy_demand, now=0.0, interval=INTERVAL,
+        )
+
+        assert limits.get(Pool.LIGHT_PARSE) == floor_for(Pool.LIGHT_PARSE, ceilings.light) + 1
+        assert limits.get(Pool.LIGHT_INDEX) == floor_for(Pool.LIGHT_INDEX, ceilings.light_index) + 1
+        assert heavy_limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+
+    def test_light_grows_despite_cpu_brake(self) -> None:
+        ceilings = self._ceilings()
+        limits = Limits(values={
+            Pool.HEAVY_PARSE: 8,
+            Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
+            Pool.INDEX: 16,
+            Pool.LIGHT_INDEX: floor_for(Pool.LIGHT_INDEX, ceilings.light_index),
+            Pool.DOWNLOAD_BYTES: 1024 ** 3,
+        })
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=8.0, cpu_utilisation=0.95,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+        new_limits, _ = next_limits(
+            limits, snap, ceilings, state, self._light_demand(limits), now=0.0, interval=INTERVAL,
+        )
+
+        assert new_limits.get(Pool.LIGHT_PARSE) == limits.get(Pool.LIGHT_PARSE) + 1
+        assert new_limits.get(Pool.LIGHT_INDEX) == limits.get(Pool.LIGHT_INDEX) + 1
+        assert new_limits.get(Pool.HEAVY_PARSE) == 7
+        assert new_limits.get(Pool.INDEX) == 15
+
+    def test_light_index_keeps_growing_when_throughput_gradient_is_flat(self) -> None:
+        ceilings = Ceilings(heavy=2, light=16, index=24, light_index=64, bytes_max=2 * 1024 ** 3)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        snap = _snapshot(
+            cpu_quota=2.0, cpu_utilisation=0.02,
+            mem_limit_bytes=16 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3,
+        )
+
+        def demand_at(limit: int) -> dict[Pool, PoolDemand]:
+            return {
+                Pool.LIGHT_INDEX: PoolDemand(
+                    permit_seconds=limit * INTERVAL, blocked_acquires=50, completions=100,
+                ),
+                Pool.INDEX: PoolDemand.empty(),
+                Pool.HEAVY_PARSE: PoolDemand.empty(),
+                Pool.LIGHT_PARSE: PoolDemand.empty(),
+                Pool.DOWNLOAD_BYTES: PoolDemand.empty(),
+            }
+
+        now = 0.0
+        floor = floor_for(Pool.LIGHT_INDEX, ceilings.light_index)
+        for _ in range(4):
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand_at(limits.get(Pool.LIGHT_INDEX)),
+                now=now, interval=INTERVAL,
+            )
+            now += INTERVAL
+
+        # INDEX would have grown once then held on a flat gradient; light
+        # keeps doubling (1+2+4 after the first three samples, then +8).
+        assert limits.get(Pool.LIGHT_INDEX) > floor + 1
 
 
 class TestExponentialGrowth:

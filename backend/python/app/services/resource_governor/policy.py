@@ -68,6 +68,10 @@ MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
 MEM_HARD = max(_env_float("GOVERNOR_MEM_HARD", 0.80, low=0.11, high=0.99), MEM_SOFT + 0.01)
 GROW_BAND = min(_env_float("GOVERNOR_GROW_BAND", 0.05, low=0.0, high=0.90), MEM_SOFT - 0.01)
 GROW_CONFIRM_SAMPLES = 3
+# Light records are milliseconds on a few KB; the heavy confirm window would
+# pin Jira/Slack/Markdown at the floor for ~45s waiting for Docling-grade
+# proof that the cgroup can absorb another permit.
+LIGHT_GROW_CONFIRM_SAMPLES = 1
 SHRINK_COOLDOWN_SECONDS = 30.0
 INCIDENT_COOLDOWN_SECONDS = 60.0
 
@@ -89,6 +93,7 @@ HEAVY_START_BUCKET_CAPACITY = 2
 HEAVY_START_RATE_CEILING_DIVISOR = 20.0
 
 DEMAND_UTILISATION_THRESHOLD = 0.7
+LIGHT_DEMAND_UTILISATION_THRESHOLD = 0.3
 GRADIENT_IMPROVEMENT_THRESHOLD = 0.05
 GRADIENT_LATENCY_REGRESSION_RATIO = 1.5
 
@@ -114,6 +119,10 @@ _BYTES_FLOOR = 256 * 1024 * 1024
 _BYTES_BUDGET_FRACTION = 0.25
 
 COUNT_POOL_FLOOR = 2
+
+
+def _is_light_pool(pool: Pool) -> bool:
+    return pool is Pool.LIGHT_PARSE or pool is Pool.LIGHT_INDEX
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -338,8 +347,8 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
 
     if pool is Pool.INDEX or pool is Pool.LIGHT_INDEX:
         # Deliberately just the ceiling, not a cpu_quota expression (section
-        # 4.2). The growth precondition (pressure/demand/gradient), not this
-        # target, is what actually stops INDEX/LIGHT_INDEX from reaching it.
+        # 4.2). INDEX is stopped by the growth preconditions (pressure /
+        # demand / gradient); LIGHT_INDEX uses the looser light gates.
         return ceilings.light_index if pool is Pool.LIGHT_INDEX else ceilings.index
 
     if pool is Pool.DOWNLOAD_BYTES:
@@ -399,24 +408,28 @@ def _growth_step(
     if pool is Pool.DOWNLOAD_BYTES or not state.in_slow_start:
         return linear_step, state
 
-    prev_mem = state.prev_grow_mem_pressure
-    mem_now = snap.mem_pressure
-    if prev_mem is not None and mem_now is not None:
-        prev_cpu = state.prev_grow_cpu_utilisation
-        cpu_now = snap.cpu_utilisation
-        mem_delta = abs(mem_now - prev_mem)
-        # Cannot prove a CPU delta without both samples — treat as "no
-        # evidence of impact" rather than assuming 0% or 100% (models.py
-        # convention: unknown is never treated as a provable zero, but here
-        # it must not veto growth either, so it simply drops out of the
-        # max()).
-        cpu_delta = abs(cpu_now - prev_cpu) if (cpu_now is not None and prev_cpu is not None) else 0.0
-        impact = max(mem_delta, cpu_delta)
+    # Light cost is noise next to a co-located heavy parse; a process-wide
+    # mem/cpu delta would otherwise freeze LIGHT_PARSE/LIGHT_INDEX whenever
+    # Docling happens to allocate in the same interval.
+    if not _is_light_pool(pool):
+        prev_mem = state.prev_grow_mem_pressure
+        mem_now = snap.mem_pressure
+        if prev_mem is not None and mem_now is not None:
+            prev_cpu = state.prev_grow_cpu_utilisation
+            cpu_now = snap.cpu_utilisation
+            mem_delta = abs(mem_now - prev_mem)
+            # Cannot prove a CPU delta without both samples — treat as "no
+            # evidence of impact" rather than assuming 0% or 100% (models.py
+            # convention: unknown is never treated as a provable zero, but here
+            # it must not veto growth either, so it simply drops out of the
+            # max()).
+            cpu_delta = abs(cpu_now - prev_cpu) if (cpu_now is not None and prev_cpu is not None) else 0.0
+            impact = max(mem_delta, cpu_delta)
 
-        if impact >= RESOURCE_DELTA_MODERATE:
-            return 0, state
-        if impact >= RESOURCE_DELTA_LOW:
-            return linear_step, replace(state, in_slow_start=False, slow_start_step=1)
+            if impact >= RESOURCE_DELTA_MODERATE:
+                return 0, state
+            if impact >= RESOURCE_DELTA_LOW:
+                return linear_step, replace(state, in_slow_start=False, slow_start_step=1)
 
     used_step = state.slow_start_step
     next_step = min(used_step * 2, max(1, ceiling))
@@ -465,17 +478,18 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
 def _gradient_permits_growth(
     pool: Pool, demand: PoolDemand, state: PoolState, interval: float,
 ) -> tuple[bool, bool, PoolState]:
-    """Throughput-gradient gate for INDEX/LIGHT_INDEX (plan section 4.2).
+    """Throughput-gradient gate for INDEX (plan section 4.2).
 
     Returns ``(may_grow, must_shrink, updated_state)``. Every other pool is
     unconditionally allowed to grow — the gradient only matters for a pool
     whose bottleneck can be a *downstream* service (embeddings, vector
     upserts, LLM table enrichment) rather than local CPU/RAM, where blindly
     growing to the ceiling would just move the queue instead of clearing it.
-    LIGHT_INDEX shares this: light records still compete for the same
-    downstream embedding/vectordb services as heavy ones.
+    LIGHT_INDEX is excluded: a light record's local cost is negligible, and
+    sharing this gate with INDEX pins Jira/Slack/Markdown at the floor
+    whenever embeddings are already the heavy-path bottleneck.
     """
-    if pool is not Pool.INDEX and pool is not Pool.LIGHT_INDEX:
+    if pool is not Pool.INDEX:
         return True, False, state
 
     completions_per_sec = demand.completions_per_second(interval)
@@ -550,7 +564,11 @@ def _next_pool_limit(
             state, cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
         )
 
-    if (brake_pressure is not None and brake_pressure >= MEM_SOFT) or _cpu_brake_active(snap):
+    # CPU brake is for CPU-bound heavy work. Light records are not, and
+    # shrinking them because Docling is saturating cores only queues cheap
+    # Jira/Slack work behind a problem they are not causing.
+    cpu_brake = (not _is_light_pool(pool)) and _cpu_brake_active(snap)
+    if (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
         return max(floor, current - shrink_step), _reset_for_shrink(
             state, cooldown_until=max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS),
         )
@@ -560,10 +578,18 @@ def _next_pool_limit(
         # (The CPU brake above still applies independently of this branch.)
         return current, replace(state, healthy_streak=0)
 
-    if pressure < MEM_SOFT - GROW_BAND and not cooling_down:
+    # Light may grow right up to MEM_SOFT; heavy still needs the extra
+    # GROW_BAND of headroom so a Docling batch cannot close the gap inside
+    # one sample interval.
+    grow_threshold = MEM_SOFT if _is_light_pool(pool) else MEM_SOFT - GROW_BAND
+    confirm_samples = LIGHT_GROW_CONFIRM_SAMPLES if _is_light_pool(pool) else GROW_CONFIRM_SAMPLES
+    demand_threshold = (
+        LIGHT_DEMAND_UTILISATION_THRESHOLD if _is_light_pool(pool) else DEMAND_UTILISATION_THRESHOLD
+    )
+    if pressure < grow_threshold and not cooling_down:
         healthy_streak = state.healthy_streak + 1
-        if healthy_streak >= GROW_CONFIRM_SAMPLES and demand.has_demand(
-            current, interval, threshold=DEMAND_UTILISATION_THRESHOLD
+        if healthy_streak >= confirm_samples and demand.has_demand(
+            current, interval, threshold=demand_threshold
         ):
             may_grow, must_shrink, gradient_state = _gradient_permits_growth(pool, demand, state, interval)
             next_state = replace(gradient_state, healthy_streak=healthy_streak)
