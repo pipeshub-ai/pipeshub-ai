@@ -26,6 +26,13 @@ _PERMANENT_REFRESH_ERROR_MARKERS = (
     "bad_refresh_token",
 )
 
+# RFC 6749 §5.2 `invalid_client` — the OAuth client id/secret itself is wrong, not the
+# grant. `unauthorized_client` is deliberately NOT here: Atlassian returns it for dead
+# refresh tokens, so it cannot distinguish a client-config problem from a token problem.
+_INVALID_CLIENT_ERROR_MARKERS = (
+    "invalid_client",
+)
+
 
 class MCPOAuthError(Exception):
     """Raised when a token exchange/refresh request fails."""
@@ -35,9 +42,19 @@ class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
 
 
+class MCPInvalidClientError(MCPOAuthError):
+    """The provider rejected the OAuth client credentials (client id/secret) — retrying with
+    the same client can never succeed; an admin must fix the OAuth client configuration."""
+
+
 def _is_permanent_refresh_rejection(error_text: str) -> bool:
     lowered = error_text.lower()
     return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+
+
+def _is_invalid_client_rejection(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return any(marker in lowered for marker in _INVALID_CLIENT_ERROR_MARKERS)
 
 
 def _parse_token_response(content_type: str, text: str, json_body: Optional[dict]) -> dict[str, Any]:
@@ -82,6 +99,10 @@ async def _post_token_request(token_url: str, data: dict[str, Any]) -> dict[str,
             if _is_permanent_refresh_rejection(text):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {text}"
+                )
+            if _is_invalid_client_rejection(text):
+                raise MCPInvalidClientError(
+                    f"OAuth client credentials rejected ({resp.status_code}): {text}"
                 )
             raise MCPOAuthError(f"OAuth token request failed ({resp.status_code}): {text}")
 

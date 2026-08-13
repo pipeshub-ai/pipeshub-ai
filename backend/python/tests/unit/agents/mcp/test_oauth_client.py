@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.mcp.oauth_client import (
+    MCPInvalidClientError,
     MCPOAuthError,
     MCPRefreshTokenInvalidError,
     _parse_form_encoded,
@@ -243,6 +244,59 @@ class TestRefreshAccessToken:
     @pytest.mark.asyncio
     async def test_invalid_grant_raises_permanent_error(self) -> None:
         resp = _json_response(400, {"error": "invalid_grant", "error_description": "refresh token is invalid"})
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=resp)
+
+        with _mock_async_client(inner):
+            with pytest.raises(MCPRefreshTokenInvalidError):
+                await refresh_access_token(
+                    token_url="https://example.com/token",
+                    client_id="cid",
+                    client_secret="csec",
+                    refresh_token="badrefresh",
+                )
+
+    @pytest.mark.asyncio
+    async def test_invalid_client_raises_invalid_client_error(self) -> None:
+        resp = _json_response(
+            401, {"error": "invalid_client", "error_description": "Invalid client credentials"}
+        )
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=resp)
+
+        with _mock_async_client(inner):
+            with pytest.raises(MCPInvalidClientError):
+                await refresh_access_token(
+                    token_url="https://example.com/token",
+                    client_id="cid",
+                    client_secret="wrong-secret",
+                    refresh_token="somerefresh",
+                )
+
+    @pytest.mark.asyncio
+    async def test_invalid_client_is_an_oauth_error_but_not_refresh_token_invalid(self) -> None:
+        resp = _json_response(401, {"error": "invalid_client"})
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=resp)
+
+        with _mock_async_client(inner):
+            with pytest.raises(MCPOAuthError) as exc_info:
+                await refresh_access_token(
+                    token_url="https://example.com/token",
+                    client_id="cid",
+                    client_secret="wrong-secret",
+                    refresh_token="somerefresh",
+                )
+        assert isinstance(exc_info.value, MCPInvalidClientError)
+        assert not isinstance(exc_info.value, MCPRefreshTokenInvalidError)
+
+    @pytest.mark.asyncio
+    async def test_invalid_grant_wins_over_invalid_client_marker(self) -> None:
+        """A body carrying a refresh-token marker classifies as MCPRefreshTokenInvalidError
+        even if it also mentions the client — only the user's re-auth can fix it."""
+        resp = _json_response(
+            400, {"error": "invalid_grant", "error_description": "invalid_client or expired token"}
+        )
         inner = MagicMock()
         inner.post = AsyncMock(return_value=resp)
 

@@ -39,7 +39,12 @@ from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.client import MCPConnectionError
 from app.agents.mcp.discovery import discover_tools
-from app.agents.mcp.models import DiscoveredOAuthMetadata, MCPAuthMode, MCPServerInstanceConfig, MCPTransport
+from app.agents.mcp.models import (
+    DiscoveredOAuthMetadata,
+    MCPAuthMode,
+    MCPServerInstanceConfig,
+    MCPTransport,
+)
 from app.agents.mcp.registry import MCPRegistry
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
@@ -1147,6 +1152,32 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
         ) from e
+    except oauth_client_module.MCPInvalidClientError as e:
+        # The shared OAuth client is broken for every user of the instance — run the same
+        # instance-wide deauth + admin notification the background sweep would, now,
+        # instead of leaving a 5-minute window of guaranteed-failed refreshes.
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+
+        logger.warning(f"MCP OAuth client credentials rejected for instance {instance_id}: {e}")
+        refresh_service = startup_service.get_mcp_token_refresh_service()
+        cred_path = get_mcp_credentials_path(instance_id, user_id)
+        if refresh_service is not None:
+            await refresh_service.handle_invalid_client(cred_path, e)
+        else:
+            record = await config_service.get_config(cred_path, default=None, use_cache=False)
+            if isinstance(record, dict):
+                record["isAuthenticated"] = False
+                record["deauthReason"] = "invalid_client_credentials"
+                await config_service.set_config(cred_path, record)
+        raise HTTPException(
+            status_code=HttpStatusCode.UNAUTHORIZED.value,
+            detail=(
+                "The OAuth provider rejected this server's client credentials. "
+                "An administrator must update the OAuth client configuration before reconnecting."
+            ),
+        ) from e
     except oauth_client_module.MCPOAuthError as e:
         logger.error(f"MCP OAuth token refresh failed for instance {instance_id}: {e}")
         raise HTTPException(
@@ -1244,6 +1275,12 @@ async def _build_mcp_instance_entry(
     entry["isAuthenticated"] = bool(effective_auth is not None and (
         effective_auth == {} or effective_auth.get("isAuthenticated")
     ))
+    # Why the credential was deauthenticated (e.g. "invalid_client_credentials") — lets the
+    # UI distinguish "an admin must fix the OAuth client" from "never connected", where a
+    # user-driven reconnect would just fail again.
+    entry["deauthReason"] = (
+        effective_auth.get("deauthReason") if isinstance(effective_auth, dict) and not entry["isAuthenticated"] else None
+    )
     entry["tools"] = []
     entry["toolsError"] = None
 

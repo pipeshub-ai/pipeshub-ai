@@ -16,12 +16,18 @@ from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
+from app.services.notification.types import (
+    CONNECTOR_NOTIFICATION_LINK_PREFIX,
+    NotificationOrigin,
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
+DEFAULT_CONNECTOR_NOTIFICATION_LINK = CONNECTOR_NOTIFICATION_LINK_PREFIX
 INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
 

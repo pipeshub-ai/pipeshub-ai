@@ -38,6 +38,7 @@ from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.notification.types import (
+    ACTIONS_NOTIFICATION_LINK,
     NotificationOrigin,
     NotificationSeverity,
     NotificationType,
@@ -2306,6 +2307,7 @@ async def _notify_toolset_auth_error(
             severity=NotificationSeverity.ERROR,
             title=resolved_title,
             message=message,
+            redirect_link=ACTIONS_NOTIFICATION_LINK,
             recipient_user_ids=[user_id] if user_id else None,
         )
     except Exception as e:

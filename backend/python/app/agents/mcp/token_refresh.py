@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "MCPTokenRefreshError",
+    "get_refresh_lock",
     "resolve_client_credentials",
     "refresh_credential_record",
 ]
@@ -46,6 +47,13 @@ __all__ = [
 # invalidated. Never evicted, same tradeoff as `MCPTokenRefreshService`'s own per-path lock
 # dicts: unbounded but slow-growing (one entry per instance/owner pair ever refreshed).
 _refresh_locks: "defaultdict[tuple[str, str], asyncio.Lock]" = defaultdict(asyncio.Lock)
+
+
+def get_refresh_lock(instance_id: str, owner_id: str) -> asyncio.Lock:
+    """The per-(instance, owner) lock serializing every refresh of that credential —
+    exposed so out-of-band writers (e.g. deauthentication sweeps) can serialize against
+    an in-flight refresh instead of clobbering its just-persisted tokens."""
+    return _refresh_locks[(instance_id, owner_id)]
 
 
 class MCPTokenRefreshError(ValueError):

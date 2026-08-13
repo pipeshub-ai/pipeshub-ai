@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.token_service.oauth_service import (
+    DEAUTH_REASON_INVALID_CLIENT,
+    InvalidClientError,
     OAuthProvider,
     OAuthToken,
     RefreshTokenInvalidError,
@@ -12,6 +14,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.base.token_service.token_refresh_service import (
     MAX_REFRESH_TOKEN_INVALID_FAILURES,
     TokenRefreshService,
+)
+from app.services.notification.types import (
+    CONNECTOR_NOTIFICATION_LINK_PREFIX,
+    NotificationRecipientRole,
+    NotificationType,
 )
 
 CONNECTOR_ID = "conn-123"
@@ -181,3 +188,139 @@ class TestRefreshTokenInvalidThreshold:
 
         await service._handle_refresh_token_invalid(CONNECTOR_ID, error)
         mock_graph_provider.update_node.assert_awaited_once()
+
+
+class TestConnectorInvalidClient:
+    """invalid_client deactivates immediately — no strike counter, distinct audit reason."""
+
+    @pytest.mark.asyncio
+    async def test_first_invalid_client_deactivates_with_reason(
+        self, service: TokenRefreshService, mock_graph_provider: MagicMock
+    ) -> None:
+        service._invalid_refresh_failures[CONNECTOR_ID] = 1  # prior refresh-token strikes are irrelevant
+
+        await service._handle_invalid_client(CONNECTOR_ID, InvalidClientError("invalid_client"))
+
+        mock_graph_provider.update_node.assert_awaited_once()
+        _, _, updates = mock_graph_provider.update_node.await_args.args
+        assert updates["isAuthenticated"] is False
+        assert updates["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+        assert CONNECTOR_ID not in service._invalid_refresh_failures
+
+    @pytest.mark.asyncio
+    async def test_refresh_now_reraises_after_deactivation(
+        self, service: TokenRefreshService,
+    ) -> None:
+        with (
+            patch.object(service, "_perform_token_refresh", new=AsyncMock(side_effect=InvalidClientError("invalid_client"))),
+            patch.object(service, "_handle_invalid_client", new=AsyncMock()) as handle,
+        ):
+            with pytest.raises(InvalidClientError):
+                await service.refresh_now(CONNECTOR_ID, "confluence", "rt")
+        handle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_client_notifies_admins_and_personal_owner(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        notification_service = MagicMock()
+        notification_service.publish_notification = AsyncMock()
+        service = TokenRefreshService(
+            mock_config_service, mock_graph_provider, notification_service=notification_service
+        )
+        mock_graph_provider.get_document = AsyncMock(
+            return_value={"_key": CONNECTOR_ID, "type": "Gmail", "scope": "personal", "orgId": "org-1", "createdBy": "user-9"}
+        )
+
+        await service._handle_invalid_client(CONNECTOR_ID, InvalidClientError("invalid_client"))
+
+        kwargs = notification_service.publish_notification.await_args.kwargs
+        assert kwargs["recipient_roles"] == [NotificationRecipientRole.ADMIN]
+        assert kwargs["recipient_user_ids"] == ["user-9"]  # owner told why their connector stopped
+        assert kwargs["payload"]["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+        assert "invalid client credentials" in kwargs["title"]
+
+
+class TestConnectorDeactivationNotification:
+    """Deactivation must reach a human: the appDisabled event only updates platform state."""
+
+    def _service_with_notifications(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock, app_doc: dict
+    ) -> tuple[TokenRefreshService, MagicMock]:
+        notification_service = MagicMock()
+        notification_service.publish_notification = AsyncMock()
+        service = TokenRefreshService(
+            mock_config_service, mock_graph_provider, notification_service=notification_service
+        )
+        mock_graph_provider.get_document = AsyncMock(return_value=app_doc)
+        mock_graph_provider.get_edges_to_node = AsyncMock(return_value=[{"_from": "orgs/org-1"}])
+        return service, notification_service
+
+    @pytest.mark.asyncio
+    async def test_team_connector_notifies_admins_with_redirect_link(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        app_doc = {"_key": CONNECTOR_ID, "type": "Confluence", "name": "Confluence", "scope": "team"}
+        service, notification_service = self._service_with_notifications(
+            mock_config_service, mock_graph_provider, app_doc
+        )
+
+        await service._mark_connector_unauthenticated(CONNECTOR_ID)
+
+        notification_service.publish_notification.assert_awaited_once()
+        kwargs = notification_service.publish_notification.await_args.kwargs
+        assert kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert kwargs["org_id"] == "org-1"  # resolved via the org→app edge fallback
+        assert kwargs["recipient_roles"] == [NotificationRecipientRole.ADMIN]
+        assert kwargs["recipient_user_ids"] is None
+        assert kwargs["redirect_link"] == CONNECTOR_NOTIFICATION_LINK_PREFIX + "team/?connectorType=Confluence"
+        assert "Confluence" in kwargs["title"]
+
+    @pytest.mark.asyncio
+    async def test_personal_connector_notifies_owner(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        app_doc = {
+            "_key": CONNECTOR_ID, "type": "Gmail", "scope": "personal",
+            "orgId": "org-1", "createdBy": "user-9",
+        }
+        service, notification_service = self._service_with_notifications(
+            mock_config_service, mock_graph_provider, app_doc
+        )
+
+        await service._mark_connector_unauthenticated(CONNECTOR_ID)
+
+        kwargs = notification_service.publish_notification.await_args.kwargs
+        assert kwargs["recipient_user_ids"] == ["user-9"]
+        assert kwargs["recipient_roles"] is None
+        assert kwargs["redirect_link"] == CONNECTOR_NOTIFICATION_LINK_PREFIX + "personal/?connectorType=Gmail"
+
+    @pytest.mark.asyncio
+    async def test_failed_state_update_does_not_notify(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        """No notification if the connector was not actually deactivated."""
+        app_doc = {"_key": CONNECTOR_ID, "type": "Confluence", "scope": "team", "orgId": "org-1"}
+        service, notification_service = self._service_with_notifications(
+            mock_config_service, mock_graph_provider, app_doc
+        )
+        mock_graph_provider.update_node = AsyncMock(return_value=False)
+
+        await service._mark_connector_unauthenticated(CONNECTOR_ID)
+
+        notification_service.publish_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_notification_failure_is_swallowed(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        app_doc = {"_key": CONNECTOR_ID, "type": "Confluence", "scope": "team", "orgId": "org-1"}
+        service, notification_service = self._service_with_notifications(
+            mock_config_service, mock_graph_provider, app_doc
+        )
+        notification_service.publish_notification = AsyncMock(side_effect=RuntimeError("kafka down"))
+
+        await service._mark_connector_unauthenticated(CONNECTOR_ID)  # no raise
+
+        _, _, updates = mock_graph_provider.update_node.await_args.args
+        assert updates["isAuthenticated"] is False

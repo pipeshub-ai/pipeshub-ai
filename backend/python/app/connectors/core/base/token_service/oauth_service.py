@@ -34,6 +34,17 @@ class RefreshTokenInvalidError(Exception):
     revoked). Retrying cannot succeed — the user must re-authenticate."""
 
 
+class InvalidClientError(Exception):
+    """The provider rejected the OAuth client credentials (client id/secret) — retrying
+    with the same client can never succeed; an admin must fix the OAuth configuration."""
+
+
+# Audit strings written to `deauthReason` on deactivated records; the same values are
+# used by the MCP refresh service so operators see one vocabulary across all surfaces.
+DEAUTH_REASON_REFRESH_TOKEN_INVALID = "refresh_token_invalid"
+DEAUTH_REASON_INVALID_CLIENT = "invalid_client_credentials"
+
+
 _PERMANENT_REFRESH_ERROR_MARKERS = (
     "invalid_grant",
     "refresh_token is invalid",
@@ -43,10 +54,22 @@ _PERMANENT_REFRESH_ERROR_MARKERS = (
     "bad_refresh_token",
 )
 
+# RFC 6749 §5.2 `invalid_client` — the client id/secret is wrong, not the grant.
+# `unauthorized_client` is deliberately NOT here: Atlassian returns it for dead refresh
+# tokens, so it cannot distinguish a client-config problem from a token problem.
+_INVALID_CLIENT_ERROR_MARKERS = (
+    "invalid_client",
+)
+
 
 def _is_permanent_refresh_rejection(error_str: str) -> bool:
     lowered = error_str.lower()
     return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+
+
+def _is_invalid_client_rejection(error_str: str) -> bool:
+    lowered = error_str.lower()
+    return any(marker in lowered for marker in _INVALID_CLIENT_ERROR_MARKERS)
 
 
 _SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
@@ -347,8 +370,11 @@ class OAuthProvider:
             token_data = await self._make_token_request(data)
         except Exception as e:
             error_str = str(e)
+            # Refresh-token markers win ambiguous bodies — the narrower blast radius.
             if _is_permanent_refresh_rejection(error_str) or _is_servicenow_refresh_rejection(error_str, self.config.token_url):
                 raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required. {error_str}") from e
+            if _is_invalid_client_rejection(error_str):
+                raise InvalidClientError(f"OAuth client credentials rejected by provider — the client id/secret is invalid. {error_str}") from e
             status_match = re.search(r"status (\d+)", error_str)
             # Bare 403 stays transient — may be a WAF block, not a dead token
             if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:

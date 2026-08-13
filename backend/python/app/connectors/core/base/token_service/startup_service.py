@@ -20,6 +20,7 @@ from app.connectors.core.base.token_service.toolset_token_refresh_service import
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.notification.notification_service import NotificationService
 
 
 class StartupService:
@@ -43,6 +44,7 @@ class StartupService:
         self,
         configuration_service: ConfigurationService,
         graph_provider: IGraphDBProvider,
+        notification_service: Optional[NotificationService] = None,
     ) -> None:
         """Initialize startup services"""
         async with self._initialize_lock:
@@ -56,19 +58,25 @@ class StartupService:
                 # not blocked on per-connector OAuth provider round-trips.
                 # The first scan runs as a background task and the periodic
                 # refresher takes over afterwards.
-                token_refresh_service = TokenRefreshService(configuration_service, graph_provider)
+                token_refresh_service = TokenRefreshService(
+                    configuration_service, graph_provider, notification_service=notification_service
+                )
                 await token_refresh_service.start(wait_for_initial_refresh=False)
                 self._token_refresh_service = token_refresh_service
                 self.logger.info("✅ Connector token refresh service initialized")
 
                 # Initialize toolset token refresh service (separate from connectors)
-                toolset_token_refresh_service = ToolsetTokenRefreshService(configuration_service)
+                toolset_token_refresh_service = ToolsetTokenRefreshService(
+                    configuration_service, notification_service=notification_service
+                )
                 await toolset_token_refresh_service.start(wait_for_initial_refresh=False)
                 self._toolset_token_refresh_service = toolset_token_refresh_service
                 self.logger.info("✅ Toolset token refresh service initialized")
 
                 # Initialize MCP server token refresh service (separate from connectors/toolsets)
-                mcp_token_refresh_service = MCPTokenRefreshService(configuration_service)
+                mcp_token_refresh_service = MCPTokenRefreshService(
+                    configuration_service, notification_service=notification_service
+                )
                 await mcp_token_refresh_service.start(wait_for_initial_refresh=False)
                 self._mcp_token_refresh_service = mcp_token_refresh_service
                 self.logger.info("✅ MCP token refresh service initialized")

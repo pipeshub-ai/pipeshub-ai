@@ -8209,3 +8209,43 @@ class TestGetAuthenticatedToolsets:
         assert toolset["isAuthenticated"] is True
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
+
+
+class TestNotifyToolsetAuthError:
+    @pytest.mark.asyncio
+    async def test_publishes_with_actions_redirect_link(self) -> None:
+        from app.api.routes.toolsets import (
+            ACTIONS_NOTIFICATION_LINK,
+            _notify_toolset_auth_error,
+        )
+        from app.services.notification.types import NotificationType
+
+        notification_service = MagicMock()
+        notification_service.publish_notification = AsyncMock()
+
+        await _notify_toolset_auth_error(
+            notification_service, "org-1", "user-1", "jira", "OAuth app misconfigured"
+        )
+
+        notification_service.publish_notification.assert_awaited_once()
+        kwargs = notification_service.publish_notification.await_args.kwargs
+        assert kwargs["type"] == NotificationType.TOOLSET_AUTH_ERROR
+        assert kwargs["redirect_link"] == ACTIONS_NOTIFICATION_LINK
+        assert kwargs["recipient_user_ids"] == ["user-1"]
+        assert kwargs["org_id"] == "org-1"
+
+    @pytest.mark.asyncio
+    async def test_missing_notification_service_is_noop(self) -> None:
+        from app.api.routes.toolsets import _notify_toolset_auth_error
+        await _notify_toolset_auth_error(None, "org-1", "user-1", "jira", "msg")  # no raise
+
+    @pytest.mark.asyncio
+    async def test_publish_failure_is_swallowed(self) -> None:
+        from app.api.routes.toolsets import _notify_toolset_auth_error
+
+        notification_service = MagicMock()
+        notification_service.publish_notification = AsyncMock(side_effect=RuntimeError("kafka down"))
+
+        await _notify_toolset_auth_error(  # no raise
+            notification_service, "org-1", "user-1", "jira", "msg"
+        )
