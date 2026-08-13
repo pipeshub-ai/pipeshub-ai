@@ -44,6 +44,23 @@ class TestIndexAndParseCeiling:
         host = _host(governor=governor)
         assert concurrency.index_ceiling(host) == 8
         assert concurrency.parse_ceiling(host) == 4
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 4
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
+
+    def test_light_parse_lease_is_split_from_heavy(self) -> None:
+        assert concurrency.parse_lease_pool(ParseTier.HEAVY) == "parsing"
+        assert concurrency.parse_lease_pool(None) == "parsing"
+        assert concurrency.parse_lease_pool(ParseTier.LIGHT) == "parsing:light"
+
+    def test_light_parse_ceiling_is_not_the_heavy_ceiling(self) -> None:
+        """The bug this guards: parse_ceiling used to return ceilings.heavy
+        for every tier, so a cluster-wide Redis lease of 4 (Docling-sized)
+        serialized Jira/Slack parses and the local LIGHT_PARSE gate never
+        saw demand."""
+        governor = _make_governor(env_parse=4, env_index=8)
+        host = _host(governor=governor)
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) > concurrency.parse_ceiling(host, ParseTier.HEAVY)
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
 
     def test_ceiling_unaffected_by_adaptive_shrink(self) -> None:
         """The resolved ceiling is fixed at startup; index_ceiling/

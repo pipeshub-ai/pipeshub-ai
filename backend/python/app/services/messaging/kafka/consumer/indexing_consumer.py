@@ -345,8 +345,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
             self.consume_task = asyncio.create_task(self.__consume_loop())
             self.logger.info(
-                f"Started Kafka consumer task with parsing_ceiling={concurrency.parse_ceiling(self)}, "
+                f"Started Kafka consumer task with "
+                f"parsing_ceiling={concurrency.parse_ceiling(self)}, "
+                f"light_parsing_ceiling={concurrency.parse_ceiling(self, ParseTier.LIGHT)}, "
                 f"indexing_ceiling={concurrency.index_ceiling(self)}, "
+                f"light_indexing_ceiling={concurrency.index_ceiling(self, ParseTier.LIGHT)}, "
                 f"max_pending_tasks={concurrency.pending_task_ceiling(self)}"
             )
         except Exception as e:
@@ -978,6 +981,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         parsing_held = False
         indexing_held = False
         shutting_down = False
+        parse_lease_pool = "parsing"
         parsing_admission: concurrency.ParsingAdmission | None = None
         distributed_leases = DistributedLeaseSet()
         renewal_task: asyncio.Future[None] | None = None
@@ -1088,7 +1092,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 token = set_context(ctx.root_id)
 
                 async def consume_handler_events() -> None:
-                    nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission
+                    nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
                     async with asyncio.timeout(messaging_env.record_processing_timeout):
                         event_gen = self.message_handler(parsed_message)
                         try:
@@ -1097,11 +1101,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     event.event == IndexingEvent.START_PARSING
                                     and not parsing_held
                                 ):
+                                    parse_tier = event.data.tier if event.data else None
+                                    if self.governor is not None:
+                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
                                     if self.concurrency_manager is not None:
                                         if not await self._acquire_distributed_slot(
-                                            "parsing",
+                                            parse_lease_pool,
                                             lease_owner,
-                                            concurrency.parse_ceiling(self),
+                                            concurrency.parse_ceiling(self, parse_tier),
                                         ):
                                             # Only reason try_acquire gives up
                                             # (no deadline here) is self.running
@@ -1110,10 +1117,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                             # retry attempt on a clean shutdown.
                                             shutting_down = True
                                             return
-                                        distributed_leases.add("parsing", lease_owner)
+                                        distributed_leases.add(parse_lease_pool, lease_owner)
                                     parsing_admission = await concurrency.acquire_parsing_slot(
                                         self,
-                                        event.data.tier if event.data else None,
+                                        parse_tier,
                                         event.data.size_bytes if event.data else None,
                                     )
                                     parsing_held = True
@@ -1124,9 +1131,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
                                 ):
-                                    distributed_leases.discard("parsing")
+                                    distributed_leases.discard(parse_lease_pool)
                                     await self._release_distributed_slot(
-                                        "parsing", lease_owner
+                                        parse_lease_pool, lease_owner
                                     )
                                     concurrency.release_parsing_slot(parsing_admission)
                                     parsing_admission = None
@@ -1252,8 +1259,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 await asyncio.gather(renewal_task, return_exceptions=True)
 
             if parsing_held:
-                if distributed_leases.discard("parsing") is not None:
-                    await self._release_distributed_slot("parsing", lease_owner)
+                if distributed_leases.discard(parse_lease_pool) is not None:
+                    await self._release_distributed_slot(parse_lease_pool, lease_owner)
                 concurrency.release_parsing_slot(parsing_admission)
                 parsing_admission = None
                 self.logger.debug(f"Released parsing slot in finally for {message_id}")

@@ -328,14 +328,32 @@ def classify_index_tier(payload: "Mapping[str, Any]") -> ParseTier:
     return classify(payload.get("extension"), payload.get("mimeType"))
 
 
-def parse_ceiling(host: ConcurrencyHost) -> int:
-    """Cluster-wide parsing lease limit: the resolved HEAVY_PARSE ceiling
-    (the more conservative of the two tiers) when a governor is present,
-    else the legacy static env var."""
+def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
+    """Cluster-wide parsing lease limit for *tier* when a governor is
+    present, else the legacy static env var — which was never split by
+    tier, so it stays a single shared limit regardless of *tier*.
+
+    Light must not share the heavy ceiling: that cap is sized for Docling
+    RSS, and a Jira/Slack/Markdown parse waiting on it will never occupy
+    more than a handful of local LIGHT_PARSE slots, so the node-local
+    gate never sees demand and stays on its floor.
+    """
     governor = host.governor
     if governor is not None:
+        if tier is ParseTier.LIGHT:
+            return governor.ceilings.light
         return governor.ceilings.heavy
     return messaging_env.max_concurrent_parsing
+
+
+def parse_lease_pool(tier: ParseTier | None) -> str:
+    """Redis pool name for the cluster-wide parsing lease of *tier*.
+
+    Mirrors ``indexing`` / ``indexing:light``: a light record must not
+    consume one of the few heavy-parse leases a Docling PDF holds for
+    minutes.
+    """
+    return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
 
 
 class GateWaiterToken:

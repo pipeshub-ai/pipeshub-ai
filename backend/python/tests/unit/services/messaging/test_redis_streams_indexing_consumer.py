@@ -1544,6 +1544,39 @@ class TestProcessMessageWrapperWithGovernor:
         assert lease_limits["parsing"] == 4
 
     @pytest.mark.asyncio
+    async def test_light_parse_lease_uses_light_ceiling_and_own_pool(
+        self, governor_consumer
+    ) -> None:
+        governor_consumer.running = True
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+        governor_consumer.redis = AsyncMock()
+        governor_consumer.main_loop = asyncio.get_running_loop()
+        manager = AsyncMock()
+        manager.try_acquire.return_value = True
+        governor_consumer.concurrency_manager = manager
+
+        async def handler(_msg):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        result = await governor_consumer._process_message_wrapper(
+            "stream-a", "1-0", _valid_fields()
+        )
+
+        assert result is True
+        lease_limits = {
+            call.args[0]: call.args[2] for call in manager.try_acquire.await_args_list
+        }
+        assert "parsing" not in lease_limits
+        assert lease_limits["parsing:light"] == governor_consumer.governor.ceilings.light
+        assert lease_limits["parsing:light"] > 4
+
+    @pytest.mark.asyncio
     async def test_legacy_semaphore_path_unaffected_when_no_governor(
         self, consumer
     ) -> None:
