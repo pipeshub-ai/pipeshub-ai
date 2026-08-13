@@ -370,6 +370,10 @@ class TestRunChatStream:
             tool_records=[{"recordId": "r1"}],
             citation_ref_mapper=CitationRefMapper(),
             is_empty=False,
+            image_blocks=[{
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,retrieved"},
+            }],
         )
         captured: dict[str, Any] = {}
 
@@ -406,6 +410,11 @@ class TestRunChatStream:
 
         assert events[-1].startswith("event: complete\n")
         assert captured["context"].tool_state["final_results"] == prefetch_result.final_results
+        assert captured["context"].attachment_image_blocks == prefetch_result.image_blocks
+        assert any(
+            "includes 1 retrieved source image" in str(c)
+            for c in captured["goal"].constraints
+        )
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )

@@ -419,6 +419,14 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
             if prefetch_result is not None and not prefetch_result.is_empty:
+                context.attachment_image_blocks.extend(prefetch_result.image_blocks)
+                if prefetch_result.image_blocks:
+                    goal.constraints.append(
+                        f"The user message includes {len(prefetch_result.image_blocks)} retrieved "
+                        "source image(s). Inspect them directly when answering visual questions. "
+                        "The corresponding image block markers in the retrieved context contain "
+                        "the Citation IDs to cite and appear in the same order."
+                    )
                 context.tool_state["final_results"] = [
                     *context.tool_state.get("final_results", []), *prefetch_result.final_results,
                 ]

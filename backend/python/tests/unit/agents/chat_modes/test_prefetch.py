@@ -5,9 +5,29 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.agents.chat_modes.prefetch import PrefetchResult, prefetch_retrieval
+from app.agents.chat_modes.prefetch import (
+    PrefetchResult,
+    _select_image_blocks,
+    prefetch_retrieval,
+)
 
 LOGGER = logging.getLogger("test")
+
+
+def test_select_image_blocks_enforces_combined_byte_budget() -> None:
+    png = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+        "x8AAusB9Wl0bQAAAABJRU5ErkJggg=="
+    )
+    parts = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}},
+    ]
+
+    with patch("app.agents.chat_modes.prefetch._MAX_PREFETCH_IMAGE_BYTES", 100):
+        selected = _select_image_blocks(parts)
+
+    assert selected == parts[:1]
 
 
 def _make_kwargs(**overrides):
@@ -144,3 +164,104 @@ class TestSuccessfulPrefetch:
         assert result.final_results == flattened
         assert result.citation_ref_mapper is captured_ref_mapper["mapper"]
         graph_enrich.assert_awaited_once()
+
+    async def test_preserves_only_four_images_for_multimodal_injection(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [{"metadata": {"recordId": "r1"}}],
+            "virtual_to_record_map": {},
+        }
+        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
+        captured_kwargs = {}
+
+        def _fake_build_message_content_array(final_results, vr_map, **kwargs):
+            captured_kwargs.update(kwargs)
+            parts = [{"type": "text", "text": "[1|ref1] road image"}]
+            png = (
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+                "x8AAusB9Wl0bQAAAABJRU5ErkJggg=="
+            )
+            parts.extend(
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png}"}}
+                for _ in range(6)
+            )
+            return [parts], kwargs["ref_mapper"]
+
+        with patch(
+            "app.agents.chat_modes.prefetch.get_flattened_results",
+            new=AsyncMock(return_value=flattened),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.build_message_content_array",
+            side_effect=_fake_build_message_content_array,
+        ):
+            result = await prefetch_retrieval(**_make_kwargs(
+                retrieval_service=retrieval_service,
+                is_multimodal_llm=True,
+            ))
+
+        assert captured_kwargs["from_tool"] is False
+        assert captured_kwargs["is_multimodal_llm"] is True
+        assert len(result.image_blocks) == 4
+
+    async def test_hydrates_ranked_image_record_summary(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [
+                {
+                    "content": "OCR text from the image",
+                    "metadata": {
+                        "virtualRecordId": "vr-image",
+                        "recordId": "r-image",
+                        "mimeType": "image/jpeg",
+                        "blockIndex": 1,
+                    },
+                },
+                {
+                    "content": "A coastal photograph",
+                    "metadata": {
+                        "virtualRecordId": "vr-image",
+                        "recordId": "r-image",
+                        "mimeType": "image/jpeg",
+                        "isRecordSummary": True,
+                    },
+                },
+            ],
+            "virtual_to_record_map": {"vr-image": {"mimeType": "image/jpeg"}},
+        }
+        flattened = [{"virtual_record_id": "vr-image", "recordId": "r-image"}]
+        get_flattened = AsyncMock(return_value=flattened)
+
+        with patch(
+            "app.agents.chat_modes.prefetch.get_flattened_results", new=get_flattened,
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.build_message_content_array",
+            side_effect=lambda *args, **kwargs: (
+                [[{"type": "text", "text": "image marker"}]],
+                kwargs["ref_mapper"],
+            ),
+        ):
+            await prefetch_retrieval(**_make_kwargs(
+                retrieval_service=retrieval_service,
+                is_multimodal_llm=True,
+            ))
+
+        hydrated = get_flattened.await_args.args[0][-1]
+        assert hydrated["content"] == "A coastal photograph"
+        assert hydrated["metadata"]["virtualRecordId"] == "vr-image"
+        assert hydrated["metadata"]["blockIndex"] == 0
+        assert hydrated["metadata"]["isBlockGroup"] is False
+        assert hydrated["metadata"]["isRecordSummary"] is False

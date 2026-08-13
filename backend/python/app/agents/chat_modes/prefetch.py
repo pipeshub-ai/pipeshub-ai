@@ -9,12 +9,10 @@ Mirrors the "Standard path: upfront retrieval" branch `chatbot.py`'s
 `_generate_internal_search_stream()` ran today (`search_with_filters` ->
 `get_flattened_results` -> `enrich_virtual_record_id_to_result_with_fk_
 children` -> `enrich_records_with_graph_context` -> sort), and formats
-results with the exact same `build_message_content_array(..., from_tool=True)`
-call the shared `search_internal_knowledge` tool
-(`app/agents/actions/retrieval/retrieval.py`) uses for ITS OWN return text
--- so a prefetched context block and a follow-up tool-call result look
-identical to the model, and citation ref numbering stays on one
-`CitationRefMapper` across both.
+results through `build_message_content_array`. Multimodal prefetch uses
+`from_tool=False` so image blocks are emitted alongside the same citation
+markers used by text results. Citation numbering stays on one
+`CitationRefMapper` across prefetch and later tool calls.
 """
 
 from __future__ import annotations
@@ -29,6 +27,7 @@ from app.utils.chat_helpers import (
     enrich_virtual_record_id_to_result_with_fk_children,
     flattened_result_sort_key,
     get_flattened_results,
+    is_base64_image,
 )
 
 if TYPE_CHECKING:
@@ -38,6 +37,9 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 __all__ = ["PrefetchResult", "prefetch_retrieval"]
+
+_MAX_PREFETCH_IMAGES = 4
+_MAX_PREFETCH_IMAGE_BYTES = 16 * 1024 * 1024
 
 # Statuses `RetrievalService.search_with_filters()` uses for "the backend
 # itself failed/is unavailable" -- as opposed to "ran fine, found nothing"
@@ -59,7 +61,30 @@ class PrefetchResult:
     tool_records: list[dict[str, Any]]
     citation_ref_mapper: CitationRefMapper
     is_empty: bool
+    image_blocks: list[dict[str, Any]] = field(default_factory=list)
     error_message: str | None = field(default=None)
+
+
+def _select_image_blocks(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected = []
+    total_bytes = 0
+    for part in parts:
+        if part.get("type") != "image_url":
+            continue
+        image_url = part.get("image_url") or {}
+        uri = image_url.get("url") if isinstance(image_url, dict) else None
+        if not isinstance(uri, str) or "," not in uri or not is_base64_image(uri):
+            continue
+        payload = uri.split(",", 1)[1]
+        padding = len(payload) - len(payload.rstrip("="))
+        decoded_bytes = max(0, (len(payload) * 3) // 4 - padding)
+        if decoded_bytes > _MAX_PREFETCH_IMAGE_BYTES - total_bytes:
+            continue
+        selected.append(part)
+        total_bytes += decoded_bytes
+        if len(selected) == _MAX_PREFETCH_IMAGES:
+            break
+    return selected
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -114,6 +139,7 @@ async def prefetch_retrieval(
             user_id=user_id,
             limit=limit,
             filter_groups=filters,
+            include_image_content=is_multimodal_llm,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
         logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)
@@ -141,6 +167,33 @@ async def prefetch_retrieval(
 
     search_results = result.get("searchResults", [])
     virtual_to_record_map = result.get("virtual_to_record_map", {})
+    if is_multimodal_llm:
+        hydrated_image_records = []
+        seen_image_records = set()
+        for item in search_results:
+            metadata = item.get("metadata") or {}
+            virtual_record_id = metadata.get("virtualRecordId")
+            record = virtual_to_record_map.get(virtual_record_id) or {}
+            mime_type = str(metadata.get("mimeType") or record.get("mimeType") or "")
+            if (
+                virtual_record_id
+                and virtual_record_id not in seen_image_records
+                and metadata.get("blockIndex") is None
+                and mime_type.lower().startswith("image/")
+                and not is_base64_image(item.get("content"))
+            ):
+                hydrated_item = dict(item)
+                hydrated_item["metadata"] = {
+                    **metadata,
+                    "blockIndex": 0,
+                    "isBlockGroup": False,
+                    "isRecordSummary": False,
+                }
+                hydrated_image_records.append(hydrated_item)
+                seen_image_records.add(virtual_record_id)
+                if len(hydrated_image_records) == _MAX_PREFETCH_IMAGES:
+                    break
+        search_results = [*search_results, *hydrated_image_records]
 
     virtual_record_id_to_result: dict[str, Any] = {}
     flattened_results = await get_flattened_results(
@@ -175,11 +228,17 @@ async def prefetch_retrieval(
 
     message_content_array, ref_mapper = build_message_content_array(
         final_results, virtual_record_id_to_result,
-        is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True,
+        is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=False,
     )
     flat_parts = [item for sublist in message_content_array for item in sublist]
     formatted_context = "\n".join(
         part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
+    )
+    image_blocks = _select_image_blocks(flat_parts)
+    logger.info(
+        "prefetch_retrieval: prepared %d text part(s) and %d image part(s)",
+        sum(1 for part in flat_parts if part.get("type") == "text"),
+        len(image_blocks),
     )
 
     return PrefetchResult(
@@ -188,5 +247,6 @@ async def prefetch_retrieval(
         virtual_record_id_to_result=virtual_record_id_to_result,
         tool_records=list(virtual_record_id_to_result.values()),
         citation_ref_mapper=ref_mapper,
-        is_empty=not formatted_context.strip(),
+        is_empty=not formatted_context.strip() and not image_blocks,
+        image_blocks=image_blocks,
     )
