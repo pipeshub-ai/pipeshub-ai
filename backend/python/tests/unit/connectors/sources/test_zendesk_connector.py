@@ -1904,6 +1904,23 @@ class TestOAuthTokenRotation:
         with pytest.raises(RuntimeError, match="not initialized"):
             await zendesk_connector._get_fresh_datasource()
 
+    async def test_token_rechecked_per_page_not_per_stage(self, zendesk_connector):
+        """Incremental exports run at 10 req/min, so a large one outlives the ~30 minute
+        token. Resolving once per stage left the rest of the export 401ing."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_users = AsyncMock(side_effect=[
+            _make_response(data={"users": [], "after_cursor": "p2", "end_of_stream": False}),
+            _make_response(data={"users": [], "end_of_stream": True}),
+        ])
+
+        with patch.object(
+            zendesk_connector, "_get_fresh_datasource",
+            new=AsyncMock(return_value=datasource),
+        ) as resolve:
+            await zendesk_connector._fetch_users()
+
+        assert resolve.await_count == 2
+
     async def test_failed_rebuild_raises_instead_of_serving_stale_token(
         self, zendesk_connector
     ):
