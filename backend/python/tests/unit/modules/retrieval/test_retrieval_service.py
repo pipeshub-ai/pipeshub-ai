@@ -8,7 +8,10 @@ from langchain_core.documents import Document
 from qdrant_client import models
 
 from app.exceptions.fastapi_responses import Status
-from app.modules.retrieval.retrieval_service import ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
+from app.modules.retrieval.retrieval_service import (
+    ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
+    DEFAULT_SEARCH_LIMIT,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +576,41 @@ class TestSearchWithFilters:
         assert result["message"] == ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
 
     @pytest.mark.asyncio
+    async def test_explicit_none_limit_falls_back_to_the_default(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The prefetch path forwards the request's optional `limit` verbatim, so
+        `None` arrives here explicitly and the default argument cannot cover it.
+        It used to survive into HybridSearchRequest (a plain dataclass, no
+        validation) and blow up on `req.limit * 2`, which the broad except logged
+        as "Filtered search failed" and turned into an empty result set -- the
+        turn then answered with no retrieved context and no visible error.
+        """
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", limit=None
+        )
+
+        passed_limit = retrieval_service._execute_parallel_searches.await_args.args[2]
+        assert passed_limit == DEFAULT_SEARCH_LIMIT
+        assert passed_limit is not None
+
+    @pytest.mark.asyncio
+    async def test_explicit_limit_is_respected(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
+
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", limit=7
+        )
+
+        assert retrieval_service._execute_parallel_searches.await_args.args[2] == 7
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_search_results(
         self, retrieval_service, mock_graph_provider
     ):
@@ -792,11 +830,12 @@ class TestSearchWithFilters:
                 # mimeType intentionally absent
             }
         ]
-        # get_document returns a file with mimeType and webUrl
-        mock_graph_provider.get_document.return_value = {
+        # the files collection is fetched in one batched query, not per record
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
             "webUrl": "https://example.com/file",
             "mimeType": "application/pdf",
-        }
+        }]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.9,
@@ -809,10 +848,10 @@ class TestSearchWithFilters:
             queries=["test"], user_id="u1", org_id="o1"
         )
         assert result["status"] == "success"
-        # The file fetch should have been called with FILES collection
+        # The file fetch should have been one batched call on FILES
         from app.config.constants.arangodb import CollectionNames
-        mock_graph_provider.get_document.assert_called_once_with(
-            "rec1", CollectionNames.FILES.value
+        mock_graph_provider.get_nodes_by_field_in.assert_called_once_with(
+            CollectionNames.FILES.value, "id", ["rec1"]
         )
         sr = result["searchResults"][0]
         assert sr["metadata"]["mimeType"] == "application/pdf"
@@ -836,10 +875,11 @@ class TestSearchWithFilters:
                 # mimeType intentionally absent
             }
         ]
-        mock_graph_provider.get_document.return_value = {
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
             "webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/123",
             "mimeType": "text/html",
-        }
+        }]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.9,
@@ -853,8 +893,8 @@ class TestSearchWithFilters:
         )
         assert result["status"] == "success"
         from app.config.constants.arangodb import CollectionNames
-        mock_graph_provider.get_document.assert_called_once_with(
-            "rec1", CollectionNames.MAILS.value
+        mock_graph_provider.get_nodes_by_field_in.assert_called_once_with(
+            CollectionNames.MAILS.value, "id", ["rec1"]
         )
         sr = result["searchResults"][0]
         # Mail mimeType should default to text/html
@@ -880,10 +920,11 @@ class TestSearchWithFilters:
                 # webUrl intentionally absent
             }
         ]
-        mock_graph_provider.get_document.return_value = {
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
             "webUrl": "https://sharepoint.com/doc",
             "mimeType": "application/pdf",
-        }
+        }]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.85,
@@ -917,9 +958,10 @@ class TestSearchWithFilters:
                 # webUrl intentionally absent
             }
         ]
-        mock_graph_provider.get_document.return_value = {
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
             "webUrl": "https://mail.google.com/mail/123",
-        }
+        }]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.85,
@@ -965,14 +1007,16 @@ class TestSearchWithFilters:
             },
         ]
 
-        async def mock_get_document(record_id, collection):
+        async def mock_batch(collection, field, values):
             if collection == "files":
-                return {"webUrl": "https://drive.google.com/file", "mimeType": "application/pdf"}
+                return [{"id": "rec1", "webUrl": "https://drive.google.com/file",
+                         "mimeType": "application/pdf"}]
             elif collection == "mails":
-                return {"webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/456"}
-            return {}
+                return [{"id": "rec2",
+                         "webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/456"}]
+            return []
 
-        mock_graph_provider.get_document = AsyncMock(side_effect=mock_get_document)
+        mock_graph_provider.get_nodes_by_field_in = AsyncMock(side_effect=mock_batch)
 
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
@@ -1211,7 +1255,7 @@ class TestSearchWithFilters:
     async def test_fetch_files_exception_returns_empty_map(
         self, retrieval_service, mock_graph_provider
     ):
-        """When get_document raises for file fetch, it's handled gracefully."""
+        """When the batched file fetch raises, it's handled gracefully."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
         mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
@@ -1225,8 +1269,7 @@ class TestSearchWithFilters:
                 # no mimeType - triggers file fetch
             }
         ]
-        # get_document raises an exception (returned via gather with return_exceptions=True)
-        mock_graph_provider.get_document = AsyncMock(side_effect=Exception("db error"))
+        mock_graph_provider.get_nodes_by_field_in = AsyncMock(side_effect=Exception("db error"))
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
             {
                 "score": 0.9,
@@ -1241,6 +1284,48 @@ class TestSearchWithFilters:
         # Exception results are filtered out; result will lack mimeType so filtered out
         # from complete_results
         assert result["status"] in ("success", "empty_response")
+
+    @pytest.mark.asyncio
+    async def test_record_matched_by_many_chunks_is_fetched_once(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The fetch list is appended per search result, so a record matched by
+        several chunks used to cost one query per chunk."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "google_drive",
+                "recordName": "File.bin",
+                "webUrl": "https://example.com/doc",
+                "recordType": "FILE",
+                # no mimeType - triggers the file fetch
+            }
+        ]
+        mock_graph_provider.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": "rec1", "webUrl": "https://example.com/f", "mimeType": "application/pdf"}
+        ])
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9 - i / 100,
+                "content": f"chunk {i}",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+            for i in range(5)
+        ])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == "success"
+        from app.config.constants.arangodb import CollectionNames
+        mock_graph_provider.get_nodes_by_field_in.assert_called_once_with(
+            CollectionNames.FILES.value, "id", ["rec1"]
+        )
 
     @pytest.mark.asyncio
     async def test_no_returned_virtual_record_ids_returns_404(
