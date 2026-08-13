@@ -369,7 +369,6 @@ class ZendeskConnector(BaseConnector):
     async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser], bool]:
         # Full map, not just changed users: on_new_user_groups rebuilds membership
         # from scratch, so a truncated one revokes access. Third value flags that.
-        datasource = await self._get_fresh_datasource()
         start_time = DEFAULT_INCREMENTAL_START_TIME
         users_data: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
@@ -377,7 +376,6 @@ class ZendeskConnector(BaseConnector):
 
         while True:
             response = await self._call_incremental(
-                datasource.incremental_users,
                 "incremental_users",
                 start_time=start_time,
                 cursor=cursor,
@@ -505,13 +503,11 @@ class ZendeskConnector(BaseConnector):
         The second return value flags a truncated export: on_new_user_groups rebuilds
         each group from scratch, so writing partial membership revokes real access.
         """
-        datasource = await self._get_fresh_datasource()
         orgs_data: List[Dict[str, Any]] = []
         start_time = DEFAULT_INCREMENTAL_START_TIME
         complete = True
         while True:
             response = await self._call_incremental(
-                datasource.incremental_organizations,
                 "incremental_organizations",
                 start_time=start_time,
             )
@@ -565,7 +561,6 @@ class ZendeskConnector(BaseConnector):
         if not self._is_indexing_enabled(IndexingFilterKey.TICKETS.value):
             return 0
 
-        datasource = await self._get_fresh_datasource()
         synced = 0
         deleted = 0
         start_time = await self._get_start_time()
@@ -574,7 +569,6 @@ class ZendeskConnector(BaseConnector):
         complete = True
         while True:
             response = await self._call_incremental(
-                datasource.incremental_tickets,
                 "incremental_tickets",
                 start_time=start_time,
                 cursor=cursor,
@@ -1260,20 +1254,25 @@ class ZendeskConnector(BaseConnector):
     async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
         return await self._call_api(api_method, page=page, per_page=PAGE_SIZE, **kwargs)
 
-    async def _call_incremental(self, api_method: Any, label: str, **kwargs: Any) -> Any:
+    async def _call_incremental(self, method_name: str, **kwargs: Any) -> Any:
         """Incremental exports are capped at 10 req/min, so 429s are routine here.
+
+        Resolves the data source per page, not once per stage: at that rate a large
+        export outlives the ~30 minute OAuth token, and a client pinned for the whole
+        stage would 401 partway through with no way to pick up the rotated token.
 
         Returns None once retries are exhausted; the caller must then treat the
         export as truncated rather than as a complete result set.
         """
+        datasource = await self._get_fresh_datasource()
         try:
             return await call_with_retry(
-                partial(self._call_api, api_method, **kwargs),
+                partial(self._call_api, getattr(datasource, method_name), **kwargs),
                 logger=self.logger,
-                label=f"zendesk/{label}",
+                label=f"zendesk/{method_name}",
             )
         except httpx.HTTPStatusError as e:
-            self.logger.error(f"Zendesk {label} gave up after retries: {e}")
+            self.logger.error(f"Zendesk {method_name} gave up after retries: {e}")
             return None
 
     async def _fetch_paginated_list(self, api_method: Any, key: str, **kwargs: Any) -> List[Dict[str, Any]]:
