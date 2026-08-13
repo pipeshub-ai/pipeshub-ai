@@ -17,7 +17,6 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CollectionNames,
     Connectors,
     ExtensionTypes,
     MimeTypes,
@@ -67,6 +66,11 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_CHANGES_LIST_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
+)
+from app.connectors.sources.google.common.impersonation import (
+    get_impersonation_candidates,
+    is_delegation_error,
+    resolve_explicit_user,
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
@@ -2975,9 +2979,31 @@ class GoogleDriveTeamConnector(BaseConnector):
                 detail=f"Error getting file metadata: {str(e)}"
             )
 
+    async def _build_delegated_client(self, user_email: str) -> object:
+        """
+        Build a Drive service client impersonating user_email. Raises on failure
+        instead of silently substituting the service account, so the caller (the
+        impersonation fallback loop) can tell a real impersonation apart from a
+        failed one and correctly try the next candidate.
+        """
+        self.logger.info(f"Using user impersonation for user: {user_email}")
+        user_drive_client = await GoogleClient.build_from_services(
+            service_name="drive",
+            logger=self.logger,
+            config_service=self.config_service,
+            is_individual=False,  # Enterprise connector
+            version="v3",
+            user_email=user_email,  # Impersonate this user
+            connector_instance_id=self.connector_id
+        )
+        self.logger.info(f"User-specific client created for {user_email}")
+        return user_drive_client.get_client()
+
     async def _get_drive_service_for_user(self, user_email: Optional[str] = None) -> object:
         """
-        Get the appropriate Google Drive service client with user impersonation.
+        Get the appropriate Google Drive service client. Impersonates user_email
+        when given (raising if impersonation fails); otherwise uses the service
+        account client.
 
         Args:
             user_email: Optional user email to impersonate
@@ -2986,27 +3012,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             Google Drive service client
         """
         if user_email:
-            # Use user impersonation
-            self.logger.info(f"Using user impersonation for user: {user_email}")
-            try:
-                user_drive_client = await GoogleClient.build_from_services(
-                    service_name="drive",
-                    logger=self.logger,
-                    config_service=self.config_service,
-                    is_individual=False,  # Enterprise connector
-                    version="v3",
-                    user_email=user_email,  # Impersonate this user
-                    connector_instance_id=self.connector_id
-                )
+            return await self._build_delegated_client(user_email)
 
-                self.logger.info(f"User-specific client created for {user_email}")
-                return user_drive_client.get_client()
-            except Exception as e:
-                self.logger.error(f"Failed to create user-specific client for {user_email}: {e}")
-                # Fall back to service account
-                self.logger.warning("Falling back to service account client")
-
-        # If no user_email provided or impersonation fails, use service account
         if not self.drive_client:
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
@@ -3014,67 +3021,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
         self.logger.info("Using service account drive client")
         return self.drive_client.get_client()
-
-    async def _resolve_explicit_user(self, user_id: Optional[str]) -> Optional[User]:
-        """
-        Resolve an explicitly-requested user_id straight to a User, with no permission-
-        holder lookup involved. Callers that already know exactly who to impersonate
-        (e.g. the public /api/v1/stream/record route, which passes the actual
-        authenticated caller from request.state.user) don't need — and shouldn't pay
-        the cost of — the broader candidate search in _get_impersonation_candidates;
-        that search exists only for callers that don't have a user_id at all (e.g. the
-        internal indexing stream route, whose JWT carries no user identity).
-        """
-        if not user_id or user_id == "None":
-            return None
-        async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_user_id(user_id)
-        email = user.get("email") if user else None
-        if not email:
-            self.logger.warning(f"User not found for user_id {user_id}, falling back to users with permission to node")
-            return None
-        self.logger.info(f"Retrieved user email {email} for user_id {user_id}")
-        return User(email=email, is_active=user.get("isActive"))
-
-    async def _get_impersonation_candidates(self, record_id: str) -> List[User]:
-        """
-        Build an ordered list of every user with permission to a record, to try
-        impersonating for domain-wide-delegation access, sorted so users this
-        connector's own workspace sync has confirmed exist (self.synced_user_emails)
-        come first — a record can be shared with users outside this Workspace/tenant
-        whose credentials this connector's service account can never be delegated to
-        impersonate (e.g. an external owner who shared the file with one of our synced
-        users).
-
-        When self.synced_user_emails is empty — right after a restart, or for a
-        connector instance that was lazily created just to stream and never ran a full
-        user sync — every permission holder is left as an equally-ranked candidate
-        rather than excluded. The caller (_get_drive_service_with_fallback) tries them
-        one by one, so an unpopulated cache degrades to "try everyone" instead of
-        failing outright.
-        """
-        
-        async with self.data_store_provider.transaction() as tx_store:
-            permission_holders = await tx_store.get_users_with_permission_to_node(
-                record_id, CollectionNames.RECORDS.value
-            )
-
-        def sort_key(user: User) -> Tuple[int, int]:
-            email_lower = (user.email or "").lower()
-            in_synced_workspace = 0 if email_lower in self.synced_user_emails else 1
-            inactive = 1 if user.is_active is False else 0
-            return (in_synced_workspace, inactive)
-
-        ordered: List[User] = []
-        seen_emails: set[str] = set()
-        for user in sorted(permission_holders, key=sort_key):
-            email_lower = (user.email or "").lower()
-            if not email_lower or email_lower in seen_emails:
-                continue
-            seen_emails.add(email_lower)
-            ordered.append(user)
-
-        return ordered
 
     async def _get_drive_service_with_fallback(
         self,
@@ -3104,7 +3050,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 result = await call(drive_service)
                 return drive_service, email, result
             except Exception as e:
-                if "unauthorized_client" not in str(e):
+                if not is_delegation_error(e):
                     raise
                 self.logger.warning(
                     f"Domain-wide delegation not authorized for {email}; trying next impersonation candidate"
@@ -3144,11 +3090,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # If the caller already told us exactly who to impersonate, use that
             # directly — no need to search permission holders.
-            preferred_user = await self._resolve_explicit_user(user_id)
+            preferred_user = await resolve_explicit_user(self.logger, self.data_store_provider, user_id)
             if preferred_user:
                 candidates = [preferred_user]
             else:
-                candidates = await self._get_impersonation_candidates(record.id)
+                candidates = await get_impersonation_candidates(
+                    self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
@@ -3347,7 +3295,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing file_id for record {record.id}")
                 return None
 
-            candidates = await self._get_impersonation_candidates(record.id)
+            candidates = await get_impersonation_candidates(
+                self.data_store_provider, record.id, self.synced_user_emails, self.logger
+            )
             if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
@@ -3380,16 +3330,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Wrap drive service in GoogleDriveDataSource to use with _process_drive_item
             user_drive_data_source = GoogleDriveDataSource(drive_service)
             user_email = api_user_email or resolved_email
-            user_id = api_user_id
+            # _process_drive_item keys off user_email only and ignores user_id (shared-drive
+            # sync passes "" for it), so a missing permissionId must not abort the reindex.
+            user_id = api_user_id or ""
 
             if not user_id:
                 self.logger.warning(f"Failed to get user permissionId for {user_email}")
-                # Fallback to using source_user_id if available
-                resolved_user = next((u for u in candidates if u.email == resolved_email), None)
-                user_id = resolved_user.source_user_id if resolved_user else None
-                if not user_id:
-                    self.logger.warning(f"Could not determine user_id for record {record.id}")
-                    return None
 
             if not file_metadata:
                 self.logger.warning(f"File {file_id} not found at source")

@@ -18,7 +18,6 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -67,6 +66,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.apps import GmailTeamApp
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
+)
+from app.connectors.sources.google.common.impersonation import (
+    get_impersonation_candidates,
+    is_delegation_error,
+    resolve_explicit_user,
 )
 from app.connectors.sources.google.gmail.talon_utils import quotations
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -1726,18 +1730,23 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error creating Gmail client for user {user_email}: {e}")
             raise
 
+    async def _build_delegated_client(self, user_email: str) -> GoogleGmailDataSource:
+        """
+        Build a Gmail client impersonating user_email. Raises on failure instead
+        of silently substituting the service account, so the caller (the
+        impersonation fallback loop) can tell a real impersonation apart from a
+        failed one and correctly try the next candidate.
+        """
+        return await self._create_user_gmail_client(user_email)
+
     async def _get_gmail_client_for_user(self, user_email: Optional[str] = None) -> GoogleGmailDataSource:
         """
-        Get the appropriate Gmail data source, impersonating user_email when given,
-        otherwise using the service account client. Mirrors the Drive connector's
-        _get_drive_service_for_user.
+        Get the appropriate Gmail data source. Impersonates user_email when given
+        (raising if impersonation fails); otherwise uses the service account
+        client. Mirrors the Drive connector's _get_drive_service_for_user.
         """
         if user_email:
-            try:
-                return await self._create_user_gmail_client(user_email)
-            except Exception as e:
-                self.logger.error(f"Failed to create user-specific client for {user_email}: {e}")
-                self.logger.warning("Falling back to service account client")
+            return await self._build_delegated_client(user_email)
 
         if not self.gmail_data_source:
             raise HTTPException(
@@ -1745,64 +1754,6 @@ class GoogleGmailTeamConnector(BaseConnector):
                 detail="Gmail client not initialized"
             )
         return self.gmail_data_source
-
-    async def _resolve_explicit_user(self, user_id: Optional[str]) -> Optional[User]:
-        """
-        Resolve an explicitly-requested user_id straight to a User, with no permission-
-        holder lookup involved. Callers that already know exactly who to impersonate
-        (e.g. the public /api/v1/stream/record route, which passes the actual
-        authenticated caller from request.state.user) don't need — and shouldn't pay
-        the cost of — the broader candidate search in _get_impersonation_candidates;
-        that search exists only for callers that don't have a user_id at all (e.g. the
-        internal indexing stream route, whose JWT carries no user identity).
-        """
-        if not user_id or user_id == "None":
-            return None
-        async with self.data_store_provider.transaction() as tx_store:
-            user = await tx_store.get_user_by_user_id(user_id)
-        email = user.get("email") if user else None
-        if not email:
-            self.logger.warning(f"User not found for user_id {user_id}, falling back to users with permission to node")
-            return None
-        self.logger.info(f"Retrieved user email {email} for user_id {user_id}")
-        return User(email=email, is_active=user.get("isActive"))
-
-    async def _get_impersonation_candidates(self, record_id: str) -> List[User]:
-        """
-        Build an ordered list of every user with permission to a record, to try
-        impersonating for domain-wide-delegation access, sorted so users this
-        connector's own workspace sync has confirmed exist (self.synced_user_emails)
-        come first — a record can be shared with users outside this Workspace/tenant
-        whose credentials this connector's service account can never be delegated to
-        impersonate.
-
-        When self.synced_user_emails is empty — right after a restart, or for a
-        connector instance that was lazily created just to stream and never ran a full
-        user sync — every permission holder is left as an equally-ranked candidate
-        rather than excluded, so the caller tries them all instead of failing outright.
-        """
-
-        async with self.data_store_provider.transaction() as tx_store:
-            permission_holders = await tx_store.get_users_with_permission_to_node(
-                record_id, CollectionNames.RECORDS.value
-            )
-
-        def sort_key(user: User) -> Tuple[int, int]:
-            email_lower = (user.email or "").lower()
-            in_synced_workspace = 0 if email_lower in self.synced_user_emails else 1
-            inactive = 1 if user.is_active is False else 0
-            return (in_synced_workspace, inactive)
-
-        ordered: List[User] = []
-        seen_emails: set[str] = set()
-        for user in sorted(permission_holders, key=sort_key):
-            email_lower = (user.email or "").lower()
-            if not email_lower or email_lower in seen_emails:
-                continue
-            seen_emails.add(email_lower)
-            ordered.append(user)
-
-        return ordered
 
     async def _get_gmail_service_with_fallback(
         self,
@@ -1828,7 +1779,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 result = await call(gmail_data_source.client, email)
                 return email, result
             except Exception as e:
-                if "unauthorized_client" not in str(e):
+                if not is_delegation_error(e):
                     raise
                 self.logger.warning(
                     f"Domain-wide delegation not authorized for {email}; trying next impersonation candidate"
@@ -2708,13 +2659,13 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Failed to fetch mail content: {str(http_error)}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to fetch mail content: {str(http_error)}"
+                detail="Failed to fetch mail content"
             )
         except Exception as mail_error:
             self.logger.error(f"Failed to fetch mail content: {str(mail_error)}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to fetch mail content: {str(mail_error)}"
+                detail="Failed to fetch mail content"
             )
 
     async def _stream_attachment_record(
@@ -2873,10 +2824,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 )
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=(
-                        "Failed to download file from both Gmail and Drive. "
-                        f"Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                    ),
+                    detail="Failed to download file from both Gmail and Drive",
                 )
         except Exception as attachment_error:
             self.logger.error(f"Error streaming attachment: {str(attachment_error)}")
@@ -2913,11 +2861,13 @@ class GoogleGmailTeamConnector(BaseConnector):
             # directly — no need to search permission holders. Only fall back to the
             # broader candidate search when no user_id was given at all (e.g. the
             # internal indexing stream route, whose JWT carries no user identity).
-            preferred_user = await self._resolve_explicit_user(user_id)
+            preferred_user = await resolve_explicit_user(self.logger, self.data_store_provider, user_id)
             if preferred_user:
                 candidates = [preferred_user]
             else:
-                candidates = await self._get_impersonation_candidates(record.id)
+                candidates = await get_impersonation_candidates(
+                    self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
@@ -3012,7 +2962,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing external_record_id for record {record.id}")
                 return None
 
-            candidates = await self._get_impersonation_candidates(record.id)
+            candidates = await get_impersonation_candidates(
+                self.data_store_provider, record.id, self.synced_user_emails, self.logger
+            )
             if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
@@ -3115,7 +3067,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             return None
 
         except Exception as e:
-            if "unauthorized_client" in str(e):
+            if is_delegation_error(e):
                 # Delegation failure, not a real "no change" — let the caller retry with
                 # a different impersonation candidate instead of silently treating this
                 # record as unchanged.
@@ -3331,7 +3283,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             return None
 
         except Exception as e:
-            if "unauthorized_client" in str(e):
+            if is_delegation_error(e):
                 # Delegation failure, not a real "no change" — let the caller retry with
                 # a different impersonation candidate instead of silently treating this
                 # record as unchanged.

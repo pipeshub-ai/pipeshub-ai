@@ -1670,15 +1670,15 @@ class TestGetDriveServiceForUser:
             await connector._get_drive_service_for_user()
 
     @pytest.mark.asyncio
-    async def test_fallback_on_impersonation_failure(self, connector):
+    async def test_impersonation_failure_raises(self, connector):
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
             MockGC.build_from_services = AsyncMock(side_effect=RuntimeError("fail"))
             connector.drive_client = MagicMock()
             connector.drive_client.get_client.return_value = MagicMock()
-            result = await connector._get_drive_service_for_user("u@t.com")
-            assert result is not None
+            with pytest.raises(RuntimeError, match="fail"):
+                await connector._get_drive_service_for_user("u@t.com")
 
 
 class TestGetFileMetadataFromDrive:
@@ -3239,15 +3239,15 @@ class TestGetDriveServiceForUserFullCoverage:
             await connector._get_drive_service_for_user()
 
     @pytest.mark.asyncio
-    async def test_fallback_on_impersonation_failure(self, connector):
+    async def test_impersonation_failure_raises(self, connector):
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
             MockGC.build_from_services = AsyncMock(side_effect=RuntimeError("fail"))
             connector.drive_client = MagicMock()
             connector.drive_client.get_client.return_value = MagicMock()
-            result = await connector._get_drive_service_for_user("u@t.com")
-            assert result is not None
+            with pytest.raises(RuntimeError, match="fail"):
+                await connector._get_drive_service_for_user("u@t.com")
 
 
 class TestGetFileMetadataFromDriveFullCoverage:

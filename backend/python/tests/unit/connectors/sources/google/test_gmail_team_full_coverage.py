@@ -56,6 +56,9 @@ def _make_mock_tx_store(existing_record=None, user_with_perm=None, user_by_id=No
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.create_record_relation = AsyncMock()
     tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user_with_perm)
+    tx.get_users_with_permission_to_node = AsyncMock(
+        return_value=[user_with_perm] if user_with_perm else []
+    )
     tx.get_user_by_user_id = AsyncMock(return_value=user_by_id)
     tx.get_records_by_parent = AsyncMock(return_value=attachment_records or [])
     return tx
@@ -1101,7 +1104,7 @@ class TestCheckAndFetchUpdatedRecord:
         connector.data_store_provider = provider
 
         record = _make_record(record_type=RecordType.MAIL)
-        connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
+        connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_mail_record = AsyncMock(return_value=None)
         await connector._check_and_fetch_updated_record("org-1", record)
         connector._check_and_fetch_updated_mail_record.assert_awaited_once()
@@ -1114,7 +1117,7 @@ class TestCheckAndFetchUpdatedRecord:
         connector.data_store_provider = provider
 
         record = _make_record(record_type=RecordType.FILE)
-        connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
+        connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_file_record = AsyncMock(return_value=None)
         await connector._check_and_fetch_updated_record("org-1", record)
         connector._check_and_fetch_updated_file_record.assert_awaited_once()
