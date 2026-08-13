@@ -335,6 +335,90 @@ class TestTicketToRecord:
 
 
 # ===========================================================================
+# Deletion at source
+# ===========================================================================
+
+
+class TestDeletedTickets:
+    """A ticket deleted in Zendesk stays in the export with status "deleted" while it
+    sits in the trash. Ignoring that left it indexed and answerable forever — no later
+    sync revisits it, and a full sync re-created it from the same export."""
+
+    @staticmethod
+    def _page(connector, tickets):
+        datasource = _ready(connector)
+        datasource.incremental_tickets = AsyncMock(
+            return_value=_make_response(data={"tickets": tickets, "end_of_stream": True})
+        )
+        connector.records_sync_point.update_sync_point = AsyncMock()
+        connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+        return datasource
+
+    async def test_deleted_ticket_is_not_rebuilt_as_a_record(self, zendesk_connector):
+        assert await zendesk_connector._ticket_to_record({
+            "id": 16, "subject": "PIPESHUB TEST - Database Connection Error",
+            "status": "deleted",
+        }) is None
+
+    async def test_deleted_ticket_cascades(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """Cascade, not on_record_deleted — attachments hang off the ticket as child
+        records and only the cascade path purges the vectors."""
+        existing = MagicMock()
+        existing.id = "rec-16"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._page(zendesk_connector, [{"id": 16, "subject": "Gone", "status": "deleted"}])
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-16"], "zd-conn-1"
+        )
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+    async def test_unknown_deleted_ticket_is_ignored(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """Never synced, so there is nothing to remove."""
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._page(zendesk_connector, [{"id": 99, "status": "deleted"}])
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    async def test_live_tickets_on_the_same_page_still_sync(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        existing = MagicMock()
+        existing.id = "rec-16"
+        mock_tx_store.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_id: (
+                existing if external_id == "16" else None
+            )
+        )
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._page(zendesk_connector, [
+            {"id": 16, "subject": "Gone", "status": "deleted"},
+            {"id": 17, "subject": "Alive", "status": "open", "group_id": 7},
+        ])
+
+        synced = await zendesk_connector._sync_tickets()
+
+        assert synced == 1
+        published = mock_data_entities_processor.on_new_records.await_args.args[0]
+        assert [r.external_record_id for r, _ in published] == ["17"]
+
+    async def test_status_check_is_case_insensitive(self, zendesk_connector):
+        assert zendesk_connector._is_deleted_ticket({"status": "Deleted"}) is True
+        assert zendesk_connector._is_deleted_ticket({"status": "open"}) is False
+        assert zendesk_connector._is_deleted_ticket({}) is False
+
+
+# ===========================================================================
 # Ticket-to-ticket links
 # ===========================================================================
 
