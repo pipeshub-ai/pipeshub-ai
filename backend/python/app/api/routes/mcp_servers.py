@@ -1153,9 +1153,9 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
             detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
         ) from e
     except oauth_client_module.MCPInvalidClientError as e:
-        # The shared OAuth client is broken for every user of the instance — run the same
-        # instance-wide deauth + admin notification the background sweep would, now,
-        # instead of leaving a 5-minute window of guaranteed-failed refreshes.
+        from app.connectors.core.base.token_service.mcp_token_refresh_service import (
+            DEAUTH_REASON_INVALID_CLIENT,
+        )
         from app.connectors.core.base.token_service.startup_service import (
             startup_service,
         )
@@ -1168,9 +1168,13 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
         else:
             record = await config_service.get_config(cred_path, default=None, use_cache=False)
             if isinstance(record, dict):
+                now_ms = get_epoch_timestamp_in_ms()
                 record["isAuthenticated"] = False
-                record["deauthReason"] = "invalid_client_credentials"
-                await config_service.set_config(cred_path, record)
+                record["deauthReason"] = DEAUTH_REASON_INVALID_CLIENT
+                record["deauthAt"] = now_ms
+                record["updatedAt"] = now_ms
+                if not await config_service.set_config(cred_path, record):
+                    logger.error(f"Failed to persist deauthentication for MCP credential {cred_path}")
         raise HTTPException(
             status_code=HttpStatusCode.UNAUTHORIZED.value,
             detail=(
@@ -1275,9 +1279,7 @@ async def _build_mcp_instance_entry(
     entry["isAuthenticated"] = bool(effective_auth is not None and (
         effective_auth == {} or effective_auth.get("isAuthenticated")
     ))
-    # Why the credential was deauthenticated (e.g. "invalid_client_credentials") — lets the
-    # UI distinguish "an admin must fix the OAuth client" from "never connected", where a
-    # user-driven reconnect would just fail again.
+
     entry["deauthReason"] = (
         effective_auth.get("deauthReason") if isinstance(effective_auth, dict) and not entry["isAuthenticated"] else None
     )

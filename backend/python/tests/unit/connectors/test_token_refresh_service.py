@@ -38,6 +38,7 @@ def mock_graph_provider() -> MagicMock:
     """Mock IGraphDBProvider with async update_node."""
     provider = MagicMock()
     provider.update_node = AsyncMock(return_value=True)
+    provider.get_document = AsyncMock(return_value=None)
     return provider
 
 
@@ -220,6 +221,37 @@ class TestConnectorInvalidClient:
         handle.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_already_deauthed_connector_does_not_renotify(
+        self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
+    ) -> None:
+        """A repeat invalid_client on an already-deauthed connector (in-flight refresh_now,
+        a task mid-refresh when the flip landed) must not rewrite state or re-notify."""
+        notification_service = MagicMock()
+        notification_service.publish_notification = AsyncMock()
+        service = TokenRefreshService(
+            mock_config_service, mock_graph_provider, notification_service=notification_service
+        )
+        mock_graph_provider.get_document = AsyncMock(
+            return_value={"_key": CONNECTOR_ID, "type": "Confluence", "isAuthenticated": False, "orgId": "org-1"}
+        )
+
+        await service._handle_invalid_client(CONNECTOR_ID, InvalidClientError("invalid_client"))
+
+        mock_graph_provider.update_node.assert_not_awaited()
+        notification_service.publish_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_precheck_failure_still_deactivates(
+        self, service: TokenRefreshService, mock_graph_provider: MagicMock
+    ) -> None:
+        """The guard is only dedupe — a failed pre-check read must not block the deauth."""
+        mock_graph_provider.get_document = AsyncMock(side_effect=RuntimeError("arango down"))
+
+        await service._handle_invalid_client(CONNECTOR_ID, InvalidClientError("invalid_client"))
+
+        mock_graph_provider.update_node.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_invalid_client_notifies_admins_and_personal_owner(
         self, mock_config_service: MagicMock, mock_graph_provider: MagicMock
     ) -> None:
@@ -320,7 +352,7 @@ class TestConnectorDeactivationNotification:
         )
         notification_service.publish_notification = AsyncMock(side_effect=RuntimeError("kafka down"))
 
-        await service._mark_connector_unauthenticated(CONNECTOR_ID)  # no raise
+        await service._mark_connector_unauthenticated(CONNECTOR_ID)
 
         _, _, updates = mock_graph_provider.update_node.await_args.args
         assert updates["isAuthenticated"] is False

@@ -67,6 +67,7 @@ class MCPTokenRefreshService:
         self._refresh_lock = asyncio.Lock()
         self._credential_locks: Dict[str, asyncio.Lock] = {}
         self._schedule_locks: Dict[str, asyncio.Lock] = {}
+        self._instance_deauth_locks: dict[str, asyncio.Lock] = {}
         self._last_refresh_time: Dict[str, float] = {}
         self._invalid_refresh_failures: Dict[str, int] = {}
 
@@ -200,7 +201,8 @@ class MCPTokenRefreshService:
                 record["isAuthenticated"] = False
                 record["deauthReason"] = "refresh_token_invalid"
                 record["updatedAt"] = get_epoch_timestamp_in_ms()
-                await self.configuration_service.set_config(config_path, record)
+                if not await self.configuration_service.set_config(config_path, record):
+                    self.logger.error(f"Failed to persist deauthentication for MCP credential {config_path}")
         except Exception as e:
             self.logger.error(f"Error marking MCP credential {config_path} unauthenticated: {e}")
 
@@ -210,20 +212,30 @@ class MCPTokenRefreshService:
         instead of leaving it to the next periodic sweep."""
         await self._handle_invalid_client(config_path, error)
 
+    def _get_instance_deauth_lock(self, instance_id: str) -> asyncio.Lock:
+        if instance_id not in self._instance_deauth_locks:
+            self._instance_deauth_locks[instance_id] = asyncio.Lock()
+        return self._instance_deauth_locks[instance_id]
+
     async def _handle_invalid_client(self, config_path: str, error: Exception) -> None:
         """The OAuth client is shared by every credential of the instance and only an admin
-        can fix it, so no retry can succeed — the whole instance is deauthenticated at once."""
+        can fix it, so no retry can succeed — the whole instance is deauthenticated at once.
+
+        Serialized per instance: when the shared client breaks, every credential's refresh
+        fails at once, and unserialized handlers could each flip a disjoint subset of
+        records — each ending with deauthed_count > 0 and each notifying admins. Under
+        the lock, the second handler finds nothing left to flip and stays silent.
+        """
         instance_id = config_path.strip("/").split("/")[-2]
         self.logger.error(
             f"OAuth client credentials rejected for MCP instance {instance_id} (via {config_path}); "
             f"marking all credentials for the instance unauthenticated: {error}"
         )
-        org_id, deauthed_count = await self._deauthenticate_instance_credentials(instance_id, config_path)
-        self._cancel_instance_refresh_tasks_except_current(instance_id)
-        # Concurrent in-flight refreshes of the same instance all fail with the same error;
-        # only the handler that actually flipped records notifies, so admins get one message.
-        if deauthed_count > 0:
-            await self._notify_admins_invalid_client(instance_id, org_id, error, deauthed_count)
+        async with self._get_instance_deauth_lock(instance_id):
+            org_id, deauthed_count = await self._deauthenticate_instance_credentials(instance_id, config_path)
+            self._cancel_instance_refresh_tasks_except_current(instance_id)
+            if deauthed_count > 0:
+                await self._notify_admins_invalid_client(instance_id, org_id, deauthed_count)
 
     async def _deauthenticate_instance_credentials(self, instance_id: str, triggering_path: str) -> tuple[Optional[str], int]:
         """Mark every credential record of the instance unauthenticated. Returns the orgId
@@ -260,8 +272,12 @@ class MCPTokenRefreshService:
                     record["deauthReason"] = DEAUTH_REASON_INVALID_CLIENT
                     record["deauthAt"] = now_ms
                     record["updatedAt"] = now_ms
-                    await self.configuration_service.set_config(key, record)
-                    deauthed_count += 1
+                    # set_config returns False instead of raising — an unpersisted flip
+                    # must not count toward the admin notification.
+                    if await self.configuration_service.set_config(key, record):
+                        deauthed_count += 1
+                    else:
+                        self.logger.error(f"Failed to persist deauthentication for MCP credential {key}")
             except Exception as e:
                 self.logger.error(f"Error marking MCP credential {key} unauthenticated: {e}")
             finally:
@@ -280,7 +296,7 @@ class MCPTokenRefreshService:
             self.cancel_refresh_task(path)
 
     async def _notify_admins_invalid_client(
-        self, instance_id: str, org_id: Optional[str], error: Exception, deauthed_count: int
+        self, instance_id: str, org_id: Optional[str], deauthed_count: int
     ) -> None:
         if self._notification_service is None:
             return
@@ -318,7 +334,6 @@ class MCPTokenRefreshService:
                     "instanceId": instance_id,
                     "deauthReason": DEAUTH_REASON_INVALID_CLIENT,
                     "deauthedCredentials": deauthed_count,
-                    "error": str(error),
                 },
                 redirect_link=MCP_SERVERS_NOTIFICATION_LINK,
                 recipient_roles=[NotificationRecipientRole.ADMIN],

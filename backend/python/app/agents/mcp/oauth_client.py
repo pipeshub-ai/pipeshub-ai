@@ -26,9 +26,7 @@ _PERMANENT_REFRESH_ERROR_MARKERS = (
     "bad_refresh_token",
 )
 
-# RFC 6749 §5.2 `invalid_client` — the OAuth client id/secret itself is wrong, not the
-# grant. `unauthorized_client` is deliberately NOT here: Atlassian returns it for dead
-# refresh tokens, so it cannot distinguish a client-config problem from a token problem.
+# the client id/secret itself is wrong.
 _INVALID_CLIENT_ERROR_MARKERS = (
     "invalid_client",
 )

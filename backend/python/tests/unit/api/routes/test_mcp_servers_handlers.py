@@ -604,6 +604,41 @@ class TestOauthRouteWrappers:
         assert called_path.startswith("/services/mcp/credentials/inst-1/")
 
     @pytest.mark.asyncio
+    async def test_refresh_oauth_token_invalid_client_fallback_deauths_record(self) -> None:
+        """Without the background service (degraded startup), the route itself deauths the
+        record — with the same reason constant and timestamps the service path writes."""
+        from app.agents.mcp import oauth_client as oauth_client_module
+        from app.connectors.core.base.token_service.mcp_token_refresh_service import (
+            DEAUTH_REASON_INVALID_CLIENT,
+        )
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"isAuthenticated": True, "orgId": "org-1"})
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service)
+
+        with (
+            patch(
+                "app.api.routes.mcp_servers.mcp_token_refresh.refresh_credential_record",
+                new=AsyncMock(side_effect=oauth_client_module.MCPInvalidClientError("invalid_client")),
+            ),
+            patch.object(startup_service, "get_mcp_token_refresh_service", return_value=None),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await refresh_oauth_token(request, "inst-1")
+
+        assert exc.value.status_code == 401
+        config_service.set_config.assert_awaited_once()
+        _, record = config_service.set_config.await_args.args
+        assert record["isAuthenticated"] is False
+        assert record["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+        assert record["deauthAt"] > 0
+        assert record["updatedAt"] == record["deauthAt"]
+
+    @pytest.mark.asyncio
     async def test_get_oauth_config_masks_secrets(self) -> None:
         config_service = MagicMock()
         config_service.get_config = AsyncMock(

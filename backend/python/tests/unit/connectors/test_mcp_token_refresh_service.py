@@ -357,7 +357,7 @@ class TestHandleInvalidClient:
         records = {CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()}}
         written = self._wire_instance_records(mock_config_service, records)
 
-        await service._handle_invalid_client(  # no raise
+        await service._handle_invalid_client(
             CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
         )
 
@@ -402,6 +402,68 @@ class TestHandleInvalidClient:
         await task
         assert path in written
         assert written[path]["isAuthenticated"] is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_handlers_for_same_instance_notify_once(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """When the shared client breaks, every credential's refresh fails at once — two
+        concurrent handlers must produce exactly one admin notification and flip each
+        record exactly once, not split the records between them and both notify. The
+        mocks yield on every call so unserialized handlers would interleave."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        path_1 = "/services/mcp/credentials/inst-conc/user-1"
+        path_2 = "/services/mcp/credentials/inst-conc/user-2"
+        records = {
+            path_1: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+            path_2: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+        }
+        writes: list = []
+
+        async def _list(prefix) -> list:
+            await asyncio.sleep(0)
+            return [path_1, path_2]
+
+        async def _get(path, default=None, use_cache=True) -> dict | None:
+            await asyncio.sleep(0)
+            return records.get(path, default)
+
+        async def _set(path, record) -> bool:
+            await asyncio.sleep(0)
+            records[path] = record  # persist, so the other handler observes the flip
+            writes.append(path)
+            return True
+
+        mock_config_service.list_keys_in_directory = AsyncMock(side_effect=_list)
+        mock_config_service.get_config = AsyncMock(side_effect=_get)
+        mock_config_service.set_config = AsyncMock(side_effect=_set)
+
+        await asyncio.gather(
+            service._handle_invalid_client(path_1, oauth_client_module.MCPInvalidClientError("invalid_client")),
+            service._handle_invalid_client(path_2, oauth_client_module.MCPInvalidClientError("invalid_client")),
+        )
+
+        assert sorted(writes) == sorted([path_1, path_2])
+        assert mock_notification_service.publish_notification.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_persistence_does_not_count_or_notify(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """set_config returns False instead of raising; records whose flip did not persist
+        are still authenticated and must not count toward the admin notification."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {
+            CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+        }
+        self._wire_instance_records(mock_config_service, records)
+        mock_config_service.set_config = AsyncMock(return_value=False)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        mock_notification_service.publish_notification.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_already_deauthed_instance_does_not_renotify(

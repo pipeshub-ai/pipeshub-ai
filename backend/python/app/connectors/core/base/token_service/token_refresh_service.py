@@ -589,6 +589,16 @@ class TokenRefreshService:
         if existing_task is not None and existing_task is not asyncio.current_task():
             self._cancel_existing_refresh_task(connector_id)
 
+        try:
+            current = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            if current and current.get(ConnectorStateKeys.IS_AUTHENTICATED) is False:
+                self.logger.debug(
+                    f"Connector {connector_id} is already unauthenticated; skipping deauth and notification"
+                )
+                return
+        except Exception as e:
+            self.logger.warning(f"Could not pre-check auth state for connector {connector_id}: {e}")
+
         updates = {
             ConnectorStateKeys.IS_AUTHENTICATED: False,
             ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),

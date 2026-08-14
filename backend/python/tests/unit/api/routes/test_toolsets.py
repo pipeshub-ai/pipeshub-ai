@@ -8237,7 +8237,7 @@ class TestNotifyToolsetAuthError:
     @pytest.mark.asyncio
     async def test_missing_notification_service_is_noop(self) -> None:
         from app.api.routes.toolsets import _notify_toolset_auth_error
-        await _notify_toolset_auth_error(None, "org-1", "user-1", "jira", "msg")  # no raise
+        await _notify_toolset_auth_error(None, "org-1", "user-1", "jira", "msg")
 
     @pytest.mark.asyncio
     async def test_publish_failure_is_swallowed(self) -> None:
@@ -8246,6 +8246,6 @@ class TestNotifyToolsetAuthError:
         notification_service = MagicMock()
         notification_service.publish_notification = AsyncMock(side_effect=RuntimeError("kafka down"))
 
-        await _notify_toolset_auth_error(  # no raise
+        await _notify_toolset_auth_error(
             notification_service, "org-1", "user-1", "jira", "msg"
         )

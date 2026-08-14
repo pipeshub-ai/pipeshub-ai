@@ -39,8 +39,6 @@ class InvalidClientError(Exception):
     with the same client can never succeed; an admin must fix the OAuth configuration."""
 
 
-# Audit strings written to `deauthReason` on deactivated records; the same values are
-# used by the MCP refresh service so operators see one vocabulary across all surfaces.
 DEAUTH_REASON_REFRESH_TOKEN_INVALID = "refresh_token_invalid"
 DEAUTH_REASON_INVALID_CLIENT = "invalid_client_credentials"
 
@@ -54,9 +52,7 @@ _PERMANENT_REFRESH_ERROR_MARKERS = (
     "bad_refresh_token",
 )
 
-# RFC 6749 §5.2 `invalid_client` — the client id/secret is wrong, not the grant.
-# `unauthorized_client` is deliberately NOT here: Atlassian returns it for dead refresh
-# tokens, so it cannot distinguish a client-config problem from a token problem.
+# the client id/secret is wrong, not the grant.
 _INVALID_CLIENT_ERROR_MARKERS = (
     "invalid_client",
 )
