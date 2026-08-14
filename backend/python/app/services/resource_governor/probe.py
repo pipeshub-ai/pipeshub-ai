@@ -316,7 +316,7 @@ class BaselineMemoryTracker:
     Without this, a sibling service's idle memory (Docling's VLM model
     weights, ~3GB RSS even between documents) permanently inflates
     ``mem_pressure`` in a shared-container deployment. Since growth requires
-    ``pressure < MEM_SOFT - GROW_BAND`` (plan section 4), a baseline that
+    ``pressure < MEM_SOFT`` (minus optional ``GROW_BAND``), a baseline that
     never fluctuates can pin every pool's limit at its floor forever, even
     with idle CPU and genuinely free RAM.
 

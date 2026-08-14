@@ -94,11 +94,14 @@ INDEX_SLOTS_PER_PARSE_SLOT = _env_float(
 # overridden and the others fall back to their un-clamped defaults.
 MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
 MEM_HARD = max(_env_float("GOVERNOR_MEM_HARD", 0.80, low=0.11, high=0.99), MEM_SOFT + 0.01)
-GROW_BAND = min(_env_float("GOVERNOR_GROW_BAND", 0.05, low=0.0, high=0.90), MEM_SOFT - 0.01)
-GROW_CONFIRM_SAMPLES = 3
-# Light records are milliseconds on a few KB; the heavy confirm window would
-# pin Jira/Slack/Markdown at the floor for ~45s waiting for Docling-grade
-# proof that the cgroup can absorb another permit.
+# Default 0: heavy grows up to MEM_SOFT like light. The memory cap and
+# resource-delta hold already stop a Docling batch from closing the gap
+# inside one sample; this band is an optional operator tightening.
+GROW_BAND = min(_env_float("GOVERNOR_GROW_BAND", 0.0, low=0.0, high=0.90), MEM_SOFT - 0.01)
+GROW_CONFIRM_SAMPLES = 1
+# Light used to confirm faster than heavy; both now grow on a single
+# healthy+demand sample — a bad grow is caught by the next interval's
+# shrink path (~15s), not a 45s proof window.
 LIGHT_GROW_CONFIRM_SAMPLES = 1
 SHRINK_COOLDOWN_SECONDS = 30.0
 INCIDENT_COOLDOWN_SECONDS = 60.0
@@ -503,9 +506,8 @@ def _next_pool_limit(
         # (The CPU brake above still applies independently of this branch.)
         return current, replace(state, healthy_streak=0)
 
-    # Light may grow right up to MEM_SOFT; heavy still needs the extra
-    # GROW_BAND of headroom so a Docling batch cannot close the gap inside
-    # one sample interval.
+    # Both tiers grow up to MEM_SOFT. GROW_BAND (default 0) is an optional
+    # extra margin on heavy only.
     grow_threshold = MEM_SOFT if _is_light_pool(pool) else MEM_SOFT - GROW_BAND
     confirm_samples = LIGHT_GROW_CONFIRM_SAMPLES if _is_light_pool(pool) else GROW_CONFIRM_SAMPLES
     demand_threshold = (

@@ -15,7 +15,6 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.policy import (
-    GROW_BAND,
     GROW_CONFIRM_SAMPLES,
     HEAVY_START_BUCKET_CAPACITY,
     HEAVY_START_INTERVAL_SECONDS,
@@ -537,18 +536,6 @@ class TestNextLimitsGrowth:
 
         assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
 
-    def test_growth_blocked_during_confirm_window(self) -> None:
-        ceilings = self._ceilings()
-        limits = warm_start_limits(ceilings)
-        state = ControllerState.initial()
-        snap = self._healthy_snapshot()
-        demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
-
-        for _ in range(GROW_CONFIRM_SAMPLES - 1):
-            limits, state = next_limits(limits, snap, ceilings, state, demand, now=0.0, interval=INTERVAL)
-
-        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
-
     def test_growth_after_confirm_window_with_demand(self) -> None:
         ceilings = self._ceilings()
         limits = warm_start_limits(ceilings)
@@ -630,33 +617,29 @@ class TestNextLimitsGrowth:
         assert limits.get(Pool.LIGHT_PARSE) == floor_for(Pool.LIGHT_PARSE, ceilings.light) + 1
         assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
 
-    def test_light_grows_inside_the_heavy_grow_band(self) -> None:
-        """Heavy needs MEM_SOFT - GROW_BAND of headroom; light may grow
-        right up to MEM_SOFT, so a moderately full cgroup still admits
-        Jira/Slack rather than waiting for Docling-grade slack."""
+    def test_heavy_grows_just_below_mem_soft(self) -> None:
+        """Heavy no longer needs an extra GROW_BAND of headroom — the
+        memory cap is the per-slot gate — so a cgroup sitting just under
+        MEM_SOFT still ramps."""
         ceilings = self._ceilings()
-        limits = warm_start_limits(ceilings)
-        state = ControllerState.initial()
         mem_limit = 16 * 1024 ** 3
-        # Midway through the heavy grow-band: too tight for heavy, open for light.
-        pressure = MEM_SOFT - (GROW_BAND / 2)
+        pressure = MEM_SOFT - 0.02
         snap = _snapshot(
             cpu_quota=8.0, cpu_utilisation=0.1,
             mem_limit_bytes=mem_limit, mem_working_set_bytes=int(pressure * mem_limit),
         )
-        assert MEM_SOFT - GROW_BAND <= snap.mem_pressure < MEM_SOFT
+        assert snap.mem_pressure_raw is not None
+        assert snap.mem_pressure_raw < MEM_SOFT
 
-        limits, state = next_limits(
-            limits, snap, ceilings, state, self._light_demand(limits), now=0.0, interval=INTERVAL,
-        )
-        heavy_demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
-        heavy_limits, _ = next_limits(
-            warm_start_limits(ceilings), snap, ceilings, ControllerState.initial(),
-            heavy_demand, now=0.0, interval=INTERVAL,
-        )
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+        now = 0.0
+        for _ in range(GROW_CONFIRM_SAMPLES):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(limits, snap, ceilings, state, demand, now=now, interval=INTERVAL)
+            now += INTERVAL
 
-        assert limits.get(Pool.LIGHT_PARSE) == floor_for(Pool.LIGHT_PARSE, ceilings.light) + 1
-        assert heavy_limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy)
+        assert limits.get(Pool.HEAVY_PARSE) == floor_for(Pool.HEAVY_PARSE, ceilings.heavy) + 1
 
     def test_light_grows_despite_cpu_brake(self) -> None:
         ceilings = self._ceilings()
@@ -922,9 +905,9 @@ class TestConfigurableThresholds:
     def test_module_reload_without_overrides_restores_original_defaults(self) -> None:
         importlib.reload(policy_mod)
 
-        assert policy_mod.MEM_SOFT == 0.75
-        assert policy_mod.MEM_HARD == 0.85
-        assert policy_mod.GROW_BAND == 0.05
+        assert policy_mod.MEM_SOFT == 0.70
+        assert policy_mod.MEM_HARD == 0.80
+        assert policy_mod.GROW_BAND == 0.0
 
     def test_raised_mem_soft_permits_growth_at_a_pressure_that_would_otherwise_shrink_forever(
         self, monkeypatch: pytest.MonkeyPatch,
