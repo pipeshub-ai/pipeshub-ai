@@ -21,3 +21,4 @@ export { apiClient, default as apiClientDefault } from '@/lib/api/axios-instance
 export { SettingsSection } from '@/app/components/workspace-menu/settings-section';
 export { WorkspaceMenu } from '@/app/components/workspace-menu/menu';
 export { GuestGuard } from '@/app/components/ui/guest-guard';
+export { UsersPageHeaderActions } from '@/app/(main)/workspace/users/components/users-page-header-actions';

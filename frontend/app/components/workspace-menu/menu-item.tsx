@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
+import { Link } from '@/lib/navigation';
 import { Box } from '@radix-ui/themes';
 import { ITEM_HEIGHT } from './types';
 
