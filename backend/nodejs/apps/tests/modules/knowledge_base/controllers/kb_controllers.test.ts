@@ -58,20 +58,23 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     body: {},
     params: {},
     query: {},
-    // Valid ObjectIds required by isUserOrgAdmin before role lookup.
-    user: {
-      userId: '507f1f77bcf86cd799439011',
-      orgId: '507f1f77bcf86cd799439012',
-      email: 'test@test.com',
-      fullName: 'Test User',
-    },
-
+    // Non-ObjectId placeholders: isUserOrgAdmin returns false without DB.
+    // Tests that assert admin behavior must use VALID_USER_IDS + stubUserRole.
+    user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
     context: { requestId: 'req-123' },
     // Streaming upload clears the per-response socket timeout and listens for close.
     socket: { setTimeout: sinon.stub() },
     on: sinon.stub(),
     ...overrides,
   }
+}
+
+/** Valid ObjectIds for tests that stub Users.findOne / assert X-Is-Admin. */
+const VALID_USER_IDS = {
+  userId: '507f1f77bcf86cd799439011',
+  orgId: '507f1f77bcf86cd799439012',
+  email: 'test@test.com',
+  fullName: 'Test User',
 }
 
 function createMockResponse(): any {
@@ -1936,6 +1939,7 @@ describe('Knowledge Base Controller', () => {
       })
 
       const req = createMockRequest({
+        user: VALID_USER_IDS,
         params: { connectorId: 'c1' },
         body: { statusFilters: ['FAILED'] },
       })
@@ -1959,6 +1963,7 @@ describe('Knowledge Base Controller', () => {
       })
 
       const req = createMockRequest({
+        user: VALID_USER_IDS,
         params: { connectorId: 'c1' },
         body: {},
       })
@@ -3313,6 +3318,7 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexConnector(createMockAppConfig())
       const req = createMockRequest({
+        user: VALID_USER_IDS,
         params: { connectorId: 'c1' },
         body: { statusFilters: ['FAILED'] },
       })
@@ -3331,6 +3337,7 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
+        user: VALID_USER_IDS,
         params: { connectorId: 'c1' },
         body: { connectorName: 'Google Drive', fullSync: false },
       })
