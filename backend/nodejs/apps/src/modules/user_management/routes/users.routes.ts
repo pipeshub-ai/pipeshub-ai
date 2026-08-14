@@ -20,8 +20,11 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
-import { NotFoundError } from '../../../libs/errors/http.errors';
-import { findOrgAdminUserIds } from '../services/user-admin.service';
+import {
+  BadRequestError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
+import { findOrgAdminUserIds, isUserOrgAdmin } from '../services/user-admin.service';
 import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
@@ -386,6 +389,48 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  /**
+   * GET /users/internal/:id/adminCheck
+   * Internal S2S admin check. Uses USER_LOOKUP scoped token (no user-session role).
+   * Token userId must match :id; admin privilege is verified from User.role in DB.
+   */
+  router.get(
+    '/internal/:id/adminCheck',
+    authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const tokenUserId = req.tokenPayload?.userId;
+        const orgId = req.tokenPayload?.orgId;
+        const pathUserId = req.params.id;
+
+        if (!tokenUserId || !orgId) {
+          throw new NotFoundError('Account not found');
+        }
+        if (String(tokenUserId) !== String(pathUserId)) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        const isAdmin = await isUserOrgAdmin(
+          String(tokenUserId),
+          String(orgId),
+        );
+        if (!isAdmin) {
+          throw new BadRequestError('Admin access required');
+        }
+
+        res.status(200).json({ message: 'User has admin access' });
+        return;
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.get(
     '/internal/:id',
     authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
@@ -687,6 +732,8 @@ export function createUserRouter(container: Container) {
 
   router.get(
     '/:id/adminCheck',
+    // User-session JWT path (e.g. Python toolsets forwarding the browser token).
+    // Auth-service S2S calls use GET /internal/:id/adminCheck with a USER_LOOKUP scoped token.
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(UserIdValidationSchema),

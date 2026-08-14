@@ -3,7 +3,6 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
-  authJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -651,7 +650,11 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
@@ -691,7 +694,11 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
