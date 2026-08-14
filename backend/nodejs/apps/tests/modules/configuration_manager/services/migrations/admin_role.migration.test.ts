@@ -48,9 +48,10 @@ describe('AdminRoleMigration', () => {
     } as any);
 
     const updateManyStub = sinon.stub(Users, 'updateMany');
-    updateManyStub.onCall(0).resolves({ modifiedCount: 1 } as any); // promote
+    updateManyStub.onCall(0).resolves({ modifiedCount: 1, matchedCount: 1 } as any); // promote
     updateManyStub.onCall(1).resolves({ modifiedCount: 2 } as any); // members in org
     updateManyStub.onCall(2).resolves({ modifiedCount: 0 } as any); // global default
+    sinon.stub(Users, 'countDocuments').resolves(1);
 
     const updateOneStub = sinon.stub(UserGroups, 'updateOne').resolves({
       modifiedCount: 1,
@@ -116,6 +117,37 @@ describe('AdminRoleMigration', () => {
 
     expect(result.errored).to.equal(1);
     expect(result.adminGroupsProcessed).to.equal(1);
+    expect(kv.set.called).to.equal(false);
+  });
+
+  it('does not soft-delete admin group when promote leaves org with zero admins', async () => {
+    const kv = makeKvStore(null);
+    sinon.stub(UserGroups, 'find').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().resolves([
+          {
+            _id: groupId,
+            orgId,
+            users: [adminUserId],
+          },
+        ]),
+      }),
+    } as any);
+
+    const updateManyStub = sinon.stub(Users, 'updateMany');
+    updateManyStub.onCall(0).resolves({ modifiedCount: 0, matchedCount: 0 } as any);
+    updateManyStub.onCall(1).resolves({ modifiedCount: 0 } as any); // global default only
+    sinon.stub(Users, 'countDocuments').resolves(0);
+    const updateOneStub = sinon.stub(UserGroups, 'updateOne');
+
+    const result = await new AdminRoleMigration(
+      makeLogger() as any,
+      kv as any,
+    ).run();
+
+    expect(result.errored).to.equal(1);
+    expect(result.adminGroupsSoftDeleted).to.equal(0);
+    expect(updateOneStub.called).to.equal(false);
     expect(kv.set.called).to.equal(false);
   });
 
@@ -260,10 +292,11 @@ describe('AdminRoleMigration', () => {
     // first group: no promote (empty after filter), org members
     updateManyStub.onCall(0).resolves({} as any);
     // second group: promote + org members
-    updateManyStub.onCall(1).resolves({} as any); // modifiedCount undefined → ?? 0
+    updateManyStub.onCall(1).resolves({ matchedCount: 1 } as any); // modifiedCount undefined → ?? 0
     updateManyStub.onCall(2).resolves({ modifiedCount: 1 } as any);
     // global default
     updateManyStub.onCall(3).resolves({ modifiedCount: 0 } as any);
+    sinon.stub(Users, 'countDocuments').resolves(1);
 
     sinon.stub(UserGroups, 'updateOne').resolves({ modifiedCount: 1 } as any);
 

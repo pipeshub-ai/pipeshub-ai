@@ -840,7 +840,8 @@ export class UserController {
       }
 
       const orgId = req.user.orgId;
-      const previousRole = user.role;
+      // Unset/legacy role is treated as member so setting role=member is not a change.
+      const previousRole = normalizeUserRole(user.role) ?? 'member';
       const roleChanging =
         updateFields.role !== undefined &&
         updateFields.role !== previousRole;
@@ -895,7 +896,7 @@ export class UserController {
         }
       }
 
-      // Demotion: atomic save+admin check when RS is available; otherwise save+restore
+      // Demotion: RS = Org touch + check + save in one txn; non-RS = check, save, restore if zero
       if (demotingAdmin && id && orgId) {
         await saveUserEnsuringOrgRetainsAdmin(
           user,
@@ -1282,7 +1283,8 @@ export class UserController {
         throw new NotFoundError('Account not found');
       }
 
-      if (user.role === 'admin') {
+      // Fail closed: only explicit members may be deleted (unset/legacy ≠ deletable).
+      if (user.role !== 'member') {
         throw new BadRequestError('User cannot be deleted. Please demote the user from admin first.');
       }
 

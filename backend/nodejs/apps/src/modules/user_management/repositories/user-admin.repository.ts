@@ -1,6 +1,6 @@
 import type { ClientSession } from 'mongoose';
 import { Users, type UserRole } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
+import { Org } from '../schema/org.schema';
 
 /**
  * Data-access helpers for org-admin role checks.
@@ -20,17 +20,6 @@ export const UserAdminRepository = {
       .lean();
   },
 
-  async findActiveGroupTypesForUser(
-    userId: string,
-    orgId: string,
-  ): Promise<Array<{ type?: string }>> {
-    return UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: { $ne: true },
-    }).select('type');
-  },
-
   async findActiveAdminUserIds(
     orgId: string | { toString(): string },
   ): Promise<Array<{ _id?: unknown }>> {
@@ -40,18 +29,6 @@ export const UserAdminRepository = {
       isDeleted: { $ne: true },
     })
       .select('_id')
-      .lean();
-  },
-
-  async findActiveAdminGroupUsers(
-    orgId: string | { toString(): string },
-  ): Promise<Array<{ users?: unknown }>> {
-    return UserGroups.find({
-      orgId,
-      type: 'admin',
-      isDeleted: { $ne: true },
-    })
-      .select('users')
       .lean();
   },
 
@@ -65,6 +42,21 @@ export const UserAdminRepository = {
       isDeleted: { $ne: true },
     });
     return session ? query.session(session) : query;
+  },
+
+  /**
+   * Serializes concurrent last-admin demotions under snapshot isolation by
+   * forcing a write conflict on the shared Org document inside the transaction.
+   */
+  async touchOrgAdminGuard(
+    orgId: string,
+    session: ClientSession,
+  ): Promise<void> {
+    await Org.updateOne(
+      { _id: orgId, isDeleted: { $ne: true } },
+      { $set: { adminRoleGuardAt: new Date() } },
+      { session },
+    );
   },
 
   async restoreAdminRole(

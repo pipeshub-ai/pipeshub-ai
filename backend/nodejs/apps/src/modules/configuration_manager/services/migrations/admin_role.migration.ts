@@ -71,6 +71,28 @@ export class AdminRoleMigration {
               { $set: { role: 'admin' } },
             );
             usersPromoted += promoteResult.modifiedCount ?? 0;
+
+            // Fail closed: never soft-delete the legacy admin group if the org
+            // would be left with zero role=admin users after promote.
+            const adminCount = await Users.countDocuments({
+              orgId,
+              role: 'admin',
+              isDeleted: { $ne: true },
+            });
+            if (adminCount < 1) {
+              errored += 1;
+              this.logger.error(
+                'Admin-role migration left org with no admins; skipping soft-delete',
+                {
+                  groupId: String(group._id),
+                  orgId: String(orgId),
+                  adminUserIds: adminUserIds.map(String),
+                  matchedCount: promoteResult.matchedCount ?? 0,
+                  modifiedCount: promoteResult.modifiedCount ?? 0,
+                },
+              );
+              continue;
+            }
           }
 
           const memberResult = await Users.updateMany(

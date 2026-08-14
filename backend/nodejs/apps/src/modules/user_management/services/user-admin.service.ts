@@ -46,11 +46,15 @@ function addValidObjectId(ids: Set<string>, value: unknown): void {
 
 /**
  * Org admin check based on User.role (admin groups are no longer supported).
+ * Invalid ids return false (deny) instead of throwing CastError.
  */
 export const isUserOrgAdmin = async (
   userId: string,
   orgId: string,
 ): Promise<boolean> => {
+  if (!mongoose.isValidObjectId(userId) || !mongoose.isValidObjectId(orgId)) {
+    return false;
+  }
   const user = await UserAdminRepository.findActiveUserRole(userId, orgId);
   return user?.role === 'admin';
 };
@@ -88,23 +92,32 @@ export const assertCanDemoteAdmin = async (
 
 /**
  * Persist a user update that may demote an admin.
- * Checks that another admin remains, then saves (transactional when RS is available).
+ * - Replica set: touch Org (serialize concurrent demotions) + check + save in one txn.
+ * - Non-RS: check, save, then verify; restore admin if the org was left with zero.
  */
 export const saveUserEnsuringOrgRetainsAdmin = async (
   user: User,
   rsAvailable: boolean,
 ): Promise<void> => {
   const orgId = String(user.orgId);
+  const userId = String(user._id);
 
   if (!rsAvailable) {
     await assertCanDemoteAdmin(orgId);
     await user.save();
+    const adminCount = await UserAdminRepository.countActiveAdmins(orgId);
+    if (adminCount === 0) {
+      await UserAdminRepository.restoreAdminRole(userId, orgId);
+      user.role = 'admin';
+      throw new BadRequestError(LAST_ADMIN_DEMOTION_MESSAGE);
+    }
     return;
   }
 
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
+      await UserAdminRepository.touchOrgAdminGuard(orgId, session);
       await assertCanDemoteAdmin(orgId, session);
       await user.save({ session });
     });

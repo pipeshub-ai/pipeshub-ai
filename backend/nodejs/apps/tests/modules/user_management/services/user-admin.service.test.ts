@@ -12,6 +12,7 @@ import {
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 
 function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
@@ -148,6 +149,15 @@ describe('user-admin.service', () => {
         isDeleted: { $ne: true },
       });
     });
+
+    it('returns false for invalid ObjectIds without querying', async () => {
+      const findOneStub = sinon.stub(Users, 'findOne');
+
+      const result = await isUserOrgAdmin('not-an-id', orgId);
+
+      expect(result).to.equal(false);
+      expect(findOneStub.called).to.equal(false);
+    });
   });
 
   describe('findOrgAdminUserIds', () => {
@@ -240,22 +250,56 @@ describe('user-admin.service', () => {
   });
 
   describe('saveUserEnsuringOrgRetainsAdmin', () => {
-    it('checks then saves when replica set is unavailable', async () => {
+    it('checks then saves when replica set is unavailable and admins remain', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
         orgId,
+        role: 'member',
         save,
       };
-      sinon.stub(Users, 'countDocuments').resolves(2);
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(2); // pre-check
+      countStub.onSecondCall().resolves(1); // post-save verify
 
       await saveUserEnsuringOrgRetainsAdmin(user as any, false);
 
       expect(save.calledOnce).to.equal(true);
       expect(save.firstCall.args[0]).to.equal(undefined);
+      expect(countStub.callCount).to.equal(2);
     });
 
-    it('checks then saves inside a transaction when RS is available', async () => {
+    it('restores admin when non-RS save leaves the org with zero admins', async () => {
+      const save = sinon.stub().resolves();
+      const user = {
+        _id: userId,
+        orgId,
+        role: 'member',
+        save,
+      };
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(2);
+      countStub.onSecondCall().resolves(0);
+      const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
+
+      try {
+        await saveUserEnsuringOrgRetainsAdmin(user as any, false);
+        expect.fail('expected BadRequestError');
+      } catch (error: any) {
+        expect(error.message).to.equal(
+          'Cannot demote the last admin. Promote another user to admin first.',
+        );
+      }
+
+      expect(save.calledOnce).to.equal(true);
+      expect(updateStub.calledOnce).to.equal(true);
+      expect(updateStub.firstCall.args[1]).to.deep.equal({
+        $set: { role: 'admin' },
+      });
+      expect(user.role).to.equal('admin');
+    });
+
+    it('touches Org then checks then saves inside a transaction when RS is available', async () => {
       const save = sinon.stub().resolves();
       const user = {
         _id: userId,
@@ -273,10 +317,16 @@ describe('user-admin.service', () => {
       sinon.stub(Users, 'countDocuments').returns({
         session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
+      const orgUpdate = sinon.stub(Org, 'updateOne').resolves({} as any);
 
       await saveUserEnsuringOrgRetainsAdmin(user as any, true);
 
       expect(withTransaction.calledOnce).to.equal(true);
+      expect(orgUpdate.calledOnce).to.equal(true);
+      expect(orgUpdate.firstCall.args[0]).to.deep.include({ _id: orgId });
+      expect(orgUpdate.firstCall.args[1]).to.have.nested.property(
+        '$set.adminRoleGuardAt',
+      );
       expect(save.calledOnce).to.equal(true);
       expect(save.firstCall.args[0]).to.have.property('session');
       expect(endSession.calledOnce).to.equal(true);
@@ -296,6 +346,7 @@ describe('user-admin.service', () => {
         withTransaction,
         endSession: sinon.stub().resolves(),
       } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       sinon.stub(Users, 'countDocuments').returns({
         session: sinon.stub().callsFake(() => Promise.resolve(1)),
       } as any);

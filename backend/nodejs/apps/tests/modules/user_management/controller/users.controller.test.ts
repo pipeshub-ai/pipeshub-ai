@@ -1009,6 +1009,7 @@ describe('UserController', () => {
         withTransaction,
         endSession: sinon.stub().resolves(),
       } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       sinon.stub(Users, 'countDocuments').returns({
         session: sinon.stub().callsFake(() => Promise.resolve(1)),
       } as any);
@@ -1060,6 +1061,7 @@ describe('UserController', () => {
         withTransaction,
         endSession: sinon.stub().resolves(),
       } as any);
+      sinon.stub(Org, 'updateOne').resolves({} as any);
       sinon.stub(Users, 'countDocuments').returns({
         session: sinon.stub().callsFake(() => Promise.resolve(2)),
       } as any);
@@ -2755,6 +2757,22 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('User cannot be deleted. Please demote the user from admin first.');
     });
+
+    it('should throw BadRequestError when deleting user with unset role', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+
+      sinon.stub(Users, 'findOne').resolves({
+        _id: '507f1f77bcf86cd799439011',
+        orgId: req.user.orgId,
+      } as any);
+
+      await controller.deleteUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.include(
+        'User cannot be deleted. Please demote the user from admin first.',
+      );
+    });
   });
 
   describe('updateUserDisplayPicture - missing dpFile', () => {
@@ -3227,6 +3245,7 @@ describe('UserController', () => {
         fullName: 'OAuth Owner',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
@@ -3294,6 +3313,7 @@ describe('UserController', () => {
         fullName: 'Owner',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
@@ -3337,6 +3357,7 @@ describe('UserController', () => {
         fullName: 'Owner',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
@@ -3379,6 +3400,7 @@ describe('UserController', () => {
         fullName: 'Owner',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
@@ -3431,6 +3453,7 @@ describe('UserController', () => {
         fullName: 'Owner',
         isDeleted: false,
         hasLoggedIn: true,
+        role: 'member',
         save: sinon.stub().resolves(),
       };
 
