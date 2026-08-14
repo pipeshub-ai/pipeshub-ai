@@ -58,7 +58,14 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
     body: {},
     params: {},
     query: {},
-    user: { userId: 'user-1', orgId: 'org-1', email: 'test@test.com', fullName: 'Test User' },
+    // Valid ObjectIds required by isUserOrgAdmin before role lookup.
+    user: {
+      userId: '507f1f77bcf86cd799439011',
+      orgId: '507f1f77bcf86cd799439012',
+      email: 'test@test.com',
+      fullName: 'Test User',
+    },
+
     context: { requestId: 'req-123' },
     // Streaming upload clears the per-response socket timeout and listens for close.
     socket: { setTimeout: sinon.stub() },

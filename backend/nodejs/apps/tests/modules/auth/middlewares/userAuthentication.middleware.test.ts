@@ -180,7 +180,10 @@ describe('userAuthentication middlewares', () => {
     });
 
     it('should call next() without error when user is admin', async () => {
-      const token = jwt.sign({ userId: 'u1', orgId: 'o1' }, jwtSecret, {
+      // isUserOrgAdmin requires valid ObjectIds before querying role.
+      const userId = '507f1f77bcf86cd799439011';
+      const orgId = '507f1f77bcf86cd799439012';
+      const token = jwt.sign({ userId, orgId }, jwtSecret, {
         expiresIn: '1h',
       });
       const req: any = {
