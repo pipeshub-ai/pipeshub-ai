@@ -275,34 +275,15 @@ describe('PlusMenuContent', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// PlusMenuButton — red-dot badge when search capabilities leave defaults
-// ---------------------------------------------------------------------------
-
 describe('hasNonDefaultSearchCapabilities', () => {
-  async function importHelper() {
-    const mod = await import('../components/chat-panel/plus-menu-button');
-    return mod.hasNonDefaultSearchCapabilities;
-  }
-
-  it('is false when both capabilities are at their default (true)', async () => {
-    const hasNonDefault = await importHelper();
-    expect(hasNonDefault(true, true)).toBe(false);
-  });
-
-  it('is true when Internal Search is off', async () => {
-    const hasNonDefault = await importHelper();
-    expect(hasNonDefault(false, true)).toBe(true);
-  });
-
-  it('is true when Web Search is off', async () => {
-    const hasNonDefault = await importHelper();
-    expect(hasNonDefault(true, false)).toBe(true);
-  });
-
-  it('is true when both are off', async () => {
-    const hasNonDefault = await importHelper();
-    expect(hasNonDefault(false, false)).toBe(true);
+  it('is false only when both capabilities are at their default (true)', async () => {
+    const { hasNonDefaultSearchCapabilities } = await import(
+      '../components/chat-panel/plus-menu-button'
+    );
+    expect(hasNonDefaultSearchCapabilities(true, true)).toBe(false);
+    expect(hasNonDefaultSearchCapabilities(false, true)).toBe(true);
+    expect(hasNonDefaultSearchCapabilities(true, false)).toBe(true);
+    expect(hasNonDefaultSearchCapabilities(false, false)).toBe(true);
   });
 });
 
@@ -333,21 +314,17 @@ describe('PlusMenuButton filter badge', () => {
     expect(screen.queryByTestId('plus-menu-filter-badge')).toBeNull();
   });
 
-  it('shows the badge when Internal Search is off', async () => {
+  it('shows the badge for each non-default capability combination', async () => {
     const Button = await importButton();
-    renderButton({ ...baseProps, internalSearch: false, webSearch: true }, Button);
-    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
-  });
-
-  it('shows the badge when Web Search is off', async () => {
-    const Button = await importButton();
-    renderButton({ ...baseProps, internalSearch: true, webSearch: false }, Button);
-    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
-  });
-
-  it('shows the badge when both capabilities are off', async () => {
-    const Button = await importButton();
-    renderButton({ ...baseProps, internalSearch: false, webSearch: false }, Button);
-    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+    const nonDefaults: Array<Pick<ButtonProps, 'internalSearch' | 'webSearch'>> = [
+      { internalSearch: false, webSearch: true },
+      { internalSearch: true, webSearch: false },
+      { internalSearch: false, webSearch: false },
+    ];
+    for (const caps of nonDefaults) {
+      const { unmount } = renderButton({ ...baseProps, ...caps }, Button);
+      expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+      unmount();
+    }
   });
 });
