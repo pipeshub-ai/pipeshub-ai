@@ -30,35 +30,23 @@ def _current_test(request: pytest.FixtureRequest):
     set_current_test(request.node.nodeid)
 
 
-@pytest.mark.parametrize(
-    "nodeid",
-    [
+def test_generated_id_survives_sanitizer_and_stays_unique(_current_test) -> None:
+    for nodeid in (
         "unit/test_request_id.py::test_short",
         _LONG_NODEID,
         f"{_LONG_NODEID}@serial",
-    ],
-)
-def test_id_survives_backend_sanitizer(nodeid: str, _current_test) -> None:
-    """The backend must log the id we sent, not a stripped or truncated one."""
-    _current_test(nodeid)
-    request_id = generate_request_id()
+    ):
+        _current_test(nodeid)
+        request_id = generate_request_id()
+        assert len(request_id) <= 64
+        assert sanitize_root_id(request_id) == request_id
+        assert request_id.startswith(request_id_prefix(nodeid))
 
-    assert len(request_id) <= 64
-    assert sanitize_root_id(request_id) == request_id
-    assert request_id.startswith(request_id_prefix(nodeid))
-
-
-def test_prefix_is_shared_but_each_id_is_unique(_current_test) -> None:
     _current_test(_LONG_NODEID)
     first, second = generate_request_id(), generate_request_id()
-
     assert first != second
     assert first.startswith(request_id_prefix(_LONG_NODEID))
     assert second.startswith(request_id_prefix(_LONG_NODEID))
-
-
-def test_xdist_group_suffix_does_not_change_the_prefix() -> None:
-    """The report recomputes the prefix from the controller's stripped node id."""
     assert request_id_prefix(f"{_LONG_NODEID}@serial") == request_id_prefix(_LONG_NODEID)
 
 
@@ -69,15 +57,13 @@ def _prepare(headers: dict[str, str] | None = None) -> requests.PreparedRequest:
     )
 
 
-def test_hook_stamps_the_header(request: pytest.FixtureRequest) -> None:
-    prepared = _prepare()
-
-    assert prepared.headers[HEADER_REQUEST_ID].startswith(
+def test_hook_stamps_header_but_keeps_an_explicit_one(
+    request: pytest.FixtureRequest,
+) -> None:
+    stamped = _prepare()
+    assert stamped.headers[HEADER_REQUEST_ID].startswith(
         request_id_prefix(request.node.nodeid)
     )
 
-
-def test_hook_does_not_override_an_explicit_header() -> None:
-    prepared = _prepare({"X-Request-ID": "caller-supplied-id"})
-
-    assert prepared.headers[HEADER_REQUEST_ID] == "caller-supplied-id"
+    explicit = _prepare({"X-Request-ID": "caller-supplied-id"})
+    assert explicit.headers[HEADER_REQUEST_ID] == "caller-supplied-id"
