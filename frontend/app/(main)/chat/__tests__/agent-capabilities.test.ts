@@ -274,3 +274,80 @@ describe('PlusMenuContent', () => {
     expect(toggle).toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PlusMenuButton — red-dot badge when search capabilities leave defaults
+// ---------------------------------------------------------------------------
+
+describe('hasNonDefaultSearchCapabilities', () => {
+  async function importHelper() {
+    const mod = await import('../components/chat-panel/plus-menu-button');
+    return mod.hasNonDefaultSearchCapabilities;
+  }
+
+  it('is false when both capabilities are at their default (true)', async () => {
+    const hasNonDefault = await importHelper();
+    expect(hasNonDefault(true, true)).toBe(false);
+  });
+
+  it('is true when Internal Search is off', async () => {
+    const hasNonDefault = await importHelper();
+    expect(hasNonDefault(false, true)).toBe(true);
+  });
+
+  it('is true when Web Search is off', async () => {
+    const hasNonDefault = await importHelper();
+    expect(hasNonDefault(true, false)).toBe(true);
+  });
+
+  it('is true when both are off', async () => {
+    const hasNonDefault = await importHelper();
+    expect(hasNonDefault(false, false)).toBe(true);
+  });
+});
+
+describe('PlusMenuButton filter badge', () => {
+  async function importButton() {
+    const mod = await import('../components/chat-panel/plus-menu-button');
+    return mod.PlusMenuButton;
+  }
+
+  type ButtonProps = Parameters<Awaited<ReturnType<typeof importButton>>>[0];
+
+  function renderButton(props: ButtonProps, Button: Awaited<ReturnType<typeof importButton>>) {
+    return render(h(Theme, null, h(Button, props)));
+  }
+
+  const baseProps = {
+    onAttachFiles: vi.fn(),
+    onToggleInternalSearch: vi.fn(),
+    onToggleWebSearch: vi.fn(),
+    activeIconColor: 'var(--slate-12)',
+    open: false,
+    onOpenChange: vi.fn(),
+  };
+
+  it('hides the badge when both capabilities are on', async () => {
+    const Button = await importButton();
+    renderButton({ ...baseProps, internalSearch: true, webSearch: true }, Button);
+    expect(screen.queryByTestId('plus-menu-filter-badge')).toBeNull();
+  });
+
+  it('shows the badge when Internal Search is off', async () => {
+    const Button = await importButton();
+    renderButton({ ...baseProps, internalSearch: false, webSearch: true }, Button);
+    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+  });
+
+  it('shows the badge when Web Search is off', async () => {
+    const Button = await importButton();
+    renderButton({ ...baseProps, internalSearch: true, webSearch: false }, Button);
+    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+  });
+
+  it('shows the badge when both capabilities are off', async () => {
+    const Button = await importButton();
+    renderButton({ ...baseProps, internalSearch: false, webSearch: false }, Button);
+    expect(screen.getByTestId('plus-menu-filter-badge')).toBeTruthy();
+  });
+});
