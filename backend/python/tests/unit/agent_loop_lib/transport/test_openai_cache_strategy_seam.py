@@ -119,6 +119,64 @@ class TestStreamMatchesCompletePath:
         assert kwargs["messages"][1]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
 
 
+class TestModelOverrideDoesNotReuseConstructorStrategy:
+    """The injected strategy is bound to the constructor model. Applying
+    an explicit-mode strategy (gpt-5.6+) to an automatic-mode override
+    (gpt-4o) would send `prompt_cache_options.mode="explicit"` and
+    disable implicit caching; the reverse would omit breakpoints the
+    explicit model needs. Skip cache planning when the per-call model
+    differs. A matching override (Agent always passes
+    `spec.model.model`) must still cache."""
+
+    async def test_complete_skips_cache_when_override_differs_from_constructor(self) -> None:
+        strategy = OpenAICacheStrategy(_permissive_capability(), cache_key="org-1:user-1")
+        transport = OpenAITransport(
+            api_key="sk-test", model="gpt-5.6-terra", cache_strategy=strategy,
+        )
+        transport._client.chat.completions.create = AsyncMock(return_value=_chat_response())
+
+        await transport.complete(_messages(), model="gpt-4o")
+
+        _, kwargs = transport._client.chat.completions.create.call_args
+        assert kwargs["model"] == "gpt-4o"
+        assert "prompt_cache_key" not in kwargs
+        assert "prompt_cache_options" not in kwargs
+        for msg in kwargs["messages"]:
+            assert isinstance(msg["content"], str)
+
+    async def test_complete_still_caches_when_override_matches_constructor(self) -> None:
+        strategy = OpenAICacheStrategy(_permissive_capability(), cache_key="org-1:user-1")
+        transport = OpenAITransport(
+            api_key="sk-test", model="gpt-5.6-terra", cache_strategy=strategy,
+        )
+        transport._client.chat.completions.create = AsyncMock(return_value=_chat_response())
+
+        await transport.complete(_messages(), model="gpt-5.6-terra")
+
+        _, kwargs = transport._client.chat.completions.create.call_args
+        assert kwargs["prompt_cache_key"] == "org-1:user-1"
+        assert kwargs["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
+
+    async def test_stream_skips_cache_when_override_differs_from_constructor(self) -> None:
+        strategy = OpenAICacheStrategy(_permissive_capability(), cache_key="org-1:user-1")
+        transport = OpenAITransport(
+            api_key="sk-test", model="gpt-5.6-terra", cache_strategy=strategy,
+        )
+        transport._client.chat.completions.create = AsyncMock(
+            return_value=_AsyncChunkIterator([_stream_chunk(finish_reason="stop")])
+        )
+
+        async for _ in transport.stream(_messages(), model="gpt-4o"):
+            pass
+
+        _, kwargs = transport._client.chat.completions.create.call_args
+        assert kwargs["model"] == "gpt-4o"
+        assert "prompt_cache_key" not in kwargs
+        assert "prompt_cache_options" not in kwargs
+        for msg in kwargs["messages"]:
+            assert isinstance(msg["content"], str)
+
+
 class TestGatewayStanddown:
     def test_pre_existing_marker_on_tools_stands_down(self) -> None:
         transport = OpenAITransport(api_key="sk-test", cache_strategy=OpenAICacheStrategy(_permissive_capability()))

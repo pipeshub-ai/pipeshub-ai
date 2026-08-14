@@ -31,10 +31,9 @@ class TestAnthropic:
         cap = resolve_capability("anthropic", "claude-2.1")
         assert cap.mode == "none"
 
-    def test_unknown_model_name_degrades_to_conservative_floor(self) -> None:
+    def test_unknown_model_name_degrades_to_none(self) -> None:
         cap = resolve_capability("anthropic", "claude-future-model-9")
-        assert cap.mode == "explicit"
-        assert cap.min_prefix_tokens == 2048
+        assert cap.mode == "none"
 
     def test_no_model_name_at_all_degrades_to_none(self) -> None:
         cap = resolve_capability("anthropic", None)
@@ -81,6 +80,14 @@ class TestOpenAI:
         automatic = resolve_capability("openai", "gpt-4o-mini")
         assert explicit.can_cache_tools is False
         assert automatic.can_cache_tools is False
+
+    def test_unknown_model_name_degrades_to_none(self) -> None:
+        cap = resolve_capability("openai", "not-a-real-gpt")
+        assert cap.mode == "none"
+
+    def test_no_model_name_at_all_degrades_to_none(self) -> None:
+        cap = resolve_capability("openai", None)
+        assert cap.mode == "none"
 
 
 class TestGoogle:

@@ -106,17 +106,41 @@ class TestAinvokeThrottledCacheKwargs:
         llm.ainvoke.assert_awaited_once_with([])
 
 
-class TestReuseClassThreadedFromStructuredOutputReflection:
-    async def test_reuse_class_and_cache_key_reach_ainvoke_throttled(self) -> None:
-        wrapped = MagicMock()
-        wrapped.ainvoke = AsyncMock(return_value=AIMessage(content='{"x": 1}'))
+class TestAinvokeThrottledRecordsResolvedCacheIdentity:
+    async def test_logs_downgraded_provider_and_detected_model(self) -> None:
+        llm = MagicMock()
+        llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": 10, "output_tokens": 1, "total_tokens": 11,
+                },
+            )
+        )
+        llm.openai_api_base = "https://openrouter.ai/api/v1"
+        llm.base_url = "https://openrouter.ai/api/v1"
+        llm.model = "gpt-4o"
+        llm.model_name = "gpt-4o"
 
-        with patch(
-            "app.utils.streaming._apply_structured_output", return_value=wrapped
-        ), patch(
+        with patch("app.utils.streaming.log_cache_usage") as mock_log, patch(
             "app.utils.streaming.resolve_cache_config",
             return_value=CacheConfig(enabled=True, source="env"),
         ):
+            await _ainvoke_throttled(
+                llm, [], provider="openai", model="",
+                reuse_class=CacheReuseClass.MULTI_TURN,
+            )
+
+        sample = mock_log.call_args.args[0]
+        assert sample.provider == "unknown"
+        assert sample.model == "gpt-4o"
+
+
+class TestReuseClassThreadedFromStructuredOutputReflection:
+    async def test_reuse_class_and_cache_key_reach_ainvoke_throttled(self) -> None:
+        mock_throttled = AsyncMock(return_value=AIMessage(content='{"x": 1}'))
+
+        with patch("app.utils.streaming._ainvoke_throttled", mock_throttled):
             out = await invoke_with_structured_output_and_reflection(
                 MagicMock(),
                 [],
@@ -129,10 +153,12 @@ class TestReuseClassThreadedFromStructuredOutputReflection:
             )
 
         assert out is not None and out.x == 1
-        # provider defaults to "magicmock" (unmapped LangChain class name),
-        # which resolves to no cache kwargs regardless of shared_static_enabled —
-        # this only proves the parameters were threaded through without error.
-        wrapped.ainvoke.assert_awaited_once_with([])
+        mock_throttled.assert_awaited_once()
+        kwargs = mock_throttled.await_args.kwargs
+        assert kwargs["reuse_class"] is CacheReuseClass.SHARED_STATIC
+        assert kwargs["cache_key"] == "org-1"
+        assert kwargs["shared_static_enabled"] is True
+        assert kwargs["call_site"] == "document_metadata_extraction"
 
     async def test_omitting_reuse_class_keeps_legacy_no_kwargs_behavior(self) -> None:
         """Existing callers that never pass `reuse_class` must see byte

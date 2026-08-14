@@ -375,29 +375,50 @@ def token_usage_from_ai_message(ai_message: AIMessage) -> TokenUsage:
     raising — a missing usage field should never crash the turn loop.
 
     `usage_metadata["input_tokens"]` is LangChain's TOTAL prompt token
-    count, which on every provider integration observed here already
-    INCLUDES `input_token_details["cache_read"]` — it is not additive.
-    Returning it as-is double-counted cached tokens into
-    `TokenUsage.input_tokens` (they'd show up there AND in
-    `cache_read_tokens`), which both inflates the reported non-cached
-    cost and hides the win prompt caching is supposed to demonstrate.
-    Subtracting `cache_read` here matches the semantics
-    `app.llm.prompt_cache.metrics.usage_from_ai_message` already uses
-    for the Phase 0 measurement path, so both consumers of this same
-    `usage_metadata` agree on what "input_tokens" means.
+    count — `UsageMetadata` documents it as the sum of all input types,
+    and `langchain_anthropic._create_usage_metadata` explicitly adds
+    both `cache_read` and `cache_creation` onto Anthropic's native
+    `input_tokens` (which excludes them). Returning the total as-is
+    double-counted those tokens: they'd appear in `input_tokens` at
+    full price AND in `cache_read_tokens`/`cache_write_tokens` at the
+    cache rate. Subtracting both matches native `AnthropicTransport`
+    (`TokenUsage.input_tokens` is uncached-only) and
+    `app.llm.prompt_cache.metrics.usage_from_ai_message`.
     """
     usage = ai_message.usage_metadata
-    if not usage:
+    if not isinstance(usage, dict) or not usage:
         return TokenUsage()
 
     input_details = usage.get("input_token_details") or {}
-    cache_read = input_details.get("cache_read", 0) or 0
-    raw_input = usage.get("input_tokens", 0) or 0
+    if not isinstance(input_details, dict):
+        input_details = {}
+    cache_read = _usage_int(input_details, "cache_read")
+    cache_write = _cache_write_tokens(input_details)
+    raw_input = _usage_int(usage, "input_tokens")
     return TokenUsage(
-        input_tokens=max(raw_input - cache_read, 0),
-        output_tokens=usage.get("output_tokens", 0) or 0,
+        input_tokens=max(raw_input - cache_read - cache_write, 0),
+        output_tokens=_usage_int(usage, "output_tokens"),
         cache_read_tokens=cache_read,
-        cache_write_tokens=input_details.get("cache_creation", 0) or 0,
+        cache_write_tokens=cache_write,
+    )
+
+
+def _usage_int(mapping: dict, key: str) -> int:
+    value = mapping.get(key, 0) or 0
+    return value if isinstance(value, int) else 0
+
+
+def _cache_write_tokens(input_details: dict) -> int:
+    """LangChain's `cache_creation` field, plus Anthropic's TTL-split
+    keys: `langchain_anthropic._create_usage_metadata` zeros
+    `cache_creation` and reports writes on `ephemeral_5m_input_tokens` /
+    `ephemeral_1h_input_tokens` when those are present."""
+    cache_write = _usage_int(input_details, "cache_creation")
+    if cache_write:
+        return cache_write
+    return (
+        _usage_int(input_details, "ephemeral_5m_input_tokens")
+        + _usage_int(input_details, "ephemeral_1h_input_tokens")
     )
 
 

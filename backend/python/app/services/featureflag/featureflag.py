@@ -148,8 +148,8 @@ class FeatureFlagService:
 
         A failed tick is logged (if a logger is given) and swallowed so one
         bad refresh never kills the loop. Returns the task so the caller can
-        hold a reference (and optionally cancel it on shutdown) — the task
-        itself runs forever until cancelled or the process exits.
+        hold a reference — cancel it on shutdown via `stop_periodic_refresh`.
+        The task itself runs forever until cancelled or the process exits.
         """
 
         async def _loop() -> None:
@@ -162,6 +162,22 @@ class FeatureFlagService:
                         logger.debug(f"Periodic feature flag refresh failed: {exc}")
 
         return asyncio.create_task(_loop())
+
+    @classmethod
+    async def stop_periodic_refresh(
+        cls, task: Optional["asyncio.Task[None]"]
+    ) -> None:
+        """Cancel a task from `start_periodic_refresh` and wait for it.
+
+        No-op if `task` is None, already done, or not an `asyncio.Task`.
+        """
+        if task is None or not isinstance(task, asyncio.Task) or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     def set_provider(self, provider: IConfigProvider) -> None:
         """

@@ -233,6 +233,37 @@ class TestStartPeriodicRefresh:
                     await task
 
 
+class TestStopPeriodicRefresh:
+    """Cancel-and-await helper used by query/indexing lifespan shutdown."""
+
+    @pytest.mark.asyncio
+    async def test_cancels_a_running_task(self, mock_provider):
+        mock_provider.refresh = AsyncMock()
+        FeatureFlagService.get_service(provider=mock_provider)
+
+        task = FeatureFlagService.start_periodic_refresh(interval_seconds=60)
+        assert not task.done()
+        await FeatureFlagService.stop_periodic_refresh(task)
+        assert task.done()
+        assert task.cancelled()
+        # Idempotent: a second stop must not raise.
+        await FeatureFlagService.stop_periodic_refresh(task)
+
+    @pytest.mark.asyncio
+    async def test_is_a_no_op_for_none_already_done_and_non_tasks(self):
+        await FeatureFlagService.stop_periodic_refresh(None)
+        await FeatureFlagService.stop_periodic_refresh(MagicMock())  # type: ignore[arg-type]
+
+        async def _already_done() -> None:
+            return None
+
+        done_task = asyncio.create_task(_already_done())
+        await done_task
+        await FeatureFlagService.stop_periodic_refresh(done_task)
+        assert done_task.done()
+        assert not done_task.cancelled()
+
+
 # ===========================================================================
 # EnvFileProvider
 # ===========================================================================

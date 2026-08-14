@@ -110,14 +110,30 @@ class TestOverBudgetBothShapersMayRunInOneDispatch:
         fires on the same dispatch. This is one deliberate, compounded
         cold write for this dispatch — not two rewrites spread across two
         separate turns."""
-        messages = [_user(50)] + [_assistant(500) for _ in range(6)]  # 3050 / 1000
+        # 300-token assistants: sliding window evicts until 50+3*300=950,
+        # which is still over auto_compact's 850-token trigger. 500-token
+        # assistants would stop at 550 and never reach auto_compact.
+        messages = [_user(50)] + [_assistant(300) for _ in range(6)]  # 1850 / 1000
         assert _total_tokens(messages) > 1_000
+
+        async def _noop() -> None:
+            return None
+
+        after_window = ModelCallContext(messages=list(messages), budget=_budget(1_000))
+        await shape_sliding_window(pin_first_n=1)(after_window, _noop)
+        windowed = _total_tokens(after_window.messages)
+        assert 850 < windowed <= 1_000
 
         ctx = await _dispatch_pipeline(messages, _budget(1_000))
 
         assert _total_tokens(ctx.messages) <= 1_000
         # Pinned head (index 0, pin_first_n=1) survives both shapers.
         assert ctx.messages[0] == messages[0]
+        assert any(
+            "Auto-compacted summary" in (m.content or "")
+            for m in ctx.messages
+            if isinstance(m.content, str)
+        )
 
 
 class TestPinnedPrefixSurvivesBothShapersRegardlessOfTriggerBand:

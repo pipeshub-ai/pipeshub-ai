@@ -182,14 +182,12 @@ def resolve_capability(provider: str, model_name: str | None) -> CacheCapability
         for pattern, capability in _ANTHROPIC_RULES:
             if pattern.search(model):
                 return capability
-        # Unknown Claude model name: assume the more conservative
-        # (higher) floor rather than the Sonnet/Opus 1,024 minimum.
-        return _anthropic_capability(2048) if model else _NONE_CAPABILITY
+        return _NONE_CAPABILITY
 
     if provider_key in ("openai", "azure_openai"):
         if _OPENAI_EXPLICIT_PATTERN.search(model):
             return _openai_capability("explicit")
-        if _OPENAI_AUTOMATIC_PATTERN.search(model) or model:
+        if _OPENAI_AUTOMATIC_PATTERN.search(model):
             return _openai_capability("automatic")
         return _NONE_CAPABILITY
 

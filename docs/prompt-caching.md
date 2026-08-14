@@ -4,11 +4,14 @@ How PipesHub reuses cached LLM prompt prefixes to cut latency and cost, why it
 is designed the way it is, and what to do to extend it to a new call site or
 provider. The implementation lives almost entirely under
 [`backend/python/app/llm/prompt_cache/`](../backend/python/app/llm/prompt_cache/),
-with the two production call sites in
+with production call sites in
 [`app/agents/agent_loop/langchain_transport.py`](../backend/python/app/agents/agent_loop/langchain_transport.py)
-(chat/agent-loop traffic) and
+(chat/agent-loop traffic),
 [`app/utils/streaming.py`](../backend/python/app/utils/streaming.py) (indexing
-structured-output calls).
+structured-output helpers), and
+[`app/modules/transformers/document_extraction.py`](../backend/python/app/modules/transformers/document_extraction.py)
+(the one indexing site wired for `SHARED_STATIC`; it goes through
+`streaming.py` — see §6).
 
 ---
 
@@ -19,7 +22,10 @@ accumulating cost?" has a precise answer, and it isn't a TTL and isn't a kill
 switch. Every provider's cache entries expire on their own (5m–30m; there is
 no persistent cache storage and no per-entry storage fee on any path PipesHub
 uses). The actual cost risk runs the other way: **paying a write premium on a
-prefix that is never read again before it expires.**
+prefix that is never read again before it expires.** That premium is
+provider- and model-specific: Anthropic charges 1.25× input on cache writes;
+OpenAI writes are free on models before GPT-5.6 and 1.25× from GPT-5.6
+onward.
 
 So the unit of decision isn't "is caching on globally" — it's **"will this
 specific call's prefix be re-read before the TTL expires?"**, answered per
@@ -54,8 +60,8 @@ cache kwargs (never an etcd round-trip on the hot path); a background task
 started by `FeatureFlagService.start_periodic_refresh()` keeps that in-memory
 value current every 60s in both the query and indexing processes.
 
-Turning the flag off does not, by itself, retroactively enable any
-`SHARED_STATIC` site that hasn't been individually justified — see §1's table.
+Turning the flag on does not, by itself, enable any `SHARED_STATIC` site
+that hasn't been individually justified — see §1's table.
 
 ## 3. Per-provider support matrix
 

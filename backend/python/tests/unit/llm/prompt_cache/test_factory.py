@@ -38,6 +38,10 @@ class TestResolveStrategy:
         strategy = resolve_strategy("azure_openai", "gpt-5.6-luna")
         assert isinstance(strategy, OpenAICacheStrategy)
 
+    def test_unrecognized_openai_model_resolves_to_noop(self) -> None:
+        strategy = resolve_strategy("openai", "not-a-real-gpt")
+        assert isinstance(strategy, NoopStrategy)
+
     def test_no_model_name_still_resolves(self) -> None:
         strategy = resolve_strategy("anthropic", None)
         assert isinstance(strategy, NoopStrategy)

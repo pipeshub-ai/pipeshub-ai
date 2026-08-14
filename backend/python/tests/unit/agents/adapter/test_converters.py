@@ -341,12 +341,12 @@ class TestTokenUsage:
             },
         )
         usage = token_usage_from_ai_message(ai_message)
-        # `usage_metadata["input_tokens"]` (10) already INCLUDES the 2
-        # cache_read tokens on every provider integration observed —
-        # input_tokens must exclude them (10 - 2 = 8) or those 2 tokens
-        # get billed twice: once at full price via input_tokens, once
-        # at the cache-read discount via cache_read_tokens.
-        assert usage.input_tokens == 8
+        # LangChain's `usage_metadata["input_tokens"]` (10) already INCLUDES
+        # both cache_read (2) and cache_creation (1) — input_tokens must
+        # exclude them (10 - 2 - 1 = 7) or those tokens get billed twice:
+        # once at full price via input_tokens, once at the cache rate via
+        # cache_read_tokens / cache_write_tokens.
+        assert usage.input_tokens == 7
         assert usage.output_tokens == 5
         assert usage.cache_read_tokens == 2
         assert usage.cache_write_tokens == 1
@@ -387,16 +387,16 @@ class TestTokenUsage:
         already 100 (excluding its separate `cache_read_input_tokens=10`).
         This test pins the equivalent LangChain-path scenario: LangChain's
         `usage_metadata["input_tokens"]` for the same underlying call
-        reports 110 (100 + the 10 cached), so this function must subtract
-        the 10 to land on the same 100 the native path reports for
-        identical underlying provider usage.
+        reports 115 (100 uncached + 10 cache_read + 5 cache_creation), so
+        this function must subtract both cache fields to land on the same
+        100 the native path reports for identical underlying provider usage.
         """
         ai_message = AIMessage(
             content="hi",
             usage_metadata={
-                "input_tokens": 110,
+                "input_tokens": 115,
                 "output_tokens": 50,
-                "total_tokens": 160,
+                "total_tokens": 165,
                 "input_token_details": {"cache_read": 10, "cache_creation": 5},
             },
         )
@@ -404,6 +404,28 @@ class TestTokenUsage:
         assert usage.input_tokens == 100
         assert usage.cache_read_tokens == 10
         assert usage.cache_write_tokens == 5
+
+    def test_anthropic_ttl_split_cache_creation_keys_count_as_writes(self) -> None:
+        """langchain-anthropic zeros `cache_creation` and reports writes on
+        `ephemeral_*` keys when TTL is split — those must still leave
+        `input_tokens` and land in `cache_write_tokens`."""
+        ai_message = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 130,
+                "output_tokens": 10,
+                "total_tokens": 140,
+                "input_token_details": {
+                    "cache_read": 20,
+                    "cache_creation": 0,
+                    "ephemeral_5m_input_tokens": 10,
+                },
+            },
+        )
+        usage = token_usage_from_ai_message(ai_message)
+        assert usage.input_tokens == 100
+        assert usage.cache_read_tokens == 20
+        assert usage.cache_write_tokens == 10
 
 
 class TestToolSchemaConversion:

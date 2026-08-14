@@ -72,8 +72,10 @@ class TestNoGratuitousEviction:
         """The trigger is a strict `>`, not `>=` — landing exactly on the
         ceiling must not itself count as "over budget" and force a cold
         write for zero actual overflow."""
-        messages = [_user(1_000)]
-        ctx = await _run(shape_sliding_window(), messages, budget=_budget(1_000))
+        messages = [_user(400), _assistant(600)]
+        ctx = await _run(
+            shape_sliding_window(pin_first_n=1), messages, budget=_budget(1_000)
+        )
         assert ctx.messages == messages
 
 

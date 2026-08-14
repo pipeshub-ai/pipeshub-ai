@@ -188,14 +188,32 @@ class OpenAITransport(LLMTransport):
         )
 
     def _apply_cache_strategy(
-        self, formatted_messages: list[dict], formatted_tools: list[dict] | None
+        self,
+        formatted_messages: list[dict],
+        formatted_tools: list[dict] | None,
+        *,
+        model: str | None = None,
     ) -> ApplyResult:
         """Routes the plain (uncached) payload through the injected
         strategy, if any. With no strategy injected, or a strategy
         that declines to cache this call, returns the payload
-        unchanged and adds no request kwargs."""
+        unchanged and adds no request kwargs.
+
+        The injected strategy is bound to the constructor model
+        (`self._model`): OpenAI automatic (gpt-4o) vs explicit (gpt-5.6+)
+        produce incompatible request shapes, and sending
+        `prompt_cache_options.mode="explicit"` to an automatic-mode
+        model disables its implicit caching. A per-call `model`
+        override that differs from the constructor therefore skips
+        cache planning rather than applying the wrong shape. Matching
+        overrides (including Agent always passing `spec.model.model`)
+        still cache. `agent_loop_lib` stays hermetic — it does not
+        import `resolve_strategy` to rebuild a strategy per model.
+        """
         identity = ApplyResult(messages=formatted_messages, tools=formatted_tools)
         if self._cache_strategy is None:
+            return identity
+        if model is not None and model != self._model:
             return identity
         request = CacheableRequest(messages=formatted_messages, tools=formatted_tools)
         plan = self._cache_strategy.plan(request)
@@ -238,7 +256,8 @@ class OpenAITransport(LLMTransport):
         resolved_model = model or self._model
         formatted_tools = self._format_tools(tools)
         cache_result = self._apply_cache_strategy(
-            self._format_messages(messages, system), formatted_tools
+            self._format_messages(messages, system), formatted_tools,
+            model=resolved_model,
         )
         kwargs: dict[str, Any] = {
             "model": resolved_model,
@@ -322,7 +341,8 @@ class OpenAITransport(LLMTransport):
         resolved_model = model or self._model
         formatted_tools = self._format_tools(tools)
         cache_result = self._apply_cache_strategy(
-            self._format_messages(messages, system), formatted_tools
+            self._format_messages(messages, system), formatted_tools,
+            model=resolved_model,
         )
         kwargs: dict[str, Any] = {
             "model": resolved_model,

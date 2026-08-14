@@ -277,6 +277,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except (asyncio.CancelledError, Exception):
                 pass
 
+    from app.services.featureflag.featureflag import FeatureFlagService
+    await FeatureFlagService.stop_periodic_refresh(
+        getattr(app_container, "_feature_flag_refresh_task", None)
+    )
+
     # Stop all message consumers
     try:
         await stop_kafka_consumers(app_container)

@@ -216,6 +216,21 @@ class TestSystemBreakpointFloor:
         _apply(_strategy(), CacheableRequest(messages=[], system=system))
         assert "cache_control" not in system[0]
 
+    def test_later_system_blocks_do_not_make_the_marked_prefix_eligible(self) -> None:
+        system = [{"type": "text", "text": "tiny"}, {"type": "text", "text": "x" * 50}]
+        result = _apply(_strategy(), CacheableRequest(messages=[], system=system))
+        assert "cache_control" not in result.system[0]
+        assert "cache_control" not in result.system[1]
+
+    def test_large_tool_prefix_makes_short_first_system_block_eligible(self) -> None:
+        system = [{"type": "text", "text": "tiny"}]
+        tools = [{"name": "search", "description": "x" * 50}]
+        result = _apply(
+            _strategy(), CacheableRequest(messages=[], system=system, tools=tools)
+        )
+        assert result.system[0]["cache_control"] == {"type": "ephemeral"}
+        assert result.tools[-1]["cache_control"] == {"type": "ephemeral"}
+
 
 class TestToolBreakpoint:
     def test_none_when_no_tools(self) -> None:

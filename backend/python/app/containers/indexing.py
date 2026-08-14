@@ -166,10 +166,13 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")
 
+        await Health.system_health_check(container)
+
         # Etcd-backed feature flags (e.g. the ENABLE_PROMPT_CACHING Labs
         # toggle) — this process only ever consults FeatureFlagService off
         # the request path, so a bounded-cadence background refresh keeps it
-        # from going stale for the process lifetime. See
+        # from going stale for the process lifetime. Started after the
+        # health check so a failed init cannot leak the loop. See
         # FeatureFlagService.start_periodic_refresh.
         await container.feature_flag_service()
         from app.services.featureflag.featureflag import FeatureFlagService
@@ -177,7 +180,6 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
             _FEATURE_FLAG_REFRESH_INTERVAL_SECONDS, logger
         )
 
-        await Health.system_health_check(container)
         return True
 
     except Exception as e:

@@ -77,12 +77,11 @@ class CacheUsageSample:
     """One LLM call's usage, normalized so `input_tokens` EXCLUDES cached
     tokens on every path that produces a sample here.
 
-    This differs from `app.agents.agent_loop.converters.token_usage_from_ai_message`,
-    which currently double-counts cache tokens into `input_tokens` on the
-    LangChain path (see the plan's "Existing bugs this plan fixes" #1,
-    fixed at that call site in Phase 5). This module is new code with no
-    existing behavior to preserve, so it is written with the correct
-    semantics from the start rather than inheriting the bug.
+    Matches `app.agents.agent_loop.converters.token_usage_from_ai_message`:
+    LangChain's `usage_metadata["input_tokens"]` is the sum of all input
+    types (see `langchain_anthropic._create_usage_metadata`), so both
+    `cache_read` and `cache_creation` are subtracted to leave uncached
+    tokens only.
     """
 
     provider: str
@@ -120,22 +119,42 @@ def usage_from_ai_message(
     "caching produced zero reads".
     """
     usage = getattr(ai_message, "usage_metadata", None)
-    if not usage:
+    if not isinstance(usage, dict) or not usage:
         return None
     input_details = usage.get("input_token_details") or {}
-    cache_read = input_details.get("cache_read", 0) or 0
-    cache_write = input_details.get("cache_creation", 0) or 0
-    raw_input = usage.get("input_tokens", 0) or 0
+    if not isinstance(input_details, dict):
+        input_details = {}
+    cache_read = _usage_int(input_details, "cache_read")
+    cache_write = _cache_write_tokens(input_details)
+    raw_input = _usage_int(usage, "input_tokens")
     return CacheUsageSample(
         provider=provider,
         model=model,
         call_site=call_site,
-        input_tokens=max(raw_input - cache_read, 0),
-        output_tokens=usage.get("output_tokens", 0) or 0,
+        input_tokens=max(raw_input - cache_read - cache_write, 0),
+        output_tokens=_usage_int(usage, "output_tokens"),
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
         decision_enabled=decision.enabled if decision is not None else None,
         decision_reason=decision.reason if decision is not None else None,
+    )
+
+
+def _usage_int(mapping: dict, key: str) -> int:
+    value = mapping.get(key, 0) or 0
+    return value if isinstance(value, int) else 0
+
+
+def _cache_write_tokens(input_details: dict) -> int:
+    """See `converters._cache_write_tokens` — same LangChain Anthropic
+    TTL-split fallback, duplicated so this package does not import the
+    agent-loop adapter."""
+    cache_write = _usage_int(input_details, "cache_creation")
+    if cache_write:
+        return cache_write
+    return (
+        _usage_int(input_details, "ephemeral_5m_input_tokens")
+        + _usage_int(input_details, "ephemeral_1h_input_tokens")
     )
 
 
@@ -176,7 +195,9 @@ def log_cache_usage(sample: CacheUsageSample | None) -> None:
     if sample is None:
         return
     try:
-        total_input = sample.input_tokens + sample.cache_read_tokens
+        total_input = (
+            sample.input_tokens + sample.cache_read_tokens + sample.cache_write_tokens
+        )
         hit_rate = sample.cache_read_tokens / total_input if total_input else 0.0
         net_savings = _net_savings_tokens(
             provider=sample.provider,

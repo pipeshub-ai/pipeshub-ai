@@ -101,8 +101,8 @@ class TestInitializeContainer:
         with patch(
             "app.services.featureflag.featureflag.FeatureFlagService.start_periodic_refresh",
             return_value=MagicMock(),
-        ):
-            yield
+        ) as mock_start:
+            yield mock_start
 
     def _make_mock_container(self):
         container = MagicMock()
@@ -116,12 +116,13 @@ class TestInitializeContainer:
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
     @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
-    async def test_success(self, mock_sys_health, mock_conn_health):
+    async def test_success(self, mock_sys_health, mock_conn_health, _no_real_feature_flag_refresh_task):
         container, logger = self._make_mock_container()
         result = await initialize_container(container)
         assert result is True
         mock_conn_health.assert_awaited_once_with(container)
         mock_sys_health.assert_awaited_once_with(container)
+        _no_real_feature_flag_refresh_task.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
@@ -152,11 +153,15 @@ class TestInitializeContainer:
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
     @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
-    async def test_fails_on_system_health_check(self, mock_sys_health, mock_conn_health):
+    async def test_fails_on_system_health_check(
+        self, mock_sys_health, mock_conn_health, _no_real_feature_flag_refresh_task
+    ):
         container, logger = self._make_mock_container()
         mock_sys_health.side_effect = Exception("system unhealthy")
         with pytest.raises(Exception, match="system unhealthy"):
             await initialize_container(container)
+        _no_real_feature_flag_refresh_task.assert_not_called()
+        container.feature_flag_service.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)

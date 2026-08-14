@@ -1369,12 +1369,17 @@ class TestLifespan:
             patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
             patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", MagicMock())]),
             patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock) as mock_stop,
+            patch(
+                "app.services.featureflag.featureflag.FeatureFlagService.stop_periodic_refresh",
+                new_callable=AsyncMock,
+            ) as mock_stop_refresh,
         ):
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
                 assert mock_app.state.graph_provider is mock_gp
 
             mock_stop.assert_awaited_once()
+            mock_stop_refresh.assert_awaited_once()
             mock_container.config_service().close.assert_awaited()
 
     async def test_graph_provider_fallback(self):

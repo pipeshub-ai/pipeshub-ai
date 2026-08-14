@@ -33,6 +33,7 @@ building the plain (uncached) formatted payload before constructing a
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 from app.agent_loop_lib.cache.base import ApplyResult, CacheableRequest, CachePlan
@@ -57,6 +58,17 @@ def _message_char_length(msg: dict[str, Any]) -> int:
     return len(content) if isinstance(content, str) else 0
 
 
+def _serialized_char_length(value: Any) -> int:
+    try:
+        return len(json.dumps(value, default=str, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _tools_char_length(tools: list[dict[str, Any]] | None) -> int:
+    return _serialized_char_length(tools) if tools else 0
+
+
 class AnthropicCacheStrategy:
     """Implements `agent_loop_lib.cache.base.PromptCacheStrategy` via
     structural typing. Bound to one `CacheCapability` at construction
@@ -77,7 +89,9 @@ class AnthropicCacheStrategy:
         floor_tokens = self._capability.min_prefix_tokens
 
         eligible_indices = self._eligible_message_boundaries(request.messages, floor_tokens)
-        system_clears_floor = self._system_clears_floor(request.system, floor_tokens)
+        system_clears_floor = self._system_clears_floor(
+            request.system, floor_tokens, tools=request.tools
+        )
 
         allocation = self._allocator.allocate(
             has_tools=bool(request.tools),
@@ -138,12 +152,22 @@ class AnthropicCacheStrategy:
 
     @staticmethod
     def _system_clears_floor(
-        system: list[dict[str, Any]] | None, floor_tokens: int
+        system: list[dict[str, Any]] | None,
+        floor_tokens: int,
+        tools: list[dict[str, Any]] | None = None,
     ) -> bool:
+        """Eligibility is the prefix Anthropic sees through the marker
+        we actually place (serialized tools + `system[0]`), not the
+        sum of every system block. Later system blocks are not in that
+        prefix; a large tool schema is.
+        """
         if not system:
             return False
-        total_chars = sum(len(_block_text(b)) for b in system if isinstance(b, dict))
-        return estimate_tokens(total_chars) >= floor_tokens
+        first = system[0]
+        marked_chars = _tools_char_length(tools) + (
+            len(_block_text(first)) if isinstance(first, dict) else 0
+        )
+        return estimate_tokens(marked_chars) >= floor_tokens
 
     @staticmethod
     def _mark_tool_breakpoint(

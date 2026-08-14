@@ -149,9 +149,10 @@ async def _ainvoke_throttled(
     last-block placement).
     """
     cache_provider = resolve_cache_provider(llm, provider or detect_langchain_provider(llm))
+    cache_model = model or model_name_of(llm)
     cache_kwargs, cache_decision = resolve_langchain_cache_kwargs(
         provider=cache_provider,
-        model=model or model_name_of(llm),
+        model=cache_model,
         reuse_class=reuse_class,
         cache_config=resolve_cache_config(),
         cache_key=cache_key,
@@ -164,7 +165,7 @@ async def _ainvoke_throttled(
                 result = await llm.ainvoke(messages, **cache_kwargs)
                 note_llm_call()
                 _record_cache_usage(
-                    result, provider=provider, model=model, call_site=call_site,
+                    result, provider=cache_provider, model=cache_model, call_site=call_site,
                     decision=cache_decision,
                 )
                 return result

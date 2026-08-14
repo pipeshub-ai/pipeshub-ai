@@ -20,7 +20,18 @@ this key is already scoped by the caller.
 
 from __future__ import annotations
 
+import hashlib
+
 _MAX_KEY_LENGTH = 128  # OpenAI's documented maximum for `prompt_cache_key`.
+
+
+def _length_delimited(*fields: str) -> bytes:
+    chunks: list[bytes] = []
+    for field in fields:
+        encoded = field.encode("utf-8")
+        chunks.append(f"{len(encoded)}:".encode("ascii"))
+        chunks.append(encoded)
+    return b"".join(chunks)
 
 
 def build_prompt_cache_key(*, org_id: str, user_id: str, spec_id: str = "") -> str:
@@ -31,8 +42,13 @@ def build_prompt_cache_key(*, org_id: str, user_id: str, spec_id: str = "") -> s
     want distinct cache buckets per agent configuration within the
     same org+user.
     """
-    parts = [p for p in (org_id, user_id, spec_id) if p]
-    return ":".join(parts)[:_MAX_KEY_LENGTH]
+    # Hash a length-delimited encoding of every field so a `:` inside a
+    # value, or a field longer than 128 characters, cannot make two
+    # distinct (org, user, spec) tuples share a routing key.
+    digest = hashlib.sha256(
+        _length_delimited(org_id, user_id, spec_id)
+    ).hexdigest()
+    return digest[:_MAX_KEY_LENGTH]
 
 
 __all__ = ["build_prompt_cache_key"]

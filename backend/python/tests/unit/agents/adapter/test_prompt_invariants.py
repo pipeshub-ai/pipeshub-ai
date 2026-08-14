@@ -718,9 +718,8 @@ def test_stable_block_survives_a_changed_clock(fixture_name: str) -> None:
         fixture_name, current_time="2027-06-15T12:34:56Z", timezone="America/Los_Angeles",
     )
     assert stable_1 == stable_2
-    if volatile_1 or volatile_2:
-        assert volatile_1 != volatile_2, (
-            f"[{fixture_name}] time_context did not actually vary between "
-            "the two clocks — this test would pass vacuously if the "
-            "volatile block stopped rendering time_context at all"
-        )
+    assert volatile_1 != volatile_2, (
+        f"[{fixture_name}] time_context did not actually vary between "
+        "the two clocks — this test would pass vacuously if the "
+        "volatile block stopped rendering time_context at all"
+    )

@@ -407,6 +407,10 @@ class TestLifespan:
             patch("app.query_main.container", mock_container),
             patch("app.query_main.get_toolset_registry", return_value=mock_toolset_registry, create=True),
             patch("app.query_main._global_tools_registry", mock_tools_registry, create=True),
+            patch(
+                "app.services.featureflag.featureflag.FeatureFlagService.stop_periodic_refresh",
+                new_callable=AsyncMock,
+            ) as mock_stop_refresh,
         ):
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
@@ -424,6 +428,7 @@ class TestLifespan:
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
+            mock_stop_refresh.assert_awaited_once()
 
     async def test_startup_no_orgs(self):
         """When no orgs found, retrieval_service is NOT invoked."""

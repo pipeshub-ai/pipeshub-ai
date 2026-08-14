@@ -71,6 +71,15 @@ def _named(cls: type, class_name: str) -> type:
 _FakeChatAnthropic = _named(_ScriptedModel, "ChatAnthropic")
 _FakeChatOpenAI = _named(_ScriptedModel, "ChatOpenAI")
 
+_RESOLVE_CACHE_CONFIG = "app.agents.agent_loop.langchain_transport.resolve_cache_config"
+
+
+def _enabled_cache_config():
+    return patch(
+        _RESOLVE_CACHE_CONFIG,
+        return_value=CacheConfig(enabled=True, source="env"),
+    )
+
 
 async def _run_turns(transport: LangChainTransport, turn_count: int) -> None:
     for i in range(turn_count):
@@ -95,7 +104,8 @@ class TestMultiTurnAnthropic:
         )
         transport = LangChainTransport(model, model_name="claude-sonnet-4-6")
 
-        await _run_turns(transport, 3)
+        with _enabled_cache_config():
+            await _run_turns(transport, 3)
 
         # Every turn requested the same automatic cache_control breakpoint.
         assert all(
@@ -128,7 +138,8 @@ class TestMultiTurnOpenAI:
             model, model_name="gpt-5.6-terra", cache_key="org-1:user-1",
         )
 
-        await _run_turns(transport, 2)
+        with _enabled_cache_config():
+            await _run_turns(transport, 2)
 
         assert all(
             kwargs == {"prompt_cache_key": "org-1:user-1"}
@@ -146,11 +157,12 @@ class TestFlagToggledOffMidSession:
         )
         transport = LangChainTransport(model, model_name="claude-sonnet-4-6")
 
-        await transport.complete([UserMessage(content="turn 1")])
+        with _enabled_cache_config():
+            await transport.complete([UserMessage(content="turn 1")])
         assert model.ainvoke_kwargs_by_turn[-1] == {"cache_control": {"type": "ephemeral"}}
 
         with patch(
-            "app.agents.agent_loop.langchain_transport.resolve_cache_config",
+            _RESOLVE_CACHE_CONFIG,
             return_value=CacheConfig(enabled=False, source="feature_flag"),
         ):
             await transport.complete([UserMessage(content="turn 2")])

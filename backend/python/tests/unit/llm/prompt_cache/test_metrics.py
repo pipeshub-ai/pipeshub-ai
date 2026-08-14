@@ -71,10 +71,12 @@ class TestUsageFromAiMessage:
             object(), provider="anthropic", model="m", call_site="x"
         ) is None
 
-    def test_normalizes_input_tokens_to_exclude_cache_read(self) -> None:
-        # LangChain's `usage_metadata.input_tokens` sums ALL input types,
-        # including cached tokens — this must subtract cache_read so the
-        # sample's `input_tokens` means "non-cached" everywhere.
+    def test_normalizes_input_tokens_to_exclude_cache_read_and_write(self) -> None:
+        # LangChain's `usage_metadata.input_tokens` sums ALL input types
+        # (`langchain_anthropic._create_usage_metadata` adds cache_read
+        # AND cache_creation onto Anthropic's native input_tokens) — both
+        # must be subtracted so the sample's `input_tokens` means
+        # "uncached" everywhere.
         usage = {
             "input_tokens": 1000,
             "output_tokens": 50,
@@ -87,7 +89,7 @@ class TestUsageFromAiMessage:
             provider="anthropic",
             model="claude",
             call_site="agent_loop",
-            input_tokens=600,
+            input_tokens=500,
             output_tokens=50,
             cache_read_tokens=400,
             cache_write_tokens=100,
@@ -155,6 +157,16 @@ class TestLogCacheUsage:
         assert "provider=anthropic" in message
         assert "call_site=agent_loop" in message
         assert "hit_rate=0.750" in message
+
+    def test_hit_rate_denominator_includes_cache_writes(self, caplog: pytest.LogCaptureFixture) -> None:
+        sample = CacheUsageSample(
+            provider="anthropic", model="claude", call_site="agent_loop",
+            input_tokens=100, output_tokens=20, cache_read_tokens=300, cache_write_tokens=100,
+        )
+        with caplog.at_level(logging.INFO, logger="app.llm.prompt_cache.metrics"):
+            log_cache_usage(sample)
+        # 300 / (100 + 300 + 100) = 0.600 — writes are prompt tokens too.
+        assert "hit_rate=0.600" in caplog.records[0].getMessage()
 
     def test_zero_total_input_does_not_divide_by_zero(self, caplog: pytest.LogCaptureFixture) -> None:
         sample = CacheUsageSample(
