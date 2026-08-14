@@ -490,7 +490,7 @@ class TestSalesforceConnectorInitMethod:
             "auth": {"oauthConfigId": "oauth-1"},
         })
         with patch(
-            "app.connectors.sources.salesforce.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
         ) as mock_oauth:
             mock_oauth.return_value = {"config": {"instance_url": "https://example.salesforce.com"}}
@@ -505,7 +505,7 @@ class TestSalesforceConnectorInitMethod:
             "auth": {"oauthConfigId": "oauth-1"},
         })
         with patch(
-            "app.connectors.sources.salesforce.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
         ) as mock_oauth:
             mock_oauth.return_value = {"config": {}}  # no instance_url
@@ -521,7 +521,7 @@ class TestSalesforceConnectorInitMethod:
             "apiVersion": "59.0",
         })
         with patch(
-            "app.connectors.sources.salesforce.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
         ) as mock_oauth, patch(
             "app.connectors.sources.salesforce.connector.SalesforceClient"
@@ -2431,7 +2431,7 @@ class TestInitValueError:
             "auth": {"oauthConfigId": "oid-1"},
         })
         with patch(
-            "app.connectors.sources.salesforce.connector.fetch_oauth_config_by_id",
+            "app.utils.oauth_config.fetch_oauth_config_by_id",
             new_callable=AsyncMock,
             return_value={"config": {"instance_url": "https://sf.example.com"}},
         ), patch(

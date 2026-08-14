@@ -12,7 +12,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.middlewares.auth import authMiddleware
+from app.edition_config import (
+    authMiddleware,
+    connector_router,
+    ensure_org_context,
+    knowledge_hub_service_factory,
+    oauth_apps_router,
+)
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
@@ -24,23 +30,27 @@ from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
-from app.connectors.api.router import router
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.registry.connector_registry import (
-    ConnectorRegistry,
-)
-from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
 from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.connectors.sources.localKB.api.kb_router import kb_router
-from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
-from app.containers.connector import (
-    ConnectorAppContainer,
-    initialize_container,
+from app.connectors.sources.localKB.api.knowledge_hub_router import (
+    get_knowledge_hub_service,
+    knowledge_hub_router,
+)
+from app.containers.connector import initialize_container
+from app.edition_containers import ConnectorAppContainer
+from app.edition_services import (
+    get_connector_registry_cls,
+    get_oauth_config_registry,
+    get_startup_extra_kwargs,
+    pre_sync_hook,
+    register_extra_connectors,
+    scope_org_resources,
 )
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -118,8 +128,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
         logger.info("Found %d organizations in the system", len(orgs))
 
-        config_service = app_container.config_service()
-
         # Process each organization
         for org in orgs:
             org_id = org.get("_key") or org.get("id")
@@ -141,7 +149,11 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             logger.info("Found %d users for organization %s", len(users), org_id)
 
-            config_service = app_container.config_service()
+            # Edition hook: OSS returns global config + shared store;
+            # EE returns org-scoped ConfigurationServiceEE + GraphDataStore.
+            config_service, org_data_store = await scope_org_resources(
+                app_container, data_store, org_id
+            )
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
             # data_store_provider = data_store if data_store else await app_container.data_store()
 
@@ -161,7 +173,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                     connector = await ConnectorFactory.create_and_start_sync(
                         name=connector_name,
                         logger=logger,
-                        data_store_provider=data_store,
+                        data_store_provider=org_data_store,
                         config_service=config_service,
                         connector_id=connector_id,
                         scope=scope,
@@ -195,14 +207,15 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
-async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
+async def initialize_connector_registry(app_container: ConnectorAppContainer):
     """Initialize and sync connector registry with database"""
     logger = app_container.logger()
     logger.info("🔧 Initializing Connector Registry...")
 
     try:
-        registry = ConnectorRegistry(app_container)
+        registry = get_connector_registry_cls()(app_container)
 
+        register_extra_connectors()
         ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
         available_connectors = ConnectorFactory.list_connectors()
@@ -433,7 +446,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Start token refresh service at app startup (database-agnostic)
     try:
-        await startup_service.initialize(app_container.config_service(), graph_provider)
+        await startup_service.initialize(
+            app_container.config_service(),
+            graph_provider,
+            **get_startup_extra_kwargs(app_container),
+        )
         logger.info("✅ Startup services initialized successfully")
     except Exception as e:
         logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
@@ -482,6 +499,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # contract: connectors_map must be populated before the sync consumer
     # begins processing events.
     async def _post_startup() -> None:
+        await pre_sync_hook(app_container, logger)
+
         try:
             await resume_sync_services(app_container, data_store)
         except Exception as e:
@@ -527,12 +546,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 # Create FastAPI app with lifespan
+_app_dependencies = [Depends(get_initialized_container)]
+if ensure_org_context is not None:
+    _app_dependencies.append(Depends(ensure_org_context))
+
 app = FastAPI(
     title="Connectors Sync Service",
     description="Service for syncing content from connectors to GraphDB",
     version="1.0.0",
     lifespan=lifespan,
-    dependencies=[Depends(get_initialized_container)],
+    dependencies=_app_dependencies,
 )
 
 # List of paths to exclude from authentication (public endpoints)
@@ -610,7 +633,7 @@ app.add_middleware(RequestContextMiddleware)
 telemetry = setup_telemetry(app, service_name="connector_service")
 
 
-@router.get("/health")
+@app.get("/health")
 async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
     try:
@@ -632,7 +655,7 @@ async def health_check() -> JSONResponse:
         )
 
 
-@router.get("/health/graph-db")
+@app.get("/health/graph-db")
 async def graph_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured graph database using the same driver the app uses.
 
@@ -730,7 +753,7 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/health/vector-db")
+@app.get("/health/vector-db")
 async def vector_db_health_check(request: Request) -> JSONResponse:
     """Probe the configured vector database.
 
@@ -802,7 +825,13 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
-app.include_router(router)
+app.include_router(connector_router)
+if oauth_apps_router is not None:
+    app.include_router(oauth_apps_router)
+
+# EE: wire org-scoped KnowledgeHubService without touching the OSS router.
+if knowledge_hub_service_factory is not None:
+    app.dependency_overrides[get_knowledge_hub_service] = knowledge_hub_service_factory
 
 
 

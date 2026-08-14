@@ -127,7 +127,7 @@ class TestIndividualInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_returns_false_when_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(return_value={
@@ -137,7 +137,7 @@ class TestIndividualInit:
         result = await connector.init()
         assert result is False
 
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_raises_when_incomplete_credentials(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {}}
         connector.config_service.get_config = AsyncMock(return_value={

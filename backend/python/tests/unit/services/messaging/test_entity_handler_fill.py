@@ -50,7 +50,7 @@ class TestCreateAllTeamForOrgException:
             side_effect=RuntimeError("arango down"),
         )
         # Must not raise
-        result = await svc._EntityEventService__create_all_team_for_org("org-1", "u1")
+        result = await svc._create_all_team_for_org("org-1", "u1")
         assert result is None
         svc.logger.error.assert_called_once()
         msg = svc.logger.error.call_args[0][0]
@@ -61,7 +61,7 @@ class TestCreateAllTeamForOrgException:
     async def test_defaults_created_by_to_system(self):
         svc = _make_service()
         svc.graph_provider.batch_upsert_nodes = AsyncMock()
-        await svc._EntityEventService__create_all_team_for_org("org-1")
+        await svc._create_all_team_for_org("org-1")
         args, _ = svc.graph_provider.batch_upsert_nodes.call_args
         nodes = args[0]
         assert nodes[0]["createdBy"] == "system"
@@ -76,7 +76,7 @@ class TestGetOrCreateAllTeamAndAddUserException:
         svc.graph_provider.add_user_to_all_team = AsyncMock(
             side_effect=RuntimeError("edge failed"),
         )
-        result = await svc._EntityEventService__get_or_create_all_team_and_add_user(
+        result = await svc._get_or_create_all_team_and_add_user(
             "org-1", "user-key-1",
         )
         assert result is None
@@ -89,7 +89,7 @@ class TestGetOrCreateAllTeamAndAddUserException:
     async def test_success_logs_info(self):
         svc = _make_service()
         svc.graph_provider.add_user_to_all_team = AsyncMock()
-        await svc._EntityEventService__get_or_create_all_team_and_add_user(
+        await svc._get_or_create_all_team_and_add_user(
             "org-1", "user-key-1",
         )
         svc.graph_provider.add_user_to_all_team.assert_awaited_once_with(
@@ -120,7 +120,7 @@ class TestCreateKbConnectorNoMetadataReal:
             "kb",
             create=True,
         ):
-            result = await svc._EntityEventService__create_kb_connector_app_instance("org-1")
+            result = await svc._create_kb_connector_app_instance("org-1")
 
         assert result is None
         svc.logger.warning.assert_called_once()
@@ -158,7 +158,7 @@ class TestCreateKbConnectorMissingConnectorsMap:
             fake_connector = MagicMock()
             mock_factory.create_and_start_sync = AsyncMock(return_value=fake_connector)
 
-            result = await svc._EntityEventService__create_kb_connector_app_instance(
+            result = await svc._create_kb_connector_app_instance(
                 "org-1", "u1",
             )
 

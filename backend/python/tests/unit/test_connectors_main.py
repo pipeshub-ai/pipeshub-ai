@@ -315,7 +315,7 @@ class TestInitializeConnectorRegistry:
         mock_registry.sync_with_database = AsyncMock()
 
         with (
-            patch("app.connectors_main.ConnectorRegistry", return_value=mock_registry),
+            patch("app.connectors_main.get_connector_registry_cls", return_value=MagicMock(return_value=mock_registry)),
             patch("app.connectors_main.ConnectorFactory.initialize_beta_connector_registry"),
             patch("app.connectors_main.ConnectorFactory.list_connectors", return_value={"drive": MagicMock(), "slack": MagicMock()}),
         ):
@@ -332,7 +332,10 @@ class TestInitializeConnectorRegistry:
         mock_container = _make_container()
 
         with (
-            patch("app.connectors_main.ConnectorRegistry", side_effect=RuntimeError("fail")),
+            patch(
+                "app.connectors_main.get_connector_registry_cls",
+                return_value=MagicMock(side_effect=RuntimeError("fail")),
+            ),
         ):
             with pytest.raises(RuntimeError, match="fail"):
                 await initialize_connector_registry(mock_container)

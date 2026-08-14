@@ -115,7 +115,6 @@ from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsResponse,
     OutlookMailFoldersResponse,
 )
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     datetime_to_epoch_ms,
@@ -343,12 +342,10 @@ class OutlookIndividualConnector(BaseConnector):
                 self.logger.error("Outlook Personal oauthConfigId not found in auth configuration.")
                 raise ValueError("Outlook Personal oauthConfigId not found in auth configuration.")
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=OutlookOAuthConfig.CONNECTOR_TYPE_PERSONAL,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -2072,7 +2069,7 @@ class OutlookIndividualConnector(BaseConnector):
         data_entities_processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
         await data_entities_processor.initialize()
 
-        return OutlookIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

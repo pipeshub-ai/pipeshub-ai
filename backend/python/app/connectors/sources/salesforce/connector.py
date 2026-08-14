@@ -13,7 +13,6 @@ from html_to_markdown import convert as html_to_markdown  # type: ignore[import-
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -792,6 +791,10 @@ class SalesforceConnector(BaseConnector):
     """
     salesforce_instance_url: str
 
+    def _get_parent_org_id(self) -> str | None:
+        """EE override: returns this connector's org_id for parentOrgId graph filters."""
+        return None
+
     def __init__(
         self,
         logger: Logger,
@@ -970,12 +973,10 @@ class SalesforceConnector(BaseConnector):
             auth_config = config.get("auth", {})
             oauth_config_id = auth_config.get("oauthConfigId")
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.SALESFORCE.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             # Extract access token and instance URL
@@ -4271,6 +4272,7 @@ class SalesforceConnector(BaseConnector):
         try:
             newly_synced_account_ids: Set[str] = set()
             org_id = self.data_entities_processor.org_id
+            parent_org_id = self._get_parent_org_id()
 
             # One-time setup: snapshot existing external orgs into a name -> _key map.
             # Updated in place each page so that newly upserted orgs are recognized as
@@ -4281,6 +4283,7 @@ class SalesforceConnector(BaseConnector):
                 o["name"]: o["_key"]
                 for o in (all_orgs or [])
                 if o.get("isExternal") is True
+                and (parent_org_id is None or o.get("parentOrgId") == parent_org_id)
             }
 
             total_orgs = 0
@@ -4362,9 +4365,11 @@ class SalesforceConnector(BaseConnector):
 
                 async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
                     all_orgs = await tx_store.get_all_orgs(is_external=True)
+                    parent_org_id = self._get_parent_org_id()
                     external_org_key_by_name = {
                         o["name"]: o.get("id", o.get("_key"))
                         for o in all_orgs
+                        if parent_org_id is None or o.get("parentOrgId") == parent_org_id
                     }
                     delete_tasks = []
                     for org, rg, _, _ in orgs_with_edges:
@@ -4547,8 +4552,20 @@ class SalesforceConnector(BaseConnector):
                     existing_people_result, existing_orgs_result = await asyncio.gather(
                         people_coro, orgs_coro
                     )
-                    email_map = {node.get("email"): node for node in (existing_people_result or [])}
-                    org_name_map = {node.get("name"): node for node in (existing_orgs_result or [])}
+                    parent_org_id = self._get_parent_org_id()
+                    email_map = {
+                        node.get("email"): node
+                        for node in (existing_people_result or [])
+                        if parent_org_id is None or node.get("orgId") == parent_org_id
+                    }
+                    org_name_map = {
+                        node.get("name"): node
+                        for node in (existing_orgs_result or [])
+                        if parent_org_id is None or (
+                            node.get("isExternal") is True
+                            and node.get("parentOrgId") == parent_org_id
+                        )
+                    }
 
                     unchanged_emails: set = set()
                     delete_tasks = []
@@ -4703,7 +4720,12 @@ class SalesforceConnector(BaseConnector):
                         field="email",
                         values=all_emails,
                     )
-                    email_map = {node.get("email"): node for node in (existing_people or [])}
+                    parent_org_id = self._get_parent_org_id()
+                    email_map = {
+                        node.get("email"): node
+                        for node in (existing_people or [])
+                        if parent_org_id is None or node.get("orgId") == parent_org_id
+                    }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
@@ -5865,6 +5887,7 @@ class SalesforceConnector(BaseConnector):
             )
 
         # 3. Build O(1) lookup maps to avoid per-record DB round-trips
+        parent_org_id = self._get_parent_org_id()
         ext_id_to_record_id: Dict[str, str] = {
             r.get("externalRecordId"): (r.get("id") or r.get("_key"))
             for r in salesforce_records
@@ -5879,6 +5902,7 @@ class SalesforceConnector(BaseConnector):
             u.get("email"): (u.get("id") or u.get("_key"))
             for u in (db_users or [])
             if u.get("email") and (u.get("id") or u.get("_key"))
+            and (parent_org_id is None or u.get("orgId") == parent_org_id)
         }
 
         salesforce_external_ids = list(ext_id_to_record_id.keys())
@@ -6408,7 +6432,7 @@ class SalesforceConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return SalesforceConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

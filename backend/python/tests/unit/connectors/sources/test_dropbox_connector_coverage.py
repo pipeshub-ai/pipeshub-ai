@@ -142,7 +142,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:
@@ -158,7 +158,7 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref", "isTeam": True},
             "auth": {"oauthConfigId": "oauth-1"}
         })
-        with patch("app.connectors.sources.dropbox.connector.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
+        with patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock, return_value={
             "config": {"clientId": "cid", "clientSecret": "csecret"}
         }):
             with patch("app.connectors.sources.dropbox.connector.DropboxClient") as MockClient:

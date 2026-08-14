@@ -146,6 +146,26 @@ class BaseConnector(ABC):
         """
         raise NotImplementedError("This method should be implemented by the subclass")
 
+    def _get_inherited_org_id(self, auth_config: dict) -> str | None:
+        """EE override point: returns inherited org ID for shared OAuth apps. OSS: no-op."""
+        return None
+
+    async def _fetch_oauth_config_by_id(
+        self,
+        oauth_config_id: str,
+        connector_type: str,
+        auth_config: dict | None = None,
+    ) -> dict | None:
+        """Fetch a shared OAuth app config. EE override point for inherited orgs."""
+        from app.utils.oauth_config import fetch_oauth_config_by_id
+
+        return await fetch_oauth_config_by_id(
+            oauth_config_id=oauth_config_id,
+            connector_type=connector_type,
+            config_service=self.config_service,
+            logger=self.logger,
+        )
+
     def get_app(self) -> App:
         return self.app
 

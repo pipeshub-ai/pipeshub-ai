@@ -211,7 +211,7 @@ def connector():
 
 class TestInit:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleDriveDataSource")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_success(self, MockGClient, MockDS, mock_fetch, connector):
@@ -254,7 +254,7 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_oauth_config_not_found(self, mock_fetch, connector):
         mock_fetch.return_value = None
         connector.config_service.get_config = AsyncMock(
@@ -264,7 +264,7 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_missing_client_id(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {"clientSecret": "csec"}}
         connector.config_service.get_config = AsyncMock(
@@ -277,7 +277,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_missing_client_secret(self, mock_fetch, connector):
         mock_fetch.return_value = {"config": {"clientId": "cid"}}
         connector.config_service.get_config = AsyncMock(
@@ -290,7 +290,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_no_tokens_warning(self, MockGClient, mock_fetch, connector):
         """No access_token and no refresh_token -- should still succeed with warning."""
@@ -313,7 +313,7 @@ class TestInit:
         assert result is True
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     @patch("app.connectors.sources.google.drive.individual.connector.GoogleClient")
     async def test_init_client_build_fails(self, MockGClient, mock_fetch, connector):
         mock_fetch.return_value = {
@@ -330,7 +330,7 @@ class TestInit:
             await connector.init()
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.google.drive.individual.connector.fetch_oauth_config_by_id")
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_empty_oauth_config_data(self, mock_fetch, connector):
         """oauth_config has no 'config' key, so clientId/Secret are None."""
         mock_fetch.return_value = {"id": "oc-1"}

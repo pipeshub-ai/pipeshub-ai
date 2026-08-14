@@ -81,7 +81,6 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -232,12 +231,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.logger.error("Gmail oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.GOOGLE_MAIL.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -2810,7 +2807,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        return GoogleGmailIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
