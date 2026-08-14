@@ -128,10 +128,9 @@ LIGHT_DEMAND_UTILISATION_THRESHOLD = 0.3
 RESOURCE_DELTA_LOW = 0.05
 RESOURCE_DELTA_MODERATE = 0.20
 
-_BYTES_FLOOR = 256 * 1024 * 1024
-_BYTES_BUDGET_FRACTION = 0.25
-
 COUNT_POOL_FLOOR = 2
+# Every pool is a count pool, and one grow/shrink transition moves one permit.
+COUNT_POOL_STEP = 1
 
 
 def _is_light_pool(pool: Pool) -> bool:
@@ -142,12 +141,12 @@ def _is_index_pool(pool: Pool) -> bool:
     """The active-pipeline pool, which the control law does not adapt.
 
     An INDEX permit is pipeline width, not a resource reservation: what a
-    record actually consumes is gated elsewhere — buffered download bytes by
-    DOWNLOAD_BYTES, parse CPU/RSS by HEAVY_PARSE/LIGHT_PARSE, embedding and
-    LLM fan-out by MAX_CONCURRENT_INDEXING_LLM_CALLS. Adapting it as well
-    throttled the one stage whose cost is mostly waiting on those gates and
-    on downstream services, and cost ~45s of near-serial startup (floor of 2
-    plus the confirm window) on every deploy. It therefore sits at
+    record actually consumes is gated elsewhere — parse CPU/RSS by
+    HEAVY_PARSE/LIGHT_PARSE, embedding and LLM fan-out by
+    MAX_CONCURRENT_INDEXING_LLM_CALLS. Adapting it as well throttled the one
+    stage whose cost is mostly waiting on those gates and on downstream
+    services, and cost ~45s of near-serial startup (floor of 2 plus the
+    confirm window) on every deploy. It therefore sits at
     ``ceilings.index`` for the life of the process.
     """
     return pool is Pool.INDEX
@@ -244,34 +243,24 @@ def resolve_ceilings(
     if env_index is not None:
         index_ceiling = min(index_ceiling, max(1, env_index))
 
-    if snap.mem_limit_bytes is not None:
-        bytes_max = max(_BYTES_FLOOR, int(snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION))
-    else:
-        bytes_max = _BYTES_FLOOR
-
     if workers > 1:
         heavy_parse_ceiling = max(1, heavy_parse_ceiling // workers)
         light_parse_ceiling = max(1, light_parse_ceiling // workers)
         index_ceiling = max(1, index_ceiling // workers)
-        bytes_max = max(_BYTES_FLOOR, bytes_max // workers)
 
     return Ceilings(
         heavy=heavy_parse_ceiling,
         light=light_parse_ceiling,
         index=index_ceiling,
-        bytes_max=bytes_max,
     )
 
 
 def start_rate_limiter_params(reference_ceiling: int) -> tuple[float, int]:
     """``(interval, capacity)`` for a pool's ``StartRateLimiter``.
 
-    ``reference_ceiling`` is the *count* ceiling that should drive how fast
-    this pool admits new work — ``ceilings.heavy`` for ``HEAVY_PARSE``, and
-    ``ceilings.index`` for ``DOWNLOAD_BYTES`` (every record passes through
-    download before any parse/index slot is even requested, so its
-    admission rate should track overall record throughput, not the
-    byte-sized ``ceilings.bytes_max``).
+    ``reference_ceiling`` is the ceiling that should drive how fast this
+    pool admits new work — ``ceilings.heavy`` for ``HEAVY_PARSE``, the only
+    rate-limited pool.
 
     The sustained rate (``1 / interval``) is ``max(1 / HEAVY_START_INTERVAL_
     SECONDS, reference_ceiling / HEAVY_START_RATE_CEILING_DIVISOR)`` —
@@ -291,8 +280,7 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     """Warm-start / minimum-under-pressure limit for a pool.
 
     Count pools floor at ``min(2, ceiling)`` so an explicit ceiling of 1 is
-    honoured exactly (never forced up to 2). The bytes pool floors at a
-    fixed minimum useful budget.
+    honoured exactly (never forced up to 2).
 
     Light parse floors at half its ceiling instead: its per-slot cost is
     negligible, so ramping a Jira/Slack sync one permit at a time from 2
@@ -302,8 +290,6 @@ def floor_for(pool: Pool, ceiling: int) -> int:
     The index pool floors *at* its ceiling: it is never adapted (see
     ``_is_index_pool``), so its minimum and maximum are the same value.
     """
-    if pool is Pool.DOWNLOAD_BYTES:
-        return min(_BYTES_FLOOR, ceiling)
     if _is_index_pool(pool):
         return ceiling
     if _is_light_pool(pool):
@@ -330,7 +316,6 @@ def warm_start_limits(ceilings: Ceilings) -> Limits:
         Pool.HEAVY_PARSE: floor_for(Pool.HEAVY_PARSE, ceilings.heavy),
         Pool.LIGHT_PARSE: floor_for(Pool.LIGHT_PARSE, ceilings.light),
         Pool.INDEX: floor_for(Pool.INDEX, ceilings.index),
-        Pool.DOWNLOAD_BYTES: floor_for(Pool.DOWNLOAD_BYTES, ceilings.bytes_max),
     })
 
 
@@ -339,16 +324,12 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
         Pool.HEAVY_PARSE: ceilings.heavy,
         Pool.LIGHT_PARSE: ceilings.light,
         Pool.INDEX: ceilings.index,
-        Pool.DOWNLOAD_BYTES: ceilings.bytes_max,
     }[pool]
 
 
 def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
-    free_gb = _free_memory_gb(snap)
-    avail_bytes = None if free_gb is None else int(free_gb * 1024 ** 3)
-
     if pool is Pool.HEAVY_PARSE:
         mem_cap = heavy_memory_cap(snap)
         bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
@@ -366,32 +347,7 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
     if _is_index_pool(pool):
         return ceilings.index
 
-    if pool is Pool.DOWNLOAD_BYTES:
-        if avail_bytes is not None and snap.mem_limit_bytes:
-            target = _clamp(
-                avail_bytes * _BYTES_BUDGET_FRACTION, _BYTES_FLOOR, snap.mem_limit_bytes * _BYTES_BUDGET_FRACTION,
-            )
-        else:
-            target = ceilings.bytes_max
-        floor = floor_for(pool, ceilings.bytes_max)
-        return int(_clamp(target, floor, ceilings.bytes_max))
-
     raise AssertionError(f"unhandled pool {pool!r}")  # exhaustive over Pool StrEnum
-
-
-def _step_for(pool: Pool, ceiling: int) -> int:
-    """How much a single shrink transition (or a post-slow-start linear
-    grow transition) moves the limit.
-
-    Count pools move by one permit. The bytes pool moves by a percentage of
-    its ceiling so a multi-gigabyte budget doesn't take hundreds of
-    intervals to reach a useful size, while still ramping rather than
-    jumping (plan principle 6). Growth for count pools while still in slow
-    start uses ``_growth_step`` instead — see that function.
-    """
-    if pool is Pool.DOWNLOAD_BYTES:
-        return max(64 * 1024 * 1024, ceiling // 20)
-    return 1
 
 
 def _growth_step(
@@ -402,12 +358,10 @@ def _growth_step(
     Returns ``(step, updated_state)``. A ``step`` of ``0`` means "hold this
     round" — the caller must not advance the limit, only persist the state.
 
-    ``DOWNLOAD_BYTES`` and any pool that has already exited slow start
-    (``in_slow_start=False``) use the fixed linear ``_step_for`` step
-    unconditionally — the percentage-of-ceiling sizing for bytes already
-    ramps fast as a fraction of a multi-GB budget, and "exited slow start"
-    means a previous grow already found the knee of the resource-usage
-    curve for this pool.
+    A pool that has already exited slow start (``in_slow_start=False``)
+    uses the fixed linear step unconditionally — having exited means a
+    previous grow already found the knee of the resource-usage curve for
+    this pool.
 
     While in slow start, the step doubles on every grow whose resource
     impact (vs. the snapshot recorded at the *previous* grow) was small,
@@ -419,9 +373,8 @@ def _growth_step(
     headroom, so the next healthy sample can resume doubling from the same
     step.
     """
-    linear_step = _step_for(pool, ceiling)
-    if pool is Pool.DOWNLOAD_BYTES or not state.in_slow_start:
-        return linear_step, state
+    if not state.in_slow_start:
+        return COUNT_POOL_STEP, state
 
     # Light cost is noise next to a co-located heavy parse; a process-wide
     # mem/cpu delta would otherwise freeze LIGHT_PARSE whenever Docling
@@ -444,7 +397,7 @@ def _growth_step(
             if impact >= RESOURCE_DELTA_MODERATE:
                 return 0, state
             if impact >= RESOURCE_DELTA_LOW:
-                return linear_step, replace(state, in_slow_start=False, slow_start_step=1)
+                return COUNT_POOL_STEP, replace(state, in_slow_start=False, slow_start_step=1)
 
     used_step = state.slow_start_step
     next_step = min(used_step * 2, max(1, ceiling))
@@ -506,7 +459,7 @@ def _next_pool_limit(
         return ceiling, state
 
     floor = floor_for(pool, ceiling)
-    shrink_step = _step_for(pool, ceiling)
+    shrink_step = COUNT_POOL_STEP
     target = _target_for(pool, snap, ceilings)
     pressure = snap.mem_pressure
     # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on

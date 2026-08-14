@@ -188,13 +188,11 @@ class KafkaUtils:
         if not event_processor:
             event_processor = await app_container.event_processor()
         config_service = app_container.config_service()
-        governor = getattr(app_container, "resource_governor", None)
         record_event_service = RecordEventHandler(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
             producer=producer,
-            governor=governor,
         )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:

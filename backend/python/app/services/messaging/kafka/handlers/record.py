@@ -2,7 +2,6 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
-from typing import TYPE_CHECKING
 
 import aiohttp  # type: ignore
 
@@ -32,13 +31,9 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
-from app.services.resource_governor import GatedBytesBudget, Pool
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
-
-if TYPE_CHECKING:
-    from app.services.resource_governor import ResourceGovernor
 
 
 SUPPORTED_CODE_FILE_EXTENSIONS = {
@@ -83,7 +78,6 @@ class RecordEventHandler(BaseEventService):
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
                 producer: IMessagingProducer | None = None,
-                governor: "ResourceGovernor | None" = None,
                 ) -> None:
 
         self.logger = logger
@@ -91,14 +85,6 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
-        self.governor = governor
-
-    def _new_download_budget(self) -> GatedBytesBudget:
-        """A fresh reservation against ``Pool.DOWNLOAD_BYTES``, scoped to one
-        record's downloaded bytes for as long as they stay resident (plan
-        section 1.3 / phase 2). A no-op when no governor is configured."""
-        gate = self.governor.gate(Pool.DOWNLOAD_BYTES) if self.governor else None
-        return GatedBytesBudget(gate)
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -539,18 +525,13 @@ class RecordEventHandler(BaseEventService):
 
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
-                download_budget = self._new_download_budget()
                 try:
                     response = await self._download_from_signed_url(
                         signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
-                        budget=download_budget,
                     )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
-                    # Release whatever was reserved for this attempt — the
-                    # fallback below starts a new download with its own budget.
-                    download_budget.release()
                     self.logger.warning(
                         f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
                         f"Falling back to connector streaming..."
@@ -568,11 +549,6 @@ class RecordEventHandler(BaseEventService):
                     finally:
                         await on_event_gen.aclose()
                         payload.pop("buffer", None)
-                        # The bytes stay resident until the buffer reference
-                        # above is dropped, so the reservation is held for
-                        # the whole download+process lifetime, not just the
-                        # download (plan section 1.3).
-                        download_budget.release()
                         response = None
 
                     processing_time = (datetime.now() - start_time).total_seconds()
@@ -596,14 +572,8 @@ class RecordEventHandler(BaseEventService):
                     endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
-                    # make_api_call reserves against download_budget itself
-                    # (after headers, before buffering the body) and releases
-                    # it on every failure path — on success we hold it below
-                    # until the buffer is dropped (plan section 1.3).
-                    download_budget = self._new_download_budget()
                     response = await make_api_call(
                         route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
-                        byte_budget=download_budget,
                     )
 
                     event_data_for_processor = {
@@ -623,10 +593,6 @@ class RecordEventHandler(BaseEventService):
                     finally:
                         await on_event_gen.aclose()
                         payload.pop("buffer", None)
-                        # Held from the reservation made inside make_api_call
-                        # (after headers, before the body was buffered) through
-                        # the whole download+process lifetime (plan section 1.3).
-                        download_budget.release()
                         # Drop the local reference too: process_event is itself an
                         # async generator, so its frame outlives this block until
                         # the caller closes it.
@@ -871,7 +837,6 @@ class RecordEventHandler(BaseEventService):
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict, from_route: bool = False,
-        budget: GatedBytesBudget | None = None,
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -880,18 +845,10 @@ class RecordEventHandler(BaseEventService):
             signed_url: The signed URL to download from
             record_id: Record ID for logging
             doc: Document object for status updates
-            budget: Optional reservation against ``Pool.DOWNLOAD_BYTES``
-                (plan section 1.3 / phase 2). Reserved once headers arrive
-                and topped up as bytes accumulate; released on every failed
-                attempt so a retry starts with a clean reservation. On
-                success the reservation is left held — the caller owns it
-                for as long as the returned bytes stay resident.
 
         Returns:
             bytes: The downloaded file content
         """
-        if budget is None:
-            budget = self._new_download_budget()
         chunk_size = 1024 * 1024 * 3  # 3MB chunks
         max_retries = 3
         base_delay = 1  # Start with 1 second delay
@@ -919,11 +876,6 @@ class RecordEventHandler(BaseEventService):
                                 self.logger.info(
                                     f"Expected file size: {int(content_length) / (1024*1024):.2f} MB"
                                 )
-                            # Reserve before buffering the body — gating parse/index
-                            # slots alone can't bound resident memory, because a file
-                            # is downloaded into memory before any parse slot is
-                            # requested (plan section 1.3).
-                            await budget.reserve(int(content_length) if content_length else None)
 
                             last_logged_size = 0
                             total_size = 0
@@ -936,9 +888,6 @@ class RecordEventHandler(BaseEventService):
                                 ):
                                     file_buffer.extend(chunk)
                                     total_size += len(chunk)
-                                    # Tops up the reservation if the stream runs
-                                    # past what Content-Length promised.
-                                    await budget.ensure(total_size)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
                                             f"Total size so far: {total_size / (1024*1024):.2f} MB"
@@ -961,9 +910,6 @@ class RecordEventHandler(BaseEventService):
                         raise aiohttp.ClientError(f"Connection error: {str(cce)}") from cce
 
             except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
-                # This attempt's reservation is being abandoned — release it
-                # so a retry (or the caller's fallback path) starts clean.
-                budget.release()
                 error_type = type(e).__name__
                 self.logger.warning(
                     f"Download attempt {attempt + 1} failed with {error_type}: {str(e)}. "

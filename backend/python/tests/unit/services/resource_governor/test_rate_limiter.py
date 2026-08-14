@@ -58,4 +58,3 @@ class TestStartRateLimiter:
         governor = ResourceGovernor(logger=logging.getLogger("test.rate_limiter"), probe=_StubProbe())
         assert governor._rate_limiters.get(Pool.LIGHT_PARSE) is None
         assert governor._rate_limiters.get(Pool.HEAVY_PARSE) is not None
-        assert governor._rate_limiters.get(Pool.DOWNLOAD_BYTES) is not None

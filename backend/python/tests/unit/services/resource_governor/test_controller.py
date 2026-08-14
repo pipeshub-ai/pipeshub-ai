@@ -128,52 +128,40 @@ class TestResourceGovernorController:
             clock=clock,
         )
         heavy_gate = governor.gate(Pool.HEAVY_PARSE)
-        bytes_gate = governor.gate(Pool.DOWNLOAD_BYTES)
 
         # Grow heavy_parse's limit directly via the registry to simulate an
         # earlier ramp-up, so halving is observable.
         governor._registry.set(Pool.HEAVY_PARSE, 8)
         before_heavy = heavy_gate.limit
-        before_bytes = bytes_gate.limit
 
         governor.report_memory_incident("synthetic OOM-adjacent event")
 
         assert heavy_gate.limit == max(
             floor_for(Pool.HEAVY_PARSE, governor.ceilings.heavy), before_heavy // 2
         )
-        assert bytes_gate.limit == max(
-            floor_for(Pool.DOWNLOAD_BYTES, governor.ceilings.bytes_max), before_bytes // 2
-        )
 
     async def test_start_rate_limiters_scale_with_a_high_ceiling(self) -> None:
         """Regression guard: a large resolved ceiling must raise how fast
-        HEAVY_PARSE/DOWNLOAD_BYTES admit new work, not leave them throttled
-        at the fixed ~0.5/s default forever (the root cause of "5-10 docs at
-        a time regardless of MAX_CONCURRENT_*"). Driven by a CPU-rich host
-        rather than by MAX_CONCURRENT_PARSING, which can only cap the
-        CPU-derived ceiling, never raise it."""
+        HEAVY_PARSE admits new work, not leave it throttled at the fixed
+        ~0.5/s default forever (the root cause of "5-10 docs at a time
+        regardless of MAX_CONCURRENT_*"). Driven by a CPU-rich host rather
+        than by MAX_CONCURRENT_PARSING, which can only cap the CPU-derived
+        ceiling, never raise it."""
         probe = ScriptedProbe([_snap(mem_pressure_working_set_gb=0.5, cpu_quota=64.0)])
         governor = ResourceGovernor(
             logger=logging.getLogger("test.governor"),
             probe=probe,
         )
         heavy_gate = governor.gate(Pool.HEAVY_PARSE)
-        bytes_gate = governor.gate(Pool.DOWNLOAD_BYTES)
 
         expected_heavy_interval, expected_heavy_capacity = start_rate_limiter_params(
             governor.ceilings.heavy
         )
-        expected_bytes_interval, expected_bytes_capacity = start_rate_limiter_params(
-            governor.ceilings.index
-        )
 
         assert heavy_gate._rate_limiter._interval == expected_heavy_interval
         assert heavy_gate._rate_limiter._capacity == expected_heavy_capacity
-        assert bytes_gate._rate_limiter._interval == expected_bytes_interval
-        assert bytes_gate._rate_limiter._capacity == expected_bytes_capacity
         # Sustained rate must be well above the old fixed default now.
         assert 1.0 / heavy_gate._rate_limiter._interval > 1.0 / HEAVY_START_INTERVAL_SECONDS
-        assert 1.0 / bytes_gate._rate_limiter._interval > 1.0 / HEAVY_START_INTERVAL_SECONDS
 
     async def test_start_rate_limiters_keep_conservative_default_for_small_derived_ceiling(self) -> None:
         """Small/derived ceilings (no explicit env) must not regress — the
@@ -228,7 +216,7 @@ class TestResourceGovernorController:
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
-            "heavy_parse", "light_parse", "index", "download_bytes",
+            "heavy_parse", "light_parse", "index",
         }
         assert set(stats["demand"][Pool.HEAVY_PARSE.value].keys()) == {
             "utilisation", "blocked_acquires", "completions", "rate_limited_acquires",

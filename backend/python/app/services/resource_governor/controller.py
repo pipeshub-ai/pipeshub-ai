@@ -89,19 +89,11 @@ class ResourceGovernor:
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}
-        # HEAVY_PARSE's admission rate scales with the heavy-parse ceiling;
-        # DOWNLOAD_BYTES scales with the *index* ceiling (every record —
-        # heavy or light tier — reserves a DOWNLOAD_BYTES permit before any
-        # parse slot is even requested, so its admission rate should track
-        # overall record throughput, not the derived byte budget).
+        # HEAVY_PARSE's admission rate scales with the heavy-parse ceiling.
         heavy_rate_interval, heavy_rate_capacity = start_rate_limiter_params(self._ceilings.heavy)
-        download_rate_interval, download_rate_capacity = start_rate_limiter_params(self._ceilings.index)
         self._rate_limiters: dict[Pool, StartRateLimiter] = {
             Pool.HEAVY_PARSE: StartRateLimiter(
                 heavy_rate_interval, heavy_rate_capacity, clock=clock,
-            ),
-            Pool.DOWNLOAD_BYTES: StartRateLimiter(
-                download_rate_interval, download_rate_capacity, clock=clock,
             ),
         }
 
@@ -113,12 +105,12 @@ class ResourceGovernor:
 
         self._logger.info(
             "ResourceGovernor initialised: probe_source=%s cpu_quota=%.2f mem_limit=%s "
-            "ceilings(heavy_parse=%d light_parse=%d index=%d download_bytes=%s) "
+            "ceilings(heavy_parse=%d light_parse=%d index=%d) "
             "worker_count=%d start_limits(heavy_parse=%d light_parse=%d index=%d) "
             "— parse ceilings are %.2f (heavy) / %.2f (light) slots per CPU capped by "
             "MAX_CONCURRENT_PARSING, index is %.2fx the widest parse tier capped by "
             "MAX_CONCURRENT_INDEXING and bounds heavy and light records *together*; "
-            "the parse and download pools ramp from their floor toward their ceiling "
+            "the parse pools ramp from their floor toward their ceiling "
             "and heavy_parse is additionally held to what free memory can hold "
             "(~%.2fGiB per slot), while the index pool is fixed at its ceiling "
             "and never adapts",
@@ -128,7 +120,6 @@ class ResourceGovernor:
             self._ceilings.heavy,
             self._ceilings.light,
             self._ceilings.index,
-            _fmt_bytes(self._ceilings.bytes_max),
             self._worker_count,
             self._registry.get(Pool.HEAVY_PARSE),
             self._registry.get(Pool.LIGHT_PARSE),
@@ -140,12 +131,10 @@ class ResourceGovernor:
         )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
-            "download_bytes=%.1f/s (burst %d) — sustained admission rate for "
-            "these two pools is capped independently of their concurrency "
-            "limit; raise MAX_CONCURRENT_PARSING/MAX_CONCURRENT_INDEXING if "
-            "this rate looks like the real bottleneck",
+            "— sustained admission rate for this pool is capped independently "
+            "of its concurrency limit; raise MAX_CONCURRENT_PARSING if this "
+            "rate looks like the real bottleneck",
             1.0 / heavy_rate_interval, heavy_rate_capacity,
-            1.0 / download_rate_interval, download_rate_capacity,
         )
         if initial_snapshot.mem_baseline_bytes is not None:
             self._logger.info(
@@ -333,28 +322,24 @@ class ResourceGovernor:
     # -- fast-reacting incident path ---------------------------------------
 
     def report_memory_incident(self, reason: str) -> None:
-        """Immediately halve the memory-relevant pools and start an incident
+        """Immediately halve the heavy-parse pool and start an incident
         cooldown, without waiting for the next sample (plan section 4,
         "Memory incident feedback"). Safe to call from any thread — e.g. the
         PDF rasterizer's ``BrokenProcessPool`` handler or a ``MemoryError``
         catch, both of which react faster than the sample loop ever could.
         """
         now = self._clock()
-        affected = (Pool.HEAVY_PARSE, Pool.DOWNLOAD_BYTES)
-        pool_ceiling = {Pool.HEAVY_PARSE: self._ceilings.heavy, Pool.DOWNLOAD_BYTES: self._ceilings.bytes_max}
         with self._state_lock:
-            state = self._state
-            for pool in affected:
-                ceiling = pool_ceiling[pool]
-                floor = floor_for(pool, ceiling)
-                current = self._registry.get(pool)
-                self._registry.set(pool, max(floor, current // 2))
-                state = state.with_update(pool, replace(
-                    state.get(pool), healthy_streak=0, cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
-                ))
-            self._state = state
+            floor = floor_for(Pool.HEAVY_PARSE, self._ceilings.heavy)
+            current = self._registry.get(Pool.HEAVY_PARSE)
+            self._registry.set(Pool.HEAVY_PARSE, max(floor, current // 2))
+            self._state = self._state.with_update(Pool.HEAVY_PARSE, replace(
+                self._state.get(Pool.HEAVY_PARSE),
+                healthy_streak=0,
+                cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
+            ))
         self._logger.warning(
-            "ResourceGovernor: memory incident reported (%s); heavy_parse/download_bytes halved", reason,
+            "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
         )
 
     # -- observability ------------------------------------------------------
@@ -385,7 +370,6 @@ class ResourceGovernor:
                 "heavy_parse": self._ceilings.heavy,
                 "light_parse": self._ceilings.light,
                 "index": self._ceilings.index,
-                "download_bytes": self._ceilings.bytes_max,
             },
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,

@@ -17,7 +17,6 @@ class Pool(StrEnum):
     """Admission pools governed independently by the ResourceGovernor."""
 
     INDEX = "index"
-    DOWNLOAD_BYTES = "download_bytes"
     HEAVY_PARSE = "heavy_parse"
     LIGHT_PARSE = "light_parse"
 
@@ -142,7 +141,6 @@ class Ceilings:
     heavy: int
     light: int
     index: int
-    bytes_max: int
 
 
 @dataclass(frozen=True)

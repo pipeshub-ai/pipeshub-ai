@@ -10,7 +10,6 @@ design rationale.
 from __future__ import annotations
 
 from app.services.resource_governor.admission import acquire_gate_with_backpressure
-from app.services.resource_governor.budget import BytesBudget, GatedBytesBudget
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.models import (
@@ -28,10 +27,8 @@ from app.services.resource_governor.tiers import classify, gate_pool, parse_cost
 
 __all__ = [
     "AdmissionGate",
-    "BytesBudget",
     "Ceilings",
     "ControllerState",
-    "GatedBytesBudget",
     "Limits",
     "ParseTier",
     "Pool",
