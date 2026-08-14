@@ -357,7 +357,12 @@ class TestAgentConversationStream(_AgentStreamTestBase):
         agent_key = agent["_key"]
         try:
             assert agent.get("models") == [], f"Expected empty models, got: {agent!r}"
-            assert agent.get("usesOrgDefault") is True
+
+            # `usesOrgDefault` is derived on read paths only, not on the
+            # create response — assert it via GET.
+            get_resp = self.agents.get_agent(agent_key)
+            assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
+            assert get_resp.json()["agent"].get("usesOrgDefault") is True
 
             outcome = self._stream_agent_conversation(
                 agent_key,
