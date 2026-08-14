@@ -1184,8 +1184,10 @@ class TestCheckAndFetchUpdatedRecord:
     async def test_unknown_record_type(self, connector):
         user = MagicMock()
         user.email = "u@e.com"
+        user.is_active = True
         tx = AsyncMock()
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
+        tx.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         @asynccontextmanager
         async def _tx():
@@ -1193,7 +1195,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _tx
-        connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
+        connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
 
         record = MagicMock()
         record.external_record_id = "ext-1"
