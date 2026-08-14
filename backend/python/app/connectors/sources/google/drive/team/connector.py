@@ -3089,7 +3089,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info(f"Streaming Drive file: {file_id}, convertTo: {convertTo}")
 
             # If the caller already told us exactly who to impersonate, use that
-            # directly — no need to search permission holders.
+            # directly — no need to search permission holders. Only fall back to the
+            # broader candidate search when no user_id was given at all (e.g. the
+            # internal indexing stream route, whose JWT carries no user identity);
+            # resolve_explicit_user raises if a given user_id can't be resolved.
             preferred_user = await resolve_explicit_user(self.logger, self.data_store_provider, user_id)
             if preferred_user:
                 candidates = [preferred_user]

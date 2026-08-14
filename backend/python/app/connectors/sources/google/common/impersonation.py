@@ -9,7 +9,10 @@ from the chosen identity (`_get_drive_service_with_fallback`,
 from logging import Logger
 from typing import List, Optional, Set, Tuple
 
+from fastapi import HTTPException
+
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.models.entities import User
 
@@ -45,6 +48,12 @@ async def resolve_explicit_user(
     the cost of — the broader candidate search in get_impersonation_candidates;
     that search exists only for callers that don't have a user_id at all (e.g. the
     internal indexing stream route, whose JWT carries no user identity).
+
+    Returns None only when no user_id was given at all. If a non-empty user_id is
+    given but can't be resolved to a known user, raises rather than returning None —
+    an explicit identity that fails to resolve must not be silently treated the same
+    as "no identity given" and fall through to searching arbitrary permission
+    holders (or the service account) for a different user to impersonate.
     """
     if not user_id or user_id == "None":
         return None
@@ -52,8 +61,11 @@ async def resolve_explicit_user(
         user = await tx_store.get_user_by_user_id(user_id)
     email = user.get("email") if user else None
     if not email:
-        logger.warning(f"User not found for user_id {user_id}, falling back to users with permission to node")
-        return None
+        logger.warning(f"User not found for user_id {user_id}")
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=f"Unable to resolve user {user_id} for impersonation",
+        )
     logger.info(f"Retrieved user email {email} for user_id {user_id}")
     return User(email=email, is_active=user.get("isActive"))
 

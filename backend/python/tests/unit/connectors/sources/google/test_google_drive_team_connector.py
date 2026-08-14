@@ -3367,16 +3367,20 @@ class TestResolveExplicitUser:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_user_not_found_returns_none(self):
+    async def test_user_not_found_raises(self):
+        from fastapi import HTTPException
         conn = _make_connector(user_by_id=None)
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
-    async def test_user_without_email_returns_none(self):
+    async def test_user_without_email_raises(self):
+        from fastapi import HTTPException
         conn = _make_connector(user_by_id={"isActive": True})
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_success_returns_user(self):
@@ -3720,7 +3724,9 @@ class TestStreamRecord:
                     result = await conn.stream_record(record, user_id="None")
 
     @pytest.mark.asyncio
-    async def test_no_user_found_for_user_id(self):
+    async def test_no_user_found_for_user_id_raises(self):
+        from fastapi import HTTPException
+
         conn = _make_connector()
         record = MagicMock()
         record.id = "rec-1"
@@ -3732,7 +3738,8 @@ class TestStreamRecord:
         mock_files.get_media = MagicMock(return_value=MagicMock())
         mock_service.files = MagicMock(return_value=mock_files)
 
-        # user_by_id returns None, user_with_permission also None
+        # An explicit user_id that can't be resolved must raise rather than
+        # silently falling back to permission-holder candidates.
         conn.data_store_provider = _make_mock_data_store_provider(user_by_id=None, user_with_permission=None)
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
@@ -3740,7 +3747,9 @@ class TestStreamRecord:
                               return_value={"mimeType": "text/plain"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()):
-                    result = await conn.stream_record(record, user_id="uid-1")
+                    with pytest.raises(HTTPException) as exc_info:
+                        await conn.stream_record(record, user_id="uid-1")
+                    assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_error_raises_http_exception(self):

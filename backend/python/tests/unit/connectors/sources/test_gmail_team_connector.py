@@ -551,18 +551,20 @@ class TestResolveExplicitUser:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_user_not_found_returns_none(self, connector):
+    async def test_user_not_found_raises(self, connector):
         connector.data_store_provider._tx_store.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await resolve_explicit_user(connector.logger, connector.data_store_provider, "uid-1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(connector.logger, connector.data_store_provider, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
-    async def test_user_without_email_returns_none(self, connector):
+    async def test_user_without_email_raises(self, connector):
         connector.data_store_provider._tx_store.get_user_by_user_id = AsyncMock(
             return_value={"isActive": True}
         )
-        result = await resolve_explicit_user(connector.logger, connector.data_store_provider, "uid-1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(connector.logger, connector.data_store_provider, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_success_returns_user(self, connector):
@@ -2010,7 +2012,7 @@ class TestStreamRecord:
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_user_not_found_falls_back_to_permission(self, connector):
+    async def test_user_not_found_raises(self, connector):
         record = _make_mock_record(record_type=RecordTypes.MAIL.value)
 
         user_with_perm = MagicMock()
@@ -2027,6 +2029,8 @@ class TestStreamRecord:
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
 
+        # An explicit user_id that can't be resolved must raise rather than
+        # silently falling back to permission-holder candidates.
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
              patch.object(connector, "_stream_mail_record", new_callable=AsyncMock,
                           return_value=MagicMock()):
@@ -2034,7 +2038,9 @@ class TestStreamRecord:
             mock_gmail_ds.client = MagicMock()
             mock_create.return_value = mock_gmail_ds
 
-            await connector.stream_record(record, user_id="bad-user")
+            with pytest.raises(HTTPException) as exc_info:
+                await connector.stream_record(record, user_id="bad-user")
+            assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_no_user_id_gets_permission_user(self, connector):
