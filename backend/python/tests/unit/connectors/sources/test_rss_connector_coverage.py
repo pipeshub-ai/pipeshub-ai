@@ -144,6 +144,10 @@ class TestFetchAndParseFeed:
     @pytest.mark.asyncio
     async def test_http_error_returns_none(self):
         conn = _make_connector()
+        # Patch `fetch_url_with_fallback`, not `conn.session`. The session is
+        # only that helper's *third* strategy -- curl_cffi and cloudscraper run
+        # first and reach the real network, so a session mock never intercepts
+        # and the test hangs until the suite timeout.
         with _patch_fetch(status=404):
             result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is None

@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import time
+import zlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -75,7 +76,12 @@ class AccessibleRecordsCache:
     DEFAULT_TTL_SECONDS = 300
     OP_TIMEOUT_SECONDS = 2.0
     DOWN_BACKOFF_SECONDS = 30.0
-    MAX_LOCKS = 4096
+    # Striped locks, not one per key. A per-key table could only be trimmed of
+    # *unlocked* entries, so under enough concurrent misses on distinct keys it
+    # grew without limit. A fixed stripe array is bounded by construction; two
+    # unrelated keys sharing a stripe just serialise their (already expensive)
+    # miss, which is the point of the lock anyway.
+    LOCK_STRIPES = 1024
 
     def __init__(
         self,
@@ -89,7 +95,9 @@ class AccessibleRecordsCache:
         self._ttl = ttl_seconds
         self._enabled = enabled and redis_client is not None
         self._down_until = 0.0
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: tuple[asyncio.Lock, ...] = tuple(
+            asyncio.Lock() for _ in range(self.LOCK_STRIPES)
+        )
 
     @classmethod
     async def create(
@@ -183,22 +191,32 @@ class AccessibleRecordsCache:
         cached = await self._read(key, field)
         if cached is not None:
             return cached
+        # A failed read has already tripped the breaker. Every further Redis
+        # call in this same request would wait out its own timeout, so one
+        # outage cost three of them (read, re-read, write) on a single search.
+        if not self.enabled:
+            return await loader()
 
         lock_key = key if field is None else f"{key}#{field}"
-        lock = self._locks.get(lock_key)
-        if lock is None:
-            self._prune_locks()
-            lock = self._locks.setdefault(lock_key, asyncio.Lock())
+        lock = self._lock_for(lock_key)
 
         async with lock:
+            if not self.enabled:
+                return await loader()
             # Another coroutine may have populated the entry while we queued.
             cached = await self._read(key, field)
             if cached is not None:
                 return cached
 
             value = await loader()
-            await self._write(key, field, value)
+            if self.enabled:
+                await self._write(key, field, value)
             return value
+
+    def _lock_for(self, lock_key: str) -> asyncio.Lock:
+        """Stripe for this key. crc32 rather than hash() so the mapping is
+        stable across processes and test runs."""
+        return self._locks[zlib.crc32(lock_key.encode()) % len(self._locks)]
 
     async def _read(self, key: str, field: str | None) -> dict[str, str] | None:
         try:
@@ -276,11 +294,6 @@ class AccessibleRecordsCache:
                 op, str(error), self.DOWN_BACKOFF_SECONDS,
             )
 
-    def _prune_locks(self) -> None:
-        if len(self._locks) < self.MAX_LOCKS:
-            return
-        for lock_key in [k for k, lock in self._locks.items() if not lock.locked()]:
-            self._locks.pop(lock_key, None)
 
 
 class AccessibleRecordsInvalidator:

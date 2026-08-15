@@ -248,12 +248,107 @@ class TestSingleFlight:
         )
         assert set(started) == {"a", "b"}
 
-    async def test_lock_table_is_bounded(self) -> None:
+    async def test_lock_table_never_grows(self) -> None:
+        """The stripe array is fixed at construction, so no key count grows it."""
         cache = _cache(FakeRedis())
-        cache.MAX_LOCKS = 8
-        for i in range(40):
+        before = len(cache._locks)
+        for i in range(400):
             await cache.get_or_compute_kb(ORG, f"kb-{i}", _loader({}))
-        assert len(cache._locks) <= cache.MAX_LOCKS
+        assert len(cache._locks) == before == cache.LOCK_STRIPES
+
+    async def test_lock_table_bounded_while_every_lock_is_held(self) -> None:
+        """The case the old per-key table failed.
+
+        Trimming could only remove *unlocked* entries, so with every lock held
+        a new distinct key was inserted anyway and the table grew past its
+        bound. Striping cannot: the array is allocated once.
+        """
+        cache = _cache(FakeRedis())
+        held = list(cache._locks)
+        for lock in held:
+            await lock.acquire()
+        try:
+            assert len(cache._locks) == cache.LOCK_STRIPES
+            # Distinct keys that would each have wanted their own lock.
+            for i in range(50):
+                cache._lock_for(f"brand-new-key-{i}")
+            assert len(cache._locks) == cache.LOCK_STRIPES
+        finally:
+            for lock in held:
+                lock.release()
+
+    async def test_same_key_maps_to_one_stripe_and_is_stable(self) -> None:
+        cache = _cache(FakeRedis())
+        assert cache._lock_for("kb:x") is cache._lock_for("kb:x")
+        # Stable across instances: crc32, not the per-process hash seed.
+        other = _cache(FakeRedis())
+        assert cache._locks.index(cache._lock_for("kb:x")) == other._locks.index(
+            other._lock_for("kb:x")
+        )
+
+
+class TestOutageCost:
+    """One Redis outage must cost one timeout per call, not three.
+
+    `enabled` is only consulted on entry, so a failed first read used to leave
+    the method free to issue a second read and a write -- three waits of
+    OP_TIMEOUT_SECONDS each on a single search.
+    """
+
+    class DeadRedis:
+        def __init__(self) -> None:
+            self.ops: list[str] = []
+
+        async def _fail(self, name: str) -> None:
+            self.ops.append(name)
+            raise ConnectionError("connection refused")
+
+        async def get(self, *a, **k) -> None:
+            await self._fail("get")
+
+        async def set(self, *a, **k) -> None:
+            await self._fail("set")
+
+        async def hget(self, *a, **k) -> None:
+            await self._fail("hget")
+
+        async def hset(self, *a, **k) -> None:
+            await self._fail("hset")
+
+        async def expire(self, *a, **k) -> None:
+            await self._fail("expire")
+
+        async def delete(self, *a, **k) -> None:
+            await self._fail("delete")
+
+    async def test_one_redis_op_per_call_when_down(self) -> None:
+        dead = self.DeadRedis()
+        cache = _cache(dead)
+        result = await cache.get_or_compute_kb(ORG, "kb-1", _loader({"v": "r"}))
+
+        assert result == {"v": "r"}, "caller must still get correct data"
+        assert dead.ops == ["get"], (
+            f"expected a single Redis attempt, got {dead.ops} — a failed read "
+            f"must short-circuit instead of re-reading and writing"
+        )
+
+    async def test_breaker_still_skips_redis_on_later_calls(self) -> None:
+        dead = self.DeadRedis()
+        cache = _cache(dead)
+        await cache.get_or_compute_kb(ORG, "kb-1", _loader({"v": "r"}))
+        before = len(dead.ops)
+        for _ in range(5):
+            await cache.get_or_compute_kb(ORG, "kb-1", _loader({"v": "r"}))
+        assert len(dead.ops) == before, "backoff should skip Redis entirely"
+
+    async def test_write_is_skipped_when_the_locked_read_trips_the_breaker(self) -> None:
+        """Healthy on entry, dead by the time the loader returns."""
+        dead = self.DeadRedis()
+        cache = _cache(dead)
+        assert cache.enabled
+        result = await cache.get_or_compute_kb(ORG, "kb-2", _loader({"a": "b"}))
+        assert result == {"a": "b"}
+        assert "set" not in dead.ops, f"write attempted after breaker tripped: {dead.ops}"
 
 
 class TestKillSwitch:
