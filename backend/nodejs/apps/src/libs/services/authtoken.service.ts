@@ -41,7 +41,17 @@ function toVerificationKey(secret: string): KeyObject {
 function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
   return key.type === 'secret'
     ? ['HS256', 'HS384', 'HS512']
-    : ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'PS256', 'PS384', 'PS512'];
+    : [
+        'RS256',
+        'RS384',
+        'RS512',
+        'ES256',
+        'ES384',
+        'ES512',
+        'PS256',
+        'PS384',
+        'PS512',
+      ];
 }
 
 @injectable()
@@ -94,11 +104,19 @@ export class AuthTokenService {
     return decoded;
   }
 
-  generateToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '7d'): string {
+  generateToken(
+    payload: TokenPayload,
+    expiresIn: SignOptions['expiresIn'] = '7d',
+  ): string {
     return jwt.sign(payload, this.jwtSecret, { expiresIn } as SignOptions);
   }
 
-  generateScopedToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '1h'): string {
-    return jwt.sign(payload, this.scopedJwtSecret, { expiresIn } as SignOptions);
+  generateScopedToken(
+    payload: TokenPayload,
+    expiresIn: SignOptions['expiresIn'] = '1h',
+  ): string {
+    return jwt.sign(payload, this.scopedJwtSecret, {
+      expiresIn,
+    } as SignOptions);
   }
 }

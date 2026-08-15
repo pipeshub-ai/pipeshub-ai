@@ -99,7 +99,8 @@ def _record_ids(citations: list[dict[str, Any]]) -> list[str]:
         record_id = None
         if isinstance(metadata, dict):
             record_id = metadata.get("recordId")
-        record_id = record_id or block.get("recordId") if isinstance(block, dict) else record_id
+        if not record_id and isinstance(block, dict):
+            record_id = block.get("recordId")
         if record_id and str(record_id) not in ids:
             ids.append(str(record_id))
     return ids
@@ -154,6 +155,7 @@ class TestRetrievalIntegrity:
             self.conversations, self.stream_timeout, filters={"kb": [self.kb_id]}
         )
         assert finished, "stream ended without RUN_FINISHED"
+        assert conversation_id, "stream never reported a conversation id"
 
         resp = self.conversations.get_conversation(
             conversation_id, timeout=self.stream_timeout

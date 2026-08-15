@@ -32,12 +32,16 @@ import pytest
 import requests
 from pymongo import MongoClient
 
-from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
-from pipeshub_client import PipeshubClient
-
+# Path setup precedes the local imports below: `config` and `pipeshub_client`
+# live in this directory, and importing this module should not depend on a
+# caller having configured sys.path first.
 _ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+for _p in (_ROOT, _ROOT / "helper"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
+from pipeshub_client import PipeshubClient  # noqa: E402
 
 logger = logging.getLogger("second-user")
 

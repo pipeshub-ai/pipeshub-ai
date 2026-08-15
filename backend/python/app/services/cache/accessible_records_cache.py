@@ -406,6 +406,10 @@ class AccessibleRecordsInvalidator:
             CollectionNames.ORG_APP_RELATION.value,
         )
         for edge in edges or []:
+            # A malformed entry must cost only itself: letting .get() raise here
+            # would abort the loop and skip invalidation altogether.
+            if not isinstance(edge, dict):
+                continue
             # neo4j returns a bare id in `from_id`; arango returns a document
             # handle in `_from` ("organizations/<key>").
             raw = str(edge.get("from_id") or edge.get("_from") or "")

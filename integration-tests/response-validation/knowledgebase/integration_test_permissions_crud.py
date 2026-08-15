@@ -70,6 +70,10 @@ def _list_permissions(
     return list(resp.json().get("permissions") or [])
 
 
+# Sentinel: the KB lists a permission for this user but reports no role.
+_ROLE_PRESENT_BUT_UNSET = "<present-without-role>"
+
+
 def _granted_role(
     base_url: str,
     headers: dict[str, str],
@@ -90,8 +94,11 @@ def _granted_role(
         if entry.get("type") != "USER":
             continue
         if str(entry.get("id") or "") == graph_user_id:
+            # A surviving row with a null role is NOT the same as no row: the
+            # delete test asserts the permission is gone, and collapsing both
+            # to None would let a still-present permission pass it.
             role = entry.get("role")
-            return str(role) if role is not None else None
+            return str(role) if role is not None else _ROLE_PRESENT_BUT_UNSET
     return None
 
 
