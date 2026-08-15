@@ -19,12 +19,29 @@ interface TokenPayload extends Record<string, any> {}
  *
  * Passing a KeyObject skips the try/throw entirely. PEM input is still handled
  * so an asymmetric deployment keeps working.
+ *
+ * The empty-secret check is load-bearing, not defensive tidiness. verify()
+ * rejects a falsy secret with "secret or public key must be provided" *before*
+ * it coerces the key, so an empty string used to fail closed. A KeyObject is
+ * always truthy, so without this guard an empty secret sails past that check
+ * and every token forged with an empty HMAC key verifies successfully.
  */
 function toVerificationKey(secret: string): KeyObject {
+  if (!secret) {
+    throw new Error('JWT secret is not configured');
+  }
   if (secret.includes('-----BEGIN')) {
     return createPublicKey(secret);
   }
   return createSecretKey(Buffer.from(secret));
+}
+
+/** Algorithms a key type can legitimately verify, so a token's own `alg`
+ * header cannot steer verification onto a weaker scheme. */
+function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
+  return key.type === 'secret'
+    ? ['HS256', 'HS384', 'HS512']
+    : ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'PS256', 'PS384', 'PS512'];
 }
 
 @injectable()
@@ -34,20 +51,23 @@ export class AuthTokenService {
   private readonly scopedJwtSecret: string;
   private readonly jwtVerificationKey: KeyObject;
   private readonly scopedJwtVerificationKey: KeyObject;
+  private readonly jwtAlgorithms: jwt.Algorithm[];
+  private readonly scopedJwtAlgorithms: jwt.Algorithm[];
 
   constructor(jwtSecret: string, scopedJwtSecret: string) {
     this.jwtSecret = jwtSecret;
     this.scopedJwtSecret = scopedJwtSecret;
     this.jwtVerificationKey = toVerificationKey(jwtSecret);
     this.scopedJwtVerificationKey = toVerificationKey(scopedJwtSecret);
+    this.jwtAlgorithms = algorithmsFor(this.jwtVerificationKey);
+    this.scopedJwtAlgorithms = algorithmsFor(this.scopedJwtVerificationKey);
   }
 
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
-      const decoded = jwt.verify(
-        token,
-        this.jwtVerificationKey,
-      ) as TokenPayload;
+      const decoded = jwt.verify(token, this.jwtVerificationKey, {
+        algorithms: this.jwtAlgorithms,
+      }) as TokenPayload;
 
       return decoded;
     } catch (error) {
@@ -59,10 +79,9 @@ export class AuthTokenService {
   async verifyScopedToken(token: string, scope: string): Promise<TokenPayload> {
     let decoded: TokenPayload;
     try {
-      decoded = jwt.verify(
-        token,
-        this.scopedJwtVerificationKey,
-      ) as TokenPayload;
+      decoded = jwt.verify(token, this.scopedJwtVerificationKey, {
+        algorithms: this.scopedJwtAlgorithms,
+      }) as TokenPayload;
     } catch (error) {
       this.logger.error('Token verification failed', { error });
       throw new UnauthorizedError('Invalid token');

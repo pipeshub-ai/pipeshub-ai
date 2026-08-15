@@ -309,6 +309,13 @@ class AccessibleRecordsInvalidator:
                 return
             org_id = org_id or await self._org_for_app(connector_id)
             if not org_id:
+                # Returning silently here hid a total failure: the cache keeps
+                # serving the pre-sync permission map until the TTL expires.
+                self.logger.warning(
+                    "Skipping accessible-records cache invalidation for connector %s: "
+                    "could not resolve its org",
+                    connector_id,
+                )
                 return
             await self.cache.invalidate_connector(org_id, connector_id)
         except Exception as e:
@@ -380,5 +387,28 @@ class AccessibleRecordsInvalidator:
         return await self.graph_provider.get_document(app_id, CollectionNames.APPS.value)
 
     async def _org_for_app(self, app_id: str) -> str | None:
+        """The org that owns this app.
+
+        Connector apps do not carry `orgId` as a property -- only KB apps do --
+        so the ORG_APP_RELATION edge is the answer for every connector, not a
+        rare fallback. Reading only the property meant every connector-scoped
+        invalidation resolved to None and silently did nothing.
+        """
+        from app.config.constants.arangodb import CollectionNames
+
         app = await self._app_doc(app_id)
-        return (app or {}).get("orgId")
+        org_id = (app or {}).get("orgId")
+        if org_id:
+            return org_id
+
+        edges = await self.graph_provider.get_edges_to_node(
+            f"{CollectionNames.APPS.value}/{app_id}",
+            CollectionNames.ORG_APP_RELATION.value,
+        )
+        for edge in edges or []:
+            # neo4j returns a bare id in `from_id`; arango returns a document
+            # handle in `_from` ("organizations/<key>").
+            raw = str(edge.get("from_id") or edge.get("_from") or "")
+            if raw:
+                return raw.rsplit("/", 1)[-1]
+        return None

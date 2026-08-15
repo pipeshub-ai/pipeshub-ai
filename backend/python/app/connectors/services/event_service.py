@@ -325,7 +325,10 @@ class EventService:
                     self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
 
                 # Schedule the background sync task
-                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
+                await sync_task_manager.start_sync(
+                    connector_id,
+                    self._run_sync_and_clear_status(connector, connector_id, org_id),
+                )
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
                 # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
@@ -367,12 +370,20 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
-            await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
+            await sync_task_manager.start_sync(
+                connector_id,
+                self._run_sync_and_clear_status(connector, connector_id, org_id),
+            )
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
         return True
 
-    async def _run_sync_and_clear_status(self, connector: BaseConnector, connector_id: str) -> None:
+    async def _run_sync_and_clear_status(
+        self,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str | None = None,
+    ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         try:
@@ -392,7 +403,7 @@ class EventService:
 
             # The sync may have added or removed records; drop the query
             # service's cached view of this connector so the next search sees them.
-            await notify_connector_sync_completed(connector_id)
+            await notify_connector_sync_completed(connector_id, org_id)
 
     @staticmethod
     def _reindex_task_key(

@@ -2987,6 +2987,7 @@ class AppMetadata(BaseModel):
     updated_at_timestamp: int = Field(description="Epoch timestamp in milliseconds of app update")
     status: str | None = Field(default=None, description="Current sync status")
     is_locked: bool | None = Field(default=None, description="Whether the app is locked")
+    permission_model: str | None = Field(default=None, description="How the connector's records derive per-user visibility (PermissionModel: APP_LEVEL or RECORD_LEVEL)")
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -3008,6 +3009,7 @@ class AppMetadata(BaseModel):
             updated_at_timestamp=doc.get("updatedAtTimestamp", 0),
             status=doc.get("status"),
             is_locked=doc.get("isLocked"),
+            permission_model=doc.get("permissionModel"),
         )
 
 class MeetingRecord(Record):

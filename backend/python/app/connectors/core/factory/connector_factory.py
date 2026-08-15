@@ -285,7 +285,9 @@ class ConnectorFactory:
         try:
             await connector.run_sync()
         finally:
-            await notify_connector_sync_completed(connector_id)
+            processor = getattr(connector, "data_entities_processor", None)
+            org_id = getattr(processor, "org_id", None) if processor is not None else None
+            await notify_connector_sync_completed(connector_id, org_id)
 
     @classmethod
     async def create_and_start_sync(

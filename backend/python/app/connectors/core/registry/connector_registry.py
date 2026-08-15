@@ -488,6 +488,7 @@ class ConnectorRegistry:
                 'appGroup': metadata['appGroup'],
                 'authType': auth_type_to_store,  # Store selected auth type (user's choice, not metadata)
                 'scope': scope,
+                'orgId': org_id,
                 # Denormalized off the decorator so the query service can route
                 # permission resolution without importing connector code.
                 'permissionModel': self._permission_model_for(metadata),

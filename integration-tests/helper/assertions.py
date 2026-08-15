@@ -438,3 +438,51 @@ class ConnectorAssertions:
             property_name, validated_count, connector_id
         )
         return validated_count
+
+
+async def assert_permission_model(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    expected: str,
+    *,
+    context: str = "",
+) -> None:
+    """The app document records the permission model the connector declared.
+
+    Worth asserting on its own: the model decides whether per-user visibility is
+    resolved per record or answered once for the whole connector, so a value
+    that silently fails to persist changes who can read what -- and nothing
+    else in these suites would notice.
+    """
+    label = f"[{context}] " if context else ""
+    app = await graph_provider.get_app_metadata_by_connector_id(connector_id)
+    assert app is not None, f"{label}No app document for connector {connector_id}"
+    actual = getattr(app, "permission_model", None)
+    assert actual == expected, (
+        f"{label}Connector {connector_id} declares permissionModel={expected!r} in "
+        f"code but its app document holds {actual!r}. A declared model that does "
+        f"not reach the database is not in force."
+    )
+
+
+async def assert_app_level_permissions(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    record_count: int,
+    *,
+    context: str = "",
+) -> None:
+    """APP_LEVEL connectors write a blanket grant, not one grant per record.
+
+    The source has no per-record ACLs, so reaching the app means reaching every
+    record it synced. If permission edges instead scale with the record count,
+    the connector is really writing per-record ACLs and the declared model is
+    wrong -- which matters, because the APP_LEVEL read path never consults them.
+    """
+    label = f"[{context}] " if context else ""
+    perm_count = await graph_provider.count_permission_edges(connector_id)
+    assert perm_count < max(record_count, 1), (
+        f"{label}Connector {connector_id} is declared APP_LEVEL but has "
+        f"{perm_count} permission edge(s) for {record_count} record(s) — that is "
+        f"per-record ACLs, which the APP_LEVEL read path ignores."
+    )

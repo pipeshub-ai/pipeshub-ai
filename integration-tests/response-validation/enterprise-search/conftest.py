@@ -29,6 +29,7 @@ from helper.agui_sse import (
     run_finished_result,
 )
 from helper.clients.kb_client import KBClient
+from helper.second_user import second_user  # noqa: F401 - fixture
 from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import (
     AgentConversationsClient,

@@ -7,6 +7,7 @@ abstracting away the specific database implementation (ArangoDB, Neo4j, etc.).
 All methods support optional transaction parameter for atomic operations.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -917,21 +918,42 @@ class IGraphDBProvider(ABC):
         have not specialised it. Overriding it with a single query is what makes
         it worth calling -- the default still costs one query per record per
         relation type per direction.
+
+        Those queries are issued concurrently. Awaiting them in place would make
+        an unspecialised provider slower than the per-record code this replaced,
+        which gathered the same calls; a caller must not lose latency by moving
+        to the batch API.
         """
-        out: dict[str, dict[str, list[dict[str, Any]]]] = {}
-        for record_id in record_ids:
-            parents: list[dict[str, Any]] = []
-            children: list[dict[str, Any]] = []
-            for relation_type in relation_types:
-                for edges, bucket in (
-                    (await self.get_parent_record_ids_by_relation_type(
-                        record_id, relation_type, transaction), parents),
-                    (await self.get_child_record_ids_by_relation_type(
-                        record_id, relation_type, transaction), children),
-                ):
-                    for edge in edges or []:
-                        bucket.append({**edge, "relationType": relation_type})
-            out[record_id] = {"parents": parents, "children": children}
+        jobs = [
+            (record_id, relation_type, outgoing)
+            for record_id in record_ids
+            for relation_type in relation_types
+            for outgoing in (True, False)
+        ]
+
+        async def fetch(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
+            call = (
+                self.get_parent_record_ids_by_relation_type
+                if outgoing
+                else self.get_child_record_ids_by_relation_type
+            )
+            return await call(record_id, relation_type, transaction)
+
+        results = await asyncio.gather(
+            *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
+            return_exceptions=True,
+        )
+
+        out: dict[str, dict[str, list[dict[str, Any]]]] = {
+            record_id: {"parents": [], "children": []} for record_id in record_ids
+        }
+        for (record_id, relation_type, outgoing), edges in zip(jobs, results):
+            if isinstance(edges, BaseException):
+                # One failing pair must not cost the caller every other edge.
+                continue
+            bucket = out[record_id]["parents" if outgoing else "children"]
+            for edge in edges or []:
+                bucket.append({**edge, "relationType": relation_type})
         return out
 
     @abstractmethod

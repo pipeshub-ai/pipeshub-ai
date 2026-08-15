@@ -98,7 +98,7 @@ class TestSyncCompletionSite:
             ):
                 await service._run_sync_and_clear_status(connector, "conn-1")
 
-        notify.assert_awaited_once_with("conn-1")
+        notify.assert_awaited_once_with("conn-1", None)
 
     async def test_fires_even_when_the_sync_raises(self) -> None:
         service = EventService(MagicMock(), MagicMock(), MagicMock())
@@ -111,19 +111,20 @@ class TestSyncCompletionSite:
             "app.connectors.services.event_service.notify_connector_sync_completed", new=notify
         ):
             with pytest.raises(RuntimeError, match="sync failed"):
-                await service._run_sync_and_clear_status(connector, "conn-1")
+                await service._run_sync_and_clear_status(connector, "conn-1", "org-1")
 
-        notify.assert_awaited_once_with("conn-1")
+        notify.assert_awaited_once_with("conn-1", "org-1")
 
     async def test_boot_resume_path_also_fires(self) -> None:
         connector = MagicMock()
         connector.run_sync = AsyncMock()
+        connector.data_entities_processor = MagicMock(org_id="org-1")
         invalidator = _register()
 
         await ConnectorFactory._run_sync_and_invalidate(connector, "conn-1")
 
         connector.run_sync.assert_awaited_once()
-        invalidator.on_connector_sync_completed.assert_awaited_once_with("conn-1", None)
+        invalidator.on_connector_sync_completed.assert_awaited_once_with("conn-1", "org-1")
 
 
 class TestCascadeDeleteSite:

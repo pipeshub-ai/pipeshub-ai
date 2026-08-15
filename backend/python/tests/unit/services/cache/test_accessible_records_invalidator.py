@@ -13,7 +13,7 @@ from app.services.cache.accessible_records_cache import AccessibleRecordsInvalid
 ORG = "org-1"
 
 
-def _make(app_doc=None, get_document_error=None):
+def _make(app_doc=None, get_document_error=None, org_edges=None):
     cache = MagicMock()
     cache.invalidate_connector = AsyncMock()
     cache.invalidate_kb = AsyncMock()
@@ -23,6 +23,7 @@ def _make(app_doc=None, get_document_error=None):
         graph.get_document = AsyncMock(side_effect=get_document_error)
     else:
         graph.get_document = AsyncMock(return_value=app_doc)
+    graph.get_edges_to_node = AsyncMock(return_value=org_edges or [])
 
     return AccessibleRecordsInvalidator(MagicMock(), cache, graph), cache, graph
 
@@ -34,6 +35,31 @@ class TestConnectorSyncCompleted:
         await inv.on_connector_sync_completed("conn-1")
 
         graph.get_document.assert_awaited_once_with("conn-1", CollectionNames.APPS.value)
+        graph.get_edges_to_node.assert_not_called()
+        cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
+
+    async def test_resolves_org_from_org_app_relation_when_property_missing(self) -> None:
+        inv, cache, graph = _make(
+            app_doc={"type": "S3"},
+            org_edges=[{"from_id": ORG}],
+        )
+
+        await inv.on_connector_sync_completed("conn-1")
+
+        graph.get_edges_to_node.assert_awaited_once_with(
+            f"{CollectionNames.APPS.value}/conn-1",
+            CollectionNames.ORG_APP_RELATION.value,
+        )
+        cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
+
+    async def test_resolves_org_from_arango_edge_shape(self) -> None:
+        inv, cache, _ = _make(
+            app_doc={"type": "S3"},
+            org_edges=[{"_from": f"organizations/{ORG}"}],
+        )
+
+        await inv.on_connector_sync_completed("conn-1")
+
         cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
 
     async def test_supplied_org_skips_the_lookup(self) -> None:

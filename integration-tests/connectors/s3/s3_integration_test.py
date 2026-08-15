@@ -31,6 +31,11 @@ if str(_ROOT) not in sys.path:
 
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from app.config.constants.arangodb import PermissionModel  # noqa: E402
+from helper.assertions import (  # noqa: E402
+    assert_app_level_permissions,
+    assert_permission_model,
+)
 from helper.graph_provider_utils import (  # noqa: E402
     async_wait_for_stable_record_count,
     wait_until_graph_condition,
@@ -88,8 +93,13 @@ class TestS3Connector:
                 connector_id, [known_name]
             )
 
-        perm_count = await graph_provider.count_permission_edges(connector_id)
-        logger.info("Permission edges: %d (connector %s)", perm_count, connector_id)
+        await assert_permission_model(
+            graph_provider, connector_id, PermissionModel.APP_LEVEL.value,
+            context="TC-SYNC-001",
+        )
+        await assert_app_level_permissions(
+            graph_provider, connector_id, full_count, context="TC-SYNC-001",
+        )
 
         summary = await graph_provider.graph_summary(connector_id)
         logger.info("Graph summary after full sync: %s (connector %s)", summary, connector_id)

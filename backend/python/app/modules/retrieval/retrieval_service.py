@@ -545,30 +545,38 @@ class RetrievalService:
                             or []
                         )
                 except Exception as e:
-                    # Losing the whole batch would strip webUrl/mimeType from
-                    # every record in it, so degrade to the per-id path the
-                    # batch replaced rather than returning nothing. Matches
-                    # _fetch_docs in chat_helpers.py.
                     self.logger.warning(
                         f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
                     )
-                    per_id = await asyncio.gather(
-                        *[
-                            self.graph_provider.get_document(rid, collection)
-                            for rid in unique_ids
-                        ],
-                        return_exceptions=True,
-                    )
-                    return {
-                        rid: doc
-                        for rid, doc in zip(unique_ids, per_id)
-                        if doc and not isinstance(doc, Exception)
-                    }
+                    nodes = []
+
                 resolved = {}
                 for node in nodes:
                     key = (node or {}).get("id") or (node or {}).get("_key")
                     if key:
                         resolved[key] = node
+
+                # Losing the batch strips webUrl/mimeType from every record in
+                # it, and a result without mimeType is dropped outright by the
+                # required_fields filter below -- the citation disappears from
+                # the answer with no error. The except above cannot catch that:
+                # get_nodes_by_field_in swallows its own errors and returns [],
+                # so a failure looks exactly like "no rows". Recover on which
+                # ids actually came back instead.
+                missing = [rid for rid in unique_ids if rid not in resolved]
+                if missing:
+                    per_id = await asyncio.gather(
+                        *[
+                            self.graph_provider.get_document(rid, collection)
+                            for rid in missing
+                        ],
+                        return_exceptions=True,
+                    )
+                    resolved.update({
+                        rid: doc
+                        for rid, doc in zip(missing, per_id)
+                        if doc and not isinstance(doc, BaseException)
+                    })
                 return resolved
 
             async def fetch_files() -> dict:

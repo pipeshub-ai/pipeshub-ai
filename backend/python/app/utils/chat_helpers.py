@@ -844,6 +844,48 @@ def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
     return relation.value
 
 
+async def _relations_per_record(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+    relation_types: list[str],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Per-record equivalent of `get_record_relations_batch`, used when the
+    batch fails. Concurrent, and a failing pair costs only itself."""
+    async def one(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
+        fetch = (
+            graph_provider.get_parent_record_ids_by_relation_type
+            if outgoing
+            else graph_provider.get_child_record_ids_by_relation_type
+        )
+        return await fetch(record_id, relation_type)
+
+    jobs = [
+        (record_id, relation_type, outgoing)
+        for record_id in record_ids
+        for relation_type in relation_types
+        for outgoing in (True, False)
+    ]
+    results = await asyncio.gather(
+        *[one(rid, rel, outgoing=out) for rid, rel, out in jobs],
+        return_exceptions=True,
+    )
+
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {
+        record_id: {"parents": [], "children": []} for record_id in record_ids
+    }
+    for (record_id, relation_type, outgoing), result in zip(jobs, results):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "Graph context enrichment: %s edges failed for %s: %s",
+                relation_type, record_id, result,
+            )
+            continue
+        bucket = "parents" if outgoing else "children"
+        for edge in result or []:
+            out[record_id][bucket].append({**edge, "relationType": relation_type})
+    return out
+
+
 async def _fetch_edges_for_records(
     graph_provider: IGraphDBProvider,
     record_ids: list[str],
@@ -866,8 +908,14 @@ async def _fetch_edges_for_records(
             record_ids, list(by_value),
         )
     except Exception as e:
-        logger.warning("Graph context enrichment: batch edge query failed: %s", e)
-        return {}
+        # Returning {} here drops linked-record context for every hit in the
+        # turn. The per-record form this replaced used return_exceptions=True
+        # and lost only the failing pair, so fall back to it rather than
+        # degrading the whole turn on one bad batch.
+        logger.warning(
+            "Graph context enrichment: batch edge query failed, per-record fallback: %s", e
+        )
+        relations = await _relations_per_record(graph_provider, record_ids, list(by_value))
 
     out: dict[str, list[tuple[str, str]]] = {}
     for record_id in record_ids:
@@ -999,20 +1047,29 @@ async def _resolve_target_metadata(
                 )
         except Exception as e:
             logger.warning("Linked record context: batch doc fetch failed, per-id fallback: %s", e)
-            per_id = await asyncio.gather(
-                *[graph_provider.get_document(rid, collection) for rid in ids_needing_docs],
-                return_exceptions=True,
-            )
-            return {
-                rid: doc
-                for rid, doc in zip(ids_needing_docs, per_id)
-                if not isinstance(doc, Exception) and doc and isinstance(doc, dict)
-            }
+            nodes = []
+
         resolved: dict[str, dict[str, Any]] = {}
         for node in nodes:
             key = (node or {}).get("id") or (node or {}).get("_key")
             if key:
                 resolved[key] = node
+
+        # Recover on id coverage, not on an exception: get_nodes_by_field_in
+        # catches its own errors and returns [], so a dead database is
+        # indistinguishable from "no rows" and the except above never fires.
+        # Anything the batch did not account for is retried individually.
+        missing = [rid for rid in ids_needing_docs if rid not in resolved]
+        if missing:
+            per_id = await asyncio.gather(
+                *[graph_provider.get_document(rid, collection) for rid in missing],
+                return_exceptions=True,
+            )
+            resolved.update({
+                rid: doc
+                for rid, doc in zip(missing, per_id)
+                if isinstance(doc, dict) and doc
+            })
         return resolved
 
     doc_results, vrid_result = await asyncio.gather(
@@ -1620,10 +1677,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     # resolve the whole batch with one query per collection instead.
     type_docs: dict[str, dict[str, Any]] = {}
     if records_to_fetch and graph_provider:
+        # Records reach here carrying `_key` rather than `id` (the graph write
+        # path moves `id` into `_key`), so keying on `id` alone matched nothing
+        # and the batch silently no-opped back to one query per record.
         by_record_id = {
-            gdb["id"]: gdb
+            key: gdb
             for vrid in records_to_fetch
-            if isinstance(gdb := (virtual_to_record_map or {}).get(vrid), dict) and gdb.get("id")
+            if isinstance(gdb := (virtual_to_record_map or {}).get(vrid), dict)
+            and (key := gdb.get("id") or gdb.get("_key"))
         }
         if by_record_id:
             type_docs = await _fetch_type_specific_docs_batched(
