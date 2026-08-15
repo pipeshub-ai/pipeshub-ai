@@ -169,7 +169,13 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.delete_permission_from_record = AsyncMock()
         dep.on_records_deleted_cascade = AsyncMock(return_value={"deleted_records": []})
         dep.get_placeholder_records = AsyncMock(return_value=[])
-        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        dep.get_user_by_user_id = AsyncMock(
+            return_value=User.from_arango_user(user_by_id) if user_by_id else None
+        )
+        dep.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_permission] if user_with_permission is not None else []
+        )
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()
@@ -2132,8 +2138,8 @@ class TestProcessDriveItem:
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
         conn = _make_connector()
-        # Force an error by making data_store_provider.transaction raise
-        conn.data_store_provider.transaction = MagicMock(side_effect=Exception("tx fail"))
+        # Force an error on the existing-record lookup
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("lookup fail"))
         metadata = _make_file_metadata()
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "d1")
         assert result is None
@@ -3351,19 +3357,19 @@ class TestResolveExplicitUser:
     @pytest.mark.asyncio
     async def test_no_user_id_returns_none(self):
         conn = _make_connector()
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, None)
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, None)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_empty_string_returns_none(self):
         conn = _make_connector()
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, "")
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_string_none_returns_none(self):
-        conn = _make_connector(user_by_id={"email": "u@x.com"})
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, "None")
+        conn = _make_connector(user_by_id={"_key": "u1", "email": "u@x.com"})
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "None")
         assert result is None
 
     @pytest.mark.asyncio
@@ -3371,21 +3377,21 @@ class TestResolveExplicitUser:
         from fastapi import HTTPException
         conn = _make_connector(user_by_id=None)
         with pytest.raises(HTTPException) as exc_info:
-            await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
+            await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_user_without_email_raises(self):
         from fastapi import HTTPException
-        conn = _make_connector(user_by_id={"isActive": True})
+        conn = _make_connector(user_by_id={"_key": "u1", "isActive": True})
         with pytest.raises(HTTPException) as exc_info:
-            await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
+            await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
         assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_success_returns_user(self):
-        conn = _make_connector(user_by_id={"email": "u@x.com", "isActive": True})
-        result = await resolve_explicit_user(conn.logger, conn.data_store_provider, "uid-1")
+        conn = _make_connector(user_by_id={"_key": "u1", "email": "u@x.com", "isActive": True})
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
         assert result is not None
         assert result.email == "u@x.com"
         assert result.is_active is True
@@ -3401,9 +3407,9 @@ class TestGetImpersonationCandidates:
     @pytest.mark.asyncio
     async def test_no_permission_holders_returns_empty(self):
         conn = _make_connector()
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert result == []
 
@@ -3413,11 +3419,11 @@ class TestGetImpersonationCandidates:
         conn.synced_user_emails = {"in-workspace@x.com"}
         outside = User(email="outside@x.com")
         inside = User(email="in-workspace@x.com")
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=[outside, inside]
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert [u.email for u in result] == ["in-workspace@x.com", "outside@x.com"]
 
@@ -3427,11 +3433,11 @@ class TestGetImpersonationCandidates:
         conn.synced_user_emails = {"active@x.com", "inactive@x.com"}
         inactive = User(email="inactive@x.com", is_active=False)
         active = User(email="active@x.com", is_active=True)
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=[inactive, active]
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert [u.email for u in result] == ["active@x.com", "inactive@x.com"]
 
@@ -3441,11 +3447,11 @@ class TestGetImpersonationCandidates:
         conn.synced_user_emails = set()
         u1 = User(email="a@x.com")
         u2 = User(email="b@x.com")
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=[u1, u2]
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert {u.email for u in result} == {"a@x.com", "b@x.com"}
 
@@ -3454,11 +3460,11 @@ class TestGetImpersonationCandidates:
         conn = _make_connector()
         u1 = User(email="Dup@x.com")
         u2 = User(email="dup@x.com")
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=[u1, u2]
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert len(result) == 1
 
@@ -3467,11 +3473,11 @@ class TestGetImpersonationCandidates:
         conn = _make_connector()
         u1 = User(email="")
         u2 = User(email="ok@x.com")
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=[u1, u2]
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
         )
         assert [u.email for u in result] == ["ok@x.com"]
 
@@ -3479,11 +3485,11 @@ class TestGetImpersonationCandidates:
     async def test_caps_candidates_at_max(self):
         conn = _make_connector()
         users = [User(email=f"user{i}@x.com") for i in range(40)]
-        conn.data_store_provider._tx_store.get_users_with_permission_to_node = AsyncMock(
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
             return_value=users
         )
         result = await get_impersonation_candidates(
-            conn.data_store_provider, "rec-1", conn.synced_user_emails, conn.logger
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails, conn.logger
         )
         assert len(result) == MAX_IMPERSONATION_CANDIDATES
 
@@ -3642,6 +3648,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3667,6 +3676,9 @@ class TestStreamRecord:
         conn.data_store_provider = _make_mock_data_store_provider(
             user_by_id={"email": "u@x.com"}
         )
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User.from_arango_user({"_key": "u1", "email": "u@x.com"})
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3691,6 +3703,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3715,6 +3730,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3741,6 +3759,7 @@ class TestStreamRecord:
         # An explicit user_id that can't be resolved must raise rather than
         # silently falling back to permission-holder candidates.
         conn.data_store_provider = _make_mock_data_store_provider(user_by_id=None, user_with_permission=None)
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -4104,7 +4123,9 @@ class TestCheckAndFetchUpdatedRecord:
         record.external_record_group_id = "d1"
 
         # Force an error
-        conn.data_store_provider.transaction = MagicMock(side_effect=Exception("tx fail"))
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            side_effect=Exception("tx fail")
+        )
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is None
 

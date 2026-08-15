@@ -13,7 +13,9 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.models.entities import User
 
 DELEGATION_ERROR_MARKER = "unauthorized_client"
@@ -37,7 +39,7 @@ def is_delegation_error(error: Exception) -> bool:
 
 async def resolve_explicit_user(
     logger: Logger,
-    data_store_provider: DataStoreProvider,
+    data_entities_processor: DataSourceEntitiesProcessor,
     user_id: Optional[str],
 ) -> Optional[User]:
     """
@@ -57,21 +59,19 @@ async def resolve_explicit_user(
     """
     if not user_id or user_id == "None":
         return None
-    async with data_store_provider.transaction() as tx_store:
-        user = await tx_store.get_user_by_user_id(user_id)
-    email = user.get("email") if user else None
-    if not email:
+    user = await data_entities_processor.get_user_by_user_id(user_id)
+    if not user or not user.email:
         logger.warning(f"User not found for user_id {user_id}")
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail=f"Unable to resolve user {user_id} for impersonation",
         )
-    logger.info(f"Retrieved user email {email} for user_id {user_id}")
-    return User(email=email, is_active=user.get("isActive"))
+    logger.info(f"Retrieved user email {user.email} for user_id {user_id}")
+    return user
 
 
 async def get_impersonation_candidates(
-    data_store_provider: DataStoreProvider,
+    data_entities_processor: DataSourceEntitiesProcessor,
     record_id: str,
     synced_user_emails: Set[str],
     logger: Optional[Logger] = None,
@@ -95,10 +95,9 @@ async def get_impersonation_candidates(
     token exchange plus an API call, so an over-shared record shouldn't be able to
     make a single request perform an unbounded number of sequential round-trips.
     """
-    async with data_store_provider.transaction() as tx_store:
-        permission_holders = await tx_store.get_users_with_permission_to_node(
-            record_id, CollectionNames.RECORDS.value
-        )
+    permission_holders = await data_entities_processor.get_users_with_permission_to_node(
+        record_id, CollectionNames.RECORDS.value
+    )
 
     def sort_key(user: User) -> Tuple[int, int]:
         email_lower = (user.email or "").lower()

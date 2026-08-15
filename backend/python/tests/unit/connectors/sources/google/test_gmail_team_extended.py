@@ -179,6 +179,8 @@ def connector():
         dep.on_record_content_update = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
+        dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -384,8 +386,9 @@ class TestProcessGmailMessage:
         existing.id = "existing-id"
         existing.version = 1
         existing.external_record_group_id = "user@example.com:INBOX"
-        ds = _make_mock_data_store_provider(existing)
-        connector.data_store_provider = ds
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         msg = _make_gmail_message(label_ids=["SENT"])
         result = await connector._process_gmail_message("user@example.com", msg, "thread-1", None)
@@ -963,8 +966,9 @@ class TestProcessHistoryChanges:
     async def test_message_deletion(self, connector):
         existing = MagicMock()
         existing.id = "rec-1"
-        ds = _make_mock_data_store_provider(existing)
-        connector.data_store_provider = ds
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector._delete_message_and_attachments = AsyncMock()
 
         entry = {"id": "h2", "messagesDeleted": [{"message": {"id": "m1"}}]}
@@ -975,8 +979,9 @@ class TestProcessHistoryChanges:
     async def test_labels_added_trash(self, connector):
         existing = MagicMock()
         existing.id = "rec-1"
-        ds = _make_mock_data_store_provider(existing)
-        connector.data_store_provider = ds
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         connector._delete_message_and_attachments = AsyncMock()
 
         entry = {
@@ -1137,7 +1142,6 @@ class TestCheckAndFetchUpdatedRecord:
         user.is_active = True
         tx = AsyncMock()
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         @asynccontextmanager
         async def _tx():
@@ -1145,6 +1149,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _tx
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_mail_record = AsyncMock(return_value=None)
@@ -1162,7 +1167,6 @@ class TestCheckAndFetchUpdatedRecord:
         user.is_active = True
         tx = AsyncMock()
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         @asynccontextmanager
         async def _tx():
@@ -1170,6 +1174,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _tx
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_file_record = AsyncMock(return_value=None)
@@ -1187,7 +1192,6 @@ class TestCheckAndFetchUpdatedRecord:
         user.is_active = True
         tx = AsyncMock()
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user)
-        tx.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         @asynccontextmanager
         async def _tx():
@@ -1195,6 +1199,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _tx
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
         connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
 
         record = MagicMock()

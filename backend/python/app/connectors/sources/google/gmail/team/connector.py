@@ -340,12 +340,10 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-                return existing_record
+            return await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -1730,15 +1728,6 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error creating Gmail client for user {user_email}: {e}")
             raise
 
-    async def _build_delegated_client(self, user_email: str) -> GoogleGmailDataSource:
-        """
-        Build a Gmail client impersonating user_email. Raises on failure instead
-        of silently substituting the service account, so the caller (the
-        impersonation fallback loop) can tell a real impersonation apart from a
-        failed one and correctly try the next candidate.
-        """
-        return await self._create_user_gmail_client(user_email)
-
     async def _get_gmail_client_for_user(self, user_email: Optional[str] = None) -> GoogleGmailDataSource:
         """
         Get the appropriate Gmail data source. Impersonates user_email when given
@@ -1746,7 +1735,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         client. Mirrors the Drive connector's _get_drive_service_for_user.
         """
         if user_email:
-            return await self._build_delegated_client(user_email)
+            return await self._create_user_gmail_client(user_email)
 
         if not self.gmail_data_source:
             raise HTTPException(
@@ -2705,14 +2694,13 @@ class GoogleGmailTeamConnector(BaseConnector):
         # Get parent message record using parent_external_record_id
         message_id = None
         if record.parent_external_record_id:
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=record.connector_id,
-                    external_id=record.parent_external_record_id
-                )
-                if parent_record:
-                    message_id = parent_record.external_record_id
-                    self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_record_id=record.parent_external_record_id
+            )
+            if parent_record:
+                message_id = parent_record.external_record_id
+                self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
 
         if not message_id:
             self.logger.error(f"Parent message ID not found for attachment record {record.id}")
@@ -2861,12 +2849,12 @@ class GoogleGmailTeamConnector(BaseConnector):
             # directly — no need to search permission holders. Only fall back to the
             # broader candidate search when no user_id was given at all (e.g. the
             # internal indexing stream route, whose JWT carries no user identity).
-            preferred_user = await resolve_explicit_user(self.logger, self.data_store_provider, user_id)
+            preferred_user = await resolve_explicit_user(self.logger, self.data_entities_processor, user_id)
             if preferred_user:
                 candidates = [preferred_user]
             else:
                 candidates = await get_impersonation_candidates(
-                    self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                    self.data_entities_processor, record.id, self.synced_user_emails, self.logger
                 )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
@@ -2963,7 +2951,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 return None
 
             candidates = await get_impersonation_candidates(
-                self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                self.data_entities_processor, record.id, self.synced_user_emails, self.logger
             )
             if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")

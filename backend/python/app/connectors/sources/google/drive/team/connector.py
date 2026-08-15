@@ -1682,11 +1682,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
 
             # Get existing record from the database
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=file_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=file_id
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -2349,12 +2348,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-                        existing_record = None
-                        async with self.data_store_provider.transaction() as tx_store:
-                            existing_record = await tx_store.get_record_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=change.get("fileId")
-                            )
+                        existing_record = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=change.get("fileId")
+                        )
 
                         if existing_record and existing_record.id:
                             self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
@@ -3093,12 +3090,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             # broader candidate search when no user_id was given at all (e.g. the
             # internal indexing stream route, whose JWT carries no user identity);
             # resolve_explicit_user raises if a given user_id can't be resolved.
-            preferred_user = await resolve_explicit_user(self.logger, self.data_store_provider, user_id)
+            preferred_user = await resolve_explicit_user(self.logger, self.data_entities_processor, user_id)
             if preferred_user:
                 candidates = [preferred_user]
             else:
                 candidates = await get_impersonation_candidates(
-                    self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                    self.data_entities_processor, record.id, self.synced_user_emails, self.logger
                 )
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
@@ -3299,7 +3296,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 return None
 
             candidates = await get_impersonation_candidates(
-                self.data_store_provider, record.id, self.synced_user_emails, self.logger
+                self.data_entities_processor, record.id, self.synced_user_emails, self.logger
             )
             if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
