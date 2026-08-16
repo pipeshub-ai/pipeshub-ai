@@ -86,7 +86,7 @@ def _make_fetch_response(status=200, content=b"<html>body</html>", headers=None,
     return FetchResponse(
         status_code=status,
         content_bytes=content,
-        headers=headers or {"Content-Type": "text/html"},
+        headers={"Content-Type": "text/html"} if headers is None else headers,
         final_url=final_url,
         strategy="aiohttp",
     )
@@ -277,8 +277,7 @@ class TestFetchArticleContent:
     @pytest.mark.asyncio
     async def test_missing_content_type_header(self):
         conn = _make_connector()
-        with _patch_fetch(status=200, content=b"<html>body</html>",
-                          headers={"Server": "nginx"}):
+        with _patch_fetch(status=200, content=b"<html>body</html>", headers={}):
             result = await conn._fetch_article_content("https://example.com/article")
         assert result == ""  # Absent content-type doesn't contain 'html' or 'xml'
 
