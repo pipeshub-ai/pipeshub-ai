@@ -15,6 +15,7 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.policy import (
+    EMBEDDING_CPU_RESERVATION,
     GROW_CONFIRM_SAMPLES,
     HEAVY_START_BUCKET_CAPACITY,
     HEAVY_START_INTERVAL_SECONDS,
@@ -159,6 +160,62 @@ class TestResolveCeilings:
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 16
         assert policy_mod.heavy_memory_cap(snap) == 2  # (12 - 9) / 1.5
+
+
+class TestEmbeddingCpuReservation:
+    """``reserve_embedding_cpus`` holds CPU back for the co-located local
+    embedding server before heavy-parse slots are derived, for the
+    deployments that embed on local CPU (default / sentenceTransformers /
+    huggingFace) in this same cgroup."""
+
+    def test_reservation_comes_off_the_quota_before_heavy_slots_are_derived(self) -> None:
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        reserved = resolve_ceilings(snap, None, None, reserve_embedding_cpus=True)
+        assert reserved.heavy == int(8.0 - EMBEDDING_CPU_RESERVATION)
+
+    def test_off_by_default_so_a_hosted_embedding_api_keeps_every_core(self) -> None:
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        assert resolve_ceilings(snap, None, None).heavy == 8
+
+    def test_light_and_index_budgets_are_untouched(self) -> None:
+        """A light parse is milliseconds of CPU on a few KB, so its ceiling
+        is a runaway bound rather than a claim on cores — only heavy, which
+        is CPU-bound end to end, gives ground to embedding."""
+        snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
+        derived = resolve_ceilings(snap, None, None)
+        reserved = resolve_ceilings(snap, None, None, reserve_embedding_cpus=True)
+        assert reserved.light == derived.light
+        assert reserved.index == derived.index
+
+    def test_heavy_still_floors_at_one_when_the_reservation_covers_the_quota(self) -> None:
+        """A 2-CPU container must still parse one document at a time,
+        slowly, rather than stalling every PDF forever."""
+        snap = _snapshot(cpu_quota=EMBEDDING_CPU_RESERVATION, mem_limit_bytes=4 * 1024 ** 3)
+        assert resolve_ceilings(snap, None, None, reserve_embedding_cpus=True).heavy == 1
+
+    def test_fully_ramped_heavy_never_climbs_past_the_reserved_ceiling(self) -> None:
+        """The reservation has to hold at every point in the ramp, not just
+        at startup: memory is generous and demand saturated here, so the
+        only thing that can stop growth is the reserved ceiling itself."""
+        snap = _snapshot(
+            cpu_quota=8.0,
+            mem_limit_bytes=64 * 1024 ** 3,
+            mem_working_set_bytes=1 * 1024 ** 3,
+        )
+        ceilings = resolve_ceilings(snap, None, None, reserve_embedding_cpus=True)
+        limits = warm_start_limits(ceilings)
+        state = ControllerState.initial()
+
+        now = 0.0
+        for _ in range(40):
+            demand = _saturated_demand(limits.get(Pool.HEAVY_PARSE))
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=now, interval=INTERVAL,
+            )
+            now += INTERVAL
+            assert limits.get(Pool.HEAVY_PARSE) <= ceilings.heavy
+
+        assert limits.get(Pool.HEAVY_PARSE) == ceilings.heavy  # ramp did reach it
 
 
 class TestHeavyMemoryCap:

@@ -32,6 +32,7 @@ from app.services.docling.docling_service import (
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -97,6 +98,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
         worker_count=worker_count,
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            config_service, logger
+        ),
     )
     app.state.governor = governor
     set_resource_governor(governor)

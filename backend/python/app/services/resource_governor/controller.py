@@ -20,6 +20,7 @@ from app.services.resource_governor.models import (
     ResourceSnapshot,
 )
 from app.services.resource_governor.policy import (
+    EMBEDDING_CPU_RESERVATION,
     HEAVY_PARSE_SLOTS_PER_CPU,
     HEAVY_PARSE_WORKING_SET_GB,
     INCIDENT_COOLDOWN_SECONDS,
@@ -62,6 +63,7 @@ class ResourceGovernor:
         env_parse: int | None = None,
         env_index: int | None = None,
         worker_count: int = 1,
+        reserve_embedding_cpus: bool = False,
         probe: ResourceProbe | None = None,
         sample_interval: float = SAMPLE_INTERVAL_SECONDS,
         jitter: float = SAMPLE_JITTER_SECONDS,
@@ -80,7 +82,11 @@ class ResourceGovernor:
 
         initial_snapshot = self._probe.snapshot()
         self._ceilings: Ceilings = resolve_ceilings(
-            initial_snapshot, env_parse, env_index, self._worker_count,
+            initial_snapshot,
+            env_parse,
+            env_index,
+            self._worker_count,
+            reserve_embedding_cpus=reserve_embedding_cpus,
         )
 
         self._state_lock = threading.Lock()
@@ -129,6 +135,18 @@ class ResourceGovernor:
             INDEX_SLOTS_PER_PARSE_SLOT,
             HEAVY_PARSE_WORKING_SET_GB,
         )
+        if reserve_embedding_cpus:
+            self._logger.info(
+                "ResourceGovernor: local CPU embedding model configured — %.2f of "
+                "%.2f CPU held back from the heavy-parse ceiling (derived from the "
+                "remaining %.2f) so the co-located embedding server keeps cores to "
+                "embed with while Docling is converting; set "
+                "GOVERNOR_EMBEDDING_CPU_RESERVATION=0 to size heavy off the full "
+                "quota, or raise it if embedding is still starved",
+                EMBEDDING_CPU_RESERVATION,
+                initial_snapshot.cpu_quota,
+                max(0.0, initial_snapshot.cpu_quota - EMBEDDING_CPU_RESERVATION),
+            )
         self._logger.info(
             "ResourceGovernor start-rate limiters: heavy_parse=%.1f/s (burst %d) "
             "— sustained admission rate for this pool is capped independently "

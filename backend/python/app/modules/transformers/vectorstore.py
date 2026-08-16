@@ -52,6 +52,7 @@ from app.utils.aimodels import (
     coerce_message_content_to_text,
     get_default_embedding_model,
     get_embedding_model,
+    is_local_cpu_embedding_provider,
 )
 from app.utils.llm import get_llm
 
@@ -941,12 +942,7 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     def _is_local_cpu_embedding(self) -> bool:
-        return (
-            self.embedding_provider is None
-            or self.embedding_provider == EmbeddingProvider.DEFAULT.value
-            or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
-            or self.embedding_provider == EmbeddingProvider.HUGGING_FACE.value
-        )
+        return is_local_cpu_embedding_provider(self.embedding_provider)
 
     async def _compute_sparse_embeddings(
         self, texts: List[str]

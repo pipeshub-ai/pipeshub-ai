@@ -61,6 +61,7 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.utils.llm import is_local_cpu_embedding_configured
 
 logger = logging.getLogger("parsing_main")
 
@@ -232,6 +233,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger=app_logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
         worker_count=worker_count,
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            config_service, app_logger
+        ),
     )
     app.state.governor = governor
     governor_task = asyncio.create_task(governor.run())

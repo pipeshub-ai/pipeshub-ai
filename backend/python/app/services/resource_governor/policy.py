@@ -70,6 +70,20 @@ LIGHT_PARSE_SLOTS_PER_CPU = _env_float(
     "GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU", 10.0, low=0.1, high=64.0
 )
 
+# CPUs withheld from the heavy-parse ceiling when a local embedding model is
+# configured. The default/sentence-transformers/HuggingFace providers all run
+# ``model.encode()`` on CPU in the embedding server, which every shipped
+# deployment co-locates in this cgroup (EMBEDDING_SERVER_URL=localhost:8002),
+# and embedding sits on the critical path of every indexed record. Sizing
+# heavy off the full quota lets a Docling batch take every core and leaves
+# embedding to fight it for CPU, so the reservation comes off the quota
+# *before* the slot count is derived. Applied to heavy only: a light parse is
+# milliseconds of CPU on a few KB, so its 10-per-CPU ceiling is a runaway
+# bound rather than a claim on cores.
+EMBEDDING_CPU_RESERVATION = _env_float(
+    "GOVERNOR_EMBEDDING_CPU_RESERVATION", 2.0, low=0.0, high=32.0
+)
+
 # The INDEX permit is held for a record's whole lifetime (download through
 # vector upsert), most of which is *not* parsing — so the active-pipeline
 # pool is sized as a multiple of the widest parse tier rather than equal to
@@ -204,6 +218,8 @@ def resolve_ceilings(
     env_parse: int | None,
     env_index: int | None,
     worker_count: int = 1,
+    *,
+    reserve_embedding_cpus: bool = False,
 ) -> Ceilings:
     """Resolve operator ceilings once at startup.
 
@@ -211,11 +227,18 @@ def resolve_ceilings(
     operator's ``MAX_CONCURRENT_PARSING`` / ``MAX_CONCURRENT_INDEXING``
     (``None`` means "no cap"):
 
-    * heavy parse — ``min(cpus * HEAVY_PARSE_SLOTS_PER_CPU, env_parse)``
+    * heavy parse — ``min(heavy_cpus * HEAVY_PARSE_SLOTS_PER_CPU, env_parse)``
     * index —
       ``min(INDEX_SLOTS_PER_PARSE_SLOT * max(heavy, light), env_index)``,
       the in-flight cap for heavy and light records together
     * light parse — ``min(cpus * LIGHT_PARSE_SLOTS_PER_CPU, env_parse)``
+
+    ``reserve_embedding_cpus`` makes ``heavy_cpus`` the quota less
+    ``EMBEDDING_CPU_RESERVATION``, for the deployments where embedding runs
+    on local CPU in this cgroup. Because it lands on the ceiling — which
+    every heavy limit is clamped to for the life of the process — those
+    cores stay out of heavy's reach at every point in the ramp, not just at
+    startup.
 
     Memory deliberately plays no part here. It is not a startup constant:
     the free memory at process start (before any model is loaded, or with
@@ -230,11 +253,15 @@ def resolve_ceilings(
     """
     workers = max(1, worker_count)
     cpus = max(0.0, snap.cpu_quota)
+    heavy_cpus = max(0.0, cpus - EMBEDDING_CPU_RESERVATION) if reserve_embedding_cpus else cpus
     # Floored at 1 throughout: a sub-1-CPU cgroup (fractional cpu.max) must
-    # still be able to run one parse at a time rather than none.
+    # still be able to run one parse at a time rather than none. That floor
+    # also applies once the embedding reservation has eaten the whole quota:
+    # a 2-CPU container still parses one document at a time, slowly, rather
+    # than stalling every PDF forever.
     parse_cap = max(1, env_parse) if env_parse is not None else None
 
-    heavy_parse_ceiling = max(1, math.floor(cpus * HEAVY_PARSE_SLOTS_PER_CPU))
+    heavy_parse_ceiling = max(1, math.floor(heavy_cpus * HEAVY_PARSE_SLOTS_PER_CPU))
     light_parse_ceiling = max(1, math.floor(cpus * LIGHT_PARSE_SLOTS_PER_CPU))
     if parse_cap is not None:
         heavy_parse_ceiling = min(heavy_parse_ceiling, parse_cap)

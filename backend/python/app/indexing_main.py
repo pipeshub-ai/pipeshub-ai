@@ -43,6 +43,7 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -781,6 +782,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
         worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
     )
     app.state.governor = governor
     app_container.resource_governor = governor
