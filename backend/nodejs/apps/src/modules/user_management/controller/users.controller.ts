@@ -40,6 +40,7 @@ import {
   isUserOrgAdmin,
   toDisplayUserRole,
   normalizeUserRole,
+  resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
@@ -519,7 +520,7 @@ export class UserController {
       const newUser = new Users({
         ...req.body,
         orgId: req.user?.orgId,
-        role: req.body.role,
+        role: resolveOptionalUserRole(req.body.role),
       });
 
       await UserGroups.updateOne(

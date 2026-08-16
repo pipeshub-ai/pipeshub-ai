@@ -17351,7 +17351,7 @@ paths:
 
         - `fullName`: Required, non-empty string
         - `email`: Required, valid email format
-        - `role`: Required, `admin` or `member`
+        - `role`: Optional, `admin` or `member` (defaults to `member` when omitted)
         - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
         - `designation`: Optional string
 
@@ -17376,7 +17376,6 @@ paths:
               required:
                 - fullName
                 - email
-                - role
               properties:
                 fullName:
                   type: string
@@ -17413,9 +17412,9 @@ paths:
           description: |
             Invalid request. Possible reasons:
 
-            - Missing required fields (`fullName`, `email`, `role`)
+            - Missing required fields (`fullName`, `email`)
             - Invalid email format
-            - Invalid role (must be `admin` or `member`)
+            - Invalid role (must be `admin` or `member` when provided)
             - Invalid mobile number format
             - Requester does not have admin privileges (`userAdminCheck`)
           content:

@@ -65,7 +65,8 @@ const createUserBody = z.object({
       message: 'Invalid mobile number',
     }),
   designation: z.string().optional(),
-  role: z.enum(['admin', 'member']),
+  // Absent → member (resolveOptionalUserRole). Present must be admin|member.
+  role: z.enum(['admin', 'member']).optional(),
 });
 
 const updateUserBody = z.object({

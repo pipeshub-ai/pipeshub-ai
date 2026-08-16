@@ -1357,15 +1357,40 @@ class TestCreateAndDeleteUser(UsersTestBase):
             f"[missing email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
 
-        # Missing role — Zod requires role enum admin|member.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "x@test.com"})
+        # Missing role — optional; defaults to member.
+        unique = uuid.uuid4().hex[:8]
+        resp = self.users.post(
+            "/",
+            json={
+                "fullName": f"Default Role {unique}",
+                "email": f"default-role-{unique}@test-pipeshub.com",
+            },
+        )
+        assert resp.status_code == 201, (
+            f"[missing role defaults] Expected 201, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUser", status_code="201")
+        assert body.get("role") == "member", (
+            f"[missing role defaults] Expected role 'member', got {body.get('role')!r}"
+        )
+        del_resp = self.users.delete_user(body["_id"])
+        assert del_resp.status_code == 200, (
+            f"[missing role defaults cleanup] Expected 200, got {del_resp.status_code}: {del_resp.text}"
+        )
+
+        # Invalid role — Zod enum rejects values other than admin|member.
+        resp = self.users.post(
+            "/",
+            json={"fullName": "Test User", "email": "x@test.com", "role": "superadmin"},
+        )
         assert resp.status_code == 400, (
-            f"[missing role] Expected 400, got {resp.status_code}: {resp.text}"
+            f"[invalid role] Expected 400, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
         assert_response_matches_openapi_operation(body, "createUser", status_code="400")
         assert body["error"]["code"] == "VALIDATION_ERROR", (
-            f"[missing role] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+            f"[invalid role] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
 
         # Invalid email format — Zod email() validator rejects malformed addresses.
