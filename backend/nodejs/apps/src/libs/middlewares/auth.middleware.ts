@@ -296,8 +296,14 @@ export class AuthMiddleware {
     // token-type peek in authenticate() and every downstream verifier see a
     // bare JWT — every other token type never has this prefix, so this is a
     // no-op for them.
-    return token.startsWith(PAT_TOKEN_PREFIX)
-      ? token.slice(PAT_TOKEN_PREFIX.length)
-      : token;
+    if (!token.startsWith(PAT_TOKEN_PREFIX)) return token;
+
+    const bare = token.slice(PAT_TOKEN_PREFIX.length);
+    // Normalise the header too, not just the return value. Several controllers
+    // forward req.headers.authorization verbatim to the Python services, which
+    // have no notion of the prefix and fail JWT decode on it. Rewriting it here
+    // keeps every downstream consumer on a bare JWT.
+    req.headers.authorization = `Bearer ${bare}`;
+    return bare;
   }
 }

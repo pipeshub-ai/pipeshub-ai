@@ -48,7 +48,7 @@ export function ChatInputWrapper() {
 
     if (lastEffectiveAgentIdForQueryMode !== null) {
       lastEffectiveAgentIdForQueryMode = null;
-      useChatStore.getState().setQueryMode('chat');
+      useChatStore.getState().setQueryMode('agent');
     }
   }, [effectiveAgentId]);
 

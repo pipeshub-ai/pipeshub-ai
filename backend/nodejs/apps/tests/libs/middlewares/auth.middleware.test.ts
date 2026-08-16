@@ -130,6 +130,24 @@ describe('AuthMiddleware', () => {
       const result = authMiddleware.extractToken(req)
       expect(result).to.equal('my-jwt')
     })
+
+    // Several controllers forward req.headers.authorization verbatim to the
+    // Python services, which know nothing about the prefix. Returning a bare
+    // token is not enough — the header itself has to be normalised, or those
+    // requests fail downstream with "Could not validate credentials".
+    it('should rewrite the authorization header so forwarded requests carry a bare JWT', () => {
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${PAT_TOKEN_PREFIX}my-jwt` },
+      })
+      authMiddleware.extractToken(req)
+      expect(req.headers.authorization).to.equal('Bearer my-jwt')
+    })
+
+    it('should leave a non-prefixed authorization header untouched', () => {
+      const req = createMockRequest({ headers: { authorization: 'Bearer plain-jwt' } })
+      authMiddleware.extractToken(req)
+      expect(req.headers.authorization).to.equal('Bearer plain-jwt')
+    })
   })
 
   // -----------------------------------------------------------------------
