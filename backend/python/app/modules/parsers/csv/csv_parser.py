@@ -85,7 +85,7 @@ class CSVParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-            llm, _ = await get_llm_for_role(self.config_service, "indexing")
+            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]

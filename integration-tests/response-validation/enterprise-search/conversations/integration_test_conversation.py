@@ -440,10 +440,10 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_get_conversation_by_id_response_matches_spec(self) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query="integration: get conversation by id",
-        )
+    def test_get_conversation_by_id_response_matches_spec(
+        self, readonly_conversation: dict[str, str],
+    ) -> None:
+        conversation_id = readonly_conversation["conversation_id"]
         resp = self.conversations.get_conversation(
             conversation_id,
             timeout=self.timeout,
@@ -847,12 +847,12 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
         assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
 
-    def test_patch_unarchive_conversation_not_archived_returns_400(self) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query="integration: unarchive without archive",
-        )
+    def test_patch_unarchive_conversation_not_archived_returns_400(
+        self, readonly_conversation: dict[str, str],
+    ) -> None:
+        # Borrows the shared conversation precisely because nothing ever archives it.
         resp = self.conversations.unarchive_conversation(
-            conversation_id,
+            readonly_conversation["conversation_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -932,11 +932,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     def test_patch_conversation_title_invalid_payload_returns_400(
         self, payload: dict,
     ) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query="integration: invalid title payload",
-        )
+        # A placeholder id is fine since validation runs before the lookup.
         resp = self.conversations.update_title(
-            conversation_id,
+            "0" * 24,
             json=payload,
             timeout=self.timeout,
         )
@@ -1168,11 +1166,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         ],
     )
     def test_stream_add_message_invalid_payload_returns_400(self, payload: dict) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query="stream-create conversation for invalid-payload test"
-        )
+        # A placeholder id is fine since validation runs before the lookup.
         resp = self.conversations.stream_message(
-            conversation_id,
+            "0" * 24,
             json=payload,
             stream=False,
             timeout=self.timeout,
@@ -1287,44 +1283,24 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
     def test_regenerate_invalid_body_returns_400(self) -> None:
-        conversation_id, message_id = self._stream_create_conversation_and_last_bot_message_id(
-            query="integration: regenerate invalid body",
-        )
+        # Placeholder ids are fine since validation runs before the lookup.
         resp = self.conversations.regenerate_message(
-            conversation_id,
-            message_id,
+            "0" * 24,
+            "0" * 24,
             json={"currentTime": "not-an-iso-datetime"},
             stream=False,
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
 
-    def test_regenerate_non_last_message_id_emits_sse_error(self) -> None:
-        conversation_id, _ = self._stream_create_conversation_and_last_bot_message_id(
-            query="integration: regenerate wrong message id",
-        )
-        get_resp = self.conversations.get_conversation(
-            conversation_id,
-            timeout=self.timeout,
-        )
-        assert get_resp.status_code == 200, f"{get_resp.status_code}: {get_resp.text}"
-        conv = get_resp.json().get("conversation") or {}
-        msgs = conv.get("messages") or []
-        user_query_id: str | None = None
-        for m in msgs if isinstance(msgs, list) else []:
-            if not isinstance(m, dict):
-                continue
-            if m.get("messageType") != "user_query":
-                continue
-            mid = m.get("_id") or m.get("id")
-            if isinstance(mid, str) and mid:
-                user_query_id = mid
-                break
-        assert user_query_id, f"no user_query message id in conversation: {msgs!r}"
-
+    def test_regenerate_non_last_message_id_emits_sse_error(
+        self, readonly_conversation: dict[str, str],
+    ) -> None:
+        # Depends on the shared conversation staying at [user_query, bot_response]: the
+        # user query is only "not the last message" while nothing has appended to it.
         with self.conversations.regenerate_message(
-            conversation_id,
-            user_query_id,
+            readonly_conversation["conversation_id"],
+            readonly_conversation["user_message_id"],
             json={},
             stream=True,
             timeout=self.stream_timeout,
@@ -1370,15 +1346,13 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
             body, "updateMessageFeedback", status_code="200"
         )
 
-    def test_post_message_feedback_on_user_query_returns_400(self) -> None:
-        conversation_id, _bot_id, user_id = (
-            self._stream_create_conversation_bot_and_user_message_ids(
-                query="integration: message feedback negative user_query",
-            )
-        )
+    def test_post_message_feedback_on_user_query_returns_400(
+        self, readonly_conversation: dict[str, str],
+    ) -> None:
+        # Rejected before any write, so the shared conversation keeps no feedback.
         resp = self.conversations.submit_message_feedback(
-            conversation_id,
-            user_id,
+            readonly_conversation["conversation_id"],
+            readonly_conversation["user_message_id"],
             timeout=self.timeout,
         )
         assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
@@ -1390,11 +1364,9 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
     # Reading a conversation sorted oldest first or newest first should both work.
     @pytest.mark.parametrize("sort_order", ["asc", "desc"])
     def test_get_conversation_by_id_with_sort_order_variants(
-        self, sort_order: str,
+        self, sort_order: str, readonly_conversation: dict[str, str],
     ) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query=f"integration: get conversation sort {sort_order}",
-        )
+        conversation_id = readonly_conversation["conversation_id"]
         resp = self.conversations.get_conversation(
             conversation_id,
             sortOrder=sort_order,
@@ -1411,12 +1383,11 @@ class TestConversations(_BaseEnterpriseConversationIntegration):
         )
 
     # Asking for one message at a time caps how many come back.
-    def test_get_conversation_by_id_with_limit_caps_messages(self) -> None:
-        conversation_id = self._stream_create_conversation_id(
-            query="integration: get conversation paginated messages",
-        )
+    def test_get_conversation_by_id_with_limit_caps_messages(
+        self, readonly_conversation: dict[str, str],
+    ) -> None:
         resp = self.conversations.get_conversation(
-            conversation_id,
+            readonly_conversation["conversation_id"],
             limit=1,
             page=1,
             timeout=self.timeout,

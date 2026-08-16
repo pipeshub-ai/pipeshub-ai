@@ -3066,28 +3066,34 @@ async def _resolve_agent_with_permission(
 async def _require_agent_edit_access(
     agent_key: str,
     request: Request,
+    feature_name: str = "toolsets",
+    settings_path: str = "Settings → Toolsets",
 ) -> dict:
     """
     Verify the caller has edit access to a service-account agent.
     Used by write endpoints (credential configure / OAuth) that require both
     ``can_edit`` rights and ``isServiceAccount`` on the agent.
     Returns the full agent document on success.
+
+    ``feature_name``/``settings_path`` only affect the error text — reused as-is
+    by ``app.api.routes.mcp_servers`` for MCP server agent-key credentials, which
+    need the identical ``can_edit`` + ``isServiceAccount`` guard.
     """
     agent = await _resolve_agent_with_permission(agent_key, request)
 
     if not agent.get("can_edit", False):
         raise HTTPException(
             status_code=HttpStatusCode.FORBIDDEN.value,
-            detail="You do not have permission to manage toolsets for this agent.",
+            detail=f"You do not have permission to manage {feature_name} for this agent.",
         )
 
     # Per-agent credentials only apply to service account agents.
-    # Regular agents use per-user credentials via Settings → Toolsets.
+    # Regular agents use per-user credentials via Settings.
     if not agent.get("isServiceAccount", False):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail="Per-agent toolset credentials only apply to service account agents. "
-                   "For regular agents, configure credentials in Settings → Toolsets.",
+            detail=f"Per-agent {feature_name} credentials only apply to service account agents. "
+                   f"For regular agents, configure credentials in {settings_path}.",
         )
     return agent
 

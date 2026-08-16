@@ -174,15 +174,21 @@ class QueueEventSink:
     there), but token-level text/thinking deltas arrive far faster than any
     SSE consumer needs to render them at, so a burst that fills the queue
     would otherwise stall the whole run on I/O nobody is waiting on. Instead,
-    consecutive coalescable events (see `_coalesce_key`) are held in a single
-    one-event `_pending` slot and merged as they arrive; the slot is flushed
-    to the real queue as soon as `write()` sees room, or immediately ahead of
-    any non-coalescable event (which must never be reordered or dropped).
+    coalescable events (see `_coalesce_key`) are held in a per-key `_pending`
+    slot and merged as they arrive; a slot is flushed to the real queue as soon
+    as `write()` sees room, or — for every slot, in arrival order — immediately
+    ahead of any non-coalescable event (which must never be reordered or
+    dropped).
+
+    Slots are per-key rather than one shared slot because the answer stream
+    interleaves two coalescable kinds: a `TEXT_MESSAGE_CONTENT` delta and an
+    `answer_delta` `STATE_DELTA` snapshot per token. With one slot, each write
+    evicted the other kind, so neither ever actually coalesced.
     """
 
     def __init__(self, queue: "asyncio.Queue[Any]") -> None:
         self._queue = queue
-        self._pending: tuple[tuple[str, str], dict[str, Any]] | None = None
+        self._pending: dict[tuple[str, str], dict[str, Any]] = {}
 
     async def write(self, event: dict[str, Any]) -> bool:
         key = _coalesce_key(event)
@@ -191,13 +197,10 @@ class QueueEventSink:
             await self._queue.put(event)
             return True
 
-        if self._pending is not None and self._pending[0] == key:
-            event = _merge_coalesced(self._pending[1], event)
-        else:
-            await self._flush_pending()
-        self._pending = (key, event)
+        held = self._pending.get(key)
+        self._pending[key] = _merge_coalesced(held, event) if held is not None else event
         if not self._queue.full():
-            await self._flush_pending()
+            await self._flush_key(key)
         return True
 
     async def flush(self) -> None:
@@ -207,12 +210,15 @@ class QueueEventSink:
         flush above) would never reach the client at all."""
         await self._flush_pending()
 
-    async def _flush_pending(self) -> None:
-        if self._pending is None:
+    async def _flush_key(self, key: tuple[str, str]) -> None:
+        event = self._pending.pop(key, None)
+        if event is None:
             return
-        _, event = self._pending
-        self._pending = None
         await self._queue.put(event)
+
+    async def _flush_pending(self) -> None:
+        for key in list(self._pending):
+            await self._flush_key(key)
 
 
 async def _heartbeat(queue: "asyncio.Queue[Any]", interval: float = 15.0) -> None:
@@ -358,6 +364,21 @@ async def run_agent_loop_stream(
                     await context.sandbox_manager.destroy_all()
                 except Exception:
                     log.warning("agent-loop stream: sandbox cleanup failed", exc_info=True)
+            # Tears down every MCP session `MCPToolProvider`/`MCPToolAdapter`
+            # opened this request (see `mcp_session.py`). Guarded on the cache
+            # dict itself (rather than always constructing a manager) so a
+            # request with no MCP servers attached skips this entirely; the
+            # `MCPSessionManager` constructed here shares the SAME cache dict
+            # via `context.tool_state`, so it tears down the real sessions.
+            if context.tool_state.get("_mcp_client_managers"):
+                try:
+                    from app.agents.agent_loop.mcp_session import MCPSessionManager
+
+                    await MCPSessionManager(context).aclose_all()
+                except Exception:
+                    log.warning("agent-loop stream: MCP session cleanup failed", exc_info=True)
+            await event_sink.flush()
+            await queue.put(_DONE)
 
     producer = asyncio.create_task(_produce())
     heartbeat = asyncio.create_task(_heartbeat(queue)) if protocol == "agui" else None

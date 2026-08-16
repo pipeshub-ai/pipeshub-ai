@@ -237,11 +237,14 @@ class CollectionNames(Enum):
     AGENT_KNOWLEDGE = "agentKnowledge"
     AGENT_TOOLSETS = "agentToolsets"
     AGENT_TOOLS = "agentTools"
+    AGENT_MCP_SERVERS = "agentMcpServers"
 
     # Agent Builder Graph edges
     AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
+    AGENT_HAS_MCP_SERVER = "agentHasMcpServer"
+    MCP_SERVER_HAS_TOOL = "mcpServerHasTool"
 
     # Agent Skills collections (agent_loop_lib SkillManager — GraphSkillStore)
     AGENT_SKILLS = "agentSkills"
@@ -505,6 +508,33 @@ RECONCILIATION_ENABLED_EXTENSIONS = {
     ExtensionTypes.MD.value,
     ExtensionTypes.MDX.value,
     ExtensionTypes.HTML.value
+}
+
+# Extensions that make a repository blob a CODE_FILE record. Connectors that walk
+# a git tree (GitLab, GitHub) classify each blob against this set; anything outside
+# it is an ordinary FILE record and is gated by the generic mime/extension allowlist
+# instead. Text-based only — a binary listed here would be fed to the code parser.
+SUPPORTED_CODE_FILE_EXTENSIONS = {
+    # C / C++
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
+    # C#
+    "cs",
+    # Java / JVM
+    "java", "kt", "kts", "scala", "groovy", "gradle",
+    # Python
+    "py", "pyi",
+    # JavaScript / TypeScript
+    "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
+    # Go / Rust / Ruby / PHP / Swift / Dart
+    "go", "rs", "rb", "php", "swift", "dart",
+    # Other languages
+    "lua", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
+    # Shell
+    "sh", "bash", "zsh", "fish", "ps1",
+    # Markup / stylesheets
+    "html", "htm", "css", "scss", "sass", "less", "md",
+    # Schema / IDL / infra-as-code
+    "sql", "proto", "graphql", "gql", "tf", "tfvars",
 }
 
 

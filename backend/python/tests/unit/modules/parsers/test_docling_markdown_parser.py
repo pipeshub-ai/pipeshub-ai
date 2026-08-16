@@ -22,9 +22,9 @@ with patch.dict("sys.modules", _DOCLING_MOCKS):
     from app.modules.parsers.image_parser.image_parser import ImageParser
     from app.modules.parsers.markdown.docling_markdown_parser import (
         DoclingMarkdownParser,
-        _apply_caption_map,
         _extract_and_replace_images,
     )
+    from app.utils.converters.caption_map import apply_caption_map as _apply_caption_map
 
 _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 
@@ -82,46 +82,52 @@ class TestDoclingMarkdownParserParseString:
 
 
 class TestDoclingMarkdownParserParse:
+    """`parse()` is the stateless IParser entrypoint: it stops after phase 1
+    (Docling parsing) and returns the raw DoclingDocument - block construction
+    (`parse_to_blocks`) is deferred to the caller (indexing service)."""
+
     @pytest.mark.asyncio
-    async def test_parse_bytes_strips_and_delegates(self, parser):
-        expected = BlocksContainer(blocks=[], block_groups=[])
+    async def test_parse_bytes_strips_and_returns_raw_document(self, parser):
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = '{"doc": true}'
         with patch.object(
             parser, "extract_and_replace_images", return_value=("# Title", [])
         ), patch.object(
-            parser,
-            "parse_to_blocks",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ) as mock_parse:
+            parser, "parse_string", return_value=b"<h1>Title</h1>"
+        ) as mock_parse_string, patch(
+            "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
+        ) as mock_processor_cls:
+            instance = mock_processor_cls.return_value
+            instance.parse_document = AsyncMock(return_value=mock_doc)
             result = await parser.parse(b"  # Title  ", "notes.md")
 
         assert isinstance(result, ParseResult)
-        assert result.block_container is expected
-        assert result.metadata == {"record_name": "notes.md"}
-        mock_parse.assert_awaited_once_with(
-            "# Title",
-            caption_map=None,
-            name="notes.md",
-        )
+        assert result.block_container is None
+        assert result.raw_document == '{"doc": true}'
+        assert result.metadata == {"record_name": "notes.md", "caption_map": None}
+        mock_parse_string.assert_called_once_with("# Title")
+        instance.parse_document.assert_awaited_once_with("notes.md", b"<h1>Title</h1>")
 
     @pytest.mark.asyncio
     async def test_parse_accepts_str_content(self, parser):
-        expected = BlocksContainer(blocks=[], block_groups=[])
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         with patch.object(
             parser, "extract_and_replace_images", return_value=("text", [])
         ), patch.object(
-            parser,
-            "parse_to_blocks",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ):
+            parser, "parse_string", return_value=b"<p>text</p>"
+        ), patch(
+            "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
+        ) as mock_processor_cls:
+            mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
             result = await parser.parse("text", "plain.md")
 
-        assert result.metadata == {"record_name": "plain.md"}
+        assert result.metadata["record_name"] == "plain.md"
 
     @pytest.mark.asyncio
     async def test_parse_builds_caption_map_from_base64_urls(self, parser):
-        expected = BlocksContainer(blocks=[], block_groups=[])
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         images = [
             {
                 "url": "https://example.com/a.png",
@@ -132,28 +138,25 @@ class TestDoclingMarkdownParserParse:
         with patch.object(
             parser, "extract_and_replace_images", return_value=("# Hi", images)
         ), patch.object(
+            parser, "parse_string", return_value=b"<h1>Hi</h1>"
+        ), patch.object(
             ImageParser,
             "urls_to_base64",
             new_callable=AsyncMock,
             return_value=["data:image/png;base64,ENC"],
-        ) as mock_b64, patch.object(
-            parser,
-            "parse_to_blocks",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ) as mock_parse:
-            await parser.parse(b"# Hi", "readme.md")
+        ) as mock_b64, patch(
+            "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
+        ) as mock_processor_cls:
+            mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
+            result = await parser.parse(b"# Hi", "readme.md")
 
         mock_b64.assert_awaited_once_with(["https://example.com/a.png"])
-        mock_parse.assert_awaited_once_with(
-            "# Hi",
-            caption_map={"Image_1": "data:image/png;base64,ENC"},
-            name="readme.md",
-        )
+        assert result.metadata["caption_map"] == {"Image_1": "data:image/png;base64,ENC"}
 
     @pytest.mark.asyncio
     async def test_parse_skips_none_base64_urls(self, parser):
-        expected = BlocksContainer(blocks=[], block_groups=[])
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = "{}"
         images = [
             {"url": "https://a.com/1.png", "alt_text": "", "new_alt_text": "Image_1"},
             {"url": "https://a.com/2.png", "alt_text": "", "new_alt_text": "Image_2"},
@@ -161,23 +164,19 @@ class TestDoclingMarkdownParserParse:
         with patch.object(
             parser, "extract_and_replace_images", return_value=("# Hi", images)
         ), patch.object(
+            parser, "parse_string", return_value=b"<h1>Hi</h1>"
+        ), patch.object(
             ImageParser,
             "urls_to_base64",
             new_callable=AsyncMock,
             return_value=[None, "data:image/png;base64,OK"],
-        ), patch.object(
-            parser,
-            "parse_to_blocks",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ) as mock_parse:
-            await parser.parse(b"# Hi", "readme.md")
+        ), patch(
+            "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
+        ) as mock_processor_cls:
+            mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
+            result = await parser.parse(b"# Hi", "readme.md")
 
-        mock_parse.assert_awaited_once_with(
-            "# Hi",
-            caption_map={"Image_2": "data:image/png;base64,OK"},
-            name="readme.md",
-        )
+        assert result.metadata["caption_map"] == {"Image_2": "data:image/png;base64,OK"}
 
 
 class TestDoclingMarkdownParserParseToBlocks:

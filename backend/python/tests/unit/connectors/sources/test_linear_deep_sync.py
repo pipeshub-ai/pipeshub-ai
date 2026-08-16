@@ -137,12 +137,13 @@ class TestLinearRunSync:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
             connector._fetch_users = AsyncMock(return_value=[])
             connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock()
+            connector._sync_issues_for_teams = AsyncMock(return_value=set())
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()
             connector._sync_deleted_issues = AsyncMock()
             connector._sync_deleted_projects = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock(return_value=0)
 
             await connector.run_sync()
             connector.init.assert_awaited_once()
@@ -184,12 +185,13 @@ class TestLinearRunSync:
                 [(MagicMock(), [])],  # user groups
                 [(rg, [])],  # record groups
             ))
-            connector._sync_issues_for_teams = AsyncMock()
+            connector._sync_issues_for_teams = AsyncMock(return_value=set())
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()
             connector._sync_deleted_issues = AsyncMock()
             connector._sync_deleted_projects = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock(return_value=0)
 
             await connector.run_sync()
 
@@ -201,6 +203,7 @@ class TestLinearRunSync:
             connector._sync_projects_for_teams.assert_awaited_once()
             connector._sync_deleted_issues.assert_awaited_once()
             connector._sync_deleted_projects.assert_awaited_once()
+            connector._sweep_placeholder_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_propagates_exception(self):

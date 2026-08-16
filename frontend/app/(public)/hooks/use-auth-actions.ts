@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';

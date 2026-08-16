@@ -19,16 +19,14 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import ExtensionTypes
-from app.events.processor import Processor
-from app.models.blocks import Block, BlockGroup, BlocksContainer
-from app.modules.parsers.image_parser.image_parser import ImageParser
-from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+if TYPE_CHECKING:
+    from app.events.processor import Processor
+    from app.models.blocks import Block, BlockGroup, BlocksContainer
 
 _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -90,6 +88,14 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
 
 
 def _make_processor() -> Processor:
+    # Imported here rather than at module scope: these pull in torch, docling and
+    # onnxruntime (~0.9 GB), and under pytest-xdist every worker imports every test
+    # module at collection time, multiplying that cost by the worker count.
+    from app.config.constants.arangodb import ExtensionTypes
+    from app.events.processor import Processor
+    from app.modules.parsers.image_parser.image_parser import ImageParser
+    from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+
     logger = logging.getLogger("integration-test-md-parser")
     logger.setLevel(logging.CRITICAL)
 

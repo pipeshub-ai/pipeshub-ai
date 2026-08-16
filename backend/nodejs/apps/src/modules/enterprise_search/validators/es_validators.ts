@@ -407,6 +407,58 @@ const agentToolsetSchema = z
     tools: z.array(agentToolRefSchema).optional(),
   });
 
+/**
+ * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
+ * `api/routes/agent.py`) — no secrets, just enough to resolve the instance +
+ * an optional stored tool selection at chat time.
+ */
+const agentMcpServerSchema = z.object({
+  instanceId: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server instanceId is required' })
+    .max(256),
+  name: z
+    .string()
+    .trim()
+    .min(1, { message: 'MCP server name is required' })
+    .max(200),
+  displayName: z.string().max(200).optional(),
+  typeId: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).max(200).optional(),
+});
+
+/**
+ * `mcpServers` on create/update agent payloads. Rejects two attached
+ * instances sharing the same `typeId`, mirroring Python's `_parse_mcp_servers`
+ * duplicate-type rejection — instances with no `typeId` (custom/unregistered
+ * servers) are exempt, same as the Python side.
+ */
+const agentMcpServersSchema = z
+  .array(agentMcpServerSchema)
+  .max(50)
+  .optional()
+  .superRefine((servers, ctx) => {
+    if (!servers) {
+      return;
+    }
+    const seenTypeIds = new Set<string>();
+    servers.forEach((server, index) => {
+      if (!server.typeId) {
+        return;
+      }
+      if (seenTypeIds.has(server.typeId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate MCP server type "${server.typeId}" — only one instance per server type is allowed`,
+          path: [index, 'typeId'],
+        });
+        return;
+      }
+      seenTypeIds.add(server.typeId);
+    });
+  });
+
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
@@ -447,8 +499,6 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
-const AGENT_MODEL_REQUIRED_MESSAGE =
-  'At least one AI model is required. Please add a model to your configuration.';
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
   'At least one reasoning model is required. Please add a reasoning model to your configuration.';
 
@@ -463,13 +513,16 @@ const hasReasoningModel = (
       model.isReasoning === true,
   );
 
-const agentModelsSchema = z
+/**
+ * Agent model list is optional: an agent with no models configured falls back
+ * to the organization's default LLM at execution time. When models ARE
+ * provided, at least one must be a reasoning model so reasoning-effort
+ * settings behave predictably.
+ */
+const agentModelsOptionalSchema = z
   .array(agentModelEntrySchema)
-  .min(1, {
-    message: AGENT_MODEL_REQUIRED_MESSAGE,
-  })
   .superRefine((models, ctx) => {
-    if (!hasReasoningModel(models)) {
+    if (models.length > 0 && !hasReasoningModel(models)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: AGENT_REASONING_MODEL_REQUIRED_MESSAGE,
@@ -484,7 +537,11 @@ const createAgentBodySchema = z
       .trim()
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' }),
-    models: agentModelsSchema,
+    /**
+     * Optional: an agent created without models uses the organization's
+     * default LLM at chat time (see get_llm_for_chat fallback chain).
+     */
+    models: agentModelsOptionalSchema.optional().default([]),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -493,6 +550,7 @@ const createAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
@@ -518,7 +576,9 @@ const updateAgentBodySchema = z
       .min(1, { message: 'Name is required' })
       .max(200, { message: 'Name must be less than 200 characters' })
       .optional(),
-    models: agentModelsSchema.optional(),
+    /** Optional; when present, an empty array clears the agent's models
+     * and reverts it to the organization default LLM. */
+    models: agentModelsOptionalSchema.optional(),
     description: agentLongTextSchema.optional(),
     startMessage: agentLongTextSchema.optional(),
     systemPrompt: agentLongTextSchema.optional(),
@@ -527,6 +587,7 @@ const updateAgentBodySchema = z
     shareWithOrg: z.boolean().optional(),
     isServiceAccount: z.boolean().optional(),
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
+    mcpServers: agentMcpServersSchema,
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     skills: z.array(agentSkillSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),

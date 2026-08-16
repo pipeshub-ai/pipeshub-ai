@@ -559,11 +559,11 @@ async def handle_simple_mode(
             last_msg = messages[-1] if messages else None
             existing_ai_content: str | None = None
             if isinstance(last_msg, AIMessage):
-                existing_ai_content = getattr(last_msg, "content", None)
+                existing_ai_content = coerce_message_content_to_text(getattr(last_msg, "content", None))
             elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
-                existing_ai_content = getattr(last_msg, "content", None)
+                existing_ai_content = coerce_message_content_to_text(getattr(last_msg, "content", None))
             elif isinstance(last_msg, dict) and last_msg.get("role") == "assistant":
-                existing_ai_content = last_msg.get("content")
+                existing_ai_content = coerce_message_content_to_text(last_msg.get("content"))
 
             if existing_ai_content:
                 logger.info("handle_simple_mode: detected existing AI message (simple mode), streaming directly")
@@ -1017,6 +1017,37 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+def _recover_structured_json_from_exception(
+    error: Exception,
+    schema: type[SchemaT],
+) -> SchemaT | None:
+    """Recover JSON with duplicated wrapper braces from a validation error."""
+    if not isinstance(error, ValidationError):
+        return None
+
+    for detail in error.errors():
+        raw_input = detail.get("input")
+        if not isinstance(raw_input, str):
+            continue
+
+        original = raw_input.strip()
+        cleaned = cleanup_content(original)
+        candidates = [original, cleaned]
+        for candidate in (original, cleaned):
+            if candidate.startswith("{{"):
+                candidates.append(candidate[1:])
+                if candidate.endswith("}}"):
+                    candidates.append(candidate[1:-1])
+
+        for candidate in dict.fromkeys(candidates):
+            try:
+                return schema.model_validate_json(candidate)
+            except ValidationError:
+                pass
+
+    return None
+
+
 async def invoke_with_structured_output_and_reflection(
     llm: BaseChatModel,
     messages: list,
@@ -1040,6 +1071,10 @@ async def invoke_with_structured_output_and_reflection(
     try:
         response = await _ainvoke_throttled(llm_with_structured_output, messages)
     except Exception as e:
+        recovered = _recover_structured_json_from_exception(e, schema)
+        if recovered is not None:
+            logger.info("Recovered schema-valid structured output from invocation error")
+            return recovered
         logger.error(f"LLM invocation failed: {e}")
         return None
 
@@ -1066,7 +1101,11 @@ async def invoke_with_structured_output_and_reflection(
             if hasattr(response, 'content'):
                 # Response is an AIMessage or string
                 logger.debug("Response is AIMessage, extracting content for parsing")
-                response_content = response.content
+                # Flattened here rather than only inside `cleanup_content` so the
+                # reflection turn below replays plain text: OpenAI's Responses API
+                # returns `content` as blocks, and feeding those back verbatim
+                # would put reasoning items into the history we resend.
+                response_content = coerce_message_content_to_text(response.content)
                 logger.debug("[streaming] before cleanup_content (AIMessage.content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
@@ -1117,7 +1156,7 @@ Respond only with valid JSON that matches the schema."""
                 else:
                     if hasattr(reflection_response, 'content'):
                         logger.debug("Reflection response is AIMessage, extracting content")
-                        reflection_content = reflection_response.content
+                        reflection_content = coerce_message_content_to_text(reflection_response.content)
                         logger.debug("[streaming] before cleanup_content (reflection AIMessage.content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
@@ -1131,6 +1170,12 @@ Respond only with valid JSON that matches the schema."""
                 return parsed_response
 
             except Exception as reflection_error:
+                recovered = _recover_structured_json_from_exception(reflection_error, schema)
+                if recovered is not None:
+                    logger.info(
+                        "Recovered schema-valid structured output from reflection invocation error"
+                    )
+                    return recovered
                 logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
                 if attempt < max_retries - 1:
                     # Update messages for next retry

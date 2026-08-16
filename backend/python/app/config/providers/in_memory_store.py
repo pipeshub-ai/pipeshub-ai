@@ -301,7 +301,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         Returns:
             List of keys under the specified directory
         """
-        logger.debug("🔍 Listing keys in directory: %s", directory)
+        logger.debug("Listing keys in directory")
 
         with self.lock:
             self._cleanup_expired_keys()
@@ -310,9 +310,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                 for key, data in self.store.items()
                 if key.startswith(directory) and not data.is_expired()
             ]
-            logger.debug(
-                "📋 Found %d matching keys: %s", len(matching_keys), matching_keys
-            )
+            logger.debug("Found %d matching keys", len(matching_keys))
             return matching_keys
 
     async def close(self) -> None:

@@ -721,6 +721,48 @@ class TestValidatePublicHttpUrlEdgeCases:
         with pytest.raises(FetchError, match="Blocked unsafe URL hostname"):
             _validate_public_http_url("http://printer.local/config")
 
+    def test_resolved_nat64_public_ip_allowed(self) -> None:
+        """A NAT64-synthesized address (RFC 6052 `64:ff9b::/96`) embedding a public IPv4
+        (e.g. DNS64 resolving a public IPv4-only host like mcp.atlassian.com on an
+        IPv6-only network) must not be blocked as 'reserved'."""
+        from app.utils.url_fetcher import _validate_public_http_url
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::808:808", 0, 0, 0)),
+        ]
+        with patch("socket.getaddrinfo", return_value=infos):
+            _validate_public_http_url("http://public-nat64.example/")
+
+    def test_resolved_nat64_loopback_ip_raises(self) -> None:
+        """A NAT64 address embedding a loopback IPv4 (127.0.0.1) must still be blocked."""
+        from app.utils.url_fetcher import _validate_public_http_url
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::7f00:1", 0, 0, 0)),
+        ]
+        with patch("socket.getaddrinfo", return_value=infos):
+            with pytest.raises(FetchError, match="Blocked unsafe URL"):
+                _validate_public_http_url("http://sneaky-nat64.example/")
+
+    def test_resolved_nat64_private_ip_raises(self) -> None:
+        """A NAT64 address embedding a private IPv4 (10.0.0.1) must still be blocked."""
+        from app.utils.url_fetcher import _validate_public_http_url
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::a00:1", 0, 0, 0)),
+        ]
+        with patch("socket.getaddrinfo", return_value=infos):
+            with pytest.raises(FetchError, match="Blocked unsafe URL"):
+                _validate_public_http_url("http://sneaky-nat64-private.example/")
+
+    def test_resolved_nat64_metadata_ip_raises(self) -> None:
+        """A NAT64 address embedding the cloud metadata IPv4 (169.254.169.254) must still
+        be blocked — the well-known-prefix unwrap must not open an SSRF bypass."""
+        from app.utils.url_fetcher import _validate_public_http_url
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("64:ff9b::a9fe:a9fe", 0, 0, 0)),
+        ]
+        with patch("socket.getaddrinfo", return_value=infos):
+            with pytest.raises(FetchError, match="Blocked unsafe URL"):
+                _validate_public_http_url("http://sneaky-nat64-metadata.example/")
+
 
 # ---------------------------------------------------------------------------
 # _get_supported_profiles — lines 167-180 (body when curl_cffi is importable)

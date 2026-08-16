@@ -47,7 +47,10 @@ from app.models.entities import FileRecord, RecordType  # type: ignore[import-no
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
+from helper.graph_provider_utils import (  # noqa: E402
+    apply_filter_full_sync,
+    wait_for_sync_completion,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
     assert_graph_entity_matches,
@@ -100,30 +103,6 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
-
-
-async def _apply_filter_full_sync(
-    pipeshub_client: PipeshubClient,
-    graph_provider: GraphProviderProtocol,
-    connector_id: str,
-    filters: dict[str, Any],
-    *,
-    timeout: int = 300,
-) -> int:
-    """Set a full filter payload then force a full sync (wipes+recreates sync edges).
-
-    A full sync is required for scope *narrowing* to be reflected: it strips
-    ``BELONGS_TO`` connector-wide and recreates it only for in-scope entities, so
-    projects that left the filter drop out of BELONGS_TO-guarded counts.
-
-    Changing the filter sets the backend ``pendingFullSync`` flag, so the re-enable that
-    ``update_connector_filters_sync_safe`` performs is itself a full sync — no separate
-    ``resync`` is needed (that would just run a redundant second full sync).
-    """
-    pipeshub_client.update_connector_filters_sync_safe(connector_id, filters=filters)
-    return await wait_for_sync_completion(
-        pipeshub_client, graph_provider, connector_id, timeout=timeout,
-    )
 
 
 def _sync_filters(**values: Any) -> dict[str, Any]:
@@ -857,7 +836,7 @@ class TestJiraFilters:
         keys = jira_connector["project_keys"]
         project_id_by_key = jira_connector["project_id_by_key"]
 
-        await _apply_filter_full_sync(
+        await apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", keys)),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
@@ -880,7 +859,7 @@ class TestJiraFilters:
         primary_key = jira_connector["primary_key"]
         project_id_by_key = jira_connector["project_id_by_key"]
 
-        await _apply_filter_full_sync(
+        await apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("not_in", [primary_key])),
         )
         primary_rg = await graph_provider.get_record_group_by_external_id(
@@ -979,14 +958,14 @@ class TestJiraFilters:
             )
 
         # ── created >= cut ──
-        await _apply_filter_full_sync(
+        await apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
             _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(cut, None)),
         )
         await _verify_filter(preflight_after, "created_after(cut)", is_after=True)
 
         # ── created <= cut ──
-        await _apply_filter_full_sync(
+        await apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
             _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(None, cut)),
         )
@@ -1005,7 +984,7 @@ class TestJiraFilters:
         keys = jira_connector["project_keys"]
         project_id_by_key = jira_connector["project_id_by_key"]
 
-        await _apply_filter_full_sync(
+        await apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)

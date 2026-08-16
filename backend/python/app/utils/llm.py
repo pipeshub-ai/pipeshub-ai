@@ -13,8 +13,12 @@ from app.utils.aimodels import (
     get_tts_model,
 )
 
-
-async def get_llm(config_service: ConfigurationService, llm_configs = None) -> Tuple[BaseChatModel, dict]:
+async def get_llm(
+    config_service: ConfigurationService,
+    llm_configs = None,
+    *,
+    reasoning_effort: str | None = None,
+) -> Tuple[BaseChatModel, dict]:
     if not llm_configs:
         ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value,use_cache=False)
         llm_configs = ai_models["llm"]
@@ -24,22 +28,27 @@ async def get_llm(config_service: ConfigurationService, llm_configs = None) -> T
 
     for config in llm_configs:
         if config.get("isDefault", False):
-            llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
+            llm = await asyncio.to_thread(
+                get_generator_model, config["provider"], config, None, reasoning_effort,
+            )
             if llm:
                 return llm, config
 
     for config in llm_configs:
-        llm = await asyncio.to_thread(get_generator_model, config["provider"], config)
+        llm = await asyncio.to_thread(
+            get_generator_model, config["provider"], config, None, reasoning_effort,
+        )
         if llm:
             return llm, config
 
 
     raise ValueError("No LLM found")
 
-
 async def get_llm_for_role(
     config_service: ConfigurationService,
     role: str,
+    *,
+    reasoning_effort: str | None = None,
 ) -> Tuple[BaseChatModel, dict]:
     """Return the LLM assigned to *role*, falling back to the default LLM.
 
@@ -70,14 +79,14 @@ async def get_llm_for_role(
             )
             if matched:
                 llm = await asyncio.to_thread(
-                    get_generator_model, matched["provider"], matched
+                    get_generator_model, matched["provider"], matched, None, reasoning_effort,
                 )
                 if llm:
                     return llm, matched
     except Exception:
         pass
 
-    return await get_llm(config_service)
+    return await get_llm(config_service, reasoning_effort=reasoning_effort or "low")
 
 async def get_embedding_model_config(config_service: ConfigurationService) -> dict|None:
         try:

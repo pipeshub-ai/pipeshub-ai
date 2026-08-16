@@ -82,6 +82,7 @@ __all__ = [
     "make_lazy_tools_decider",
     "META_TOOL_NAMES",
     "CONNECTORS_PARENT",
+    "MCP_PARENT",
 ]
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,17 @@ logger = logging.getLogger(__name__)
 # which toolsets `group_connector_toolsets` nested under this category
 # without duplicating the literal.
 CONNECTORS_PARENT = "connectors"
+
+# Parallel category for attached MCP servers (`agent_loop/mcp_tool_loader.py`'s
+# `MCPToolProvider`). Unlike connector toolsets — which start out top-level
+# (`parent=None`) and only get swept under `CONNECTORS_PARENT` later, by
+# `group_connector_toolsets`, once lazy disclosure actually activates —
+# `MCPToolProvider` registers each MCP instance's group with `parent=MCP_PARENT`
+# from the moment it's loaded, unconditionally. This keeps MCP instance groups
+# out of `group_connector_toolsets`'s candidate set (it only considers groups
+# with `parent is None`), so an MCP server is never mistaken for a connector
+# toolset and re-parented under `CONNECTORS_PARENT` instead.
+MCP_PARENT = "mcp"
 
 META_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "search_tools")
 
@@ -164,7 +176,7 @@ def group_connector_toolsets(
         group
         for group in tool_registry.toolsets()
         if group.parent is None
-        and group.name != CONNECTORS_PARENT
+        and group.name not in (CONNECTORS_PARENT, MCP_PARENT)
         and group.name not in exclude
         and any(name in tool_name_set for name in group.tool_names)
     ]

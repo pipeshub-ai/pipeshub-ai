@@ -93,7 +93,6 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
-    looks_like_file_generation_request,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -121,6 +120,7 @@ from app.agents.agent_loop.loops.orchestrator import (
     register_coordination_tools,
 )
 from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
@@ -142,6 +142,7 @@ from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollec
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.mcp.service import is_mcp_enabled
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -279,6 +280,22 @@ class PipesHubAgentFactory:
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
+        # MCP servers attached to this agent (or, for the assistant/placeholder
+        # agent, every MCP instance the executing user has authenticated — see
+        # `get_authenticated_mcp_servers`) — loaded right after connector
+        # toolsets so their tools count toward every composition/lazy-disclosure
+        # decision below exactly like any other tool. `context.mcp_servers`/
+        # `mcp_server_configs` are empty for a request with no attached MCP
+        # servers, so this is a cheap no-op in the common case (see
+        # `MCPToolProvider.load_into`).
+        #
+        # Gated on `ENABLE_MCP` — belt-and-suspenders alongside `api/routes/agent.py`
+        # forcing `agent_mcp_servers` empty when disabled, so MCP tools never load
+        # into an agent regardless of entry point. The flag read is skipped when
+        # nothing is attached (nothing to gate, and it saves a settings read on
+        # every MCP-less chat).
+        if not context.mcp_servers or await is_mcp_enabled(context.config_service):
+            await MCPToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
@@ -377,16 +394,6 @@ class PipesHubAgentFactory:
             opik_active=opik_active,
             opik_project_name=opik_project_name,
             transport_registry=transport_registry,
-        )
-
-        # Read by `hooks/completion_gate.py` (already wired onto `hooks`
-        # above) once the agent actually runs — computed from the raw query
-        # and the ORIGINAL goal description (pre-attachment), since attachment
-        # text often contains file-format tokens (e.g. ".pdf" in a filename)
-        # that would false-positive when the user only uploaded a file for
-        # analysis, not requested one to be generated.
-        context.file_generation_requested = looks_like_file_generation_request(
-            query, goal.description,
         )
 
         # Stash model_name on context so ensure_fetch_full_record_available()
@@ -760,6 +767,9 @@ class PipesHubAgentFactory:
                 # `_find_web_record_by_url`'s page-level fallback for why
                 # that's an acceptable, not fully solved, trade-off).
                 "dynamic__web_search", "dynamic__fetch_url",
+                # Same reasoning: fetch_full_record results carry [refN]
+                # markers that AnswerFinalizer needs to build citations.
+                "knowledgegraph__fetch_record",
             }),
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
@@ -805,12 +815,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
 
-        # Refuses a text-only, no-tool-call turn as "done" when the request
-        # needed a generated file and no artifact has been produced yet —
-        # see `hooks/completion_gate.py`. Registered unconditionally: it is
-        # a no-op for every request `context.file_generation_requested`
-        # ends up False for (set further up in `create()`, after intent
-        # resolves the goal).
+        # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
 
         # This adapter path builds its own HookRegistry directly (never

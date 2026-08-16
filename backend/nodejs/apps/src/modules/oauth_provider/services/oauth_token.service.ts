@@ -4,7 +4,10 @@ import crypto from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
-import { OAuthAccessToken } from '../schema/oauth.access_token.schema'
+import {
+  OAuthAccessToken,
+  IOAuthAccessToken,
+} from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
 import { IOAuthApp } from '../schema/oauth.app.schema'
 import {
@@ -14,10 +17,12 @@ import {
 import {
   OAuthTokenPayload,
   GeneratedTokens,
+  GenerateTokensOptions,
   IntrospectResponse,
   TokenListItem,
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
+import { PAT_TOKEN_PREFIX } from '../constants/constants'
 
 @injectable()
 export class OAuthTokenService {
@@ -61,16 +66,19 @@ export class OAuthTokenService {
     includeRefreshToken: boolean = true,
     fullName?: string,
     accountType?: string,
+    opts?: GenerateTokensOptions,
   ): Promise<GeneratedTokens> {
     const jti = uuidv4()
     const now = Math.floor(Date.now() / 1000)
+    const accessTokenLifetime =
+      opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime
 
     // Generate access token
     const accessTokenPayload: OAuthTokenPayload = {
       userId: userId || app.clientId,
       orgId,
       iss: this.issuer,
-      exp: now + app.accessTokenLifetime,
+      exp: now + accessTokenLifetime,
       iat: now,
       jti,
       scope: scopes.join(' '),
@@ -89,19 +97,21 @@ export class OAuthTokenService {
 
     // Store access token hash for revocation lookup
     const accessTokenHash = this.hashToken(accessToken)
-    await OAuthAccessToken.create({
+    const storedAccessToken = await OAuthAccessToken.create({
       tokenHash: accessTokenHash,
       clientId: app.clientId,
       userId: userId ? new Types.ObjectId(userId) : undefined,
       orgId: new Types.ObjectId(orgId),
       scopes,
-      expiresAt: new Date((now + app.accessTokenLifetime) * 1000),
+      expiresAt: new Date((now + accessTokenLifetime) * 1000),
+      name: opts?.name,
     })
 
     const result: GeneratedTokens = {
       accessToken,
+      accessTokenId: (storedAccessToken._id as Types.ObjectId).toString(),
       tokenType: 'Bearer',
-      expiresIn: app.accessTokenLifetime,
+      expiresIn: accessTokenLifetime,
       scope: scopes.join(' '),
     }
 
@@ -155,7 +165,15 @@ export class OAuthTokenService {
    */
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
-      const payload = jwt.verify(token, this.verifyKey, {
+      // Personal access tokens carry a display-only phpat_ prefix ahead of
+      // the underlying JWT (see PAT_TOKEN_PREFIX) so they're grep-able in
+      // logs/files. Strip it before verifying/hashing — every other token
+      // type never has this prefix, so this is a no-op for them.
+      const rawToken = token.startsWith(PAT_TOKEN_PREFIX)
+        ? token.slice(PAT_TOKEN_PREFIX.length)
+        : token
+
+      const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
@@ -164,7 +182,7 @@ export class OAuthTokenService {
       }
 
       // Check if token is revoked
-      const tokenHash = this.hashToken(token)
+      const tokenHash = this.hashToken(rawToken)
       const storedToken = await OAuthAccessToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },
@@ -173,6 +191,14 @@ export class OAuthTokenService {
       if (!storedToken) {
         throw new InvalidTokenError('Token has been revoked')
       }
+
+      // Best-effort recency tracking for the token list UI — never blocks
+      // or fails the request it's riding on.
+      this.touchLastUsed(storedToken).catch((err: unknown) => {
+        this.logger.warn('Failed to update token lastUsedAt', {
+          error: err instanceof Error ? err.message : 'Unknown error',
+        })
+      })
 
       return payload
     } catch (error) {
@@ -462,6 +488,8 @@ export class OAuthTokenService {
         createdAt: t.createdAt,
         expiresAt: t.expiresAt,
         isRevoked: t.isRevoked,
+        name: t.name,
+        lastUsedAt: t.lastUsedAt,
       })),
       ...refreshTokens.map((t) => ({
         id: (t._id as Types.ObjectId).toString(),
@@ -476,6 +504,178 @@ export class OAuthTokenService {
 
     return tokens.sort(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    )
+  }
+
+  /**
+   * List a single user's active access tokens for a client — the
+   * per-user counterpart to {@link listTokensForApp}, used by the
+   * personal access token list view.
+   */
+  async listAccessTokensForUser(
+    clientId: string,
+    userId: string,
+  ): Promise<TokenListItem[]> {
+    const tokens = await OAuthAccessToken.find({
+      clientId: { $eq: clientId },
+      userId: { $eq: new Types.ObjectId(userId) },
+      isRevoked: { $eq: false },
+      expiresAt: { $gt: new Date() },
+    })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .exec()
+
+    return tokens.map((t) => ({
+      id: (t._id as Types.ObjectId).toString(),
+      tokenType: 'access' as const,
+      userId: t.userId?.toString(),
+      scopes: t.scopes,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+      isRevoked: t.isRevoked,
+      name: t.name,
+      lastUsedAt: t.lastUsedAt,
+    }))
+  }
+
+  /**
+   * List a client's active access tokens with real pagination — unlike
+   * {@link listTokensForApp}, which caps at a fixed 100 rows. Used for
+   * org-admin PAT listing, where silently dropping tokens past the
+   * hundredth would defeat the point of a complete-visibility view.
+   */
+  async listAccessTokensForClientPaginated(
+    clientId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ tokens: TokenListItem[]; total: number }> {
+    const filter = {
+      clientId: { $eq: clientId },
+      isRevoked: { $eq: false },
+      expiresAt: { $gt: new Date() },
+    }
+    const [tokens, total] = await Promise.all([
+      OAuthAccessToken.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .exec(),
+      OAuthAccessToken.countDocuments(filter),
+    ])
+
+    return {
+      tokens: tokens.map((t) => ({
+        id: (t._id as Types.ObjectId).toString(),
+        tokenType: 'access' as const,
+        userId: t.userId?.toString(),
+        scopes: t.scopes,
+        createdAt: t.createdAt,
+        expiresAt: t.expiresAt,
+        isRevoked: t.isRevoked,
+        name: t.name,
+        lastUsedAt: t.lastUsedAt,
+      })),
+      total,
+    }
+  }
+
+  /**
+   * Revoke a single access token by its document id, scoped to the owning
+   * client and user so one user can't revoke another's token even if both
+   * share a client (e.g. the shared per-org personal-access-token client).
+   */
+  async revokeAccessTokenById(
+    id: string,
+    clientId: string,
+    userId: string,
+    revokedBy: string,
+    reason?: string,
+  ): Promise<boolean> {
+    // A malformed id (not a 24-char hex string) would otherwise throw a
+    // BSONError out of `new Types.ObjectId(id)` — treat it the same as
+    // "not found" rather than letting that leak as an unhandled 500.
+    if (!Types.ObjectId.isValid(id)) {
+      return false
+    }
+    const result = await OAuthAccessToken.updateOne(
+      {
+        _id: { $eq: new Types.ObjectId(id) },
+        clientId: { $eq: clientId },
+        userId: { $eq: new Types.ObjectId(userId) },
+        isRevoked: { $eq: false },
+      },
+      {
+        isRevoked: true,
+        revokedAt: new Date(),
+        revokedBy: new Types.ObjectId(revokedBy),
+        revokedReason: reason,
+      },
+    )
+
+    if (result.modifiedCount > 0) {
+      this.logger.info('Access token revoked by id', { id, clientId, userId })
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Revoke a single access token by its document id, scoped only to the
+   * owning client — not a specific user. For admin-initiated revocation
+   * (e.g. a departed employee's personal access token), where the caller
+   * legitimately needs to revoke a token they don't own themselves.
+   */
+  async revokeAccessTokenByIdForClient(
+    id: string,
+    clientId: string,
+    revokedBy: string,
+    reason?: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) {
+      return false
+    }
+    const result = await OAuthAccessToken.updateOne(
+      {
+        _id: { $eq: new Types.ObjectId(id) },
+        clientId: { $eq: clientId },
+        isRevoked: { $eq: false },
+      },
+      {
+        isRevoked: true,
+        revokedAt: new Date(),
+        revokedBy: new Types.ObjectId(revokedBy),
+        revokedReason: reason,
+      },
+    )
+
+    if (result.modifiedCount > 0) {
+      this.logger.info('Access token revoked by id (admin)', {
+        id,
+        clientId,
+        revokedBy,
+      })
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Throttled recency update — skips the write if the token was already
+   * touched within the last 5 minutes, so a hot token doesn't generate a
+   * write on every authenticated request.
+   */
+  private async touchLastUsed(token: IOAuthAccessToken): Promise<void> {
+    const staleThresholdMs = 5 * 60 * 1000
+    if (
+      token.lastUsedAt &&
+      Date.now() - token.lastUsedAt.getTime() < staleThresholdMs
+    ) {
+      return
+    }
+    await OAuthAccessToken.updateOne(
+      { _id: token._id },
+      { lastUsedAt: new Date() },
     )
   }
 

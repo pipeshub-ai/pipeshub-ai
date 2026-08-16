@@ -181,7 +181,7 @@ describe('normalizeReasoningEffort', () => {
 describe('applyConversationModelInfoToStore — reasoningEffort normalization', () => {
   it('floors a legacy "none" from conversation modelInfo to "low" (avoids showing "· none" in the toolbar)', () => {
     applyConversationModelInfoToStore(
-      { modelKey: 'openai', modelName: 'gpt-5', reasoningEffort: 'none' },
+      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'none' },
       ASSISTANT_CTX,
     );
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
@@ -189,10 +189,28 @@ describe('applyConversationModelInfoToStore — reasoningEffort normalization', 
 
   it('passes through a non-legacy reasoningEffort from conversation modelInfo unchanged', () => {
     applyConversationModelInfoToStore(
-      { modelKey: 'openai', modelName: 'gpt-5', reasoningEffort: 'high' },
+      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'high' },
       ASSISTANT_CTX,
     );
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('high');
+  });
+
+  it('does not overwrite an existing user override when modelInfo omits reasoningEffort', () => {
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
+    applyConversationModelInfoToStore(
+      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick' },
+      ASSISTANT_CTX,
+    );
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('medium');
+  });
+
+  it('overwrites an existing override when modelInfo explicitly provides reasoningEffort', () => {
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
+    applyConversationModelInfoToStore(
+      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'low' },
+      ASSISTANT_CTX,
+    );
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
   });
 });
 

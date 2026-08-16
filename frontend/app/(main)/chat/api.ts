@@ -305,6 +305,7 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
+        ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
         // `undefined` (runtime.ts omits the field entirely when every tool
         // is selected) must NOT become `[]` here — an empty array means
         // "no tools" to the backend (agent.py treats `None`/missing as
@@ -684,7 +685,10 @@ export const ChatApi = {
     const { data } = await apiClient.get<{ status: string; models: AvailableLlmModel[]; message: string }>(
       '/api/v1/configurationManager/ai-models/available/llm'
     );
-    return data.models ?? [];
+    // `data` itself can be null/undefined (e.g. an empty response body), and
+    // `?? []` alone wouldn't guard a malformed non-array `models` value — both
+    // would otherwise reach callers that call `.find`/`.map` on the result.
+    return Array.isArray(data?.models) ? data.models : [];
   },
 
   // ── Deprecated: knowledge-hub/nodes approach (commented out) ──
@@ -834,11 +838,12 @@ export async function fetchOrgLogo(): Promise<string | null> {
   }
 }
 
-/**
- * Module-level singleton — guarantees a single fetch per page load
- * regardless of React StrictMode double-mounting or component remounts.
- */
+
 let _orgWithLogoPromise: Promise<{ org: OrgResponse | null; logoUrl: string | null }> | null = null;
+
+export function clearOrgWithLogoCache(): void {
+  _orgWithLogoPromise = null;
+}
 
 export function fetchOrgWithLogo(): Promise<{ org: OrgResponse | null; logoUrl: string | null }> {
   if (!_orgWithLogoPromise) {

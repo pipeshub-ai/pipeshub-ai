@@ -1,6 +1,7 @@
 """Parser provider that delegates PDF parsing to the external Docling HTTP service."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.services.docling.client import DoclingClient
@@ -30,15 +31,16 @@ class DoclingServiceParser:
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
 
-        block_containers = await self._client.process_pdf(record_name_pdf, content)
-        if block_containers is None:
+        doc = await self._client.parse_pdf_batched(record_name_pdf, content)
+        if doc is None:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
-                f"Docling service failed to process '{record_name}'",
+                f"Docling service failed to parse '{record_name}'",
             )
 
+        raw_document = await asyncio.to_thread(doc.model_dump_json)
         return ParseResult(
-            block_container=block_containers,
+            raw_document=raw_document,
             provider_used=ParserProvider.DOCLING,
             metadata={"record_name": record_name},
         )

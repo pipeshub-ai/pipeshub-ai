@@ -335,6 +335,15 @@ interface ChatState {
     instanceId?: string;
     iconPath?: string;
   }>;
+  /** Attached MCP server groups for the MCP tab — same row shape as `agentChatToolGroups`. */
+  agentChatMcpGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>;
   /** Default knowledge scope derived from the agent graph (used to reset UI). */
   agentKnowledgeDefaults: { apps: string[]; kb: string[] };
   /**
@@ -377,6 +386,22 @@ interface ChatState {
   }>;
   universalAgentToolsLoading: boolean;
   universalAgentToolsError: string | null;
+  /** Every tool fullName from my-mcp-servers (authenticated only) — kept separate from the
+   * toolset catalog because the two load independently (paginated vs. one-shot); combine via
+   * `getUniversalCombinedCatalog()` when computing "select all" semantics. */
+  universalAgentMcpCatalogFullNames: string[];
+  /** MCP server groups for universal agent MCP tab (from GET /api/v1/mcp-servers/my-mcp-servers). */
+  universalAgentMcpGroups: Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>;
+  universalAgentMcpLoading: boolean;
+  universalAgentMcpError: string | null;
 
   // ── Global settings (apply to all chats) ──
   settings: ChatSettings;
@@ -483,6 +508,15 @@ interface ChatState {
       instanceId?: string;
       iconPath?: string;
     }>;
+    /** Attached MCP server groups for the MCP tab. */
+    mcpGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId?: string;
+      iconPath?: string;
+    }>;
     connectors: Array<{ id: string; label: string; connectorKind: string }>;
     kbIds: string[];
     knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
@@ -513,6 +547,21 @@ interface ChatState {
   } | null) => void;
   setUniversalAgentToolsLoading: (loading: boolean) => void;
   setUniversalAgentToolsError: (error: string | null) => void;
+  /** Populate universal agent MCP groups from my-mcp-servers. Pass null to clear. */
+  hydrateUniversalAgentMcpResources: (payload: {
+    mcpGroups: Array<{
+      label: string;
+      fullNames: string[];
+      toolDescriptions?: Record<string, string>;
+      toolsetSlug: string;
+      instanceId: string;
+      iconPath?: string;
+      isAuthenticated: boolean;
+    }>;
+    mcpCatalogFullNames: string[];
+  } | null) => void;
+  setUniversalAgentMcpLoading: (loading: boolean) => void;
+  setUniversalAgentMcpError: (error: string | null) => void;
 
   addPendingConversation: (slotId: string) => void;
   updatePendingConversationTitle: (slotId: string, title: string) => void;
@@ -618,6 +667,14 @@ const initialState = {
     instanceId?: string;
     iconPath?: string;
   }>,
+  agentChatMcpGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId?: string;
+    iconPath?: string;
+  }>,
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
@@ -639,6 +696,18 @@ const initialState = {
   }>,
   universalAgentToolsLoading: false,
   universalAgentToolsError: null as string | null,
+  universalAgentMcpCatalogFullNames: [] as string[],
+  universalAgentMcpGroups: [] as Array<{
+    label: string;
+    fullNames: string[];
+    toolDescriptions?: Record<string, string>;
+    toolsetSlug: string;
+    instanceId: string;
+    iconPath?: string;
+    isAuthenticated: boolean;
+  }>,
+  universalAgentMcpLoading: false,
+  universalAgentMcpError: null as string | null,
 
   settings: {
     mode: 'chat' as ChatMode,
@@ -869,6 +938,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           agentChatKbIds: [],
           agentKnowledgeCollectionRows: [],
           agentChatToolGroups: [],
+          agentChatMcpGroups: [],
           agentKnowledgeDefaults: { apps: [], kb: [] },
           agentKnowledgeScope: null,
           agentContextDisplayName: null,
@@ -894,6 +964,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         agentChatKbIds: [],
         agentKnowledgeCollectionRows: [],
         agentChatToolGroups: [],
+        agentChatMcpGroups: [],
         agentKnowledgeDefaults: { apps: [], kb: [] },
         agentKnowledgeScope: null,
         agentContextDisplayName: null,
@@ -963,6 +1034,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? {
             agentToolCatalogFullNames: payload.toolCatalogFullNames,
             agentChatToolGroups: payload.toolGroups,
+            agentChatMcpGroups: payload.mcpGroups,
             agentChatConnectors: payload.connectors,
             agentChatKbIds: payload.kbIds,
             agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
@@ -992,6 +1064,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         : {
             agentToolCatalogFullNames: [],
             agentChatToolGroups: [],
+            agentChatMcpGroups: [],
             agentChatConnectors: [],
             agentChatKbIds: [],
             agentKnowledgeCollectionRows: [],
@@ -1034,6 +1107,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setUniversalAgentToolsLoading: (loading) => set({ universalAgentToolsLoading: loading }),
 
   setUniversalAgentToolsError: (error) => set({ universalAgentToolsError: error }),
+
+  hydrateUniversalAgentMcpResources: (payload) =>
+    set(
+      payload
+        ? {
+            universalAgentMcpGroups: payload.mcpGroups,
+            universalAgentMcpCatalogFullNames: payload.mcpCatalogFullNames,
+            universalAgentMcpLoading: false,
+            universalAgentMcpError: null,
+          }
+        : {
+            universalAgentMcpGroups: [],
+            universalAgentMcpCatalogFullNames: [],
+            universalAgentMcpLoading: false,
+            universalAgentMcpError: null,
+          }
+    ),
+
+  setUniversalAgentMcpLoading: (loading) => set({ universalAgentMcpLoading: loading }),
+
+  setUniversalAgentMcpError: (error) => set({ universalAgentMcpError: error }),
 
   moveConversationToTop: (conversationId) =>
     set((state) => {
@@ -1348,6 +1442,18 @@ export function isModelReasoningCapable(
   );
 }
 
+/**
+ * Union of the universal agent mode's toolset + MCP catalogs. The two load independently
+ * (toolsets are paginated via my-toolsets, MCP servers load in one shot via my-mcp-servers)
+ * so they're kept as separate store fields — this is the single source of truth for "every
+ * tool fullName currently selectable", used by `toggleTool`/`setGroupToolsEnabled` in
+ * `universal-agent-resources-panel.tsx` to diff the explicit selection against "everything".
+ */
+export function getUniversalCombinedCatalog(): string[] {
+  const state = useChatStore.getState();
+  return [...state.universalAgentToolCatalogFullNames, ...state.universalAgentMcpCatalogFullNames];
+}
+
 // ── Store-write diff subscriber (debug only) ────────────────────
 // Logs which top-level fields changed per set() call. This lets us
 // correlate store writes with component re-renders in the debug output.
@@ -1365,6 +1471,7 @@ if (typeof window !== 'undefined') {
     'agentChatKbIds',
     'agentKnowledgeCollectionRows',
     'agentChatToolGroups',
+    'agentChatMcpGroups',
     'agentKnowledgeDefaults',
     'agentKnowledgeScope',
     'agentContextDisplayName',
@@ -1375,6 +1482,10 @@ if (typeof window !== 'undefined') {
     'universalAgentToolGroups',
     'universalAgentToolsLoading',
     'universalAgentToolsError',
+    'universalAgentMcpCatalogFullNames',
+    'universalAgentMcpGroups',
+    'universalAgentMcpLoading',
+    'universalAgentMcpError',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
     'scopedAgentCapabilities',
     'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',

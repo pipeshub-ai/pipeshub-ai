@@ -139,7 +139,7 @@ export function SelectedCollections({
   if (!collections || collections.length === 0) return null;
 
   return (
-    <Flex align="center" style={{ minWidth: 0 }}>
+    <Flex align="center" style={{ width: '100%', minWidth: 0, flex: 1 }}>
       {canScrollLeft && (
         <IconButton
           variant="ghost"
@@ -161,7 +161,7 @@ export function SelectedCollections({
         align="center"
         gap="2"
         className="no-scrollbar"
-        style={{ overflowX: 'auto', minWidth: 0, flex: 1 }}
+        style={{ overflowX: 'auto', minWidth: 0, flex: 1, width: '100%' }}
       >
         {collections.map((col) => (
           <CollectionPill

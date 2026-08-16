@@ -52,6 +52,9 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
                        ``<div>text<div><img></div></div>``) are emitted as
                        paragraph blocks during child walks.
 
+    title (from <head>) → Block(TEXT, HEADING, MARKDOWN) emitted before body
+                         content (skipped when empty/whitespace)
+
     script / style / noscript / template / svg / meta / link / head → skipped
 """
 
@@ -1167,7 +1170,12 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
-        walker = _DomWalker(caption_map=caption_map)
+        title_node = parser.css_first("head > title")
+        document_title = _node_text(title_node) if title_node is not None else ""
+        walker = _DomWalker(
+            caption_map=caption_map,
+            document_title=document_title,
+        )
         return walker.walk(root)
 
 
@@ -1187,13 +1195,17 @@ class _DomWalker:
         self,
         *,
         caption_map: dict[str, str] | None = None,
+        document_title: str | None = None,
     ) -> None:
         """Initialize walker state for one conversion pass.
 
         Args:
             caption_map: Alt-text to base64 URI map for inlined images.
+            document_title: Non-empty ``<title>`` text from ``<head>``, emitted
+                as a leading HEADING before body content.
         """
         self.caption_map = caption_map or {}
+        self.document_title = (document_title or "").strip()
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
         self.group_stack: list[_OpenGroup] = []
@@ -1204,8 +1216,16 @@ class _DomWalker:
         """Traverse the DOM from ``root`` and return the assembled container.
 
         Only direct children are walked from ``root``; callers pass ``body`` or
-        the document root so the full tree is covered in one pass.
+        the document root so the full tree is covered in one pass. When a
+        document ``<title>`` was provided, it is emitted first as a HEADING.
         """
+        if self.document_title:
+            self._emit_text_chunks(
+                text=self.document_title,
+                block_type=BlockType.TEXT,
+                sub_type=BlockSubType.HEADING,
+                format=DataFormat.MARKDOWN,
+            )
         self._walk_children(root, depth=0)
         return BlocksContainer(blocks=self.blocks, block_groups=self.block_groups)
 

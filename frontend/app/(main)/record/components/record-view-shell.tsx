@@ -16,6 +16,7 @@ import {
   resolvePreviewIconExtension,
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
+import { resolveWebUrl } from '@/app/components/file-preview/resolve-web-url';
 import type { PaginationControls } from '@/app/components/file-preview/types';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import {
@@ -36,17 +37,6 @@ const ZOOM_STEP = 0.1;
 
 interface RecordViewShellProps {
   recordId: string;
-}
-
-/** Mirrors the old getWebUrl() from show-documents.tsx */
-function resolveWebUrl(record: RecordDetailsResponse['record']): string | null {
-  if (record.hideWeburl) return null;
-  let url = record.webUrl || record.fileRecord?.webUrl || null;
-  if (!url) return null;
-  if (record.origin === 'UPLOAD' && !url.startsWith('http')) {
-    url = `${window.location.protocol}//${window.location.host}${url}`;
-  }
-  return url;
 }
 
 function isStreamableRecordType(recordType: string): boolean {

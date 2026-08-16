@@ -1547,4 +1547,205 @@ describe('Connector Routes - handler coverage', () => {
       expect(wasZodError).to.be.false
     })
   })
+
+  describe('knowledge graph routes', () => {
+    function findAllHandlers(path: string, method: string) {
+      const layer = router.stack.find(
+        (l: any) => l.route && l.route.path === path && l.route.methods[method],
+      )
+      if (!layer) return []
+      return layer.route.stack.map((s: any) => s.handle)
+    }
+
+    // Express semantics: `next()` continues the chain, `next(err)` aborts it.
+    // Breaking on any `next` call would stop at authenticate and never reach
+    // the validation middleware these tests are about.
+    async function runChain(path: string, query: any, headers: any = {}) {
+      const req: any = {
+        user: { userId: 'u1', orgId: 'o1' },
+        query,
+        params: {},
+        body: {},
+        headers,
+      }
+      const res = mockRes()
+      const errors: any[] = []
+      const next = sinon.stub().callsFake((err?: any) => {
+        if (err) errors.push(err)
+      })
+      for (const handler of findAllHandlers(path, 'get')) {
+        await Promise.resolve(handler(req, res, next))
+        if (errors.length > 0) break
+      }
+      return { req, res, next, error: errors.length > 0 ? errors[0] : null }
+    }
+
+    function isValidationError(error: any) {
+      return error != null && error.code === 'VALIDATION_ERROR'
+    }
+
+    it('registers GET /navigate before GET /:connectorId, which would otherwise capture it', () => {
+      const routes = router.stack.filter((layer: any) => layer.route)
+      const navigateIdx = routes.findIndex(
+        (l: any) => l.route.path === '/navigate' && l.route.methods.get,
+      )
+      const connectorIdIdx = routes.findIndex(
+        (l: any) => l.route.path === '/:connectorId' && l.route.methods.get,
+      )
+
+      expect(navigateIdx).to.be.greaterThan(-1)
+      expect(connectorIdIdx).to.be.greaterThan(-1)
+      expect(navigateIdx).to.be.lessThan(connectorIdIdx)
+    })
+
+    it('registers GET /record/lookup with a full middleware chain', () => {
+      const lookupRoute = router.stack.find(
+        (l: any) => l.route && l.route.path === '/record/lookup' && l.route.methods.get,
+      )
+      expect(lookupRoute).to.not.be.undefined
+      // authenticate + requireScopes + validate + controller
+      expect(lookupRoute.route.stack.length).to.be.greaterThanOrEqual(4)
+    })
+
+    it('keeps repeated identifiers repeated rather than comma-joining them', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      await runChain('/record/lookup', { identifiers: ['PA-1787', 'PA-1788'] })
+
+      expect(exec.calledOnce).to.be.true
+      const url: string = exec.firstCall.args[0]
+      expect(url).to.include('identifiers=PA-1787')
+      expect(url).to.include('identifiers=PA-1788')
+      expect(url).to.not.include('PA-1787%2CPA-1788')
+    })
+
+    it('encodes a URL identifier as a single parameter', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      const target = 'https://acme.atlassian.net/browse/PA-1?a=1&b=2'
+      await runChain('/record/lookup', { identifiers: [target] })
+
+      const url: string = exec.firstCall.args[0]
+      const identifierParams = url
+        .split('?')[1]
+        .split('&')
+        .filter((p: string) => p.startsWith('identifiers='))
+      expect(identifierParams).to.have.lengthOf(1)
+      expect(decodeURIComponent(identifierParams[0].slice('identifiers='.length))).to.equal(target)
+    })
+
+    it('normalizes a single identifier string to an array', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { matches: [] } })
+
+      const { error } = await runChain('/record/lookup', { identifiers: 'PA-1787' })
+
+      expect(isValidationError(error)).to.be.false
+      expect(exec.firstCall.args[0]).to.include('identifiers=PA-1787')
+    })
+
+    it('rejects more than 10 identifiers without reaching the backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/record/lookup', {
+        identifiers: Array.from({ length: 11 }, (_, i) => `PA-${i}`),
+      })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('rejects a missing identifiers param without reaching the backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/record/lookup', {})
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('maps navigate camelCase params to the snake_case names Python declares', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      await runChain('/navigate', {
+        nodeId: 'n1',
+        page: '2',
+        limit: '50',
+        depth: '2',
+        nodeTypes: ['record', 'folder'],
+        createdAfter: '2026-01-01',
+        modifiedBefore: '2026-02-01',
+      })
+
+      const url: string = exec.firstCall.args[0]
+      expect(url).to.include('/api/v1/knowledge-graph/navigate?')
+      expect(url).to.include('node_id=n1')
+      expect(url).to.include('page=2')
+      expect(url).to.include('depth=2')
+      expect(url).to.include('node_types=record')
+      expect(url).to.include('node_types=folder')
+      expect(url).to.include('created_after=2026-01-01')
+      expect(url).to.include('modified_before=2026-02-01')
+      expect(url).to.not.include('nodeId=')
+      expect(url).to.not.include('createdAfter=')
+    })
+
+    it('proxies navigate with no params to the root listing', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      const { error } = await runChain('/navigate', {})
+
+      expect(isValidationError(error)).to.be.false
+      expect(exec.firstCall.args[0]).to.equal(
+        'http://localhost:8088/api/v1/knowledge-graph/navigate',
+      )
+    })
+
+    it('rejects a navigate limit below the navigator floor of 50', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/navigate', { limit: '10' })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('rejects a navigate depth above 3', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: {} })
+
+      const { error } = await runChain('/navigate', { depth: '4' })
+
+      expect(isValidationError(error)).to.be.true
+      expect(exec.called).to.be.false
+    })
+
+    it('does not forward a client-supplied x-is-admin header to the connector backend', async () => {
+      const exec = sinon
+        .stub(connectorUtils, 'executeConnectorCommand')
+        .resolves({ statusCode: 200, data: { rows: [] } })
+
+      await runChain('/navigate', {}, { 'x-is-admin': 'true', cookie: 'session=secret' })
+
+      const headers = exec.firstCall.args[2]
+      expect(headers['X-Is-Admin']).to.equal('false')
+      expect(headers).to.not.have.property('cookie')
+    })
+  })
 })

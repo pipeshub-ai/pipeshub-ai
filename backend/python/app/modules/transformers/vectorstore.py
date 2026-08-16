@@ -49,6 +49,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.utils.aimodels import (
     EmbeddingProvider,
+    coerce_message_content_to_text,
     get_default_embedding_model,
     get_embedding_model,
 )
@@ -425,7 +426,7 @@ class VectorStore(Transformer):
             ]
         )
         response = await vlm.ainvoke([message])
-        return response.content
+        return coerce_message_content_to_text(response.content)
 
     async def describe_images(
         self, base64_images: List[str], vlm: BaseChatModel
@@ -1129,7 +1130,7 @@ class VectorStore(Transformer):
             )
 
         try:
-            llm, config = await get_llm(self.config_service)
+            llm, config = await get_llm(self.config_service, reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
         except Exception as e:
             raise IndexingError("Failed to get LLM: " + str(e), details={"error": str(e)})

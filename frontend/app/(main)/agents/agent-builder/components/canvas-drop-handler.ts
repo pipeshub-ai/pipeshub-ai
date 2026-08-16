@@ -9,6 +9,11 @@ import {
   normalizeToolsetTypeKey,
 } from '../sidebar-toolset-utils';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
+import {
+  collectActiveMcpInstanceIdsFromNodes,
+  collectActiveMcpTypeIdsFromNodes,
+  isMcpTypeIdConflict,
+} from '../sidebar-mcp-utils';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
 
@@ -379,6 +384,67 @@ export function handleFlowCanvasDrop(
           selectedTools: [droppedTool.name],
           isConfigured: isToolsetConfigured,
           isAuthenticated: isToolsetAuthenticated,
+        },
+        inputs: [],
+        outputs: ['output'],
+        isConfigured: true,
+      },
+    });
+    return;
+  }
+
+  if (type === 'mcp-server' || type.startsWith('mcp-')) {
+    const mcpInstanceId = event.dataTransfer.getData('instanceId');
+    const mcpName = event.dataTransfer.getData('name');
+    const mcpDisplayName = event.dataTransfer.getData('displayName') || mcpName;
+    const mcpTypeId = event.dataTransfer.getData('typeId');
+    const mcpIsAuthenticated = event.dataTransfer.getData('isAuthenticated') === 'true';
+    const mcpToolsStr = event.dataTransfer.getData('tools');
+
+    if (!mcpInstanceId || !mcpName) return;
+
+    if (!mcpIsAuthenticated) {
+      onError?.(
+        t('agentBuilder.toolsetNotReadyNotify', {
+          name: mcpDisplayName,
+          reason: t('agentBuilder.notAuthenticatedReason'),
+        })
+      );
+      return;
+    }
+
+    if (
+      collectActiveMcpInstanceIdsFromNodes(nodes).has(mcpInstanceId) ||
+      isMcpTypeIdConflict(collectActiveMcpTypeIdsFromNodes(nodes), mcpInstanceId, mcpTypeId || undefined)
+    ) {
+      onError?.(t('agentBuilder.mcpServerAlreadyAttachedNotify', { name: mcpDisplayName }));
+      return;
+    }
+
+    const mcpTools = mcpToolsStr
+      ? parseJson<{ name: string; fullName: string; description?: string }[]>(mcpToolsStr, [])
+      : [];
+
+    const mcpNodeType = `mcp-${mcpInstanceId}`;
+    const mcpNodeId = `${mcpNodeType}-${Date.now()}`;
+    appendNodeWithAutoConnect({
+      id: mcpNodeId,
+      type: 'flowNode',
+      position: place(mcpNodeType),
+      data: {
+        id: mcpNodeId,
+        type: mcpNodeType,
+        label: normalizeDisplayName(mcpDisplayName),
+        description: t('agentBuilder.mcpServerWithToolCount', { count: mcpTools.length }),
+        icon: 'hub',
+        category: 'mcp-server',
+        config: {
+          instanceId: mcpInstanceId,
+          name: mcpName,
+          displayName: mcpDisplayName,
+          typeId: mcpTypeId || undefined,
+          tools: mcpTools,
+          isAuthenticated: mcpIsAuthenticated,
         },
         inputs: [],
         outputs: ['output'],

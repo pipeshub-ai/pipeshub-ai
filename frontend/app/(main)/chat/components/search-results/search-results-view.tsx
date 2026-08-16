@@ -21,7 +21,6 @@ function SearchResultSkeleton() {
         padding: 'var(--space-4)',
       }}
     >
-      {/* Header skeleton */}
       <Flex align="center" justify="between">
         <Flex align="center" gap="2">
           <Box
@@ -35,53 +34,51 @@ function SearchResultSkeleton() {
           />
           <Box
             style={{
-              width: 200,
-              height: 14,
-              borderRadius: 'var(--radius-1)',
-              backgroundColor: 'var(--olive-4)',
-              animation: 'pulse 1.5s ease-in-out infinite',
-            }}
-          />
-        </Flex>
-        <Flex gap="2">
-          <Box
-            style={{
               width: 80,
-              height: 24,
-              borderRadius: 'var(--radius-1)',
-              backgroundColor: 'var(--olive-4)',
-              animation: 'pulse 1.5s ease-in-out infinite',
-            }}
-          />
-          <Box
-            style={{
-              width: 48,
-              height: 24,
+              height: 12,
               borderRadius: 'var(--radius-1)',
               backgroundColor: 'var(--olive-4)',
               animation: 'pulse 1.5s ease-in-out infinite',
             }}
           />
         </Flex>
-      </Flex>
-      {/* Content skeleton */}
-      <Box
-        style={{
-          borderLeft: '4px solid var(--olive-4)',
-          paddingLeft: 'var(--space-3)',
-        }}
-      >
         <Box
           style={{
-            width: '100%',
-            height: 40,
+            width: 40,
+            height: 12,
             borderRadius: 'var(--radius-1)',
             backgroundColor: 'var(--olive-4)',
             animation: 'pulse 1.5s ease-in-out infinite',
           }}
         />
-      </Box>
-      {/* Footer skeleton */}
+      </Flex>
+      <Box
+        style={{
+          width: '70%',
+          height: 16,
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-4)',
+          animation: 'pulse 1.5s ease-in-out infinite',
+        }}
+      />
+      <Box
+        style={{
+          width: '100%',
+          height: 12,
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-4)',
+          animation: 'pulse 1.5s ease-in-out infinite',
+        }}
+      />
+      <Box
+        style={{
+          width: '90%',
+          height: 12,
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-4)',
+          animation: 'pulse 1.5s ease-in-out infinite',
+        }}
+      />
       <Box
         style={{
           width: 100,
@@ -97,6 +94,7 @@ function SearchResultSkeleton() {
 
 /**
  * Search results view — rendered when in search mode with results or a search in progress.
+ * Width is owned by the shared chat content column in page.tsx.
  */
 export function SearchResultsView() {
   const searchResults = useChatStore((s) => s.searchResults);
@@ -120,11 +118,10 @@ export function SearchResultsView() {
       direction="column"
       style={{
         flex: 1,
+        width: '100%',
+        minHeight: 0,
         position: 'relative',
         zIndex: 10,
-        maxWidth: '50rem',
-        width: '100%',
-        margin: '0 auto',
         overflow: 'hidden',
         paddingTop: 'var(--space-6)',
       }}

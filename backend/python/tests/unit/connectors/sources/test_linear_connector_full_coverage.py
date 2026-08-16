@@ -3079,6 +3079,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
+                            return_value=set(),
                         ):
                             with patch.object(
                                 connector,
@@ -3105,7 +3106,13 @@ class TestRunSync:
                                                 "_sync_deleted_projects",
                                                 new_callable=AsyncMock,
                                             ):
-                                                await connector.run_sync()
+                                                with patch.object(
+                                                    connector,
+                                                    "_sweep_placeholder_records",
+                                                    new_callable=AsyncMock,
+                                                    return_value=0,
+                                                ):
+                                                    await connector.run_sync()
 
     @pytest.mark.asyncio
     async def test_run_sync_with_team_filter(self):
@@ -3143,6 +3150,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
+                            return_value=set(),
                         ):
                             with patch.object(
                                 connector,
@@ -3169,7 +3177,13 @@ class TestRunSync:
                                                 "_sync_deleted_projects",
                                                 new_callable=AsyncMock,
                                             ):
-                                                await connector.run_sync()
+                                                with patch.object(
+                                                    connector,
+                                                    "_sweep_placeholder_records",
+                                                    new_callable=AsyncMock,
+                                                    return_value=0,
+                                                ):
+                                                    await connector.run_sync()
 
     @pytest.mark.asyncio
     async def test_run_sync_error_propagated(self):

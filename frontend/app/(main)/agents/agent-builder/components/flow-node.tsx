@@ -19,6 +19,7 @@ import { NodeHandles } from './node-handles';
 import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
+import { McpFlowNode } from './mcp-flow-node';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
 export type FlowNodeProps = {
@@ -114,6 +115,10 @@ export const FlowNode = React.memo(function FlowNode({
     return (
       <ToolsetFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />
     );
+  }
+
+  if (data.type.startsWith('mcp-')) {
+    return <McpFlowNode id={id} data={data} selected={selected} readOnly={readOnly} onDelete={onDelete} />;
   }
 
   const subtitle =

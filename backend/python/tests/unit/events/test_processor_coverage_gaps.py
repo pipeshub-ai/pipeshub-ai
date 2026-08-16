@@ -48,7 +48,8 @@ def _make_processor(**overrides):
         "sink_orchestrator": MagicMock(),
     }
     kwargs.update(overrides)
-    with patch("app.events.processor.DoclingClient"):
+    with patch("app.events.processor.DoclingClient"), \
+         patch("app.events.processor.DoclingProcessor"):
         return Processor(**kwargs)
 
 
@@ -123,7 +124,7 @@ class TestIndexingErrorReraise:
     @pytest.mark.asyncio
     async def test_process_pdf_with_docling_indexing_error(self):
         proc = _make_processor()
-        proc.docling_client.process_pdf = AsyncMock(
+        proc.docling_client.parse_pdf_batched = AsyncMock(
             side_effect=IndexingError("docling fail", record_id="r1")
         )
 
@@ -138,13 +139,13 @@ class TestIndexingErrorReraise:
             side_effect=IndexingError("docx fail", record_id="r1")
         )
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(IndexingError, match="docx fail"):
-                await _collect(
-                    proc.process_docx_document(
-                        "doc.docx", "r1", "1", "kb", "o1", b"docx", "vr1"
-                    )
+        proc.docling_processor = mock_processor
+        with pytest.raises(IndexingError, match="docx fail"):
+            await _collect(
+                proc.process_docx_document(
+                    "doc.docx", "r1", "1", "kb", "o1", b"docx", "vr1"
                 )
+            )
 
     @pytest.mark.asyncio
     async def test_process_excel_indexing_error(self):
@@ -258,13 +259,13 @@ class TestIndexingErrorReraise:
             side_effect=IndexingError("pptx fail", record_id="r1")
         )
 
-        with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(IndexingError, match="pptx fail"):
-                await _collect(
-                    proc.process_pptx_document(
-                        "a.pptx", "r1", "1", "kb", "o1", b"pptx", "vr1"
-                    )
+        proc.docling_processor = mock_processor
+        with pytest.raises(IndexingError, match="pptx fail"):
+            await _collect(
+                proc.process_pptx_document(
+                    "a.pptx", "r1", "1", "kb", "o1", b"pptx", "vr1"
                 )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +345,10 @@ class TestOcrCoverageGaps:
             ]
         )
 
+        proc.docling_processor = processor
         with patch("app.events.processor.OCRHandler", return_value=handler), patch(
-            "app.events.processor.DoclingProcessor", return_value=processor
-        ), patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            "app.events.processor.IndexingPipeline"
+        ) as MockPipeline:
             MockPipeline.return_value.apply = AsyncMock()
             events = await _collect(
                 proc.process_pdf_document_with_ocr(
@@ -412,9 +414,10 @@ class TestOcrCoverageGaps:
         processor.parse_document = AsyncMock(side_effect=[MagicMock(), MagicMock()])
         processor.create_blocks = AsyncMock(side_effect=[page1, page2])
 
+        proc.docling_processor = processor
         with patch("app.events.processor.OCRHandler", return_value=handler), patch(
-            "app.events.processor.DoclingProcessor", return_value=processor
-        ), patch("app.events.processor.IndexingPipeline") as MockPipeline:
+            "app.events.processor.IndexingPipeline"
+        ) as MockPipeline:
             MockPipeline.return_value.apply = AsyncMock()
             events = await _collect(
                 proc.process_pdf_document_with_ocr(

@@ -1,4 +1,5 @@
 """Linear Connector Implementation"""
+import asyncio
 import base64
 import re
 from collections import defaultdict
@@ -101,6 +102,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+
+# Placeholder ancestor sweep (parent sub-issue hierarchy left out of sync filters)
+PLACEHOLDER_SWEEP_BATCH: int = 50
+PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
+PLACEHOLDER_SWEEP_CONCURRENCY: int = 10
+PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
 
 
 @ConnectorBuilder("Linear")\
@@ -576,7 +583,7 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
 
             # Step 7: Sync issues for teams
-            await self._sync_issues_for_teams(team_record_groups)
+            full_sync_team_ids = await self._sync_issues_for_teams(team_record_groups)
 
             # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
             await self._sync_attachments(team_record_groups)
@@ -593,7 +600,19 @@ class LinearConnector(BaseConnector):
             # Step 12: Sync deleted projects
             await self._sync_deleted_projects(team_record_groups)
 
-            self.logger.info("✅ Linear sync completed")
+            # Step 13: Backfill placeholder parent stubs left by date/incremental filters
+            synced_team_ids = {
+                g.external_group_id for g, _ in team_record_groups if g.external_group_id
+            }
+            placeholders_backfilled = await self._sweep_placeholder_records(
+                synced_team_ids=synced_team_ids,
+                full_sync_team_ids=full_sync_team_ids,
+            )
+
+            self.logger.info(
+                "✅ Linear sync completed; placeholders backfilled: %s",
+                placeholders_backfilled,
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
@@ -856,7 +875,7 @@ class LinearConnector(BaseConnector):
     async def _sync_issues_for_teams(
         self,
         team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
-    ) -> None:
+    ) -> set[str]:
         """
         Sync issues for all teams with batch processing and incremental sync.
         Uses simple team-level sync points.
@@ -867,13 +886,17 @@ class LinearConnector(BaseConnector):
         - After EACH batch: Update last_sync_time to max issue updated_at (fault tolerance)
         - After all batches: Update last_sync_time to current time
 
-
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
+
+        Returns:
+            Team external ids that ran a full issue sync (no prior checkpoint).
         """
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync issues for")
-            return
+            return set()
+
+        full_sync_team_ids: set[str] = set()
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -892,6 +915,8 @@ class LinearConnector(BaseConnector):
 
                 if last_sync_time:
                     self.logger.info(f"🔄 Incremental sync for team {team_key} from {last_sync_time}")
+                else:
+                    full_sync_team_ids.add(team_id)
 
                 # Fetch and process issues for this team
                 total_records_processed = 0
@@ -944,6 +969,281 @@ class LinearConnector(BaseConnector):
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
                 continue
+
+        return full_sync_team_ids
+
+    async def _sweep_placeholder_records(
+        self,
+        synced_team_ids: set[str],
+        full_sync_team_ids: set[str] | None = None,
+    ) -> int:
+        """Backfill metadata for placeholder parent stubs left unreconciled.
+
+        Date/incremental filters don't respect hierarchy: an in-scope child can sync
+        while its parent (and higher ancestors) stay out of the window, leaving stubs
+        keyed by the ancestors' issue ids with no name, status or weburl.
+
+        Returns:
+            Total number of placeholder stubs refreshed from source (all BFS depths).
+        """
+        if not synced_team_ids:
+            return 0
+
+        full_sync_team_ids = full_sync_team_ids or set()
+        visited: set[str] = set()
+        frontier: list[Record] = []
+        for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id):
+            if (
+                stub.record_type != RecordType.TICKET
+                or stub.external_record_group_id not in synced_team_ids
+                or stub.external_record_id in visited
+            ):
+                continue
+            # Skip already-backfilled stubs on incremental sync; re-submit on full sync
+            # so BELONGS_TO / parent edges wiped by full-sync edge deletion are restored.
+            needs_backfill = stub.external_revision_id is None
+            needs_edge_restore = stub.external_record_group_id in full_sync_team_ids
+            if not (needs_backfill or needs_edge_restore):
+                continue
+            visited.add(stub.external_record_id)
+            frontier.append(stub)
+
+        if not frontier:
+            return 0
+
+        total_backfilled = 0
+        depth = 0
+        while frontier:
+            depth += 1
+            self.logger.info("Placeholder sweep: backfilling %s ancestor stub(s)", len(frontier))
+            issues = await self._fetch_ancestor_level(frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            parent_refs: list[str] = []
+            for stub, issue in zip(frontier, issues):
+                record: Record | None = None
+                if issue:
+                    record = self._build_ancestor_stub(issue, stub)
+                    if record is not None:
+                        total_backfilled += 1
+                if record is None:
+                    record = stub
+                record.is_placeholder = True
+                backfills.append((record, []))
+                if record.parent_external_record_id:
+                    parent_refs.append(record.parent_external_record_id)
+
+            await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for parent_ext_id in parent_refs:
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=parent_ext_id,
+                )
+                if parent_record is None or not parent_record.is_placeholder:
+                    continue
+                next_frontier.append(parent_record)
+
+            if depth >= PLACEHOLDER_SWEEP_MAX_DEPTH and next_frontier:
+                self.logger.error(
+                    "Placeholder sweep hit the depth cap (%s) with %s stub(s) unresolved; aborting",
+                    PLACEHOLDER_SWEEP_MAX_DEPTH,
+                    len(next_frontier),
+                )
+                break
+            frontier = next_frontier
+
+        self.logger.info(
+            "Placeholder sweep: backfilled %s ancestor stub(s) total",
+            total_backfilled,
+        )
+        return total_backfilled
+
+    async def _fetch_ancestor_level(
+        self, frontier: list[Record]
+    ) -> list[dict[str, Any] | None]:
+        """Fetch one frontier level, aligned with ``frontier`` (``None`` if missing)."""
+        issue_by_id: dict[str, dict[str, Any]] = {}
+
+        for i in range(0, len(frontier), PLACEHOLDER_SWEEP_BATCH):
+            chunk = frontier[i:i + PLACEHOLDER_SWEEP_BATCH]
+            issue_ids = list(dict.fromkeys(
+                str(stub.external_record_id)
+                for stub in chunk
+                if stub.external_record_id
+            ))
+            if not issue_ids:
+                continue
+            fetched = await self._search_ancestors_by_id_filter(issue_ids)
+            if fetched is None:
+                fetched = await self._fetch_ancestors_by_get(issue_ids)
+            else:
+                missing = [iid for iid in issue_ids if iid not in fetched]
+                if missing:
+                    fetched.update(await self._fetch_ancestors_by_get(missing))
+            issue_by_id.update(fetched)
+
+        return [issue_by_id.get(str(stub.external_record_id)) for stub in frontier]
+
+    async def _search_ancestors_by_id_filter(
+        self,
+        issue_ids: list[str],
+    ) -> dict[str, dict[str, Any]] | None:
+        """Batch-fetch issues via ``issues(filter: {id: {in: ...}})``.
+
+        Returns ``None`` when the caller should fall back to per-id ``issue``.
+        """
+        if not issue_ids:
+            return {}
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.issues(
+                first=len(issue_ids),
+                filter={"id": {"in": issue_ids}},
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Placeholder sweep: issues id-in failed for %s id(s): %s — using issue()",
+                len(issue_ids),
+                e,
+            )
+            return None
+
+        if not response.success:
+            self.logger.warning(
+                "Placeholder sweep: issues id-in failed for %s id(s): %s — using issue()",
+                len(issue_ids),
+                response.message,
+            )
+            return None
+
+        payload = response.data or {}
+        issues_conn = payload.get("issues") or {}
+        nodes = issues_conn.get("nodes") or []
+        return {
+            str(issue["id"]): issue
+            for issue in nodes
+            if isinstance(issue, dict) and issue.get("id")
+        }
+
+    async def _fetch_ancestors_by_get(
+        self,
+        issue_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Concurrent ``issue(id)``; skips missing/inaccessible ids."""
+        if not issue_ids:
+            return {}
+
+        semaphore = asyncio.Semaphore(PLACEHOLDER_SWEEP_CONCURRENCY)
+        results: dict[str, dict[str, Any]] = {}
+
+        async def fetch_one(issue_id: str) -> None:
+            async with semaphore:
+                try:
+                    datasource = await self._get_fresh_datasource()
+                    response = await datasource.issue(id=issue_id)
+                    if not response.success:
+                        return
+                    issue = (response.data or {}).get("issue")
+                    if isinstance(issue, dict) and issue.get("id"):
+                        results[str(issue["id"])] = issue
+                except Exception as e:
+                    self.logger.debug(
+                        "Placeholder sweep: issue(%s) failed: %s", issue_id, e
+                    )
+
+        await asyncio.gather(*(fetch_one(i) for i in issue_ids))
+        return results
+
+    def _build_ancestor_stub(
+        self, issue_data: dict[str, Any], stub: Record
+    ) -> Record | None:
+        """Refresh a stub's metadata from source, keeping it a stub.
+
+        Builds a minimal TicketRecord (no relations) so backfill does not create
+        related-issue placeholders outside the parent chain.
+        """
+        team = issue_data.get("team") or {}
+        # Prefer stub's group so cross-team parents stay anchored to the child's team.
+        team_id = stub.external_record_group_id or team.get("id") or ""
+        if not team_id:
+            self.logger.warning(
+                "Placeholder sweep: skipping stub %s — missing team id",
+                stub.external_record_id,
+            )
+            return None
+
+        issue_id = issue_data.get("id") or stub.external_record_id
+        identifier = issue_data.get("identifier") or ""
+        title = issue_data.get("title") or ""
+        if identifier and title:
+            record_name = f"[{identifier}] {title}"
+        elif identifier:
+            record_name = identifier
+        elif title:
+            record_name = title
+        else:
+            record_name = issue_id
+
+        priority_num = issue_data.get("priority")
+        if priority_num is None:
+            priority_str = None
+        elif priority_num == 0:
+            priority_str = "none"
+        else:
+            priority_str = {1: "Urgent", 2: "High", 3: "Medium", 4: "Low"}.get(priority_num)
+        priority = self.value_mapper.map_priority(priority_str)
+
+        state = issue_data.get("state") or {}
+        status = self.value_mapper.map_status(state.get("name"))
+        if status and not isinstance(status, Status):
+            status = self.value_mapper.map_status(state.get("type"))
+
+        parent = issue_data.get("parent") or {}
+        parent_external_id = parent.get("id") if isinstance(parent, dict) else None
+
+        assignee = issue_data.get("assignee") or {}
+        creator = issue_data.get("creator") or {}
+        created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
+        updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
+
+        type_value = ItemType.SUB_ISSUE if parent_external_id else ItemType.ISSUE
+
+        return TicketRecord(
+            id=stub.id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=record_name,
+            record_type=RecordType.TICKET,
+            external_record_id=stub.external_record_id,
+            external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{updated_at}",
+            external_record_group_id=team_id,
+            record_group_type=RecordGroupType.PROJECT,
+            parent_external_record_id=parent_external_id,
+            parent_record_type=RecordType.TICKET if parent_external_id else None,
+            version=stub.version,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.UNKNOWN.value,
+            weburl=issue_data.get("url"),
+            source_created_at=created_at,
+            source_updated_at=updated_at,
+            status=status,
+            priority=priority,
+            type=type_value,
+            assignee=assignee.get("displayName") or assignee.get("name"),
+            assignee_email=assignee.get("email"),
+            creator_email=creator.get("email"),
+            creator_name=creator.get("displayName") or creator.get("name"),
+            inherit_permissions=True,
+            preview_renderable=False,
+            is_placeholder=True,
+        )
 
     async def _fetch_issues_for_team_batch(
         self,
@@ -4499,6 +4799,12 @@ class LinearConnector(BaseConnector):
         try:
             if not self.data_source:
                 await self.init()
+
+            if getattr(record, "is_placeholder", False) is True:
+                raise ValueError(
+                    f"Cannot stream placeholder record {record.external_record_id}: "
+                    "it is a stub for an out-of-scope ancestor and has no content"
+                )
 
             if record.record_type == RecordType.PROJECT:
                 # Project: Fetch and stream BlocksContainer (create on-demand, serialize to JSON)

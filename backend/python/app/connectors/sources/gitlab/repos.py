@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import mimetypes
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 from app.config.constants.arangodb import (
+    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     MimeTypes,
     OriginTypes,
@@ -32,7 +34,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.constants import (
     IconPaths,
 )
-from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
+from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
 
 from .constants import (
     GITLAB_COMPARE_DIFF_LIMIT,
@@ -503,9 +505,6 @@ class ReposSync:
                         name_map[str(entry_path)] = str(entry_name)
 
         external_group_id = f"{project_id}-code-repository"
-        code_files_enabled = self._code_files_indexing_enabled()
-        from app.utils.time_conversion import get_epoch_timestamp_in_ms
-        current_timestamp = get_epoch_timestamp_in_ms()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -519,26 +518,21 @@ class ReposSync:
             if _should_skip_dotfile_repo_path(new_path):
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
                 continue
-            file_extension = file_name.split(".")[-1]
-            file_mime = getattr(MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT).value
-            preview_renderable = file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
             web_path = _code_blob_web_path(project_path, new_path)
             weburl = f"{c._gitlab_base_url}{web_path}"
             parent_dir = new_path.rpartition("/")[0] if "/" in new_path else None
             parent_external_record_id = _code_tree_web_path(project_path, parent_dir) if parent_dir else None
-            new_record = CodeFileRecord(
-                id=str(uuid.uuid4()), org_id=c.data_entities_processor.org_id, record_name=file_name,
-                record_type=RecordType.CODE_FILE.value, connector_name=c.connector_name, connector_id=c.connector_id,
-                external_record_id=web_path, version=0, origin=OriginTypes.CONNECTOR.value,
-                record_group_type=RecordGroupType.PROJECT.value, external_record_group_id=external_group_id,
-                mime_type=file_mime, external_revision_id=str(blob_sha) if blob_sha else "",
-                preview_renderable=preview_renderable, file_path=new_path, file_hash=blob_sha,
-                inherit_permissions=True, parent_external_record_id=parent_external_record_id,
-                parent_record_type=(RecordType.FILE if parent_external_record_id else None),
-                weburl=weburl, source_created_at=current_timestamp, source_updated_at=current_timestamp,
+            # Leave source timestamps unset — on_records_moved keeps the stored
+            # Git timestamps rather than overwriting with sync time.
+            new_record = self._build_blob_record(
+                file_name=file_name,
+                file_path=new_path,
+                external_record_id=web_path,
+                weburl=weburl,
+                blob_sha=blob_sha,
+                external_group_id=external_group_id,
+                parent_external_record_id=parent_external_record_id,
             )
-            if not code_files_enabled:
-                new_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
 
@@ -709,15 +703,72 @@ class ReposSync:
     # Code file record building
     # ------------------------------------------------------------------
 
+    def _build_blob_record(
+        self,
+        *,
+        file_name: str,
+        file_path: str,
+        external_record_id: str,
+        weburl: str | None,
+        blob_sha: str | None,
+        external_group_id: str,
+        parent_external_record_id: str | None,
+        source_created_at: int | None = None,
+        source_updated_at: int | None = None,
+    ) -> CodeFileRecord:
+        """Build the record for one repository blob.
+
+        Every blob is a CODE_FILE regardless of extension. What decides whether
+        it indexes, and through which parser, is the mime type and the filename
+        extension — not the record type (see the gate in
+        ``services/messaging/kafka/handlers/record.py`` and the dispatch in
+        ``events.py``). Typing non-source blobs as FILE instead would change the
+        record's type collection on a rename across the source/non-source line,
+        which leaves a second isOfType edge behind and no way to tell which one
+        a read will pick.
+
+        ``version`` is always 0 here; ``_process_record`` carries the stored
+        version forward, where the existing record is already loaded.
+        """
+        c = self.c
+        extension = _blob_extension(file_name)
+        record = CodeFileRecord(
+            id=str(uuid.uuid4()),
+            org_id=c.data_entities_processor.org_id,
+            record_name=file_name,
+            record_type=RecordType.CODE_FILE.value,
+            connector_name=c.connector_name,
+            connector_id=c.connector_id,
+            external_record_id=external_record_id,
+            version=0,
+            origin=OriginTypes.CONNECTOR.value,
+            record_group_type=RecordGroupType.PROJECT.value,
+            external_record_group_id=external_group_id,
+            mime_type=_blob_mime_type(file_name, extension),
+            extension=extension,
+            external_revision_id=str(blob_sha) if blob_sha else "",
+            preview_renderable=extension in PREVIEW_RENDERABLE_EXTENSIONS if extension else False,
+            file_path=file_path,
+            file_hash=blob_sha,
+            inherit_permissions=True,
+            parent_external_record_id=parent_external_record_id,
+            parent_record_type=(RecordType.FILE if parent_external_record_id else None),
+            weburl=weburl,
+            source_created_at=source_created_at,
+            source_updated_at=source_updated_at,
+        )
+
+        if not self._code_files_indexing_enabled():
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        return record
+
     async def build_code_file_records(
         self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
     ) -> None:
-        """Build and persist code file records from a blob list."""
-        c = self.c
+        """Build and persist repository blob records from a blob list."""
         list_records_new: list[RecordUpdate] = []
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
-        code_files_enabled = self._code_files_indexing_enabled()
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -732,29 +783,22 @@ class ReposSync:
             if file_name.startswith("."):
                 files_skipped += 1
                 continue
-            file_extension = file_name.split(".")[-1]
-            file_mime = getattr(MimeTypes, file_extension.upper(), MimeTypes.PLAIN_TEXT).value
-            preview_renderable = file_extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS
             if "/" in file_path:
                 parent_blob_path = external_record_id.rpartition("/")[0]
                 parent_external_record_id = parent_blob_path.replace("/-/blob/", "/-/tree/", 1)
             else:
                 parent_external_record_id = None
-            code_file_record = CodeFileRecord(
-                id=str(uuid.uuid4()), org_id=c.data_entities_processor.org_id, record_name=str(file_name),
-                record_type=RecordType.CODE_FILE.value, connector_name=c.connector_name, connector_id=c.connector_id,
-                external_record_id=external_record_id, version=0, origin=OriginTypes.CONNECTOR.value,
-                record_group_type=RecordGroupType.PROJECT.value, external_record_group_id=external_group_id,
-                mime_type=file_mime, external_revision_id=str(file_hash), preview_renderable=preview_renderable,
-                file_path=file_path, file_hash=file_hash, inherit_permissions=True,
+            blob_record = self._build_blob_record(
+                file_name=str(file_name),
+                file_path=file_path,
+                external_record_id=external_record_id,
+                weburl=weburl,
+                blob_sha=file_hash,
+                external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
-                parent_record_type=(RecordType.FILE if parent_external_record_id else None),
-                weburl=weburl, source_created_at=None, source_updated_at=None,
             )
-            if not code_files_enabled:
-                code_file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
             list_records_new.append(RecordUpdate(
-                record=code_file_record, is_new=True, is_updated=False, is_deleted=False,
+                record=blob_record, is_new=True, is_updated=False, is_deleted=False,
                 metadata_changed=False, content_changed=False, permissions_changed=False,
                 external_record_id=external_record_id, new_permissions=[], old_permissions=[],
             ))
@@ -992,6 +1036,47 @@ def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
     """True when the basename of a repo path starts with '.'."""
     basename = repo_path.rsplit("/", 1)[-1]
     return basename.startswith(".")
+
+
+def _blob_extension(file_name: str) -> str | None:
+    """Lower-cased filename extension, or None when the blob has none.
+
+    Returns None rather than the whole name for extension-less blobs
+    (``LICENSE``, ``Dockerfile``, ``Makefile``); ``name.split(".")[-1]`` would
+    otherwise hand back "Dockerfile" as the extension.
+    """
+    base = file_name.rsplit("/", 1)[-1]
+    if "." not in base:
+        return None
+    return base.rsplit(".", 1)[-1].lower()
+
+
+def _blob_mime_type(file_name: str, extension: str | None) -> str:
+    """Best-effort MIME type for a repository blob.
+
+    Unrecognised extensions fall back to ``application/octet-stream`` rather than
+    ``text/plain`` — a text default would let the indexer feed binaries (``.mp4``,
+    ``.zip``) through the text parser. Known code extensions with no MIME of their
+    own (``.css``, ``.lua``) still get ``text/plain``, which is what they are.
+    """
+    if extension is None:
+        # Extension-less repo blobs are conventionally text (LICENSE, Dockerfile).
+        return MimeTypes.PLAIN_TEXT.value
+
+    named = MimeTypes.__members__.get(extension.upper())
+    if named is not None:
+        return named.value
+
+    guessed, _ = mimetypes.guess_type(file_name)
+    if guessed:
+        try:
+            return MimeTypes(guessed).value
+        except ValueError:
+            pass
+
+    if extension in SUPPORTED_CODE_FILE_EXTENSIONS:
+        return MimeTypes.PLAIN_TEXT.value
+    return MimeTypes.BIN.value
 
 
 def _code_blob_web_path(project_path: str, repo_path: str, ref: str = "HEAD") -> str:

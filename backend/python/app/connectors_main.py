@@ -17,8 +17,10 @@ from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
+from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
+from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
@@ -448,6 +450,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
+    # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
+    logger.info("🔄 Initializing in-memory MCP server registry...")
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
+
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
     oauth_registry = get_oauth_config_registry()
@@ -790,6 +799,7 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
+app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(router)

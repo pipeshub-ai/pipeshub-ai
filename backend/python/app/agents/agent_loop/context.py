@@ -57,6 +57,14 @@ class AgentContext(BaseModel):
     toolset_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     web_search_config: dict[str, Any] | None = None
 
+    # MCP servers — parallel to the toolset fields above. `mcp_servers` is the
+    # attached/authenticated instance metadata (from `agent.py`'s chat handler);
+    # `mcp_server_configs` is SENSITIVE (contains resolved credentials, keyed by
+    # instanceId). Consumed by `MCPAccessResolver`/`MCPToolProvider`
+    # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
     # Knowledge config
     has_knowledge: bool = False
     apps: list[str] | None = None
@@ -123,6 +131,14 @@ class AgentContext(BaseModel):
     # without a hard dependency on `AgentContext`.
     toolset_load_failures: dict[str, str] = Field(default_factory=dict)
 
+    # Populated by `MCPToolProvider.load_into()` (`mcp_tool_loader.py`): one
+    # entry per attached MCP instance whose runtime discovery/registration
+    # failed (timeout, connection error, ...) — soft-skip, not a hard-block
+    # (unlike the chat-route's attach-time authentication hard-block). Mirrored
+    # onto `tool_state["mcp_tool_load_failures"]` the same way
+    # `toolset_load_failures` is, for the same reason (see comment above).
+    mcp_tool_load_failures: list[dict[str, Any]] = Field(default_factory=list)
+
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
     # `PipesHubToolLoader`'s `group_name`, not the registry's raw toolset
     # key) that loaded with `essential=True` metadata (see `@Toolset`/
@@ -175,14 +191,6 @@ class AgentContext(BaseModel):
     # contract `test_factory_wiring.py` asserts throughout.
     sandbox_manager: Any = None
 
-    # Set once per request (after intent/goal resolution — see
-    # `PipesHubAgentFactory.create`) when the query/goal look like they need
-    # a generated, downloadable file (PDF, spreadsheet, chart, ...). Read by
-    # `hooks/completion_gate.py`'s POST_MODEL middleware, which — for any
-    # agent in this request's spawn tree that actually has a code-execution
-    # tool — refuses to let a text-only, no-tool-call response end the run
-    # until `artifacts_produced_this_run` is true.
-    file_generation_requested: bool = False
     # Flipped to True by `sandbox_bridge.py::coding_sandbox_artifact_bridge`
     # the moment ANY `run_code` call (top-level or from a spawned
     # `coding_agent` child — both dispatch through this same shared
@@ -203,9 +211,8 @@ class AgentContext(BaseModel):
     # the delivery pipeline from attaching the same download card N times
     # (see `sandbox_bridge._register_run_code_artifacts`).
     delivered_artifact_versions: set[str] = Field(default_factory=set)
-    # Bounds `completion_gate`'s nudges so a run that's genuinely stuck
-    # (e.g. the model insists it cannot produce the file) still terminates
-    # rather than looping until `max_turns`.
+    # Bounds `completion_gate`'s empty-response nudges so a genuinely
+    # stuck run terminates rather than looping until `max_turns`.
     completion_gate_nudges: int = 0
 
     # The top-level `AgentSpec` for this request (same object `factory.py`
@@ -336,6 +343,8 @@ class AgentContext(BaseModel):
             agent_toolsets=state.get("agent_toolsets") or [],
             tool_to_toolset_map=state.get("tool_to_toolset_map") or {},
             toolset_configs=state.get("toolset_configs") or {},
+            mcp_servers=state.get("mcp_servers") or [],
+            mcp_server_configs=state.get("mcp_server_configs") or {},
             web_search_config=state.get("web_search_config"),
             has_knowledge=bool(state.get("has_knowledge", False)),
             apps=state.get("apps"),
@@ -400,6 +409,8 @@ class AgentContext(BaseModel):
             "agent_toolsets": self.agent_toolsets,
             "tool_to_toolset_map": self.tool_to_toolset_map,
             "toolset_configs": self.toolset_configs,
+            "mcp_servers": self.mcp_servers,
+            "mcp_server_configs": self.mcp_server_configs,
             "web_search_config": self.web_search_config,
             "has_knowledge": self.has_knowledge,
             "apps": self.apps,
@@ -442,6 +453,7 @@ class AgentContext(BaseModel):
             # Convenience read — retrieval.py mirrors context.needs_whole_document
             # here so the tool does not need a direct context reference.
             "needs_whole_document": self.needs_whole_document,
+            "mcp_tool_load_failures": self.mcp_tool_load_failures,
         }
 
 

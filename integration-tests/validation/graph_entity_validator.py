@@ -66,11 +66,12 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
     # Things integration tests often cannot know ahead of time or that change after sync.
-    # parent_record_type is used only at write-time for edge creation, not persisted on the record.
-    "ticket_record": frozenset[str]({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type"}),
-    "file_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type"}),
-    "link_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type"}),
-    "webpage_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type"}),
+    # parent_record_type and record_group_type are write-time hints (edge creation, record-group
+    # resolution) that are never persisted on the record node, so they always read back as None.
+    "ticket_record": frozenset[str]({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
+    "file_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
+    "link_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
+    "webpage_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),

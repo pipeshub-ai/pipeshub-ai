@@ -145,20 +145,20 @@ class TestValidatePdfBinary:
 
 
 # ===========================================================================
-# process_pdf
+# parse_pdf_batched
 # ===========================================================================
 
 
 class TestProcessPdf:
     @pytest.mark.asyncio
     async def test_invalid_type_returns_none(self, client):
-        result = await client.process_pdf("doc.pdf", "not bytes")  # type: ignore
+        result = await client.parse_pdf_batched("doc.pdf", "not bytes")  # type: ignore
         assert result is None
 
     @pytest.mark.asyncio
     async def test_too_large_returns_none(self, client):
         huge = b"x" * (101 * 1024 * 1024)
-        result = await client.process_pdf("doc.pdf", huge)
+        result = await client.parse_pdf_batched("doc.pdf", huge)
         assert result is None
 
     @pytest.mark.asyncio

@@ -103,6 +103,38 @@ tags:
       - Regenerate secrets if compromised
       - Suspend/activate apps to control access
       - Revoke all tokens for emergency access removal
+  - name: Personal Access Tokens
+    description: |
+      Self-service, long-lived, scoped, revocable credentials that act as their
+      creator — unlike an OAuth app's `client_credentials` flow, which acts as
+      the app.
+
+      **Who can create one**
+      - **Any authenticated org member** — unlike OAuth apps, this is
+        deliberately not admin-gated.
+
+      **How it's issued**
+      - Minted through the same OAuth access-token machinery as `/oauth2/token`,
+        against one lazily-created, per-org synthetic OAuth app
+        (`clientId: pat-system:<orgId>`) that every PAT in that org shares.
+        That app is hidden from `/oauth-clients/*` — it never appears in your
+        own OAuth app list and can't be managed through those routes.
+      - The raw token is prefixed `phpat_` ahead of the underlying JWT (see the
+        `bearerAuth` security scheme) so it's recognizable to secret scanners.
+        It's shown exactly once, at creation.
+
+      **Expiry and scopes**
+      - `expiryDays`: `30` (default), `90`, `365`, or `never`.
+      - Scopes default to the org's full configured `MCP_SCOPES` set if none
+        are requested; `GET /personal-access-tokens/scopes` lists what's
+        available.
+
+      **Admin visibility**
+      - Regular members only ever see and revoke their own tokens.
+      - Org admins can list and revoke *any* member's token via
+        `/personal-access-tokens/admin*` — for incident response (a departed
+        employee, a compromised laptop) — without needing the OAuth app CRUD
+        access described above.
   - name: OpenID Connect
     description: |
       OpenID Connect 1.0 endpoints for identity federation and discovery.
@@ -286,7 +318,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT Bearer token for authenticated requests
+      description: |
+        JWT Bearer token for authenticated requests.
+
+        A personal access token (see the **Personal Access Tokens** tag) is a
+        `phpat_`-prefixed variant of this same JWT — e.g. `phpat_eyJhbGci...`.
+        The prefix is display-only, added for secret-scanner detectability; the
+        gateway strips it before verifying the token, so send it exactly as
+        issued, prefix included.
     scopedToken:
       type: http
       scheme: bearer
@@ -2031,6 +2070,230 @@ components:
           items:
             $ref: '#/components/schemas/OAuthTokenListItem'
           description: Active access and refresh tokens for the app
+
+    # ==================== PERSONAL ACCESS TOKEN SCHEMAS ====================
+    CreatePatRequest:
+      type: object
+      description: |
+        Request to create a personal access token (`createPatTokenSchema` in `pat.validators.ts`).
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Label to help you recognize the token later
+          minLength: 1
+          maxLength: 100
+          example: "Claude Desktop"
+        scopes:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: |
+            Scopes to grant, validated against the org's configured `MCP_SCOPES`
+            (not the full role-aware OAuth-app scope set). Defaults to every
+            scope in `MCP_SCOPES` if omitted.
+          example: ["kb:read", "semantic:write"]
+        expiryDays:
+          oneOf:
+            - type: integer
+              enum: [30, 90, 365]
+            - type: string
+              enum: ["never"]
+          description: |
+            Token lifetime. Defaults to `30` if omitted — a token minted
+            without an explicit choice shouldn't default to the longest
+            lifetime. `"never"` is stored as a ~100-year expiry (the
+            underlying schema field is required and TTL-indexed, so there's
+            no literal null option).
+          default: 30
+          example: 30
+
+    PatListItem:
+      type: object
+      description: |
+        A personal access token as seen by its own creator (one element of
+        `GET /personal-access-tokens`'s `tokens` array, or the `token` object
+        returned by `POST /personal-access-tokens` before `accessToken` is added).
+      required:
+        - id
+        - name
+        - scopes
+        - createdAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          description: Token ID
+        name:
+          type: string
+          description: Token name
+        scopes:
+          type: array
+          items:
+            type: string
+          description: Granted scopes
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            Expiry timestamp. A `"never"`-expiry token is stored as a
+            ~100-year-out date, not a literal null — treat anything decades
+            out as "never" rather than a real deadline.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: |
+            Last time this token successfully authenticated a request.
+            Throttled server-side to update at most once per 5 minutes per
+            token; absent if the token has never been used.
+
+    PatWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - accessToken
+          properties:
+            accessToken:
+              type: string
+              description: |
+                The raw token, `phpat_`-prefixed. Returned **only** in this
+                creation response — only its hash is stored server-side, so
+                it cannot be retrieved again later.
+              example: "phpat_eyJhbGciOiJIUzI1NiIs..."
+
+    CreatePatResponse:
+      type: object
+      description: Response body for `POST /personal-access-tokens` (`pat.controller.ts` `createToken`).
+      required:
+        - message
+        - token
+      properties:
+        message:
+          type: string
+          example: Personal access token created successfully
+        token:
+          $ref: '#/components/schemas/PatWithSecret'
+
+    ListPatResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens` (`listTokens`) — the
+        caller's own active tokens, capped at 100 most-recent server-side.
+        Unlike the admin list, this is a flat array with no pagination
+        envelope and no owner fields (it's implicitly scoped to the caller).
+      required:
+        - tokens
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatListItem'
+
+    RevokePatRequest:
+      type: object
+      description: |
+        Optional request body for `DELETE /personal-access-tokens/{tokenId}`
+        and `DELETE /personal-access-tokens/admin/{tokenId}`. The body itself
+        is optional; `reason`, if present, is stored on the revocation for
+        auditing.
+      properties:
+        reason:
+          type: string
+          example: "rotated"
+
+    RevokePatResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          example: Personal access token revoked successfully
+
+    PatScopesListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/scopes` (`listScopes`).
+        Unlike `GET /oauth-clients/scopes`, this is a **flat array**, not
+        grouped by category, and reflects the org's configured `MCP_SCOPES`
+        rather than the full role-aware OAuth-app scope catalog.
+      required:
+        - scopes
+      properties:
+        scopes:
+          type: array
+          items:
+            $ref: '#/components/schemas/OAuthScopeInfo'
+
+    AdminPatListItem:
+      description: |
+        A personal access token as seen by an org admin — extends
+        `PatListItem` with who it belongs to, since an admin is looking
+        across every member's tokens rather than just their own.
+      allOf:
+        - $ref: '#/components/schemas/PatListItem'
+        - type: object
+          required:
+            - userId
+            - ownerDeleted
+          properties:
+            userId:
+              type: string
+              description: ID of the user who created this token
+            ownerEmail:
+              type: string
+              format: email
+              description: |
+                Owner's email. Populated even when `ownerDeleted` is true
+                (last-known value), for auditing.
+            ownerFullName:
+              type: string
+              description: Owner's full name (same last-known-value behavior as `ownerEmail`)
+            ownerDeleted:
+              type: boolean
+              description: |
+                True if the owning user has been removed from the org (or no
+                longer resolves at all). The token still appears — a deleted
+                user's tokens stop authenticating automatically, but stay
+                visible here so an admin can audit/clean them up.
+
+    AdminPatListResponse:
+      type: object
+      description: |
+        Response body for `GET /personal-access-tokens/admin` (`adminListTokens`).
+        Paginated — unlike the self-service `ListPatResponse` — since an org
+        can have far more active tokens than a fixed-window cap's worth.
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminPatListItem'
+        pagination:
+          type: object
+          required:
+            - page
+            - limit
+            - total
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+              description: Items per page (max 100)
+            total:
+              type: integer
+            totalPages:
+              type: integer
 
     # ==================== USER MANAGEMENT SCHEMAS ====================
     User:
@@ -4090,6 +4353,302 @@ components:
           description: >-
             The record's full parsed content as a single plain-text string.
 
+    KnowledgeGraphNodeRefSchema:
+      type: object
+      additionalProperties: false
+      description: Minimal identity reference for a node in the knowledge graph.
+      required:
+        - id
+        - name
+        - node_type
+        - sub_type
+        - is_record
+      properties:
+        id:
+          type: string
+          description: >-
+            Node identifier. Pass it back as `nodeId` to open this node. When
+            `is_record` is true it is also the Record ID accepted by
+            GET /connectors/record/{recordId}/content.
+        name:
+          type: string
+        node_type:
+          type: string
+          description: One of `app`, `recordGroup`, `folder`, `record`.
+        sub_type:
+          type: string
+          nullable: true
+          description: e.g. `TICKET`, `CONFLUENCE_PAGE`, `PROJECT`, `COLLECTION`.
+        is_record:
+          type: boolean
+          description: >-
+            True for record and folder nodes — the nodes whose content can be
+            read via GET /connectors/record/{recordId}/content.
+
+    KnowledgeGraphNodeRowSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        One row in a navigate listing. Carries the identity fields of
+        KnowledgeGraphNodeRefSchema (inlined rather than composed, so this
+        object can stay closed) plus display detail.
+      required:
+        - id
+        - name
+        - node_type
+        - sub_type
+        - is_record
+        - has_children
+        - detail
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        node_type:
+          type: string
+          description: >-
+            One of `recordGroup`, `folder`, `record`. Listings never contain
+            `app` nodes.
+        sub_type:
+          type: string
+          nullable: true
+        is_record:
+          type: boolean
+        has_children:
+          type: boolean
+          description: Whether this node can itself be opened with `nodeId`.
+        detail:
+          type: string
+          nullable: true
+          description: e.g. size, indexing status, or relationship type.
+        web_url:
+          type: string
+          nullable: true
+          description: >-
+            Link to the record in its source system. Records that carry a
+            relative URL (uploaded/KB records) are resolved against the
+            configured frontend public URL (see
+            POST /configurationManager/frontendPublicUrl). The value is null
+            when that host is not configured.
+        indexing_status:
+          type: string
+          nullable: true
+        source_created_at:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Creation time in the source system, epoch milliseconds. Null when
+            the underlying node did not carry one.
+        source_modified_at:
+          type: integer
+          format: int64
+          nullable: true
+        level:
+          type: integer
+          description: >-
+            1-based nesting depth from the navigated parent. Always 1 for a
+            `depth=1` listing; 2 or 3 for deeper rows when `depth` > 1.
+        context_summary:
+          type: string
+          nullable: true
+
+    KnowledgeGraphPaginationSchema:
+      type: object
+      additionalProperties: false
+      description: Pagination envelope for a navigate listing.
+      required:
+        - page
+        - limit
+        - total
+        - has_next
+        - has_prev
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+          description: Total children of the current node, ignoring pagination.
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+
+    NavigateKnowledgeGraphResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/navigate.
+
+        Field names are snake_case, matching the knowledge graph's internal
+        view models. `text` carries the same flat-text rendering PipesHub's
+        own agent sees for this node; the remaining fields carry the same
+        information in structured form.
+      required:
+        - current
+        - breadcrumbs
+        - rows
+        - related
+        - pagination
+        - web_url
+        - indexing_status
+        - connector
+        - text
+      properties:
+        current:
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeGraphNodeRefSchema'
+          nullable: true
+          description: The node that was opened. Null at the root listing.
+        breadcrumbs:
+          type: array
+          description: Root to parent, not including `current`.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRefSchema'
+        rows:
+          type: array
+          description: >-
+            The current node's children for this page. With `depth` > 1 this is
+            a flat list of all descendants up to that depth, each row carrying
+            its own `level`.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRowSchema'
+        related:
+          type: array
+          description: >-
+            Cross-referenced records (non-containment edges), e.g. the
+            Confluence page linked from a Jira ticket. Page 1 only.
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphNodeRowSchema'
+        pagination:
+          allOf:
+            - $ref: '#/components/schemas/KnowledgeGraphPaginationSchema'
+          nullable: true
+        web_url:
+          type: string
+          nullable: true
+        indexing_status:
+          type: string
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        context_block:
+          type: string
+          nullable: true
+          description: >-
+            Type-specific metadata for the current node when it is a record —
+            for a ticket, status, assignee, priority and dates.
+        text:
+          type: string
+          description: |
+            Flat-text rendering of this view: breadcrumbs, the current node's
+            metadata, the children listing with an id per row, `Related:`, and
+            a closing `Next:` line naming a follow-up call.
+
+            Shape depends on the page: pages after the first omit the header,
+            breadcrumbs and related rows to stay compact, while the structured
+            fields above remain complete. Capped at 25,000 bytes, with a
+            truncation marker appended when exceeded.
+
+    KnowledgeGraphLookupMatchSchema:
+      type: object
+      additionalProperties: false
+      description: A single record resolved from an identifier.
+      required:
+        - id
+        - name
+        - record_type
+        - connector_name
+        - web_url
+        - indexing_status
+        - identifier_used
+      properties:
+        id:
+          type: string
+          description: >-
+            The Record ID. Pass it to GET /connectors/record/{recordId}/content
+            to read the record, or as `nodeId` to GET /connectors/navigate to
+            list what is under it.
+        name:
+          type: string
+        record_type:
+          type: string
+          nullable: true
+        connector_name:
+          type: string
+          nullable: true
+        web_url:
+          type: string
+          nullable: true
+        indexing_status:
+          type: string
+          nullable: true
+        identifier_used:
+          type: string
+          description: Which of the supplied identifiers produced this match.
+        external_id:
+          type: string
+          nullable: true
+          description: e.g. `PA-1787`, a Confluence page id, a Drive file id.
+        context_block:
+          type: string
+          nullable: true
+          description: >-
+            Type-specific metadata for the record — for a ticket, status,
+            assignee, priority and dates.
+
+    LookupRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/record/lookup.
+
+        Field names are snake_case, matching the knowledge graph's internal
+        view models. A miss is a 200 with an empty `matches` and the input
+        echoed in `not_found_identifiers` — see the endpoint description.
+      required:
+        - matches
+        - ambiguous
+        - not_found_identifiers
+        - text
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeGraphLookupMatchSchema'
+        ambiguous:
+          type: boolean
+          description: >-
+            True when one identifier resolved to more than one accessible
+            record. Present the choice rather than taking the first, or retry
+            with `connectorName`.
+        not_found_identifiers:
+          type: array
+          description: Identifiers that resolved to nothing the caller can access.
+          items:
+            type: string
+        searched_connectors:
+          type: object
+          description: >-
+            Per-identifier list of the connector types that were searched, so a
+            miss can be retried against a different `connectorName`. Keys are
+            the identifiers exactly as supplied.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        text:
+          type: string
+          description: >-
+            Flat-text rendering of the matches — each match's metadata block
+            followed by a `Next:` line naming a follow-up call — and a line per
+            miss naming the connectors that were searched. Capped at 25,000
+            bytes.
+
     DeleteRecordResponseSchema:
       type: object
       additionalProperties: false
@@ -5083,18 +5642,21 @@ components:
       additionalProperties: false
       description: |
         Per-request agent capability toggles. Only meaningful when `chatMode`
-        selects an agent mode; ignored otherwise. Omitting the object, or
-        omitting any individual field, keeps that capability enabled — the
-        backend treats a missing flag as `true`.
+        selects an agent mode; ignored otherwise. Each field falls back to its
+        own `default` below when omitted — a missing flag is not uniformly
+        `true`. Omitting the whole object applies every default.
       properties:
         internalSearch:
           type: boolean
+          default: true
           description: Whether the agent may search internal knowledge bases for this turn.
         webSearch:
           type: boolean
+          default: true
           description: Whether the agent may perform web search for this turn.
         deepSearch:
           type: boolean
+          default: false
           description: Whether the agent may use deeper, higher-latency retrieval for this turn.
 
     Filters:
@@ -8271,6 +8833,46 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
+    McpServer:
+      type: object
+      additionalProperties: false
+      description: |
+        MCP server instance linked to an agent, as projected by the graph
+        store on `GET /agents/{agentKey}` and `GET /agents` — same shape as
+        `Toolset`. MCP server nodes carry no secrets, only the attach-time
+        snapshot of `instanceId`/`typeId`/`name`.
+      properties:
+        _key:
+          type: string
+          description: MCP server instance node key in the backing graph store.
+        name:
+          type: string
+          description: MCP server attachment name (attach-time snapshot).
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        typeId:
+          type: string
+          description: Catalog server type id, when this instance came from a registered template.
+        instanceId:
+          type: string
+          description: Admin-created MCP server instance id.
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              _key:
+                type: string
+                description: Tool node key in the backing graph store.
+              name:
+                type: string
+              fullName:
+                type: string
+              description:
+                type: string
+
     AgentFilters:
       description: |
         Knowledge scope filter as stored on the graph edge. The Node `getAgent`
@@ -8421,6 +9023,13 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         toolsets:
           type: array
           description: |
@@ -8429,6 +9038,13 @@ components:
             and optional `instanceName`.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent (GET /agents/{agentKey} graph
+            projection). Same shape/semantics as `toolsets`, keyed by `instanceId`.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
@@ -8525,6 +9141,7 @@ components:
         - shareWithOrg
         - knowledge
         - toolsets
+        - mcpServers
         - skills
         - can_view
         - can_share
@@ -8612,6 +9229,13 @@ components:
           type: string
           nullable: true
           description: User id of the last updater, if present.
+        usesOrgDefault:
+          type: boolean
+          description: |
+            True when this agent has no models configured and will use the
+            organization's default LLM (marked `isDefault: true` in the AI
+            models configuration) at chat time. Derived from `models` being
+            empty — not persisted separately.
         webSearch:
           type: object
           additionalProperties: false
@@ -8646,6 +9270,14 @@ components:
             for each agent on the returned page.
           items:
             $ref: '#/components/schemas/Toolset'
+        mcpServers:
+          type: array
+          description: |
+            MCP server instances linked to the agent. Same projection as
+            `GET /agents/{agentKey}`; the backend builds it from the graph
+            edges for each agent on the returned page.
+          items:
+            $ref: '#/components/schemas/McpServer'
         knowledge:
           type: array
           description: |
@@ -8688,6 +9320,7 @@ components:
         - updatedAtTimestamp
         - shareWithOrg
         - toolsets
+        - mcpServers
         - knowledge
         - can_view
         - can_share
@@ -8787,8 +9420,11 @@ components:
         The gateway accepts either a non-empty string model entry or an object entry
         with a required `modelKey`.
 
-        The `models` array must include at least one object entry with `isReasoning: true`.
-        String-only entries are schema-valid but are rejected at the gateway with HTTP 400.
+        The `models` array itself is optional and may be empty (the agent then uses
+        the organization's default LLM). When the array is non-empty, it must include
+        at least one object entry with `isReasoning: true`. String-only entries are
+        schema-valid but, if present without any reasoning-flagged object entry, are
+        rejected at the gateway with HTTP 400.
       oneOf:
         - type: string
           minLength: 1
@@ -8887,9 +9523,8 @@ components:
 
     AgentCreateWebSearch:
       description: |
-        Accepted web-search attachment for `POST /agents/create`.
-        The gateway accepts either a provider string or an object with at least
-        a `provider` field.
+        Web-search attachment for an agent. Accepts either a provider string
+        or an object with at least a `provider` field.
       anyOf:
         - type: string
         - type: object
@@ -8929,7 +9564,6 @@ components:
       additionalProperties: false
       required:
         - name
-        - models
       properties:
         name:
           type: string
@@ -8955,11 +9589,15 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
+          default: []
           description: |
-            Agent model configuration entries. The gateway requires at least one
-            object entry with `isReasoning: true`. String-only arrays are schema-valid
-            but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional — an agent created without
+            any models (an empty array or an omitted field) uses the organization's
+            default LLM at chat time. When at least one model entry IS provided, the
+            gateway requires at least one object entry with `isReasoning: true`.
+            String-only arrays are schema-valid but rejected at runtime with HTTP 400
+            unless the array is empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -9047,6 +9685,42 @@ components:
           items:
             $ref: '#/components/schemas/AgentCreateResponseTool'
 
+    AgentCreateResponseMcpServerTool:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - fullName
+        - key
+      properties:
+        name:
+          type: string
+        fullName:
+          type: string
+        key:
+          type: string
+
+    AgentCreateResponseMcpServer:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - displayName
+        - key
+        - tools
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+          description: Human-readable MCP server product label (for example `Jira MCP`).
+        key:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServerTool'
+
     AgentCreateResponseKnowledge:
       type: object
       additionalProperties: false
@@ -9101,6 +9775,7 @@ components:
         - updatedAtTimestamp
         - isDeleted
         - toolsets
+        - mcpServers
         - knowledge
         - skills
       properties:
@@ -9161,6 +9836,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AgentCreateResponseToolset'
+        mcpServers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCreateResponseMcpServer'
         knowledge:
           type: array
           items:
@@ -9201,9 +9880,11 @@ components:
         Partial update payload for `PUT /agents/{agentKey}`.
 
         Every field is optional — only the fields present in the request body
-        are updated. When `models` is included, the gateway Zod middleware
-        (mirroring the Python backend) requires at least one model entry and
-        at least one object entry with `isReasoning: true`.
+        are updated. `models` may be omitted, set to an empty array to clear
+        the agent's models (reverting it to the organization's default LLM at
+        chat time), or set to a non-empty array. When a non-empty array is
+        provided, the gateway Zod middleware (mirroring the Python backend)
+        requires at least one object entry with `isReasoning: true`.
       properties:
         name:
           type: string
@@ -9229,11 +9910,13 @@ components:
           description: Additional agent execution instructions
         models:
           type: array
-          minItems: 1
+          minItems: 0
           description: |
-            Agent model configuration entries. When present, the Zod middleware
-            requires at least one object entry with `isReasoning: true`.
-            String-only arrays are schema-valid but rejected at runtime with HTTP 400.
+            Agent model configuration entries. Optional. An empty array clears the
+            agent's models so it falls back to the organization's default LLM.
+            When a non-empty array is present, the Zod middleware requires at
+            least one object entry with `isReasoning: true`. String-only arrays
+            are schema-valid but rejected at runtime with HTTP 400 unless empty.
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
         tags:
@@ -15054,6 +15737,318 @@ paths:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '404':
           description: OAuth app not found or not visible to this caller (each user only sees apps they created)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  # ==================== PERSONAL ACCESS TOKEN ENDPOINTS ====================
+  /personal-access-tokens:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List your own personal access tokens
+      description: |
+        Lists the caller's own active (non-revoked, unexpired) personal
+        access tokens, newest first, capped at 100 rows server-side. Never
+        returns another user's tokens — see `GET /personal-access-tokens/admin`
+        for the org-admin, cross-user view.
+
+        Shares the same per-user rate limiter as `/oauth-clients/*`
+        (default 1000 req/min, `MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE`).
+      operationId: listPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's active personal access tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+    post:
+      tags:
+        - Personal Access Tokens
+      summary: Create a personal access token
+      description: |
+        Mints a new personal access token for the caller. Deliberately not
+        admin-gated — any authenticated org member may create their own,
+        unlike OAuth app registration.
+
+        The token is minted against a lazily-created, per-org synthetic
+        OAuth app (`clientId: pat-system:<orgId>`) shared by every PAT in
+        that org — the same signing, hashing, and revocation machinery as
+        `/oauth2/token`, reused rather than duplicated.
+
+        `scopes` is validated against the org's configured `MCP_SCOPES`
+        env var, not the full role-aware OAuth-app scope catalog — a
+        non-admin can request any scope in that set.
+
+        The response's `accessToken` is shown **once**; only its SHA-256
+        hash is stored. It's prefixed `phpat_` (see the `bearerAuth`
+        security scheme).
+      operationId: createPersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        description: "Request body for Create personal access token"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePatRequest'
+        required: true
+      responses:
+        '201':
+          description: Personal access token created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePatResponse'
+        '400':
+          description: Invalid request (validation error, or a requested scope isn't in the org's configured `MCP_SCOPES`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/scopes:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: List scopes available for a new personal access token
+      description: |
+        Returns the org's configured `MCP_SCOPES` as a flat array of scope
+        definitions, for populating the create-token scope picker. Unlike
+        `GET /oauth-clients/scopes`, this is **not** grouped by category and
+        **not** role-aware — every org member sees the same set, since PAT
+        scope selection isn't gated by admin status.
+      operationId: listPersonalAccessTokenScopes
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Scopes available to grant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatScopesListResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: Revoke one of your own personal access tokens
+      description: |
+        Revokes a token by id, scoped to `{tokenId, clientId, callerUserId}`
+        — a caller can never revoke another user's token through this route,
+        even though everyone in the org shares the same underlying
+        `pat-system:<orgId>` client. Revocation takes effect immediately: the
+        token's next verification attempt fails, including one already in
+        flight.
+      operationId: revokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found, already revoked, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin:
+    get:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: list every active personal access token in the org'
+      description: |
+        Lists every active personal access token across every member of the
+        org, paginated, with each token's owner attached (including owners
+        who've since been deleted from the org — see `ownerDeleted` on
+        `AdminPatListItem`). For incident response: a departed employee or a
+        compromised laptop, where only the token's own creator could
+        otherwise see or revoke it.
+
+        Requires org-admin privileges (`userAdminCheck`) — note this returns
+        **`400`**, not `403`, for a non-admin caller (shared middleware
+        behavior across the codebase, not specific to this route).
+      operationId: adminListPersonalAccessTokens
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number (defaults to `1` when omitted or empty)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          description: Items per page (defaults to `100` when omitted or empty; max 100)
+      responses:
+        '200':
+          description: Every active personal access token in the org
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminPatListResponse'
+        '400':
+          description: Invalid query parameters, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
+
+  /personal-access-tokens/admin/{tokenId}:
+    delete:
+      tags:
+        - Personal Access Tokens
+      summary: 'Admin: revoke any user''s personal access token by id'
+      description: |
+        Revokes a token by id, scoped to the org's PAT client but **not** to
+        a specific owning user — the admin counterpart to
+        `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
+        privileges (`userAdminCheck`); returns `400` (not `403`) for a
+        non-admin caller, same as `GET /personal-access-tokens/admin`.
+      operationId: adminRevokePersonalAccessToken
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: "Optional request body for Admin revoke personal access token"
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokePatRequest'
+      responses:
+        '200':
+          description: Personal access token revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokePatResponse'
+        '400':
+          description: Invalid token ID, or the caller is not an org admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '404':
+          description: Token not found in this org, already revoked, or the org has no PAT app yet
           content:
             application/json:
               schema:
@@ -27898,9 +28893,12 @@ paths:
 
         **Update semantics**
 
-        Only fields present in the request body are updated. When `models` is
-        included, the gateway Zod middleware requires at least one model entry
-        and at least one object entry with `isReasoning: true`.
+        Only fields present in the request body are updated. `models` may be
+        omitted (the agent's existing models are kept), set to an empty array
+        (clears the agent's models so it falls back to the organization's
+        default LLM at chat time), or set to a non-empty array. When a
+        non-empty array is provided, the gateway Zod middleware requires at
+        least one object entry with `isReasoning: true`.
 
         **Permissions**
 
@@ -29736,6 +30734,349 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while fetching record content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/navigate:
+    get:
+      tags:
+        - Connector
+      summary: Browse the knowledge graph from a node
+      description: |
+        Open a node in the knowledge graph and see what is inside it — a file
+        explorer across every connected source.
+
+        Call it with no `nodeId` for a flat listing of every record group and
+        record the caller can reach, newest first. This is a starting point to
+        pick a node from, not a roster of connected apps — app nodes are never
+        returned in a listing, though an app's `id` is accepted as a `nodeId`
+        and lists that app's record groups. Pass a node's `id` to descend:
+        record groups contain records and folders, and a record contains its
+        own children — comments, attachments, sub-tasks — plus a `related`
+        section of cross-referenced records, such as the Confluence page linked
+        from a Jira ticket. `nodeId` is tolerant: a URL or an issue key such as
+        `PA-1787` is resolved to its record before navigating, so a link can be
+        pasted straight in without a separate lookup call.
+
+        The response carries a rendered `text` view — breadcrumbs, the current
+        node, the children listing, `Related:`, and a closing `Next:` line
+        naming a follow-up call. The structured fields carry the same
+        information for programmatic use.
+
+        **When to use this vs. the other record endpoints:**
+        - **This endpoint** is for structural exploration — "what is in this
+          project", "what is attached to this ticket", "what else links to this
+          page". It returns names, types and IDs; it never returns document
+          text.
+        - `GET /connectors/record/{recordId}/content` returns one record's
+          actual parsed text. Use it once navigation has identified the record
+          you want to read.
+        - `GET /connectors/record/lookup` is the way in when you hold a URL or
+          an issue key rather than a position in the tree.
+
+        **Typical flow:** call with no `nodeId` to see what is reachable → pass
+        a record group's `id` to list its records → take a row whose
+        `is_record` is true and call
+        `GET /connectors/record/{recordId}/content` to read it.
+
+        **Paging and depth:** results are paginated; `pagination.has_next`
+        tells you whether to request the next `page`. `depth` above 1 returns
+        all descendants down to that level as one flat list, each row carrying
+        its own `level`, instead of only direct children.
+
+        **Scope:** everything the caller can read, across both connectors and
+        Knowledge Base collections. No connector-level filter is applied — the
+        listing is bounded by per-node permissions alone.
+
+        **Permission scoping:**
+
+        `rows` and `related` carry only nodes the caller can see, and the
+        opened node itself is access-checked before any of its details are
+        returned. A node that does not exist and a node the caller cannot
+        access are deliberately indistinguishable — both return an empty view
+        rather than an error.
+
+        `breadcrumbs` is the exception: the ancestor trail is resolved by id
+        alone, without a permission check. For a record shared directly with
+        the caller, it can therefore name ancestors the caller cannot open.
+        Treat breadcrumb entries as labels, not as nodes guaranteed to be
+        navigable.
+      operationId: navigateKnowledgeGraph
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: nodeId
+          in: query
+          required: false
+          description: >-
+            The node to open. Take it from an `id` in a previous navigate or
+            lookup response. Omit it entirely for the flat listing of
+            everything reachable — the usual starting point. A URL or an issue
+            key such as `PA-1787` also works: it is resolved to its record
+            automatically.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2048
+        - name: page
+          in: query
+          required: false
+          description: Page number, 1-indexed.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Children per page. The minimum is 50 — smaller values are rejected
+            rather than silently raised.
+          schema:
+            type: integer
+            minimum: 50
+            maximum: 200
+            default: 50
+        - name: depth
+          in: query
+          required: false
+          description: >-
+            Levels of descendants to return in one call. Above 1, `rows` is a
+            flat list of all descendants down to that level rather than only
+            direct children, and each row carries its own `level`.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3
+            default: 1
+        - name: nodeTypes
+          in: query
+          required: false
+          description: >-
+            Restrict children to these node types. Repeat the parameter for
+            multiple types: `?nodeTypes=record&nodeTypes=folder`.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: createdAfter
+          in: query
+          required: false
+          description: >-
+            Filter children by source creation time. ISO 8601 `YYYY-MM-DD`, or a
+            full datetime that MUST carry a timezone offset — a naive datetime
+            is rejected rather than assumed to be UTC.
+          schema:
+            type: string
+        - name: createdBefore
+          in: query
+          required: false
+          description: >-
+            Filter children by source creation time. `YYYY-MM-DD` is inclusive
+            of the whole day.
+          schema:
+            type: string
+        - name: modifiedAfter
+          in: query
+          required: false
+          description: Filter children by source modification time.
+          schema:
+            type: string
+        - name: modifiedBefore
+          in: query
+          required: false
+          description: Filter children by source modification time.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Successful operation. A node that does not exist or is not
+            accessible returns an empty view (null `current`, empty `rows`)
+            rather than an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NavigateKnowledgeGraphResponseSchema'
+        '400':
+          description: |
+            A parameter failed validation: `page` below 1, `limit` outside
+            50-200, `depth` outside 1-3, an empty `nodeId`, or a date that is
+            not valid ISO 8601, carries no timezone offset, forms an inverted
+            range, or has `createdAfter` in the future.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >-
+            OAuth token is missing both the `kb:read` and `connector:read`
+            scopes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The authenticated user could not be resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while navigating the knowledge graph
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/record/lookup:
+    get:
+      tags:
+        - Connector
+      summary: Resolve a URL, issue key or external ID to a Record ID
+      description: |
+        Turn an external reference into the matching PipesHub record. Accepts a
+        pasted link, a Jira-style issue key, or a bare external system ID from
+        any connected source. Repeat `identifiers` to batch-resolve up to ten
+        in one call.
+
+        The response carries a rendered `text` view — each match's metadata
+        block followed by a `Next:` line naming a follow-up call. The structured
+        fields carry the same information for programmatic use.
+
+        **Accepted identifiers**
+        - Jira issue URL — `https://acme.atlassian.net/browse/PA-1787`
+        - Jira issue key — `PA-1787`
+        - Confluence page URL —
+          `https://acme.atlassian.net/wiki/spaces/SD/pages/450625553/Agent+Loop`
+        - Google Drive / Docs URL — `https://docs.google.com/document/d/1AbC.../edit`
+        - Slack message link — `https://acme.slack.com/archives/C0123/p1720000000000100`
+        - Bare external system ID — `450625553`
+
+        **When to use this vs. the other record endpoints:**
+        - **This endpoint** converts an *external* reference into an internal
+          Record ID. Reach for it whenever you meet a link or ticket key and
+          need the record behind it.
+        - `GET /connectors/record/{recordId}/content` reads a record you have
+          already identified. It needs an internal Record ID, which is exactly
+          what this endpoint returns.
+        - `GET /connectors/navigate` browses the hierarchy when you have a
+          position in the tree rather than a specific identifier.
+
+        **Typical flow:** call this with the reference, take a match's `id`
+        from the response, then call
+        `GET /connectors/record/{recordId}/content` to read the record.
+
+        **Multiple matches:** one identifier can legitimately match more than
+        one record — the same external ID may exist in several connected
+        instances. In that case the response sets `ambiguous: true` and
+        `matches` holds every candidate. Present the choice rather than taking
+        the first; `connectorName` narrows a retry.
+
+        **Misses are not errors.**
+
+        Only records the caller can see are returned, and a miss is a `200`
+        with an empty `matches` array and the input echoed in
+        `not_found_identifiers` — not a `404`. The identifier resolved to
+        nothing *or* to something the caller may not access; the two are
+        deliberately indistinguishable, because an identifier is
+        caller-supplied and guessable, and confirming existence would leak
+        records across organizations. `searched_connectors` names what was
+        covered, so a retry with `connectorName` is often the right next move.
+
+        **Scope:** resolution searches every connector the caller can access,
+        regardless of any source filter used elsewhere.
+      operationId: lookupRecordByIdentifier
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: identifiers
+          in: query
+          required: true
+          description: >-
+            The reference(s) to resolve: a URL, an issue key such as `PA-1787`,
+            or a bare external system ID. Repeat the parameter to batch:
+            `?identifiers=PA-1787&identifiers=PA-1788`. Maximum 10.
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 10
+            items:
+              type: string
+              maxLength: 2048
+        - name: connectorName
+          in: query
+          required: false
+          description: >-
+            Optional hint that prioritises resolution order, e.g. `JIRA`,
+            `CONFLUENCE`, `DRIVE`, `SLACK`. Allowed values are the
+            `ConnectorNameEnum` values. It cannot widen the search beyond the
+            connectors the caller can already access. Useful on a retry when a
+            lookup came back empty.
+          schema:
+            $ref: '#/components/schemas/ConnectorNameEnum'
+      responses:
+        '200':
+          description: |
+            Successful operation. Identifiers that resolved to nothing the
+            caller can access are echoed in `not_found_identifiers` rather than
+            producing an error status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupRecordResponseSchema'
+        '400':
+          description: No non-blank identifier was supplied, or more than 10 were.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: >-
+            OAuth token is missing both the `kb:read` and `connector:read`
+            scopes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The authenticated user could not be resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while resolving identifiers
           content:
             application/json:
               schema:

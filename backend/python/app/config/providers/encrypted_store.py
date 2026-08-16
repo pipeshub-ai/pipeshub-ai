@@ -378,7 +378,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             return decrypted_keys
 
         except Exception as e:
-            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            self.logger.error(
+                "Failed to list keys in directory (%s)", type(e).__name__
+            )
             raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:

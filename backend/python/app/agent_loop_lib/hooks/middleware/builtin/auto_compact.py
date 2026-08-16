@@ -11,6 +11,39 @@ Summarizer = Callable[[list[Message]], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
+_TOOL_RESULT_CHARS = 4_000
+_TEXT_MSG_CHARS = 2_000
+_NAIVE_TOOL_CHARS = 500
+_NAIVE_TEXT_CHARS = 500
+_NAIVE_TOTAL_CHARS = 8_000
+_MAX_SUMMARIZER_INPUT_CHARS = 100_000
+
+_SUMMARIZER_SYSTEM = (
+    "You are a context compaction assistant. Produce a comprehensive summary "
+    "that preserves enough factual detail for the conversation to continue "
+    "without loss of information. Err on the side of preserving too much "
+    "rather than too little."
+)
+
+_SUMMARIZER_PROMPT = (
+    "Summarize the conversation history below. This summary will REPLACE "
+    "the original messages, so it must preserve all information the "
+    "assistant needs to continue working without losing context.\n\n"
+    "MUST PRESERVE:\n"
+    "- Record/entity names, IDs, titles, and statuses\n"
+    "- Citation references (e.g. [ref1], [ref2], R-labels, artifact:xxx)\n"
+    "- Key findings and data points from tool results\n"
+    "- Decisions made and their rationale\n"
+    "- Tool names and what they returned (key fields, not raw dumps)\n"
+    "- Open questions and unresolved issues\n"
+    "- Numerical data, dates, and specific values\n"
+    "- The user's original query/request\n\n"
+    "FORMAT: Use structured sections with bullet points. For search or "
+    "retrieval results, list each record with its key fields rather than "
+    "writing narrative prose. Faithfully represent what the tools returned.\n\n"
+    "CONVERSATION TO SUMMARIZE:\n"
+)
+
 
 def _naive_summary(messages: list[Message]) -> str:
     """Fallback used when no LLM summarizer is configured: a compact,
@@ -19,24 +52,34 @@ def _naive_summary(messages: list[Message]) -> str:
     from app.agent_loop_lib.core.messages import ToolMessage
     from app.agent_loop_lib.core.tokens import extract_text
 
-    parts = []
+    parts: list[str] = []
     for m in messages:
         if isinstance(m, ToolMessage):
             meta = m.artifact_meta
             if meta is not None:
                 parts.append(
                     f"[tool] artifact:{meta.artifact_id}"
-                    f" ({meta.tool_name}) — {meta.summary[:100]}"
+                    f" ({meta.tool_name}) — {meta.summary[:200]}"
                 )
                 continue
             tc_id = m.tool_call_id or "?"
-            preview = m.content[:150].strip() if isinstance(m.content, str) else ""
+            content = m.content if isinstance(m.content, str) else ""
+            preview = content[:_NAIVE_TOOL_CHARS].strip()
+            if len(content) > _NAIVE_TOOL_CHARS:
+                preview += "...[truncated]"
             parts.append(f"[tool:{tc_id}] {preview}")
         else:
             text = extract_text(m).strip()
             if text:
-                parts.append(f"[{m.role.value}] {text[:200]}")
-    return "\n".join(parts)[:3_000] or "(no content)"
+                preview = text[:_NAIVE_TEXT_CHARS]
+                if len(text) > _NAIVE_TEXT_CHARS:
+                    preview += "...[truncated]"
+                parts.append(f"[{m.role.value}] {preview}")
+    _TRUNCATION_MARKER = "...[truncated]"
+    joined = "\n".join(parts)
+    if len(joined) > _NAIVE_TOTAL_CHARS:
+        return joined[:_NAIVE_TOTAL_CHARS - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+    return joined or "(no content)"
 
 
 def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summarizer:
@@ -45,7 +88,7 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
     transport only the first time compaction actually triggers, not at
     wiring time.  Single source of truth for both ``ControlPlane`` and
     ``PipesHubAgentFactory``."""
-    from app.agent_loop_lib.core.messages import ToolMessage
+    from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage
     from app.agent_loop_lib.core.tokens import extract_text
 
     def _format_message(m: Message) -> str:
@@ -54,34 +97,74 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
             if meta is not None:
                 return (
                     f"[tool] artifact:{meta.artifact_id} "
-                    f"tool:{meta.tool_name} — {meta.summary[:150]}"
+                    f"tool:{meta.tool_name} — {meta.summary[:300]}"
                 )
             tc_id = m.tool_call_id or "?"
-            preview = m.content[:200].strip() if isinstance(m.content, str) else ""
-            return f"[tool:{tc_id}] {preview}"
-        return f"[{m.role.value}] {extract_text(m)}"
+            content = m.content if isinstance(m.content, str) else ""
+            if len(content) > _TOOL_RESULT_CHARS:
+                content = content[:_TOOL_RESULT_CHARS] + "\n...[truncated]"
+            return f"[tool:{tc_id}]\n{content}"
+
+        if isinstance(m, AssistantMessage) and m.tool_calls:
+            names = ", ".join(tc.name for tc in m.tool_calls)
+            text = extract_text(m).strip()
+            prefix = f"[assistant → called: {names}]"
+            if not text:
+                return prefix
+            if len(text) > _TEXT_MSG_CHARS:
+                text = text[:_TEXT_MSG_CHARS] + "\n...[truncated]"
+            return f"{prefix}\n{text}"
+
+        text = extract_text(m)
+        if len(text) > _TEXT_MSG_CHARS:
+            text = text[:_TEXT_MSG_CHARS] + "\n...[truncated]"
+        return f"[{m.role.value}] {text}"
 
     async def _summarize(messages: list[Message]) -> str:
         transport = transport_registry.resolve(provider)
-        joined = "\n".join(_format_message(m) for m in messages)
-        response = await transport.complete(
-            messages=[UserMessage(
-                content=(
-                    "Summarize the following conversation history concisely, "
-                    "preserving all facts, decisions, and open questions.\n\n"
-                    "IMPORTANT: Preserve every artifact ID (artifact:xxx) and "
-                    "tool name exactly as written — the system needs these to "
-                    f"retrieve data later.\n\n{joined}"
-                ),
-            )],
-            system=(
-                "You are a context compaction summarizer. Be concise but "
-                "lossless on facts and artifact references."
-            ),
-            model=model,
-        )
-        text = response.message.text
-        return text if text else joined[:3_000]
+
+        _SEPARATOR = "\n\n"
+        _TRUNCATION_SUFFIX = "\n...[truncated]"
+        _OMISSION_TEMPLATE = "[{} earlier message(s) omitted]"
+        prompt_overhead = len(_SUMMARIZER_PROMPT) + 1  # +1 for the "\n" joining prompt and body
+        budget = _MAX_SUMMARIZER_INPUT_CHARS - prompt_overhead
+
+        parts: list[str] = []
+        total_chars = 0
+        for i, m in enumerate(messages):
+            fmt = _format_message(m)
+            sep_cost = len(_SEPARATOR) if parts else 0
+            if total_chars + sep_cost + len(fmt) > budget:
+                remaining = budget - total_chars - sep_cost - len(_TRUNCATION_SUFFIX)
+                if remaining > 0:
+                    parts.append(fmt[:remaining] + _TRUNCATION_SUFFIX)
+                skipped = len(messages) - (i + 1)
+                if skipped > 0:
+                    parts.append(_OMISSION_TEMPLATE.format(skipped))
+                break
+            parts.append(fmt)
+            total_chars += sep_cost + len(fmt)
+
+        joined = _SEPARATOR.join(parts)
+
+        try:
+            response = await transport.complete(
+                messages=[UserMessage(
+                    content=f"{_SUMMARIZER_PROMPT}\n{joined}",
+                )],
+                system=_SUMMARIZER_SYSTEM,
+                model=model,
+            )
+            text = response.message.text
+            if not text or not text.strip():
+                return _naive_summary(messages)
+            return text
+        except Exception:
+            logger.warning(
+                "auto_compact: LLM summarizer failed, falling back to naive",
+                exc_info=True,
+            )
+            return _naive_summary(messages)
 
     return _summarize
 

@@ -64,8 +64,25 @@ _BLOCKED_HOSTNAMES = frozenset(
 )
 
 
+# RFC 6052 NAT64 "Well-Known Prefix" — DNS64 resolvers synthesize addresses in this range to
+# carry real IPv4 destinations over IPv6-only networks (common on NAT64/DNS64 VPNs and carrier
+# networks). Python's `IPv6Address.is_reserved` flags the entire `::/8` superblock — which
+# contains this prefix — as reserved, which would otherwise block every public IPv4-only host
+# resolved from such a network.
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+
+
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True if the address must not be contacted by the generic HTTP fetcher."""
+    """True if the address must not be contacted by the generic HTTP fetcher.
+
+    NAT64 well-known-prefix addresses are unwrapped to their embedded IPv4 address and
+    re-checked against the same rules, instead of trusting `is_reserved` — so a NAT64-routed
+    private/loopback/metadata IPv4 address is still blocked, but a NAT64-routed public one
+    (e.g. a legitimate SaaS host resolved from an IPv6-only network) is not.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_WELL_KNOWN_PREFIX:
+        embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        return _ip_is_blocked(embedded_ipv4)
     return bool(
         ip.is_private
         or ip.is_loopback
@@ -128,6 +145,17 @@ def _validate_public_http_url(url: str) -> None:
             continue
         if _ip_is_blocked(ip):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
+
+
+def validate_public_http_url(url: str) -> None:
+    """Public entry point for the SSRF guard above — reused by callers outside this module
+    (e.g. MCP OAuth metadata discovery) so there is exactly one blocked-host policy for
+    fetching admin-supplied URLs, instead of a second copy drifting out of sync.
+
+    Raises:
+        FetchError: if the URL's scheme/hostname/resolved address is disallowed.
+    """
+    _validate_public_http_url(url)
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,6 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.config.constants.http_status_code import HttpStatusCode
-from app.models.blocks import BlocksContainer
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.services.resource_governor import (
     ParseTier,
@@ -39,26 +37,9 @@ DOCLING_GATE_TIMEOUT_SECONDS = 30.0
 DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 
 
-class ProcessResponse(BaseModel):
-    success: bool
-    block_containers: dict[str, Any] | None = None
-    error: str | None = None
-
-
 class ParseResponse(BaseModel):
     success: bool
     parse_result: str | None = None  # JSON-encoded document data
-    error: str | None = None
-
-
-class CreateBlocksRequest(BaseModel):
-    parse_result: str  # JSON-encoded document data
-    page_number: int | None = None
-
-
-class CreateBlocksResponse(BaseModel):
-    success: bool
-    block_containers: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -87,24 +68,6 @@ class DoclingService:
             self.logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
             raise
 
-    async def process_pdf(self, record_name: str, pdf_binary: bytes) -> BlocksContainer:
-        """Parse a PDF in page batches and convert the concatenated document into blocks."""
-        try:
-            self.logger.info(f"🚀 Processing PDF: {record_name}")
-            if self.processor is None:
-                raise RuntimeError("DoclingService not initialized: processor is None")
-            result = await self.processor.process_in_batches(record_name, pdf_binary)
-
-            if result is False:
-                raise ValueError("DoclingProcessor returned False - processing failed")
-
-            self.logger.info(f"✅ Successfully processed PDF: {record_name}")
-            return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Error processing PDF {record_name}: {str(e)}")
-            raise
-
     async def parse_pdf_only(
         self,
         record_name: str,
@@ -129,30 +92,6 @@ class DoclingService:
 
         except Exception as e:
             self.logger.error(f"❌ Error parsing PDF {record_name}: {str(e)}")
-            raise
-
-    async def create_blocks_from_parse_result(
-        self, doc: DoclingDocument, page_number: int | None = None
-    ) -> BlocksContainer:
-        """Create blocks from DoclingDocument (involves LLM calls for tables).
-
-        This is phase 2 of two-phase processing.
-        """
-        try:
-            self.logger.info("🚀 Creating blocks from parse result (phase 2)")
-            if self.processor is None:
-                raise RuntimeError("DoclingService not initialized: processor is None")
-
-            block_containers = await self.processor.create_blocks(doc, page_number=page_number)
-
-            if block_containers is False:
-                raise ValueError("DoclingProcessor returned False - block creation failed")
-
-            self.logger.info("✅ Successfully created blocks from parse result")
-            return block_containers
-
-        except Exception as e:
-            self.logger.error(f"❌ Error creating blocks: {str(e)}")
             raise
 
     async def health_check(self) -> bool:
@@ -244,7 +183,7 @@ def _backpressure_response() -> JSONResponse:
 # FastAPI app
 app = FastAPI(
     title="Docling Processing Service",
-    description="Microservice for PDF processing using Docling",
+    description="Microservice for PDF parsing using Docling",
     version="1.0.0"
 )
 
@@ -268,77 +207,12 @@ async def health_check() -> dict[str, Any]:
     return {"status": "healthy", "service": "docling"}
 
 
-@app.post("/process-pdf", response_model=ProcessResponse)
-async def process_pdf_endpoint(
-    file: UploadFile = File(...),
-    record_name: str = Form(...),
-) -> ProcessResponse | JSONResponse:
-    """Parse a PDF in page batches and return its blocks in a single round trip."""
-    cost = 0
-    try:
-        pdf_binary = await file.read()
-        admitted, cost = await _acquire_docling_gate(pdf_binary, record_name)
-        if not admitted:
-            return _backpressure_response()
-
-        if docling_service is None:
-            raise HTTPException(status_code=500, detail="Docling service not available")
-
-        block_containers = await asyncio.wait_for(
-            docling_service.process_pdf(record_name, pdf_binary),
-            timeout=PDF_PROCESSING_TIMEOUT_SECONDS
-        )
-
-        return ProcessResponse(
-            success=True,
-            block_containers=serialize_blocks_container(block_containers)
-        )
-
-    except asyncio.TimeoutError:
-        return ProcessResponse(
-            success=False,
-            error=f"Processing timed out after {PDF_PROCESSING_TIMEOUT_SECONDS} seconds"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        return ProcessResponse(
-            success=False,
-            error=f"Processing failed: {str(e)}"
-        )
-    finally:
-        _release_docling_gate(cost)
-
-def serialize_blocks_container(blocks_container: BlocksContainer) -> dict[str, Any]:
-    """Serialize BlocksContainer to dictionary for JSON response"""
-    try:
-        # Convert to dict using the model's dict method.
-        # If this fails, it indicates an issue with the Pydantic model definitions that should be fixed.
-        return blocks_container.dict()
-    except Exception as e:
-        # Re-raise the exception to make the serialization issue visible and easier to debug.
-        # A logger should be used here to capture the error details.
-        raise TypeError(f"Failed to serialize BlocksContainer: {e}") from e
-
-
 def serialize_docling_doc(doc: DoclingDocument) -> str:
     """Serialize DoclingDocument to JSON string."""
     try:
         return doc.model_dump_json()
     except Exception as e:
         raise TypeError(f"Failed to serialize DoclingDocument: {e}") from e
-
-
-def deserialize_docling_doc(serialized: str) -> DoclingDocument:
-    """Deserialize JSON string to DoclingDocument.
-
-    Returns a DoclingDocument since that's what
-    the create_blocks method actually needs.
-    """
-    try:
-        return DoclingDocument.model_validate_json(serialized)
-    except Exception as e:
-        raise TypeError(f"Failed to deserialize DoclingDocument: {e}") from e
 
 
 @app.post("/parse-pdf", response_model=ParseResponse)
@@ -391,51 +265,3 @@ async def parse_pdf_endpoint(
         )
     finally:
         _release_docling_gate(cost)
-
-
-@app.post("/create-blocks", response_model=CreateBlocksResponse)
-async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksResponse:
-    """Create blocks from parse result (phase 2 - involves LLM calls)"""
-    try:
-        # Deserialize the DoclingDocument from JSON
-        try:
-            doc = await asyncio.to_thread(deserialize_docling_doc, request.parse_result)
-        except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid parse_result data: {str(e)}"
-            ) from e
-
-        # Ensure service is wired
-        if docling_service is None:
-            raise HTTPException(status_code=500, detail="Docling service not available")
-
-        # Create blocks with timeout
-        block_containers = await asyncio.wait_for(
-            docling_service.create_blocks_from_parse_result(
-                doc,
-                page_number=request.page_number
-            ),
-            timeout=PDF_PROCESSING_TIMEOUT_SECONDS
-        )
-
-        # Serialize BlocksContainer to dict
-        block_containers_dict = serialize_blocks_container(block_containers)
-
-        return CreateBlocksResponse(
-            success=True,
-            block_containers=block_containers_dict
-        )
-    except asyncio.TimeoutError:
-        return CreateBlocksResponse(
-            success=False,
-            error=f"Block creation timed out after {PDF_PROCESSING_TIMEOUT_SECONDS} seconds"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        return CreateBlocksResponse(
-            success=False,
-            error=f"Block creation failed: {str(e)}"
-        )
-
