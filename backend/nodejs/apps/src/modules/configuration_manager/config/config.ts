@@ -2,6 +2,15 @@ import { StoreType } from '../../../libs/keyValueStore/constants/KeyValueStoreTy
 import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { RedisStoreConfig } from '../../../libs/keyValueStore/providers/RedisDistributedKeyValueStore';
+import { RedisMode } from '../../../libs/types/redis.types';
+import { parseRedisNodes as parseRedisNodesShared } from '../../../libs/services/redisClientFactory';
+
+// Thin wrapper over the shared parser: this caller wants `undefined` (not an
+// empty array) when REDIS_NODES is unset, to leave the field absent in config.
+const parseRedisNodes = (raw?: string) => {
+  const nodes = parseRedisNodesShared(raw);
+  return nodes.length > 0 ? nodes : undefined;
+};
 
 const logger = Logger.getInstance({ service: 'ConfigurationManagerConfig' });
 
@@ -35,6 +44,23 @@ export const loadConfigurationManagerConfig =
     const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'redis';
     const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
 
+    // Reject anything that is not a known mode: silently treating a typo like
+    // `cluser` as standalone would point the app at the wrong topology.
+    const rawRedisMode = process.env.REDIS_MODE?.trim().toLowerCase();
+    if (rawRedisMode && rawRedisMode !== 'cluster' && rawRedisMode !== 'standalone') {
+      throw new Error(
+        `Invalid REDIS_MODE '${process.env.REDIS_MODE}'. Must be 'standalone' or 'cluster'.`,
+      );
+    }
+    const redisMode: RedisMode =
+      rawRedisMode === 'cluster' ? 'cluster' : 'standalone';
+    const redisNodes = parseRedisNodes(process.env.REDIS_NODES);
+    if (redisMode === 'cluster' && (!redisNodes || redisNodes.length === 0)) {
+      throw new Error(
+        'REDIS_MODE=cluster requires REDIS_NODES to be set (comma-separated host:port list).',
+      );
+    }
+
     return {
       storeType: storeType,
       storeConfig: {
@@ -51,6 +77,8 @@ export const loadConfigurationManagerConfig =
         db: parseInt(process.env.REDIS_DB || '0', 10),
         keyPrefix: process.env.REDIS_KV_PREFIX || 'pipeshub:kv:',
         connectTimeout: parseInt(process.env.REDIS_TIMEOUT || '10000', 10),
+        mode: redisMode,
+        nodes: redisNodes,
       },
       secretKey: getHashedSecretKey(),
       algorithm: process.env.ALGORITHM || 'aes-256-gcm',
