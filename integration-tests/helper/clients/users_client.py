@@ -65,7 +65,7 @@ class UsersClient(APIClient):
         Args:
             email: User's email address
             full_name: User's full name (fullName in API)
-            role: Org role — ``admin`` or ``member`` (required by the API)
+            role: Org role — ``admin`` or ``member``. Optional; omitted/default is ``member``.
             **kwargs: Additional fields (firstName, lastName, designation, etc.)
         """
         payload: dict[str, Any] = {

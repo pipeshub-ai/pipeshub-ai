@@ -1316,7 +1316,7 @@ class TestCreateAndDeleteUser(UsersTestBase):
         _cleanup(body["_id"], "all fields")
 
     def test_create_user_negative_tests(self) -> None:
-        """401 no auth · 400 missing role/fullName/email · 400 invalid email format."""
+        """401 no auth · 400 missing fullName/email · omitted role defaults to member · 400 invalid role/email."""
         # Missing Authorization header — auth middleware rejects before Zod.
         resp = self.users.post(
             "/",
@@ -1359,25 +1359,30 @@ class TestCreateAndDeleteUser(UsersTestBase):
 
         # Missing role — optional; defaults to member.
         unique = uuid.uuid4().hex[:8]
-        resp = self.users.post(
-            "/",
-            json={
-                "fullName": f"Default Role {unique}",
-                "email": f"default-role-{unique}@test-pipeshub.com",
-            },
-        )
-        assert resp.status_code == 201, (
-            f"[missing role defaults] Expected 201, got {resp.status_code}: {resp.text}"
-        )
-        body = resp.json()
-        assert_response_matches_openapi_operation(body, "createUser", status_code="201")
-        assert body.get("role") == "member", (
-            f"[missing role defaults] Expected role 'member', got {body.get('role')!r}"
-        )
-        del_resp = self.users.delete_user(body["_id"])
-        assert del_resp.status_code == 200, (
-            f"[missing role defaults cleanup] Expected 200, got {del_resp.status_code}: {del_resp.text}"
-        )
+        created_id = ""
+        try:
+            resp = self.users.post(
+                "/",
+                json={
+                    "fullName": f"Default Role {unique}",
+                    "email": f"default-role-{unique}@test-pipeshub.com",
+                },
+            )
+            assert resp.status_code == 201, (
+                f"[missing role defaults] Expected 201, got {resp.status_code}: {resp.text}"
+            )
+            body = resp.json()
+            created_id = str(body.get("_id") or "")
+            assert_response_matches_openapi_operation(body, "createUser", status_code="201")
+            assert body.get("role") == "member", (
+                f"[missing role defaults] Expected role 'member', got {body.get('role')!r}"
+            )
+        finally:
+            if created_id:
+                del_resp = self.users.delete_user(created_id)
+                assert del_resp.status_code == 200, (
+                    f"[missing role defaults cleanup] Expected 200, got {del_resp.status_code}: {del_resp.text}"
+                )
 
         # Invalid role — Zod enum rejects values other than admin|member.
         resp = self.users.post(
