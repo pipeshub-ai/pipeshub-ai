@@ -199,6 +199,9 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         conn.drive_client = MagicMock()
         conn.admin_data_source = AsyncMock()
         conn.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {}}
         return conn
 

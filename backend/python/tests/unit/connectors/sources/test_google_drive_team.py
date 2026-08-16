@@ -177,6 +177,9 @@ def connector():
         )
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        c.drive_data_source.execute = AsyncMock(side_effect=execute)
         c.admin_client = MagicMock()
         c.drive_client = MagicMock()
         c.sync_filters = FilterCollection()
@@ -1999,6 +2002,9 @@ def connector():
         )
         c.admin_data_source = AsyncMock()
         c.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        c.drive_data_source.execute = AsyncMock(side_effect=execute)
         c.admin_client = MagicMock()
         c.drive_client = MagicMock()
         c.sync_filters = FilterCollection()

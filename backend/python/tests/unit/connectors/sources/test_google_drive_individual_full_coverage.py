@@ -139,6 +139,9 @@ def connector():
         conn.indexing_filters = FilterCollection()
         conn.google_client = MagicMock()
         conn.drive_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 

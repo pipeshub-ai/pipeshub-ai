@@ -18,6 +18,7 @@ from app.connectors.core.registry.connector import (
 )
 from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -226,6 +227,8 @@ class ConnectorFactory:
                 data_entities_processor.org_id = org_id
             await data_entities_processor.initialize()
 
+            thread_pool = kwargs.pop("thread_pool", None)
+
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -239,6 +242,12 @@ class ConnectorFactory:
             if connector is not None:
                 if notification_service is not None:
                     connector._notification_service = notification_service
+                # Must be set here rather than passed to create_connector: no
+                # concrete connector accepts **kwargs, so an extra kwarg would
+                # TypeError and be swallowed into a None return below.
+                connector._shared_thread_pool = (
+                    thread_pool or get_shared_connector_thread_pool()
+                )
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
