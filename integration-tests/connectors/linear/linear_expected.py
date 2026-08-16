@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
 )
 from app.connectors.sources.linear.connector import PLACEHOLDER_REVISION_PREFIX
 from app.connectors.utils.value_mapper import ValueMapper
@@ -52,6 +53,7 @@ class LinearExpected:
             scope="team",
             created_at_timestamp=0,
             updated_at_timestamp=0,
+            permission_model=PermissionModel.RECORD_LEVEL.value,
         )
 
     @staticmethod

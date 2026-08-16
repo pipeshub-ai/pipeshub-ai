@@ -9,6 +9,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
 )
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.entities import (
@@ -44,6 +45,7 @@ class JiraExpected:
             scope="team",
             created_at_timestamp=0,
             updated_at_timestamp=0,
+            permission_model=PermissionModel.RECORD_LEVEL.value,
         )
 
     @staticmethod

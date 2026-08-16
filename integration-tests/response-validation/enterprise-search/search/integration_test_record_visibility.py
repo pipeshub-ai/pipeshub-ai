@@ -208,10 +208,13 @@ class TestDeletedRecordVisibility:
             assert delete_resp is not None, "delete_record returned nothing"
 
             after = _admin_search(pipeshub_client, SEARCH_QUERY, kb_id)
-            assert after.status_code == 200, f"{after.status_code}: {after.text}"
-            assert search_result_count(after) == 0, (
+            # Deleting the KB's only record leaves nothing searchable, and the
+            # service reports that as 404 ("No documents are available for you
+            # to search yet") rather than an empty 200. Both mean the record is
+            # gone; demanding 200 asserted an implementation detail instead.
+            assert has_no_access(after), (
                 "A deleted record was still retrievable. "
-                f"Response: {after.text[:400]}"
+                f"Got {describe_search(after)}"
             )
         finally:
             try:
