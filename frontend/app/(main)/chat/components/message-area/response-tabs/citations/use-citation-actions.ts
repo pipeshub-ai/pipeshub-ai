@@ -120,16 +120,33 @@ export function useCitationActions(): CitationCallbacks {
         });
         setPreviewMode('sidebar');
 
-        // 2. Fetch record details and stream file in parallel
+        // 2. Fetch details first so non-previewable records skip the stream.
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(citation.recordId);
+        if (recordDetails.record.previewRenderable === false) {
+          setPreviewFile({
+            id: citation.recordId,
+            name: citation.recordName,
+            url: '',
+            type: recordDetails.record.mimeType || citation.mimeType || citation.extension || '',
+            size: recordDetails.record.sizeInBytes,
+            isLoading: false,
+            recordDetails,
+            webUrl: recordDetails.record.webUrl ?? undefined,
+            previewRenderable: false,
+            initialPage,
+            highlightBox,
+            citations: recordCitations,
+            initialCitationId: citation.citationId,
+          });
+          return;
+        }
+
         // PPT/PPTX and legacy Word (.doc) may be converted to PDF server-side for preview.
         const streamAsPdf =
           isPresentationFile(citation.mimeType, citation.recordName) ||
           isLegacyWordDocFile(citation.mimeType, citation.recordName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(citation.recordId),
-          KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions);
 
         // 3. Build the preview-state payload.
         // For DOCX we pass the Blob straight through to `DocxRenderer`

@@ -2009,15 +2009,31 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // 2. Fetch record details and stream file in parallel
+        // 2. Fetch details first so non-previewable records skip the stream.
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        if (recordDetails.record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: recordDetails.record.mimeType || item.extension || '',
+            size:
+              recordDetails.record.sizeInBytes ??
+              recordDetails.record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: recordDetails.record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
         const streamAsPdf =
           isPresentationFile(item.mimeType, item.name) ||
           isLegacyWordDocFile(item.mimeType, item.name);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, streamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, streamOptions);
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
@@ -2082,14 +2098,30 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        if (recordDetails.record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: recordDetails.record.mimeType || item.fileType || '',
+            size:
+              recordDetails.record.sizeInBytes ??
+              recordDetails.record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: recordDetails.record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
         const legacyStreamAsPdf =
           isPresentationFile(item.fileType, item.name) ||
           isLegacyWordDocFile(item.fileType, item.name);
         const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions);
 
         // DOCX uses the Blob directly; other types stay on URLs.
         const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
