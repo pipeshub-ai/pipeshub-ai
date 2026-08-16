@@ -1244,11 +1244,12 @@ class TestCreateAndDeleteUser(UsersTestBase):
             )
             assert_response_matches_openapi_operation(del_resp.json(), "deleteUser")
 
-        # Required fields only — fullName + email.
+        # Required fields only — fullName + email + role.
         unique = uuid.uuid4().hex[:8]
         resp = self.users.create_user(
             email=f"integration-test-{unique}@test-pipeshub.com",
             full_name=f"Integration Test {unique}",
+            role="member",
         )
         assert resp.status_code == 201, (
             f"[required only] Expected 201, got {resp.status_code}: {resp.text}"
@@ -1315,9 +1316,13 @@ class TestCreateAndDeleteUser(UsersTestBase):
         _cleanup(body["_id"], "all fields")
 
     def test_create_user_negative_tests(self) -> None:
-        """401 no auth · 400 missing fullName · 400 missing email · 400 invalid email format."""
+        """401 no auth · 400 missing role/fullName/email · 400 invalid email format."""
         # Missing Authorization header — auth middleware rejects before Zod.
-        resp = self.users.post("/", json={"fullName": "x", "email": "x@test.com"}, auth=False)
+        resp = self.users.post(
+            "/",
+            json={"fullName": "x", "email": "x@test.com", "role": "member"},
+            auth=False,
+        )
         assert resp.status_code == 401, (
             f"[no auth] Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -1331,7 +1336,7 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Missing fullName — Zod requires fullName.min(1).
-        resp = self.users.post("/", json={"email": "x@test.com"})
+        resp = self.users.post("/", json={"email": "x@test.com", "role": "member"})
         assert resp.status_code == 400, (
             f"[missing fullName] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1342,7 +1347,7 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Missing email — Zod requires email.
-        resp = self.users.post("/", json={"fullName": "Test User"})
+        resp = self.users.post("/", json={"fullName": "Test User", "role": "member"})
         assert resp.status_code == 400, (
             f"[missing email] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1352,8 +1357,22 @@ class TestCreateAndDeleteUser(UsersTestBase):
             f"[missing email] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
         )
 
+        # Missing role — Zod requires role enum admin|member.
+        resp = self.users.post("/", json={"fullName": "Test User", "email": "x@test.com"})
+        assert resp.status_code == 400, (
+            f"[missing role] Expected 400, got {resp.status_code}: {resp.text}"
+        )
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, "createUser", status_code="400")
+        assert body["error"]["code"] == "VALIDATION_ERROR", (
+            f"[missing role] Expected 'VALIDATION_ERROR', got {body['error']['code']!r}"
+        )
+
         # Invalid email format — Zod email() validator rejects malformed addresses.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "not-an-email"})
+        resp = self.users.post(
+            "/",
+            json={"fullName": "Test User", "email": "not-an-email", "role": "member"},
+        )
         assert resp.status_code == 400, (
             f"[invalid email] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1364,7 +1383,15 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Invalid mobile format — Zod refine: must match ^\+?[0-9]{10,15}$.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "valid@example.com", "mobile": "abc123"})
+        resp = self.users.post(
+            "/",
+            json={
+                "fullName": "Test User",
+                "email": "valid@example.com",
+                "role": "member",
+                "mobile": "abc123",
+            },
+        )
         assert resp.status_code == 400, (
             f"[invalid mobile] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1375,7 +1402,15 @@ class TestCreateAndDeleteUser(UsersTestBase):
         )
 
         # Null mobile is invalid — schema expects string when provided.
-        resp = self.users.post("/", json={"fullName": "Test User", "email": "valid@example.com", "mobile": None})
+        resp = self.users.post(
+            "/",
+            json={
+                "fullName": "Test User",
+                "email": "valid@example.com",
+                "role": "member",
+                "mobile": None,
+            },
+        )
         assert resp.status_code == 400, (
             f"[null mobile] Expected 400, got {resp.status_code}: {resp.text}"
         )
