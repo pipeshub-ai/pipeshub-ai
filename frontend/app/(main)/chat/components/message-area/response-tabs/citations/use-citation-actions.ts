@@ -122,16 +122,20 @@ export function useCitationActions(): CitationCallbacks {
 
         // 2. Fetch details first so non-previewable records skip the stream.
         const recordDetails = await KnowledgeBaseApi.getRecordDetails(citation.recordId);
-        if (recordDetails.record.previewRenderable === false) {
+        const record = recordDetails?.record;
+        if (!record) {
+          throw new Error('Record details unavailable');
+        }
+        if (record.previewRenderable === false) {
           setPreviewFile({
             id: citation.recordId,
             name: citation.recordName,
             url: '',
-            type: recordDetails.record.mimeType || citation.mimeType || citation.extension || '',
-            size: recordDetails.record.sizeInBytes,
+            type: record.mimeType || citation.mimeType || citation.extension || '',
+            size: record.sizeInBytes,
             isLoading: false,
             recordDetails,
-            webUrl: recordDetails.record.webUrl ?? undefined,
+            webUrl: record.webUrl ?? undefined,
             previewRenderable: false,
             initialPage,
             highlightBox,
@@ -141,10 +145,13 @@ export function useCitationActions(): CitationCallbacks {
           return;
         }
 
+        // Prefer fresh record metadata for conversion; citation fields are fallbacks.
+        const previewMime = record.mimeType || citation.mimeType;
+        const previewName = record.recordName || citation.recordName;
         // PPT/PPTX and legacy Word (.doc) may be converted to PDF server-side for preview.
         const streamAsPdf =
-          isPresentationFile(citation.mimeType, citation.recordName) ||
-          isLegacyWordDocFile(citation.mimeType, citation.recordName);
+          isPresentationFile(previewMime, previewName) ||
+          isLegacyWordDocFile(previewMime, previewName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
         const blob = await KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions);
 
@@ -153,38 +160,38 @@ export function useCitationActions(): CitationCallbacks {
         // (it calls `blob.arrayBuffer()` and hands the buffer to
         // `docx-preview.renderAsync`), so no blob URL is needed. For every
         // other renderer we still materialise a blob URL the way we used to.
-        const recordMime = recordDetails.record.mimeType || citation.extension || '';
+        const recordMime = record.mimeType || citation.extension || '';
         const resolvedType = resolvePreviewMimeAfterStream(
           recordMime,
-          citation.recordName,
+          previewName,
           blob,
           !!streamOptions,
         );
         // Match old UI: drive everything from record + citation metadata so we always
         // pass the streamed Blob to DocxRenderer (avoid `fetch(blob:...)` blank previews).
-        const fr = recordDetails.record.fileRecord;
+        const fr = record.fileRecord;
         const isDocx = isDocxFile(
-          recordDetails.record.mimeType,
+          record.mimeType,
           citation.recordName,
-          recordDetails.record.recordName,
+          record.recordName,
           citation.extension,
           fr?.extension,
         );
         const url = isDocx ? '' : URL.createObjectURL(blob);
 
         // 4. Update state with actual file URL and/or blob and record details
-        const webUrl = recordDetails.record.webUrl ?? undefined;
+        const webUrl = record.webUrl ?? undefined;
         setPreviewFile({
           id: citation.recordId,
           name: citation.recordName,
           url,
           blob: isDocx ? blob : undefined,
           type: resolvedType,
-          size: recordDetails.record.sizeInBytes,
+          size: record.sizeInBytes,
           isLoading: false,
           recordDetails,
           webUrl,
-          previewRenderable: recordDetails.record.previewRenderable,
+          previewRenderable: record.previewRenderable,
           initialPage,
           highlightBox,
           citations: recordCitations,
