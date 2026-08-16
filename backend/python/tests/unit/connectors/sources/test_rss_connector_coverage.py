@@ -100,6 +100,22 @@ def _patch_fetch(**kwargs):
     )
 
 
+def _patch_fetch_raises(exc):
+    """Patch fetch_url_with_fallback to raise, exercising the connector's except branches."""
+    return patch(
+        "app.connectors.sources.rss.connector.fetch_url_with_fallback",
+        new=AsyncMock(side_effect=exc),
+    )
+
+
+def _patch_fetch_none():
+    """Patch fetch_url_with_fallback to return None — every strategy in the chain failed."""
+    return patch(
+        "app.connectors.sources.rss.connector.fetch_url_with_fallback",
+        new=AsyncMock(return_value=None),
+    )
+
+
 def _make_record(**overrides):
     """Build a minimal Record for testing."""
     defaults = {
@@ -128,9 +144,8 @@ class TestFetchAndParseFeed:
     @pytest.mark.asyncio
     async def test_http_error_returns_none(self):
         conn = _make_connector()
-        resp = _make_mock_response(status=404)
-        conn.session = _make_session(resp)
-        result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        with _patch_fetch(status=404):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is None
 
     @pytest.mark.asyncio
@@ -155,16 +170,15 @@ class TestFetchAndParseFeed:
     async def test_bozo_feed_with_no_entries_returns_none(self):
         conn = _make_connector()
         # Return content that feedparser can parse but marks as bozo
-        resp = _make_mock_response(status=200, content=b"not-valid-xml-at-all")
-        conn.session = _make_session(resp)
-        with patch("app.connectors.sources.rss.connector.feedparser") as mock_fp:
-            mock_feed = MagicMock()
-            mock_feed.bozo = True
-            mock_feed.entries = []
-            mock_feed.bozo_exception = Exception("parse error")
-            mock_fp.parse.return_value = mock_feed
-            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
-            assert result is None
+        with _patch_fetch(status=200, content=b"not-valid-xml-at-all"):
+            with patch("app.connectors.sources.rss.connector.feedparser") as mock_fp:
+                mock_feed = MagicMock()
+                mock_feed.bozo = True
+                mock_feed.entries = []
+                mock_feed.bozo_exception = Exception("parse error")
+                mock_fp.parse.return_value = mock_feed
+                result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+                assert result is None
 
     @pytest.mark.asyncio
     async def test_bozo_feed_with_entries_returns_feed(self):
@@ -179,24 +193,24 @@ class TestFetchAndParseFeed:
                 assert result is not None
 
     @pytest.mark.asyncio
+    async def test_all_strategies_failed_returns_none(self):
+        conn = _make_connector()
+        with _patch_fetch_none():
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_timeout_returns_none(self):
         conn = _make_connector()
-        session = MagicMock()
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
-        cm.__aexit__ = AsyncMock(return_value=None)
-        session.get = MagicMock(return_value=cm)
-        conn.session = session
-        result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        with _patch_fetch_raises(asyncio.TimeoutError()):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
         conn = _make_connector()
-        session = MagicMock()
-        session.get = MagicMock(side_effect=Exception("network error"))
-        conn.session = session
-        result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        with _patch_fetch_raises(Exception("network error")):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is None
 
 
@@ -218,18 +232,16 @@ class TestFetchArticleContent:
     @pytest.mark.asyncio
     async def test_http_error_returns_empty(self):
         conn = _make_connector()
-        resp = _make_mock_response(status=500)
-        conn.session = _make_session(resp)
-        result = await conn._fetch_article_content("https://example.com/article")
+        with _patch_fetch(status=500):
+            result = await conn._fetch_article_content("https://example.com/article")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_non_html_content_type_returns_empty(self):
         conn = _make_connector()
-        resp = _make_mock_response(status=200, content=b"binary data")
-        resp.headers = {"Content-Type": "application/pdf"}
-        conn.session = _make_session(resp)
-        result = await conn._fetch_article_content("https://example.com/file.pdf")
+        with _patch_fetch(status=200, content=b"binary data",
+                          headers={"Content-Type": "application/pdf"}):
+            result = await conn._fetch_article_content("https://example.com/file.pdf")
         assert result == ""
 
     @pytest.mark.asyncio
@@ -242,36 +254,33 @@ class TestFetchArticleContent:
                 assert result == "data"
 
     @pytest.mark.asyncio
+    async def test_all_strategies_failed_returns_empty(self):
+        conn = _make_connector()
+        with _patch_fetch_none():
+            result = await conn._fetch_article_content("https://example.com/article")
+        assert result == ""
+
+    @pytest.mark.asyncio
     async def test_timeout_returns_empty(self):
         conn = _make_connector()
-        session = MagicMock()
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
-        cm.__aexit__ = AsyncMock(return_value=None)
-        session.get = MagicMock(return_value=cm)
-        conn.session = session
-        result = await conn._fetch_article_content("https://example.com/article")
+        with _patch_fetch_raises(asyncio.TimeoutError()):
+            result = await conn._fetch_article_content("https://example.com/article")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
         conn = _make_connector()
-        session = MagicMock()
-        session.get = MagicMock(side_effect=Exception("connection error"))
-        conn.session = session
-        result = await conn._fetch_article_content("https://example.com/article")
+        with _patch_fetch_raises(Exception("connection error")):
+            result = await conn._fetch_article_content("https://example.com/article")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_missing_content_type_header(self):
         conn = _make_connector()
-        resp = _make_mock_response(status=200, content=b"<html>body</html>")
-        mock_headers = MagicMock()
-        mock_headers.get = MagicMock(return_value="")
-        resp.headers = mock_headers
-        conn.session = _make_session(resp)
-        result = await conn._fetch_article_content("https://example.com/article")
-        assert result == ""  # Empty content-type doesn't contain 'html' or 'xml'
+        with _patch_fetch(status=200, content=b"<html>body</html>",
+                          headers={"Server": "nginx"}):
+            result = await conn._fetch_article_content("https://example.com/article")
+        assert result == ""  # Absent content-type doesn't contain 'html' or 'xml'
 
 
 # ===================================================================
@@ -749,6 +758,7 @@ class TestProcessEntryExtended:
     @pytest.mark.asyncio
     async def test_content_from_entry_content(self):
         conn = _make_connector()
+        conn.fetch_full_content = False
         entry = {
             "title": "Test",
             "link": "https://example.com/article",
