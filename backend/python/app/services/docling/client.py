@@ -136,8 +136,6 @@ class DoclingClient(BaseServiceClient):
                     return await asyncio.to_thread(response.json)
 
                 self.logger.error(f"❌ {description} returned HTTP {response.status_code}: {response.text}")
-                if response.status_code in SERVICE_UNAVAILABLE_STATUS_CODES:
-                    self.logger.warning(f"⚠️ Docling service temporarily unavailable (HTTP {response.status_code})")
                 if not await self._sleep_before_retry(attempt):
                     break
 
