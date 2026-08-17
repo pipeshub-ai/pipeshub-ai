@@ -23,6 +23,7 @@ this system must scale up for.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -35,6 +36,8 @@ from app.services.resource_governor.models import ResourceSnapshot
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 try:
     import psutil  # type: ignore[import-untyped]
@@ -523,6 +526,20 @@ def _psutil_cpu_usec() -> int | None:
         return None
 
 
+# Sources whose counter sums CPU time across every CPU on the host, not just
+# what this container/process is entitled to (/proc/stat's "cpu " line and
+# psutil.cpu_times() are both host-wide aggregates). A delta from one of
+# these must be normalised by the host's CPU count, never by cpu_quota — a
+# small container on a big host would otherwise see a wildly inflated
+# "utilisation" and trip the CPU brake despite being idle itself.
+_HOST_WIDE_CPU_SOURCES = frozenset({"proc_stat", "psutil"})
+
+
+def _host_cpu_count() -> int | None:
+    count = os.cpu_count()
+    return count if count else None
+
+
 def _resolve_cpu_usage_usec() -> tuple[int | None, str]:
     if sys.platform.startswith("linux"):
         usage = _cgroup_v2_cpu_stat_field("usage_usec")
@@ -609,6 +626,7 @@ class SystemResourceProbe:
         try:
             return self._snapshot_unguarded()
         except Exception:
+            logger.exception("ResourceProbe snapshot failed; falling back to a default snapshot")
             return ResourceSnapshot(
                 cpu_quota=1.0,
                 cpu_utilisation=None,
@@ -643,9 +661,19 @@ class SystemResourceProbe:
                 # changes scope, so treat it like a first sample instead of
                 # diffing two incompatible counters.
                 elapsed = now - self._prev_time
-                if elapsed > 0 and cpu_quota > 0:
+                if elapsed > 0:
                     delta_usec = cpu_usage_usec - self._prev_cpu_usec
-                    cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * cpu_quota))
+                    if cpu_source in _HOST_WIDE_CPU_SOURCES:
+                        # Host-wide counter: normalise by the host's CPU
+                        # count, not this container's quota. Left as None
+                        # (no false brake) if that count isn't available.
+                        host_cpus = _host_cpu_count()
+                        if host_cpus:
+                            cpu_utilisation = max(
+                                0.0, delta_usec / (elapsed * 1_000_000 * host_cpus)
+                            )
+                    elif cpu_quota > 0:
+                        cpu_utilisation = max(0.0, delta_usec / (elapsed * 1_000_000 * cpu_quota))
                     if throttled_usec is not None and self._prev_throttled_usec is not None:
                         throttled_delta = throttled_usec - self._prev_throttled_usec
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))

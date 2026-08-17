@@ -835,7 +835,10 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
     or once that dedup is moved to a shared store (Redis lock/lease).
     """
     if workers is None:
-        workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        try:
+            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        except ValueError:
+            workers = 1
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

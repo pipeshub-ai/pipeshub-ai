@@ -347,7 +347,7 @@ async def test_second_request_gets_429_backpressure_after_gate_timeout(
     monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.02)
     monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 0.1)
 
-    release_event = asyncio.Event()  # never set — first request holds its slot for the whole test
+    release_event = asyncio.Event()  # held during the assertions, then set to let the first request drain before the client closes
     registry = MagicMock(spec=ParserRegistry)
     registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
 
@@ -390,7 +390,7 @@ async def test_light_request_proceeds_while_heavy_pool_saturated(monkeypatch: py
     monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 5.0)
     monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 5.0)
 
-    heavy_release = asyncio.Event()  # never set — heavy request holds its slot for the whole test
+    heavy_release = asyncio.Event()  # held during the assertions, then set to let the heavy request drain before the client closes
     light_parser = MagicMock()
     light_parser.parse = AsyncMock(return_value=_ok_result())
 

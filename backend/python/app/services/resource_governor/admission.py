@@ -30,6 +30,19 @@ DEFAULT_GATE_TIMEOUT_SECONDS = 120.0
 DEFAULT_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 
 
+async def _cancel_and_release_if_granted(
+    acquire_task: "asyncio.Task[bool]", gate: "AdmissionGate", cost: int
+) -> None:
+    """On our own cancellation, cancel the shielded *acquire_task* and, if it
+    had already been granted a permit in that race, release it — otherwise
+    the gate's ``in_use`` permanently overcounts by ``cost`` with nothing
+    left to release it."""
+    acquire_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        if await acquire_task:
+            gate.release(cost)
+
+
 async def acquire_gate_with_backpressure(
     gate: "AdmissionGate",
     cost: int,
@@ -75,10 +88,7 @@ async def acquire_gate_with_backpressure(
         # in_use permanently overcounts by `cost` with nothing left to
         # release it, shrinking real capacity by one permit every time a
         # caller is cancelled during this wait.
-        acquire_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            if await acquire_task:
-                gate.release(cost)
+        await _cancel_and_release_if_granted(acquire_task, gate, cost)
         raise
     except asyncio.TimeoutError:
         # in_use well below limit while a request still waits means the
@@ -95,7 +105,14 @@ async def acquire_gate_with_backpressure(
             if likely_rate_limited else "",
             gate_timeout_seconds,
         )
-        admitted = await acquire_task
+        try:
+            # Shielded for the same reason as the wait above: our own
+            # cancellation must not directly cancel acquire_task before we
+            # get a chance to release a permit it may have already won.
+            admitted = await asyncio.shield(acquire_task)
+        except asyncio.CancelledError:
+            await _cancel_and_release_if_granted(acquire_task, gate, cost)
+            raise
         if not admitted:
             logger.warning(
                 "%s saturated: %s gate timeout after %.0fs (in_use=%d/%d); "

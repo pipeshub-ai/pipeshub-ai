@@ -983,7 +983,7 @@ class TestConfigurableThresholds:
         # *absolute* free memory remains for HEAVY_PARSE's own per-slot
         # budget (_target_for) — isolating the MEM_SOFT/GROW_BAND effect
         # from that separate, unrelated constraint. With the original
-        # MEM_SOFT=0.75 this pressure would have forced a shrink every
+        # MEM_SOFT=0.70 this pressure would have forced a shrink every
         # interval; with the overridden 0.85 it reads as healthy.
         snap = _snapshot(
             cpu_quota=8.0, cpu_utilisation=0.1,

@@ -49,13 +49,13 @@ const originalRsEntry = require.cache[rsPath];
 const originalFactoryEntry = require.cache[factoryPath];
 
 function ensureIoredisMock() {
-  const FakeRedis = function (this: any, _opt: any) {
-    return Object.assign(this, new FakeRedisForFactory(_opt));
-  } as any;
-  FakeRedis.prototype = FakeRedisForFactory.prototype;
   require.cache[ioredisPath] = {
     ...originalIoredisEntry!,
-    exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
+    exports: {
+      Redis: FakeRedisForFactory,
+      default: FakeRedisForFactory,
+      RedisOptions: {},
+    },
   } as any;
 
   // Reload the modules that import ioredis

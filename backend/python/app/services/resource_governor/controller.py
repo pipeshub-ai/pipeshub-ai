@@ -81,6 +81,16 @@ class ResourceGovernor:
         self._worker_count = max(1, worker_count)
 
         initial_snapshot = self._probe.snapshot()
+        if initial_snapshot.source == "error":
+            # A transient failure on the very first read (e.g. cgroup files
+            # not yet mounted during container startup) would otherwise lock
+            # in the fallback cpu_quota=1.0 for the ceilings' entire process
+            # lifetime, since they're resolved once here and never redone.
+            # One immediate retry is enough to ride out a startup race.
+            self._logger.warning(
+                "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
+            )
+            initial_snapshot = self._probe.snapshot()
         self._ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
@@ -250,9 +260,14 @@ class ResourceGovernor:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
         demand = self._drain_all_demand()
-        current = self._registry.snapshot()
 
+        # Held across the registry snapshot, the limit calculation, and the
+        # resulting writes so report_memory_incident() (called from another
+        # thread) can't have its emergency halving clobbered by a sample
+        # that read the registry before the incident but writes after it.
+        changed: list[tuple[Pool, int, int]] = []
         with self._state_lock:
+            current = self._registry.snapshot()
             new_limits, new_state = next_limits(
                 current=current,
                 snap=snapshot,
@@ -264,12 +279,11 @@ class ResourceGovernor:
             )
             self._state = new_state
 
-        changed: list[tuple[Pool, int, int]] = []
-        for pool in Pool:
-            new_value = new_limits.get(pool)
-            old_value = current.get(pool)
-            if self._registry.set(pool, new_value):
-                changed.append((pool, old_value, new_value))
+            for pool in Pool:
+                new_value = new_limits.get(pool)
+                old_value = current.get(pool)
+                if self._registry.set(pool, new_value):
+                    changed.append((pool, old_value, new_value))
 
         with self._stats_lock:
             self._last_snapshot = snapshot

@@ -448,8 +448,9 @@ class BaseServiceClient:
                         # Signalled on every occurrence (not just the
                         # first) so the coordinator's pause deadline tracks
                         # the service's latest requested wait.
+                        wait = min(max(retry_after, MIN_BACKPRESSURE_WAIT), DEFAULT_BACKPRESSURE_WAIT_CAP)
                         if self._backpressure_coordinator is not None:
-                            self._backpressure_coordinator.signal(self.service_name, retry_after)
+                            self._backpressure_coordinator.signal(self.service_name, wait)
                         backpressure_attempts += 1
                         if backpressure_attempts > self.max_backpressure_attempts:
                             self.logger.warning(
@@ -463,7 +464,6 @@ class BaseServiceClient:
                                 retry_after=retry_after,
                                 service_name=self.service_name,
                             )
-                        wait = min(max(retry_after, MIN_BACKPRESSURE_WAIT), DEFAULT_BACKPRESSURE_WAIT_CAP)
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
                             self.service_name, operation, retry_after, wait,

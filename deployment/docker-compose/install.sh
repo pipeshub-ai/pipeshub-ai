@@ -872,6 +872,22 @@ header "Deployment summary"
 # Source .env so all variables are available for display (and for launch)
 set -a; . "$ENV_FILE"; set +a
 
+# Docker requires memswap_limit >= memory (or -1 for unlimited swap); if a user
+# raises APP_MEMORY_LIMIT without also raising APP_MEMSWAP_LIMIT, that would
+# otherwise only surface as a cryptic Docker error at container start. Only
+# checked for the G/M-suffixed forms documented in env.template — anything
+# else (e.g. -1, plain byte counts) is left to Docker's own validation.
+_parse_mem_mb() {
+  [[ "$1" =~ ^([0-9]+)[gG]$ ]] && { echo $(( ${BASH_REMATCH[1]} * 1024 )); return; }
+  [[ "$1" =~ ^([0-9]+)[mM]$ ]] && { echo "${BASH_REMATCH[1]}"; return; }
+  return 1
+}
+_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-12G}")" || _app_mem_mb=""
+_app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_mb=""
+if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
+  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-12G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
+fi
+
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
 APP_PORT="${APP_PORT:-3000}"
 HEALTH_URL="http://localhost:${APP_PORT}/api/v1/health/services"

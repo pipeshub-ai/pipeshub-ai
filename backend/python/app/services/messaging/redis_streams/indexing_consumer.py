@@ -665,7 +665,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         # No new messages - increment idle counter
                         self._consecutive_empty_polls += 1
                         if self._consecutive_empty_polls >= self._idle_threshold:
-                            # Idle: process pending messages
+                            # Idle: process pending messages. Re-check backpressure
+                            # immediately before draining — it may have engaged
+                            # during the xreadgroup block/idle wait above, and
+                            # draining would otherwise resubmit recovered
+                            # messages to an already-saturated downstream service.
+                            await self._wait_out_backpressure()
                             await self._drain_pending()
                             self._consecutive_empty_polls = 0
                         continue

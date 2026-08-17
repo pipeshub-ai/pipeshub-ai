@@ -1188,7 +1188,7 @@ class TestRun:
             host="0.0.0.0",
             port=8088,
             log_level="info",
-            reload=True,
+            reload=False,
             workers=1,
         )
 
@@ -1249,6 +1249,27 @@ class TestRun:
             reload=False,
             workers=1,
         )
+
+    def test_run_falls_back_to_one_worker_when_env_var_invalid(self):
+        """A malformed CONNECTOR_UVICORN_WORKERS value should not crash
+        startup; fall back to 1 worker instead of raising ValueError."""
+        from app.connectors_main import run
+
+        for invalid_value in ("abc", ""):
+            with (
+                patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+                patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": invalid_value}),
+            ):
+                run(reload=False)
+
+            mock_uvicorn.assert_called_once_with(
+                "app.connectors_main:app",
+                host="0.0.0.0",
+                port=8088,
+                log_level="info",
+                reload=False,
+                workers=1,
+            )
 
     def test_run_reload_with_multiple_workers_forces_single_worker(self):
         """reload=True always clamps to 1 worker, even with an explicit

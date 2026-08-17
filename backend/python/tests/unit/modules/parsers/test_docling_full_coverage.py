@@ -312,9 +312,6 @@ class TestProcessDocument:
         assert result is None
 
 
-# ===========================================================================
-# process_in_batches
-# ===========================================================================
 class TestProcessInBatches:
     """Peak memory must not scale with page count: each batch's DoclingDocument
     is converted to blocks and dropped before the next batch is parsed, rather
