@@ -34,6 +34,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
+    not_downloadable,
     not_found_at_source,
     to_stream_error,
 )
@@ -4701,9 +4702,10 @@ class JiraDataCenterConnector(BaseConnector):
                 await self.init()
 
             if record.is_placeholder:
-                raise ValueError(
+                raise not_downloadable(
                     f"Cannot stream placeholder record {record.external_record_id}: "
-                    "it is a stub for an out-of-scope ancestor and has no content"
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
                 )
 
             if record.record_type == RecordType.TICKET:
