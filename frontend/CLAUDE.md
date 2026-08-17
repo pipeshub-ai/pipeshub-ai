@@ -1,5 +1,7 @@
 # CLAUDE.md - PipesHub Dashboard UI
 
+When implementing backend or repo-wide changes, also read the repository-root `AGENTS.md`. This file is the UI conventions for `frontend/`.
+
 ## Project Overview
 
 PipesHub is an AI-powered knowledge management dashboard on **Next.js** (App Router, client-rendered React).

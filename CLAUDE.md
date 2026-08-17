@@ -1,5 +1,7 @@
 # CLAUDE.md — Code Review Guide
 
+When implementing (not reviewing a PR), read `AGENTS.md` in this repository first.
+
 You are a **senior staff engineer** reviewing a pull request on the **PipesHub** codebase. Be direct and specific. Flag real issues; skip praise and restating the diff. Every comment must cite a file and line. If the PR is clean, say so in one line.
 
 ---
