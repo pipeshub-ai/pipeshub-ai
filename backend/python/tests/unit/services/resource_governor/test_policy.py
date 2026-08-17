@@ -76,7 +76,7 @@ def _saturated_demand(limit: int, interval: float = INTERVAL) -> dict[Pool, Pool
 
 class TestResolveCeilings:
     """Slot counts are a pure function of the CPU quota, capped by the two
-    operator vars: heavy = 1/CPU, light = 3/CPU, index = 2x the wider parse
+    operator vars: heavy = 1/CPU, light = 10/CPU, index = 100x the wider parse
     tier. Memory is deliberately absent — it gates heavy per sample
     (``heavy_memory_cap``) rather than at startup."""
 
@@ -84,22 +84,22 @@ class TestResolveCeilings:
         snap = _snapshot(cpu_quota=2.0, mem_limit_bytes=4 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 2
-        assert ceilings.light == 6
-        assert ceilings.index == 12
+        assert ceilings.light == 20
+        assert ceilings.index == 2000
 
     def test_medium_host_8cpu(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 8
-        assert ceilings.light == 24
-        assert ceilings.index == 48
+        assert ceilings.light == 80
+        assert ceilings.index == 8000
 
     def test_large_host_32cpu_is_not_clamped_by_a_fixed_maximum(self) -> None:
         snap = _snapshot(cpu_quota=32.0, mem_limit_bytes=64 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 32
-        assert ceilings.light == 96
-        assert ceilings.index == 192
+        assert ceilings.light == 320
+        assert ceilings.index == 32000
 
     def test_unknown_memory_changes_nothing(self) -> None:
         """Ceilings are CPU-only, so an unreadable cgroup memory limit is
@@ -107,7 +107,7 @@ class TestResolveCeilings:
         snap = _snapshot(cpu_quota=6.0, mem_limit_bytes=None, mem_working_set_bytes=None)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 6
-        assert ceilings.light == 18
+        assert ceilings.light == 60
 
     def test_explicit_ceilings_honoured_including_one(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=32 * 1024 ** 3)
@@ -120,8 +120,8 @@ class TestResolveCeilings:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=32 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, env_parse=4, env_index=None, worker_count=1)
         assert ceilings.heavy == 4
-        assert ceilings.light == 4  # 24 derived, capped by MAX_CONCURRENT_PARSING
-        assert ceilings.index == 8  # 2 * max(4, 4)
+        assert ceilings.light == 4  # 80 derived, capped by MAX_CONCURRENT_PARSING
+        assert ceilings.index == 400  # 100 * max(4, 4)
 
     def test_explicit_ceilings_only_cap_and_never_raise(self) -> None:
         """MAX_CONCURRENT_* is a ``min`` against the derived value: a
@@ -129,15 +129,15 @@ class TestResolveCeilings:
         snap = _snapshot(cpu_quota=4.0, mem_limit_bytes=8 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, env_parse=200, env_index=200, worker_count=1)
         assert ceilings.heavy == 4
-        assert ceilings.light == 12
-        assert ceilings.index == 24
+        assert ceilings.light == 40
+        assert ceilings.index == 200
 
     def test_sub_one_cpu_host_floors_at_one_not_zero(self) -> None:
         snap = _snapshot(cpu_quota=0.5, mem_limit_bytes=8 * 1024 ** 3)
         ceilings = resolve_ceilings(snap, None, None, worker_count=1)
         assert ceilings.heavy == 1
-        assert ceilings.light == 1  # floor(0.5 * 3) = 1
-        assert ceilings.index == 2
+        assert ceilings.light == 5  # floor(0.5 * 10) = 5
+        assert ceilings.index == 500
 
     def test_worker_count_divides_ceilings(self) -> None:
         snap = _snapshot(cpu_quota=8.0, mem_limit_bytes=16 * 1024 ** 3)
@@ -287,11 +287,12 @@ class TestWarmStartLimits:
         limits = warm_start_limits(ceilings)
 
         assert ceilings.heavy == 8
-        assert ceilings.index == 48
+        assert ceilings.light == 80
+        assert ceilings.index == 1000  # env_index caps the derived 8000
         assert limits.get(Pool.HEAVY_PARSE) == 2
-        # The index pool does start at its ceiling, but that ceiling is the
-        # CPU-derived 48 — the operator's 1000 raises nothing.
-        assert limits.get(Pool.INDEX) == 48
+        # Heavy still floors; the index pool is not adapted, so it starts at
+        # its (capped) ceiling.
+        assert limits.get(Pool.INDEX) == 1000
 
     def test_ceiling_below_the_floor_is_honoured_exactly(self) -> None:
         ceilings = Ceilings(heavy=1, light=1, index=1)

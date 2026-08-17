@@ -408,114 +408,6 @@ class TestBackpressureResponse:
         assert "Retry-After" in resp.headers
 
 
-class TestProcessPdfEndpoint:
-    """Tests for the /process-pdf endpoint (multipart file upload)."""
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_backpressured_returns_429(self):
-        import app.services.docling.docling_service as mod
-        original_governor = mod._resource_governor
-        original_svc = mod.docling_service
-        svc = DoclingService()
-        mod.docling_service = svc
-        try:
-            with patch(
-                "app.services.docling.docling_service._acquire_docling_gate",
-                new_callable=AsyncMock,
-                return_value=(False, 0),
-            ):
-                from app.services.docling.docling_service import process_pdf_endpoint
-                resp = await process_pdf_endpoint(
-                    file=_make_upload_file(b"data"), record_name="test.pdf"
-                )
-            assert resp.status_code == 429
-        finally:
-            mod._resource_governor = original_governor
-            mod.docling_service = original_svc
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_service_not_available(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        mod.docling_service = None
-        try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            from fastapi import HTTPException
-            with pytest.raises(HTTPException):
-                await process_pdf_endpoint(
-                    file=_make_upload_file(b"data"), record_name="test.pdf"
-                )
-        finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_success(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        mock_result = MagicMock()
-        mock_result.dict.return_value = {"blocks": []}
-        svc.process_pdf = AsyncMock(return_value=mock_result)
-        mod.docling_service = svc
-        try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            resp = await process_pdf_endpoint(
-                file=_make_upload_file(b"data"), record_name="test.pdf"
-            )
-            assert resp.success is True
-            svc.process_pdf.assert_awaited_once_with("test.pdf", b"data")
-        finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_processing_error(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        svc = DoclingService()
-        svc.process_pdf = AsyncMock(side_effect=ValueError("processing error"))
-        mod.docling_service = svc
-        try:
-            from app.services.docling.docling_service import process_pdf_endpoint
-            resp = await process_pdf_endpoint(
-                file=_make_upload_file(b"data"), record_name="test.pdf"
-            )
-            assert resp.success is False
-            assert "processing error" in resp.error
-        finally:
-            mod.docling_service = original
-
-    @pytest.mark.asyncio
-    async def test_process_pdf_endpoint_releases_gate_on_processing_error(self):
-        """The gate must be released even when the handler raises — otherwise
-        a run of failures would permanently shrink the effective pool."""
-        import app.services.docling.docling_service as mod
-        original_svc = mod.docling_service
-        original_governor = mod._resource_governor
-        svc = DoclingService()
-        svc.process_pdf = AsyncMock(side_effect=ValueError("boom"))
-        mod.docling_service = svc
-        try:
-            with (
-                patch(
-                    "app.services.docling.docling_service._acquire_docling_gate",
-                    new_callable=AsyncMock,
-                    return_value=(True, 1),
-                ),
-                patch(
-                    "app.services.docling.docling_service._release_docling_gate"
-                ) as mock_release,
-            ):
-                from app.services.docling.docling_service import process_pdf_endpoint
-                resp = await process_pdf_endpoint(
-                    file=_make_upload_file(b"data"), record_name="test.pdf"
-                )
-            assert resp.success is False
-            mock_release.assert_called_once_with(1)
-        finally:
-            mod.docling_service = original_svc
-            mod._resource_governor = original_governor
-
-
 class TestParsePdfEndpoint:
     """Tests for the /parse-pdf endpoint (multipart file upload)."""
 
@@ -629,3 +521,37 @@ class TestParsePdfEndpoint:
             assert "parse fail" in resp.error
         finally:
             mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_releases_gate_on_processing_error(self):
+        """The gate must be released even when the handler raises — otherwise
+        a run of failures would permanently shrink the effective pool."""
+        import app.services.docling.docling_service as mod
+        original_svc = mod.docling_service
+        original_governor = mod._resource_governor
+        svc = DoclingService()
+        svc.parse_pdf_only = AsyncMock(side_effect=ValueError("boom"))
+        mod.docling_service = svc
+        try:
+            with (
+                patch(
+                    "app.services.docling.docling_service._acquire_docling_gate",
+                    new_callable=AsyncMock,
+                    return_value=(True, 1),
+                ),
+                patch(
+                    "app.services.docling.docling_service._release_docling_gate"
+                ) as mock_release,
+            ):
+                from app.services.docling.docling_service import parse_pdf_endpoint
+                resp = await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
+                )
+            assert resp.success is False
+            mock_release.assert_called_once_with(1)
+        finally:
+            mod.docling_service = original_svc
+            mod._resource_governor = original_governor

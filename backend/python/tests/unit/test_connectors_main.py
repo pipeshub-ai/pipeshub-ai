@@ -1188,7 +1188,7 @@ class TestRun:
             host="0.0.0.0",
             port=8088,
             log_level="info",
-            reload=False,
+            reload=True,
             workers=1,
         )
 

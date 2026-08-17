@@ -5,10 +5,9 @@ mechanics are covered by tests/unit/services/test_base_client.py and
 test_base_client_backpressure.py. These tests focus on Docling-specific
 behaviour:
   - __init__ (URL, timeout, retry config)
-  - _parse_blocks_container (dict and string input)
   - _validate_pdf_binary (type / size guards)
-  - process_pdf / parse_pdf / create_blocks: request shape, response
-    translation, and failure-to-None mapping
+  - parse_pdf / parse_pdf_batched: request shape, response translation,
+    and failure-to-None mapping
 """
 from __future__ import annotations
 
@@ -17,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from app.services.base_client import ServiceCallError, ServiceUnavailableError
+from app.services.base_client import ServiceUnavailableError
 from app.services.docling.client import DoclingClient
 
 # ===========================================================================
@@ -90,44 +89,6 @@ class TestInit:
 
 
 # ===========================================================================
-# _parse_blocks_container
-# ===========================================================================
-
-
-class TestParseBlocksContainer:
-    """Test _parse_blocks_container method."""
-
-    def test_dict_input(self, client):
-        with patch("app.services.docling.client.BlocksContainer") as MockBC:
-            mock_instance = MagicMock()
-            MockBC.return_value = mock_instance
-
-            result = client._parse_blocks_container({"blocks": []})
-
-            MockBC.assert_called_once_with(blocks=[])
-            assert result is mock_instance
-
-    def test_string_input(self, client):
-        with patch("app.services.docling.client.BlocksContainer") as MockBC:
-            mock_instance = MagicMock()
-            MockBC.return_value = mock_instance
-
-            result = client._parse_blocks_container('{"blocks": []}')
-
-            MockBC.assert_called_once_with(blocks=[])
-            assert result is mock_instance
-
-    def test_invalid_string_raises(self, client):
-        with pytest.raises(Exception):
-            client._parse_blocks_container("not-json")
-
-    def test_invalid_data_raises(self, client):
-        with patch("app.services.docling.client.BlocksContainer", side_effect=TypeError("bad")):
-            with pytest.raises(TypeError):
-                client._parse_blocks_container({"invalid": True})
-
-
-# ===========================================================================
 # _validate_pdf_binary
 # ===========================================================================
 
@@ -149,7 +110,7 @@ class TestValidatePdfBinary:
 # ===========================================================================
 
 
-class TestProcessPdf:
+class TestParsePdfBatched:
     @pytest.mark.asyncio
     async def test_invalid_type_returns_none(self, client):
         result = await client.parse_pdf_batched("doc.pdf", "not bytes")  # type: ignore
@@ -162,33 +123,64 @@ class TestProcessPdf:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_uploads_pdf_once(self, client, small_pdf):
-        """A single multipart POST carries the whole PDF; the service batches internally."""
-        blocks_data = {"blocks": [], "block_groups": []}
-        response_body = {"success": True, "block_containers": blocks_data}
-        mock_blocks = MagicMock()
+    async def test_single_batch_skips_concatenate(self, client, small_pdf):
+        """A document that fits in one batch is parsed once and not merged."""
+        mock_doc = MagicMock()
+        with (
+            patch("app.services.docling.client.get_pdf_page_count", return_value=3),
+            patch.object(
+                client, "_post_multipart",
+                new=AsyncMock(return_value=_make_response(200, {"success": True, "parse_result": "{}"})),
+            ) as mock_post,
+            patch("app.services.docling.client.DoclingDocument") as MockDoc,
+        ):
+            MockDoc.model_validate_json.return_value = mock_doc
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=10)
 
-        with patch.object(
-            client, "_post_multipart", new=AsyncMock(return_value=_make_response(200, response_body)),
-        ) as mock_post:
-            with patch.object(client, "_parse_blocks_container", return_value=mock_blocks):
-                result = await client.process_pdf("doc.pdf", small_pdf)
-
-        assert result is mock_blocks
+        assert result is mock_doc
         mock_post.assert_awaited_once()
+        assert mock_post.call_args.args[0] == "/parse-pdf"
         call_kwargs = mock_post.call_args.kwargs
         assert call_kwargs["data"] == {"record_name": "doc.pdf"}
         assert call_kwargs["files"] == {"file": ("doc.pdf", small_pdf, "application/pdf")}
-        assert mock_post.call_args.args[0] == "/process-pdf"
+        MockDoc.concatenate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_each_batch_is_parsed_before_concatenate(self, client, small_pdf):
+        """Page-range batches are parsed sequentially, then concatenated."""
+        call_ranges = []
+
+        async def fake_parse(record_name, pdf_binary, page_range=None):
+            call_ranges.append(page_range)
+            return f'{{"range": "{page_range}"}}'
+
+        docs = [MagicMock(), MagicMock(), MagicMock()]
+        merged = MagicMock()
+
+        with (
+            patch("app.services.docling.client.get_pdf_page_count", return_value=5),
+            patch.object(client, "parse_pdf", side_effect=fake_parse),
+            patch("app.services.docling.client.DoclingDocument") as MockDoc,
+        ):
+            MockDoc.model_validate_json.side_effect = docs
+            MockDoc.concatenate.return_value = merged
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf, batch_size=2)
+
+        assert call_ranges == [(1, 2), (3, 4), (5, 5)]
+        MockDoc.concatenate.assert_called_once_with(docs)
+        assert result is merged
+        assert merged.name == "doc.pdf"
 
     @pytest.mark.asyncio
     async def test_service_error_response_returns_none(self, client, small_pdf):
-        response_body = {"success": False, "error": "process fail"}
-
-        with patch.object(
-            client, "_post_multipart", new=AsyncMock(return_value=_make_response(200, response_body)),
+        with (
+            patch("app.services.docling.client.get_pdf_page_count", return_value=1),
+            patch.object(
+                client, "_post_multipart",
+                new=AsyncMock(return_value=_make_response(200, {"success": False, "error": "process fail"})),
+            ),
         ):
-            result = await client.process_pdf("doc.pdf", small_pdf)
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf)
 
         assert result is None
 
@@ -196,11 +188,14 @@ class TestProcessPdf:
     async def test_retries_exhausted_returns_none(self, client, small_pdf):
         """When BaseServiceClient exhausts retries, the ServiceCallError is
         caught and translated to None rather than propagating."""
-        with patch.object(
-            client, "_post_multipart",
-            new=AsyncMock(side_effect=ServiceUnavailableError("down", service_name="DoclingService")),
+        with (
+            patch("app.services.docling.client.get_pdf_page_count", return_value=1),
+            patch.object(
+                client, "_post_multipart",
+                new=AsyncMock(side_effect=ServiceUnavailableError("down", service_name="DoclingService")),
+            ),
         ):
-            result = await client.process_pdf("doc.pdf", small_pdf)
+            result = await client.parse_pdf_batched("doc.pdf", small_pdf)
 
         assert result is None
 
@@ -279,51 +274,6 @@ class TestParsePdf:
         form_data = mock_post.call_args.kwargs["data"]
         assert form_data["start_page"] == "1"
         assert form_data["end_page"] == "10"
-
-
-# ===========================================================================
-# create_blocks
-# ===========================================================================
-
-
-class TestCreateBlocks:
-    @pytest.mark.asyncio
-    async def test_successful_create(self, client):
-        blocks_data = {"blocks": [], "block_groups": []}
-        response_body = {"success": True, "block_containers": blocks_data}
-        mock_blocks = MagicMock()
-
-        with patch.object(
-            client, "_post_json", new=AsyncMock(return_value=_make_response(200, response_body)),
-        ) as mock_post:
-            with patch.object(client, "_parse_blocks_container", return_value=mock_blocks):
-                result = await client.create_blocks("serialized-parse-result", page_number=1)
-
-        assert result is mock_blocks
-        payload = mock_post.call_args.args[1]
-        assert payload["parse_result"] == "serialized-parse-result"
-        assert payload["page_number"] == 1
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_error_response(self, client):
-        response_body = {"success": False, "error": "create fail"}
-
-        with patch.object(
-            client, "_post_json", new=AsyncMock(return_value=_make_response(200, response_body)),
-        ):
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_create_blocks_service_error_returns_none(self, client):
-        with patch.object(
-            client, "_post_json",
-            new=AsyncMock(side_effect=ServiceCallError("boom", service_name="DoclingService")),
-        ):
-            result = await client.create_blocks("parse-result")
-
-        assert result is None
 
 
 # ===========================================================================

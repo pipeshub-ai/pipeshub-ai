@@ -156,23 +156,35 @@ class TestCpuUsageUsec:
     def test_container_scoped_quota_does_not_pair_with_host_wide_proc_stat(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A cgroup v1 host where ``cpu`` resolves but ``cpuacct`` doesn't
-        must never fall back to host-wide /proc/stat for the numerator: that
-        would divide host-wide CPU activity by this container's fractional
-        quota and can report an idle container as pegged (see
-        ``_resolve_cpu_usage_usec`` docstring)."""
+        """When usage falls back to host-wide /proc/stat (cgroup v1 cpuacct
+        missing), utilisation is divided by the host CPU count, never by this
+        container's quota — pairing the two would report an idle container as
+        pegged on a large host."""
         _write(tmp_path / "cpu" / "cpu.cfs_quota_us", "200000")
         _write(tmp_path / "cpu" / "cpu.cfs_period_us", "100000")
         proc_stat = tmp_path / "proc_stat"
-        _write(proc_stat, "cpu  100000000 0 0 0 0 0 0 0 0 0\n")
+        _write(proc_stat, "cpu  100 0 0 0 0 0 0 0 0 0\n")
         monkeypatch.setattr(probe_mod, "_PROC_STAT", proc_stat)
+        monkeypatch.setattr(probe_mod, "_clock_ticks_per_second", lambda: 100.0)
+        monkeypatch.setattr(probe_mod, "_host_cpu_count", lambda: 8)
 
-        _quota, quota_source = probe_mod._resolve_cpu_quota_with_source()
-        assert quota_source == "cgroup_v1"
+        assert probe_mod._resolve_cpu_quota() == 2.0
+        usage, source = probe_mod._resolve_cpu_usage_usec()
+        assert source == "proc_stat"
+        assert usage == 1_000_000
 
-        usage, source = probe_mod._resolve_cpu_usage_usec(quota_source)
-        assert source == "os_times"
-        assert usage is not None
+        times = iter([0.0, 1.0])
+        sut = SystemResourceProbe(clock=lambda: next(times))
+        first = sut.snapshot()
+        assert first.cpu_utilisation is None
+        assert first.cpu_quota == 2.0
+
+        # +100 jiffies in 1s at USER_HZ=100 is 1s of CPU time.
+        # Host-wide: 1.0 / (1s * 8 cpus) = 0.125
+        # If wrongly divided by the container quota of 2: 0.5
+        _write(proc_stat, "cpu  200 0 0 0 0 0 0 0 0 0\n")
+        second = sut.snapshot()
+        assert second.cpu_utilisation == pytest.approx(0.125, rel=1e-6)
 
 
 class TestNestedCgroupfs:
