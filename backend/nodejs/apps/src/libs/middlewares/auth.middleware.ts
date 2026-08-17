@@ -182,13 +182,14 @@ export class AuthMiddleware {
     }
 
     let email: string | undefined;
+    let role: 'admin' | 'member' | undefined;
     if (userId) {
       const user = await Users.findOne({
         _id: userId,
         orgId: orgId,
         isDeleted: false,
       })
-        .select('email fullName')
+        .select('email fullName role')
         .lean()
         .exec();
 
@@ -203,6 +204,9 @@ export class AuthMiddleware {
       if (!fullName) {
         fullName = user.fullName;
       }
+      // Attach role so isUserAdmin / X-Is-Admin match session-JWT behavior
+      // (OAuth access tokens do not carry a role claim).
+      role = user.role === 'admin' ? 'admin' : 'member';
     }
 
     if (!accountType && isClientCredentials) {
@@ -229,6 +233,7 @@ export class AuthMiddleware {
       email,
       fullName,
       accountType,
+      role,
       isOAuth: true,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,

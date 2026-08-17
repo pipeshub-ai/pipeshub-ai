@@ -419,7 +419,11 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
-      const userQuery = createMockQuery({ email: 'test@example.com', fullName: 'Test User' })
+      const userQuery = createMockQuery({
+        email: 'test@example.com',
+        fullName: 'Test User',
+        role: 'admin',
+      })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
@@ -435,6 +439,7 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         email: 'test@example.com',
         fullName: 'Test User',
+        role: 'admin',
         isOAuth: true,
         oauthClientId: 'client123',
       })
