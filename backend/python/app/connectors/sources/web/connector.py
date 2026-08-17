@@ -3020,6 +3020,7 @@ class WebConnector(BaseConnector):
             location,
             data=content,
             headers=put_headers,
+            allow_redirects=False,
         ) as put_resp:
             if put_resp.status < 200 or put_resp.status >= 300:
                 error = await put_resp.text()

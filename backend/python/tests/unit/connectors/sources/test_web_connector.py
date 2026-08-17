@@ -3077,6 +3077,44 @@ class TestUploadNewToStorage:
         assert session.calls[1]["url"] == presigned
         assert session.calls[1]["data"] == content
         assert session.calls[1]["headers"]["Content-Length"] == str(len(content))
+        assert session.calls[1].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_presigned_put_does_not_follow_redirect_to_another_host(self, monkeypatch):
+        """The presigned-URL PUT must pin allow_redirects=False so a redirecting
+        response (e.g. a compromised/malicious presigned target) can't cause the
+        raw file bytes to be re-sent to an unrelated host."""
+        connector = _make_connector()
+        presigned = "https://bucket.s3.amazonaws.com/org/report.pdf?X-Amz-Signature=abc"
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    "{}",
+                    headers={"Location": presigned, "x-document-id": "doc-presigned"},
+                ),
+            ),
+            (
+                "put",
+                _FakeStorageResponse(
+                    200, "", headers={"Location": "https://attacker.example/exfil"}
+                ),
+            ),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        content = b"%PDF-secret"
+        doc_id = await connector._upload_new_to_storage(
+            content, "report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-presigned"
+        # Only the POST and the single presigned PUT should have happened; the
+        # fake session's response Location must never trigger a follow-up call.
+        assert len(session.calls) == 2
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == presigned
+        assert session.calls[1].get("allow_redirects") is False
 
     @pytest.mark.asyncio
     async def test_308_put_failure_returns_none(self, monkeypatch):
