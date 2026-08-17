@@ -392,6 +392,26 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     async def _produce() -> None:
         agent: Any = None
         try:
+            # Census questions ("how many documents do we have", "list every
+            # file about X") are answered from the record set rather than by a
+            # model reading a sample of passages. A sample cannot say how many
+            # exist, and a model asked to count from one produces a number with
+            # no passage to attribute it to — taking the citations off the rest
+            # of the answer with it (#2975). No-op for every other query, so the
+            # agent path below is unchanged.
+            from app.modules.agents.enumeration.run import try_answer_enumeration
+            try:
+                if await try_answer_enumeration(
+                    query=query_info.get("query", ""), context=context,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    blob_store=blob_store, filters=query_info.get("filters"),
+                    event_sink=context.event_sink, log=log,
+                ):
+                    return
+            except Exception as exc:  # noqa: BLE001
+                # Never let this path break chat: fall through to the agent.
+                log.warning("enumeration path failed, falling back to agent: %s", exc, exc_info=True)
+
             factory = PipesHubAgentFactory()
             prefetch_task = (
                 asyncio.ensure_future(

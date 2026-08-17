@@ -1,0 +1,174 @@
+"""Answer an enumeration query without asking a model to count.
+
+`try_answer_enumeration` is a no-op for every query that is not a census
+question, so the normal agent path is untouched. When it does fire it computes
+the answer, registers the records so the citations resolve, and hands the result
+to the ordinary `AnswerFinalizer` — the same call the agent path makes. Nothing
+about event emission, citation normalisation or persistence is duplicated here.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.modules.agents.enumeration.answer import build_enumeration_answer
+from app.modules.agents.enumeration.policy import is_enumeration_query
+
+logger = logging.getLogger(__name__)
+
+
+async def _fetch_summaries(
+    retrieval_service: Any,
+    org_id: str,
+) -> dict[str, str]:
+    """Read every record summary for this org in one pass.
+
+    Summaries are written at index time as their own block, flagged
+    `isRecordSummary` and keyed by virtual record id
+    (`transformers/vectorstore.py`). Nothing on the query side has ever read
+    them back. One scroll is exhaustive and costs a single round trip, which is
+    the point: a census must not depend on a document having matched a query.
+
+    Returns an empty map on any failure — a listing without summaries is still
+    correct and still cited, so this must never fail the answer.
+    """
+    summaries: dict[str, str] = {}
+    vector_db = getattr(retrieval_service, "vector_db_service", None)
+    if vector_db is None:
+        logger.warning("enumeration: no vector_db_service on %r", type(retrieval_service).__name__)
+        return summaries
+    try:
+        from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+
+        payload_filter = await vector_db.filter_collection(must={
+            "isRecordSummary": True,
+            "orgId": org_id,
+        })
+        result = await vector_db.scroll(
+            collection_name=VECTOR_DB_COLLECTION_NAME,
+            scroll_filter=payload_filter,
+            limit=100000,
+        )
+        points = getattr(result, "points", None) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("enumeration: summary scroll failed, listing without them: %s", exc)
+        return summaries
+
+    for point in points or []:
+        payload = getattr(point, "payload", None) or {}
+        meta = payload.get("metadata") or {}
+        vrid = meta.get("virtualRecordId")
+        text = (payload.get("page_content") or "").strip()
+        if vrid and text:
+            summaries[vrid] = text
+    return summaries
+
+
+async def _record_lookup_factory(
+    graph_provider: Any,
+    org_id: str,
+    summaries: dict[str, str] | None = None,
+) -> Any:
+    """Resolve a record id to the fields an enumeration answer needs.
+
+    Reads the record node directly rather than going through retrieval: this
+    path is a census over the record set, so it must not depend on a document
+    having matched a query. Records that cannot be read are skipped by the
+    caller rather than counted, because a row nobody can cite is the failure
+    this module exists to remove.
+    """
+    from app.config.constants.arangodb import CollectionNames
+
+    async def lookup(vrid: str, record_id: str) -> dict[str, Any] | None:
+        try:
+            doc = await graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad record must not fail the count
+            logger.debug("enumeration: record fetch failed for %s: %s", record_id, exc)
+            return None
+        if not doc:
+            return None
+        name = doc.get("recordName") or doc.get("record_name") or record_id
+        return {
+            "id": doc.get("_key") or doc.get("id") or record_id,
+            "record_name": name,
+            "record_type": doc.get("recordType", ""),
+            "virtual_record_id": vrid,
+            "org_id": org_id,
+            "webUrl": doc.get("webUrl") or f"/record/{record_id}",
+            "mime_type": doc.get("mimeType") or "text/plain",
+            "origin": doc.get("origin") or "UPLOAD",
+            "connector_name": doc.get("connectorName") or "KB",
+            "summary": (summaries or {}).get(vrid) or None,
+        }
+
+    return lookup
+
+
+async def try_answer_enumeration(
+    *,
+    query: str,
+    context: Any,
+    retrieval_service: Any,
+    graph_provider: Any,
+    blob_store: Any,
+    filters: dict[str, Any] | None,
+    event_sink: Any,
+    log: Any = logger,
+) -> bool:
+    """Return True when this query was answered here and the agent should not run."""
+    if not is_enumeration_query(query):
+        return False
+
+    org_id = getattr(context, "org_id", "") or ""
+    user_id = getattr(context, "user_id", "") or ""
+    if not org_id or not user_id or graph_provider is None:
+        return False
+
+    try:
+        accessible = await graph_provider.get_accessible_virtual_record_ids(
+            user_id=user_id, org_id=org_id, filters=filters or {},
+        )
+    except Exception as exc:  # noqa: BLE001 - fall back to the agent rather than fail
+        log.warning("enumeration: accessible-record lookup failed, deferring: %s", exc)
+        return False
+
+    if accessible is None:
+        return False
+
+    from app.agents.agent_loop.hooks.citations import CitationCollector
+    from app.agents.agent_loop.respond import AnswerFinalizer
+    from app.utils.chat_helpers import CitationRefMapper
+
+    state = context.tool_state
+    ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
+
+    summaries = await _fetch_summaries(retrieval_service, org_id)
+    lookup = await _record_lookup_factory(graph_provider, org_id, summaries)
+    result = await build_enumeration_answer(
+        accessible=accessible, record_lookup=lookup, ref_mapper=ref_mapper,
+        org_id=org_id,
+    )
+
+    # A citation whose record never reaches these maps is discarded during
+    # finalisation, so registration is not optional (utils/citations.py).
+    state["final_results"] = [*state.get("final_results", []), *result.final_results]
+    state["virtual_record_id_to_result"] = {
+        **state.get("virtual_record_id_to_result", {}),
+        **result.virtual_record_id_to_result,
+    }
+    state["tool_records"] = [*state.get("tool_records", []), *result.tool_records]
+    state["citation_ref_mapper"] = ref_mapper
+
+    log.info(
+        "enumeration: answered %d record(s) without an agent turn (query=%r)",
+        result.total, query[:80],
+    )
+    finalizer = AnswerFinalizer(context, CitationCollector(context))
+    await finalizer.run(
+        agent_success=True, agent_error=None, agent_output=result.text,
+        event_sink=event_sink, streamed_answer="", reasoning_turns=[],
+    )
+    return True
