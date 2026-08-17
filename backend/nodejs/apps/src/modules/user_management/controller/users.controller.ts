@@ -1690,7 +1690,7 @@ export class UserController {
     }
   }
 
-  private normalizeEmails(emails: string[]): string[] {
+  protected normalizeEmails(emails: string[]): string[] {
     const seen = new Set<string>();
     const result: string[] = [];
     for (const raw of emails) {
@@ -1704,7 +1704,7 @@ export class UserController {
     return result;
   }
 
-  private parseEmailsFromFile(buffer: Buffer): string[] {
+  protected parseEmailsFromFile(buffer: Buffer): string[] {
     // Excel exports UTF-8 CSVs with a leading BOM; strip it so it never leaks
     // into the first cell, and force UTF-8 so non-ASCII text isn't mis-decoded.
     let input = buffer;
@@ -1747,7 +1747,7 @@ export class UserController {
     return emails;
   }
 
-  private async processInvites(
+  protected async processInvites(
     emails: string[],
     groupIds: string[] | undefined,
     orgId: string,
@@ -2042,7 +2042,7 @@ export class UserController {
     }
   }
 
-  private async notifyInviteResult(
+  protected async notifyInviteResult(
     userId: string | undefined,
     orgId: string,
     summary: InviteResult & { invalid: string[] },
@@ -2072,7 +2072,7 @@ export class UserController {
     );
   }
 
-  private async notifyInviteFailure(
+  protected async notifyInviteFailure(
     userId: string | undefined,
     orgId: string,
   ): Promise<void> {
