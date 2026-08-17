@@ -68,9 +68,6 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     sinon.restore()
   })
 
-  // =========================================================================
-  // isUserAdmin (JWT role claim)
-  // =========================================================================
   describe('isUserAdmin', () => {
     it('should return true when JWT role is admin', async () => {
       req.user.role = 'admin'
