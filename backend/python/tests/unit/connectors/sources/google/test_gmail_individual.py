@@ -195,6 +195,9 @@ def connector():
         conn.indexing_filters = FilterCollection()
         conn.gmail_client = MagicMock()
         conn.gmail_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.gmail_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 
@@ -2143,6 +2146,9 @@ def connector_fullcov():
         conn.indexing_filters = FilterCollection()
         conn.gmail_client = MagicMock()
         conn.gmail_data_source = AsyncMock()
+        async def execute(operation):
+            return operation()
+        conn.gmail_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
         yield conn
 
