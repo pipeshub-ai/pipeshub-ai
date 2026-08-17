@@ -238,6 +238,33 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
         )
 
 
+async def stream_with_eager_first_chunk(
+    source: AsyncGenerator[bytes, None],
+) -> AsyncGenerator[bytes, None]:
+    """Return a streaming generator after eagerly pulling its first chunk.
+
+    Reading the first chunk before returning lets upstream auth / 404 / network
+    errors surface here, where they can still be converted to a clean HTTP 5xx,
+    rather than after ``StreamingResponse`` has already committed the status line
+    and can only produce a truncated chunked body.
+    """
+    aiter = source.__aiter__()
+    try:
+        first = await aiter.__anext__()
+    except StopAsyncIteration:
+        async def _empty() -> AsyncGenerator[bytes, None]:
+            return
+            yield b""  # noqa: unreachable — marks function as async generator
+        return _empty()
+
+    async def _gen() -> AsyncGenerator[bytes, None]:
+        yield first
+        async for chunk in aiter:
+            yield chunk
+
+    return _gen()
+
+
 def create_stream_record_response(
     content_stream: AsyncGenerator[bytes, None],
     filename: str | None,

@@ -205,6 +205,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['sharepoint', 'sharepoint'],
   ['onedrive', 'onedrive'], ['outlook', 'outlook'],
   ['onenote', 'ms-onenote'], ['ms-note', 'ms-onenote'],
+  // GitHub before Teams — "github-teams" / "githubteams" contain "teams"
+  ['github-teams', 'github'], ['githubteams', 'github'], ['github', 'github'],
   ['teams', 'teams'],
   ['zoom', 'zoom'],
   // Cloud storage
@@ -217,7 +219,6 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
   // Dev tools & project tracking
-  ['github', 'github'],
   ['linear', 'linear'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],

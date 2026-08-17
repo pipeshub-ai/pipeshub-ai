@@ -1,28 +1,29 @@
 """
-GitLab connector — orchestration shell.
+GitHub Teams connector — orchestration shell.
 
 This module is intentionally thin: it wires together the focused helper
 modules and exposes the ``BaseConnector`` interface. Business logic lives in:
 
-- ``runtime.py``     — API calls, auth-retry, paged list
-- ``scope.py``       — group/project scope selection for admin/auditor roles
-- ``users.py``       — AppUser + pseudo-group sync
-- ``projects.py``    — project / RecordGroup sync
-- ``repos.py``       — code repository (blob/tree) sync
-- ``issues.py``      — issue (TICKET) sync + content streaming
-- ``merge_requests.py`` — MR (PULL_REQUEST) sync + content streaming
-- ``comments.py``    — comment block building
-- ``attachments.py`` — attachment parsing and file-record building
-- ``filters.py``     — dynamic filter-option pickers
-- ``streaming.py``   — stream_record dispatch and reindex
+- ``runtime.py``       — API call plumbing: timeout budget, auth-retry, search pacing
+- ``users.py``         — principal discovery + 3-phase email resolution
+- ``projects.py``      — repo -> RecordGroup sync, collaborator/team permissions
+- ``repos.py``         — code repository (blob/tree) sync — shared with personal
+- ``issues.py``        — issue (TICKET) sync + content streaming — shared
+- ``pull_requests.py`` — PR (PULL_REQUEST) sync + content streaming — shared
+- ``comments.py``      — comment block building — shared
+- ``filters.py``       — dynamic filter-option pickers
+- ``streaming.py``     — stream_record dispatch and reindex — shared
+
+The existing personal GitHub connector (``github/connector.py``) is refactored
+to extend ``GitHubTeamsConnector``, overriding only the permission hooks on
+``ProjectsSync`` and the repo-discovery scope — exactly the pattern
+``gitlab_personal/connector.py`` uses over ``gitlab/connector.py``.
 """
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any
 
 from fastapi.responses import StreamingResponse
 
@@ -37,7 +38,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
 )
-from app.connectors.core.constants import IconPaths
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -61,53 +62,40 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
-from app.connectors.sources.gitlab.common.apps import GitLabApp
+from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
 from app.models.entities import Record
-from app.sources.client.gitlab.gitlab import GitLabClient
-from app.sources.external.gitlab.gitlab_data_source import GitLabDataSource
-from app.utils.oauth_config import resolve_instance_url
+from app.sources.client.github.github import GitHubClient
+from app.sources.external.github.github_async import GitHubAsyncDataSource
 
-from .attachments import AttachmentsHelper
 from .comments import CommentsHelper
-from .constants import GITLAB_CLOUD_URL
 from .filters import FiltersHelper
 from .issues import IssuesSync
-from .merge_requests import MergeRequestsSync
-from .models import GitlabLiterals
 from .projects import ProjectsSync
+from .pull_requests import PullRequestsSync
 from .repos import ReposSync
 from .runtime import RuntimeHelper
-from .scope import ScopeHelper
 from .streaming import StreamingHelper
 from .users import UsersSync
 
-
-_GITLAB_EXECUTOR_MAX_WORKERS = 8
+AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
+TOKEN_URL = "https://github.com/login/oauth/access_token"
 
 
 @(
-    ConnectorBuilder("GitLab")
-    .in_group("GitLab")
-    .with_description("Sync content from your GitLab instance")
+    ConnectorBuilder("GitHub Teams")
+    .in_group("Github")
+    .with_description("Sync content, issues, pull requests, and code from your GitHub organization")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.TEAM.value])
-    # No APP_LEVEL here: GitLab syncs real per-project member ACLs
-    # (`projects.py::_transform_restrictions_to_permissions` writes a per-user
-    # permission for every project member), and creator-only is merely the
-    # fallback when member enumeration fails. Declaring APP_LEVEL routes these
-    # users to the connector-wide record scan, which returns every synced
-    # project's records to anyone linked to the app regardless of project
-    # membership. RECORD_LEVEL (the default) is correct.
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(
-                connector_name="GitLab",
-                authorize_url=f"{GITLAB_CLOUD_URL}/oauth/authorize",
-                token_url=f"{GITLAB_CLOUD_URL}/oauth/token",
-                redirect_uri="connectors/oauth/callback/Gitlab",
+                connector_name="GitHub Teams",
+                authorize_url=AUTHORIZE_URL,
+                token_url=TOKEN_URL,
+                redirect_uri="connectors/oauth/callback/Github%20Teams",
                 scopes=OAuthScopeConfig(
-                    team_sync=["read_user", "read_api", "read_repository"],
+                    team_sync=["read:org", "repo", "user:email"],
                     personal_sync=[],
                     agent=[],
                 ),
@@ -115,30 +103,19 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
                     AuthField(
                         name="clientId",
                         display_name="Application (Client) ID",
-                        placeholder="Enter your Gitlab Application ID",
-                        description="The Application (Client) ID from Gitlab OAuth Registration",
+                        placeholder="Enter your Github OAuth App Client ID",
+                        description="The Client ID from your Github OAuth App registration",
                     ),
                     AuthField(
                         name="clientSecret",
                         display_name="Client Secret",
-                        placeholder="Enter your Gitlab Client Secret",
-                        description="The Client Secret from Gitlab OAuth Registration",
+                        placeholder="Enter your Github OAuth App Client Secret",
+                        description="The Client Secret from your Github OAuth App registration",
                         field_type="PASSWORD",
                         is_secret=True,
                     ),
-                    AuthField(
-                        name="instanceUrl",
-                        display_name="GitLab Instance URL",
-                        placeholder="https://gitlab.com",
-                        description=(
-                            "Base URL of your GitLab instance. "
-                            "Leave blank or set to https://gitlab.com for GitLab.com (cloud). "
-                            "Set to your self-managed host (e.g. https://gitlab.mycompany.com) for GitLab EE."
-                        ),
-                        required=False,
-                    ),
                 ],
-                app_description="OAuth application for accessing Gitlab services",
+                app_description="OAuth application for accessing Github organization data",
                 app_categories=["Knowledge Management"],
             )
         ]
@@ -146,23 +123,23 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
     .configure(
         lambda builder: builder
-        .with_icon(IconPaths.connector_icon(Connectors.GITLAB.value))
+        .with_icon(IconPaths.connector_icon(Connectors.GITHUB.value))
         .with_realtime_support(False)
-        .add_documentation_link(DocumentationLink("Gitlab API Docs", "https://docs.gitlab.com/api/rest/", "docs"))
-        .add_documentation_link(DocumentationLink("Pipeshub Documentation", "https://docs.pipeshub.com/connectors/gitlab/gitlab", "pipeshub"))
+        .add_documentation_link(DocumentationLink("Github API Docs", "https://docs.github.com/en/rest", "docs"))
+        .add_documentation_link(DocumentationLink("Pipeshub Documentation", "https://docs.pipeshub.com/connectors/github/github", "pipeshub"))
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_sync_support(True)
         .add_filter_field(FilterField(
-            name=SyncFilterKey.GROUP_IDS.value,
-            display_name="GitLab Groups",
-            description="Limit sync to projects in these GitLab groups or subgroups (uses namespace path, e.g. my-org/engineering)",
+            name=SyncFilterKey.ORG_IDS.value,
+            display_name="Github Organizations",
+            description="Limit sync to these Github organizations (uses org login, e.g. my-org)",
             filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
         ))
         .add_filter_field(FilterField(
-            name=SyncFilterKey.PROJECT_IDS.value,
+            name=SyncFilterKey.REPO_IDS.value,
             display_name="Repositories",
-            description="Limit sync to specific repositories (path_with_namespace, e.g. my-org/my-repo)",
+            description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
             filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
         ))
@@ -170,14 +147,14 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
             name=SyncFilterKey.MODIFIED.value,
             display_name="Modified Date",
             filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and merge requests by last modification time",
+            description="Filter issues and pull requests by last modification time",
             no_implicit_operator_default=True,
         ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.CREATED.value,
             display_name="Created Date",
             filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and merge requests by creation time",
+            description="Filter issues and pull requests by creation time",
             no_implicit_operator_default=True,
         ))
         .add_filter_field(FilterField(
@@ -187,7 +164,7 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.MERGE_REQUESTS.value,
-            display_name="Index Merge Requests",
+            display_name="Index Pull Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
         .add_filter_field(FilterField(
@@ -196,13 +173,13 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_admin_access_required(True, personal_connector_type="GitLab Personal")
+        .with_admin_access_required(True, personal_connector_type="Github")
         .with_agent_support(False)
     )
     .build_decorator()
 )
-class GitLabConnector(BaseConnector):
-    """Connector for syncing data from a GitLab instance.
+class GitHubTeamsConnector(BaseConnector):
+    """Connector for syncing data from a Github organization (team scope).
 
     All heavy-lifting is delegated to focused helper modules; this class owns
     connector lifecycle (``init``, ``run_sync``, ``cleanup``), credential
@@ -220,34 +197,23 @@ class GitLabConnector(BaseConnector):
         created_by: str,
     ) -> None:
         super().__init__(
-            GitLabApp(connector_id),
+            GitHubTeamsApp(connector_id),
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,
         )
-        self.connector_name = Connectors.GITLAB.value
+        self.connector_name = Connectors.GITHUB_TEAMS.value
         self.connector_id = connector_id
-        self.data_source: GitLabDataSource | None = None
-        self.external_client: GitLabClient | None = None
-        self.batch_size = 5
-        self.max_concurrent_batches = 5
-        self._gitlab_base_url: str = GITLAB_CLOUD_URL
+        self.data_source: GitHubAsyncDataSource | None = None
+        self.external_client: GitHubClient | None = None
+        # Code-file batching only: issues and PRs take one API page as one
+        # batch, so they no longer consult this. The old value of 5 was sized
+        # for a per-PR fetch that no longer exists.
+        self.batch_size = 100
         self.sync_filters = None
         self.indexing_filters = None
 
         # Runtime state set during init/sync
-        self._gitlab_included_group_paths: list[str] | None = None
-        self._gitlab_user_id: int | None = None
-        self._is_admin: bool = False
-        self._is_auditor: bool = False
-        self._auditor_fallback_warned: bool = False
-        self._code_file_timestamp_backfill_task = None
-
-        # Dedicated executor: isolates blocking python-gitlab threads from the
-        # shared loop executor so a stuck EE instance cannot freeze the service.
-        self._gitlab_executor: ThreadPoolExecutor = ThreadPoolExecutor(
-            max_workers=_GITLAB_EXECUTOR_MAX_WORKERS,
-            thread_name_prefix=f"gitlab-{connector_id[:8]}",
-        )
+        self._github_login: str | None = None
 
         # Sync point for checkpoint management
         self.record_sync_point = SyncPoint(
@@ -259,14 +225,12 @@ class GitLabConnector(BaseConnector):
 
         # Helper modules — instantiated once, hold a reference back to self
         self.runtime = RuntimeHelper(self)
-        self.scope = ScopeHelper(self)
         self.users = UsersSync(self)
         self.projects = ProjectsSync(self)
         self.repos = ReposSync(self)
         self.issues = IssuesSync(self)
-        self.merge_requests = MergeRequestsSync(self)
+        self.pull_requests = PullRequestsSync(self)
         self.comments = CommentsHelper(self)
-        self.attachments = AttachmentsHelper(self)
         self.filters = FiltersHelper(self)
         self.streaming = StreamingHelper(self)
 
@@ -275,31 +239,29 @@ class GitLabConnector(BaseConnector):
     # ------------------------------------------------------------------
 
     async def init(self) -> bool:
-        """Initialise the GitLab client, data source, and creator identity."""
+        """Initialise the GitHub client, data source, and creator identity."""
         try:
-            config_path = f"/services/connectors/{self.connector_id}/config"
-            raw_config = await self.config_service.get_config(config_path) or {}
-            auth_cfg = raw_config.get("auth", {})
-            instance_url = await resolve_instance_url(
-                auth_cfg, self.config_service, default=GITLAB_CLOUD_URL, logger=self.logger,
-            )
-            self._gitlab_base_url = instance_url or GITLAB_CLOUD_URL
-
-            self.external_client = await GitLabClient.build_from_services(
+            self.external_client = await GitHubClient.build_from_services(
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
             )
-            self.data_source = GitLabDataSource(self.external_client, base_url=self._gitlab_base_url)
+            self.data_source = GitHubAsyncDataSource(self.external_client)
             await self._resolve_creator_identity()
-            self.logger.info("GitLab connector initialized (instance: %s).", self._gitlab_base_url)
+            self.logger.info("GitHub Teams connector initialized.")
             return True
         except Exception as e:
-            self.logger.error("Failed to initialize GitLab client: %s", e, exc_info=True)
+            self.logger.error("Failed to initialize GitHub Teams client: %s", e, exc_info=True)
             return False
 
     async def _resolve_creator_identity(self) -> None:
-        """Cache the connector creator's email, GitLab id, and role flags (best-effort)."""
+        """Cache the configuring user's GitHub login (best-effort).
+
+        The team connector derives every permission from GitHub org membership,
+        so it does not use ``creator_email`` — that is resolved here for the
+        personal subclass, which routes all access through the ConnectorGroup.
+        ``_github_login`` is used by the repo picker's ``user:`` search qualifier.
+        """
         if self.created_by:
             try:
                 creator = await self.data_entities_processor.get_user_by_user_id(self.created_by)
@@ -311,38 +273,37 @@ class GitLabConnector(BaseConnector):
         if self.data_source is None:
             return
         try:
-            me_res = await self.runtime.ds_call(self.data_source.get_user)
+            me_res = await self.runtime.ds_call(self.data_source.get_authenticated)
             if me_res.success and me_res.data is not None:
-                self._is_admin = bool(getattr(me_res.data, "is_admin", False))
-                self._is_auditor = bool(getattr(me_res.data, "is_auditor", False))
-                uid = getattr(me_res.data, "id", None)
-                if isinstance(uid, int):
-                    self._gitlab_user_id = uid
+                login = getattr(me_res.data, "login", None)
+                if isinstance(login, str) and login:
+                    self._github_login = login
                     self.logger.info(
-                        "GitLab creator resolved: pipeshub_email=%r, gitlab_user_id=%s, is_admin=%s, is_auditor=%s",
-                        self.creator_email, self._gitlab_user_id, self._is_admin, self._is_auditor,
+                        "GitHub creator resolved: creator_email_resolved=%s",
+                        bool(self.creator_email),
                     )
                     return
             self.logger.warning(
-                "Could not resolve configuring user's GitLab id; creator-permission fallback will use public_email-only path."
+                "Could not resolve configuring user's GitHub login; the repo picker's "
+                "user-scope qualifier will be omitted."
             )
         except Exception as e:
-            self.logger.warning("Exception resolving configuring user's GitLab id: %s", e, exc_info=True)
+            self.logger.warning("Exception resolving configuring user's GitHub login: %s", e, exc_info=True)
 
     async def test_connection_and_access(self) -> bool:
-        """Test the connection and access to the GitLab data source."""
+        """Test the connection and access to the GitHub data source."""
         if not self.data_source:
             return False
         try:
             await self.runtime.refresh_token_if_needed()
-            response = await self.runtime.call_with_auth_retry(lambda: self.data_source.get_user())
+            response = await self.runtime.ds_call(self.data_source.get_authenticated)
             if response.success and response.data:
-                self.logger.info("GitLab connection test successful.")
+                self.logger.info("GitHub Teams connection test successful.")
                 return True
-            self.logger.error("GitLab connection test failed: %s", response.error)
+            self.logger.error("GitHub Teams connection test failed: %s", response.error)
             return False
         except Exception as e:
-            self.logger.error("GitLab connection test failed: %s", e, exc_info=True)
+            self.logger.error("GitHub Teams connection test failed: %s", e, exc_info=True)
             return False
 
     # ------------------------------------------------------------------
@@ -350,26 +311,38 @@ class GitLabConnector(BaseConnector):
     # ------------------------------------------------------------------
 
     async def run_sync(self) -> None:
-        """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
+        """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
-            await self.repos.cancel_timestamp_backfill()
+            await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
-            self.logger.info("Starting GitLab sync")
+            self.logger.info("Starting GitHub Teams sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "gitlab", self.connector_id, self.logger
+                self.config_service, "githubteams", self.connector_id, self.logger
             )
-            self._gitlab_included_group_paths = None
-            self.logger.info("Starting sync of GitLab users")
+            # PipesHub users reach this connector through the org's "All" team,
+            # not a per-user edge. The record-access query pre-filters on
+            # `connectorId IN user_apps_ids`, which is satisfied via
+            # (User)-[:PERMISSION]->(Teams)-[:USER_APP_RELATION]->(App) — so
+            # without this edge a public repo's ORG grant is unreachable for
+            # anyone whose GitHub account never resolved to an AppUser. The edge
+            # grants nothing by itself; every access path still requires a real
+            # PERMISSION edge.
+            async with self.data_store_provider.transaction() as tx_store:
+                await tx_store.ensure_team_app_edge(
+                    self.connector_id, self.data_entities_processor.org_id,
+                )
+
+            self.logger.info("Starting sync of GitHub org members")
             await self.users.sync_users()
-            self.logger.info("Starting sync of GitLab projects")
-            await self.projects.sync_all_projects()
-            self.repos.schedule_timestamp_backfill()
+            self.logger.info("Starting sync of GitHub repositories")
+            await self.projects.sync_all_repos()
+            self.repos.timestamps.schedule()
         except Exception as e:
-            self.logger.error("Error in GitLab sync: %s", e, exc_info=True)
+            self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
 
     async def run_incremental_sync(self) -> None:
-        """Incremental sync delegates to the same full sync (GitLab handles deltas via checkpoints)."""
+        """Incremental sync delegates to the same full sync (deltas are handled via checkpoints)."""
         await self.run_sync()
 
     # ------------------------------------------------------------------
@@ -392,7 +365,7 @@ class GitLabConnector(BaseConnector):
         search: str | None = None,
         cursor: str | None = None,
     ) -> FilterOptionsResponse:
-        """Return dynamic picker options for the GROUP_IDS and PROJECT_IDS filters."""
+        """Return dynamic picker options for the ORG_IDS and REPO_IDS filters."""
         return await self.filters.get_filter_options(filter_key, page, limit, search, cursor)
 
     # ------------------------------------------------------------------
@@ -418,22 +391,13 @@ class GitLabConnector(BaseConnector):
     # ------------------------------------------------------------------
 
     async def cleanup(self) -> None:
-        """Release connector resources (background tasks, HTTP client, thread pool)."""
-        self.logger.info("Cleaning up GitLab connector resources.")
-        await self.repos.cancel_timestamp_backfill()
-        if self.data_source is not None:
-            try:
-                await self.data_source.aclose()
-            except Exception as e:
-                self.logger.warning("Failed to close GitLab HTTP client: %s", e)
+        """Release connector resources (background tasks, data source)."""
+        self.logger.info("Cleaning up GitHub Teams connector resources.")
+        await self.repos.timestamps.cancel()
         self.data_source = None
-        try:
-            self._gitlab_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception as e:
-            self.logger.warning("GitLab executor shutdown raised; ignoring: %s", e)
 
     # ------------------------------------------------------------------
-    # Datetime filter helper (used by issues.py and merge_requests.py)
+    # Datetime filter helper (used by issues.py and pull_requests.py)
     # ------------------------------------------------------------------
 
     def datetime_range_from_sync_filter(
@@ -442,7 +406,6 @@ class GitLabConnector(BaseConnector):
         """Return UTC (after, before) bounds from a sync filter for the given key."""
         if not self.sync_filters:
             return (None, None)
-        from app.connectors.core.registry.filters import SyncFilterKey
         _key_map = {
             "modified": SyncFilterKey.MODIFIED,
             "created": SyncFilterKey.CREATED,
@@ -460,21 +423,6 @@ class GitLabConnector(BaseConnector):
         return (after, before)
 
     # ------------------------------------------------------------------
-    # Creator permission helper (used by projects.py)
-    # ------------------------------------------------------------------
-
-    def creator_user_permission(self) -> Any | None:
-        """Return an OWNER Permission for the connector creator, or None if unavailable."""
-        from app.models.permission import EntityType, Permission, PermissionType
-        if not self.creator_email:
-            return None
-        return Permission(
-            entity_type=EntityType.USER,
-            email=self.creator_email,
-            type=PermissionType.OWNER,
-        )
-
-    # ------------------------------------------------------------------
     # Factory method
     # ------------------------------------------------------------------
 
@@ -488,12 +436,12 @@ class GitLabConnector(BaseConnector):
         scope: str,
         created_by: str,
     ) -> "BaseConnector":
-        """Factory method to create and return an initialized GitLabConnector."""
+        """Factory method to create and return an initialized GitHubTeamsConnector."""
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
-        return GitLabConnector(
+        return GitHubTeamsConnector(
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,
         )

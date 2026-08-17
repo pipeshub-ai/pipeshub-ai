@@ -253,12 +253,6 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is True
 
-    def test_comments_enabled_by_default_when_no_filters(self) -> None:
-        c = make_mock_connector()
-        c.indexing_filters = None
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is True
-
     def test_issues_disabled_by_filter(self) -> None:
         c = make_mock_connector()
         from app.connectors.core.registry.filters import IndexingFilterKey
@@ -268,14 +262,13 @@ class TestIssueIndexingFilters:
         issues_sync = IssuesSync(c)
         assert issues_sync._issues_indexing_enabled() is False
 
-    def test_comments_disabled_by_filter(self) -> None:
-        c = make_mock_connector()
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        filters = MagicMock()
-        filters.is_enabled = MagicMock(side_effect=lambda k: k != IndexingFilterKey.COMMENTS)
-        c.indexing_filters = filters
-        issues_sync = IssuesSync(c)
-        assert issues_sync._comments_indexing_enabled() is False
+    def test_no_comments_indexing_filter_exists(self) -> None:
+        """Comments are part of a ticket's content, not records of their own, so
+        there is nothing separate to index or not index. Gating block
+        composition on an indexing filter also silently stripped every comment
+        once enable_manual_sync was on, because is_enabled answers
+        "auto-index this?" and returns False for every filter in that mode."""
+        assert not hasattr(IssuesSync, "_comments_indexing_enabled")
 
 
 # ===========================================================================
