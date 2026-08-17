@@ -2232,8 +2232,10 @@ class TestLinearPlaceholderSweep:
         c = _make_connector()
         c.data_source = MagicMock()
         stub = _placeholder_ticket()
-        with pytest.raises(ValueError, match="placeholder"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(stub)
+        assert exc_info.value.status_code == 422
+        assert "placeholder" in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_run_sync_calls_placeholder_sweep(self):

@@ -3764,8 +3764,10 @@ async def test_stream_record_rejects_placeholder():
     conn = _make_connector()
     conn.data_source = MagicMock()
     stub = _placeholder_ticket()
-    with pytest.raises(ValueError, match="Cannot stream placeholder"):
+    with pytest.raises(HTTPException) as exc_info:
         await conn.stream_record(stub)
+    assert exc_info.value.status_code == 422
+    assert "Cannot stream placeholder" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
