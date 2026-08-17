@@ -9,6 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
@@ -953,6 +954,8 @@ class IGraphDBProvider(ABC):
                 continue
             bucket = out[record_id]["parents" if outgoing else "children"]
             for edge in edges or []:
+                if not isinstance(edge, Mapping):
+                    continue
                 bucket.append({**edge, "relationType": relation_type})
         return out
 

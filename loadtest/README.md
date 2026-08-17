@@ -33,8 +33,9 @@ Two options, and which you pick changes what the numbers mean:
   identity a per-user cache looks like it always hits, so an A/B of one would
   measure a hit rate no deployment ever sees. Tokens come from password login
   at test start, so they cannot expire mid-run.
-- **`TOKEN`** — a single bearer JWT from browser devtools. Fine for absolute
-  throughput on a stateless path; misleading for per-user caches.
+- **`TOKEN` / `PIPESHUB_TOKEN`** — a single bearer JWT from browser devtools.
+  Fine for absolute throughput on a stateless path; misleading for per-user
+  caches. `PIPESHUB_TOKEN` wins when both are set; `.env` documents `TOKEN`.
 
 Provision accounts on a local stack (creates users, sets passwords, verifies
 each login, and prints the `PIPESHUB_USERS` line to paste in):
@@ -204,7 +205,7 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 |---|---|---|
 | `PIPESHUB_USERS` | — | `email:password,…`; one real account per simulated user |
 | `PIPESHUB_EMAILS` / `PIPESHUB_PASSWORD` | — | same, when the accounts share a password |
-| `TOKEN` | — | single-identity bearer JWT; used only if the two above are unset. One of the three is required unless `users` is 0 |
+| `TOKEN` / `PIPESHUB_TOKEN` | — | single-identity bearer JWT; used only if the two above are unset. `PIPESHUB_TOKEN` overrides `TOKEN`. One of these is required unless `users` is 0 |
 | `PIPESHUB_MODE` | `auto` | `auto` / `docker` / `native` |
 | `PIPESHUB_HOST` | `http://localhost:3000` | API gateway the load hits — the Node backend, not the frontend |
 | `PIPESHUB_CONTAINER` | `pipeshub-ai` | docker mode only |

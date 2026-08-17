@@ -95,8 +95,11 @@ class TestSaveRecordPayloadFields:
     """Assert payload and metadata fields for save_record_to_storage."""
 
     @pytest.mark.asyncio
-    async def test_local_upload_uses_virtual_record_id_fields_and_payload(self):
+    async def test_local_upload_uses_virtual_record_id_fields_and_payload(self, monkeypatch):
         """Local branch should use virtual_record_id in form metadata and payload."""
+        monkeypatch.setenv(
+            "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES", str(10 * 1024 * 1024)
+        )
         bs = _make_blob_storage()
         bs.config_service.get_config = AsyncMock(
             side_effect=[

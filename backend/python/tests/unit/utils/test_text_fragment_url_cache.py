@@ -93,6 +93,29 @@ def test_cache_is_bounded() -> None:
     assert len(_FRAGMENT_URL_CACHE) <= maxsize
 
 
+def test_cache_entries_expire(monkeypatch) -> None:
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(chat_helpers.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(chat_helpers, "_FRAGMENT_URL_CACHE_TTL_SECONDS", 10.0)
+
+    snippet = "the quick brown fox jumps over"
+    first = generate_text_fragment_url(BASE, snippet)
+    assert len(_FRAGMENT_URL_CACHE) == 1
+
+    clock["t"] += 11.0
+    calls = []
+    real = chat_helpers._build_text_fragment_url
+
+    def counting(base_url, text_snippet):
+        calls.append(1)
+        return real(base_url, text_snippet)
+
+    monkeypatch.setattr(chat_helpers, "_build_text_fragment_url", counting)
+    second = generate_text_fragment_url(BASE, snippet)
+    assert second == first
+    assert len(calls) == 1
+
+
 def test_non_string_inputs_bypass_cache_and_preserve_behaviour() -> None:
     # None snippet: builder short-circuits to base_url, and nothing is cached.
     assert generate_text_fragment_url(BASE, None) == _build_text_fragment_url(BASE, None)

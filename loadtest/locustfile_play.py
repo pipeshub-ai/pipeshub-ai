@@ -13,6 +13,7 @@ Usage:
     export PIPESHUB_USERS='a@example.com:Pass1!,b@example.com:Pass2!'
     # or a single one
     export PIPESHUB_TOKEN='<bearer token from browser devtools>'
+    # PIPESHUB_TOKEN wins; TOKEN is the documented .env fallback (same as perftest.sh)
     locust -f locustfile.py --headless -u 10 -r 2 -t 10m -H http://localhost:3000
 
     # ramp to find the knee
@@ -43,7 +44,8 @@ from pipeshub_auth import AuthError, credentials_from_env, resolve_tokens  # noq
 # Config
 # --------------------------------------------------------------------------
 
-TOKEN = os.environ.get("PIPESHUB_TOKEN", "")
+# Prefer PIPESHUB_TOKEN; fall back to TOKEN so loadtest/.env matches perftest.sh.
+TOKEN = os.environ.get("PIPESHUB_TOKEN") or os.environ.get("TOKEN") or ""
 AGENT_KEY = os.environ.get("PIPESHUB_AGENT_KEY", "")
 
 # Tokens the simulated users draw from, resolved once at test_start. One shared
@@ -122,12 +124,13 @@ def _resolve_identities(environment, **_kwargs) -> None:
 
     if TOKEN:
         TOKENS = [TOKEN]
-        print("[loadtest] using the single PIPESHUB_TOKEN identity")
+        which = "PIPESHUB_TOKEN" if os.environ.get("PIPESHUB_TOKEN") else "TOKEN"
+        print(f"[loadtest] using the single {which} identity")
         return
 
     raise SystemExit(
         "No credentials. Set PIPESHUB_USERS='email:password,...' (see seed_users.py), "
-        "or PIPESHUB_EMAILS + PIPESHUB_PASSWORD, or PIPESHUB_TOKEN for a single user."
+        "or PIPESHUB_EMAILS + PIPESHUB_PASSWORD, or PIPESHUB_TOKEN / TOKEN for a single user."
     )
 
 

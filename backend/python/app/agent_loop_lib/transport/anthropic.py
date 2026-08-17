@@ -434,10 +434,15 @@ class AnthropicTransport(LLMTransport):
             budget = self._thinking.get("budget_tokens")
             if isinstance(budget, int) and budget:
                 kwargs["max_tokens"] = max(self._max_tokens, budget + 1024)
-        # Anthropic rejects temperature alongside extended thinking, so it is
-        # only sent when thinking is off — matching what LangChain puts on the
-        # wire for the same configuration.
-        if self._temperature is not None and "thinking" not in kwargs:
+        # Anthropic rejects temperature alongside extended thinking (enabled /
+        # adaptive). {"type": "disabled"} is truthy but allows temperature —
+        # match LangChain, which still sends it for that configuration.
+        thinking_cfg = kwargs.get("thinking")
+        thinking_active = (
+            isinstance(thinking_cfg, dict)
+            and thinking_cfg.get("type") in ("enabled", "adaptive")
+        )
+        if self._temperature is not None and not thinking_active:
             kwargs["temperature"] = self._temperature
         # effort has no Anthropic equivalent today — accepted for interface
         # parity with other providers and intentionally a no-op here.
@@ -530,7 +535,12 @@ class AnthropicTransport(LLMTransport):
             budget = self._thinking.get("budget_tokens")
             if isinstance(budget, int) and budget:
                 kwargs["max_tokens"] = max(self._max_tokens, budget + 1024)
-        if self._temperature is not None and "thinking" not in kwargs:
+        thinking_cfg = kwargs.get("thinking")
+        thinking_active = (
+            isinstance(thinking_cfg, dict)
+            and thinking_cfg.get("type") in ("enabled", "adaptive")
+        )
+        if self._temperature is not None and not thinking_active:
             kwargs["temperature"] = self._temperature
         # effort has no Anthropic equivalent today — same no-op as complete().
         system_list = self._build_system_kwargs(system, system_blocks)

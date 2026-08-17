@@ -53,7 +53,7 @@ class TestRegistration:
         hooks.init_accessible_records_invalidator(MagicMock(), MagicMock(), MagicMock())
         assert hooks.get_accessible_records_invalidator() is not None
 
-    def test_init_is_idempotent(self) -> None:
+    def test_init_replaces_existing_invalidator(self) -> None:
         hooks.init_accessible_records_invalidator(MagicMock(), MagicMock(), MagicMock())
         first = hooks.get_accessible_records_invalidator()
         hooks.init_accessible_records_invalidator(MagicMock(), MagicMock(), MagicMock())

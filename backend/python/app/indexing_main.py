@@ -895,6 +895,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
     governor.close()
 
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
+
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:
         config_service = app_container.config_service()

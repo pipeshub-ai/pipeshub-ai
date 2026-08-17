@@ -3,6 +3,7 @@ import base64
 import hashlib
 import logging
 import re
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from itertools import groupby
@@ -3803,8 +3804,12 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
 
     return start_text, end_text.strip()
 
-_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], str] = {}
+# Values are fragment URLs that embed a few URL-encoded snippet words in
+# #:~:text=… — not whole record blocks. Keys are digests of the snippet.
+# TTL + maxsize keep retention bounded across orgs in a long-lived process.
+_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], tuple[str, float]] = {}
 _FRAGMENT_URL_CACHE_MAXSIZE = 8192
+_FRAGMENT_URL_CACHE_TTL_SECONDS = 300.0
 
 
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
@@ -3812,23 +3817,28 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
 
     The live citation overlay re-derives every citation's URL on each refresh,
     so the same (base_url, snippet) pair is re-scanned many times per turn.
-    Snippets are keyed by digest rather than by value so the cache cannot pin
-    whole record blocks in memory. Cleared wholesale when full: eviction
-    bookkeeping would cost more than the recompute it saves, and the working
-    set for a turn is far below the bound.
+    Snippets are keyed by digest so the cache does not retain full record text
+    as keys; cached values still hold the short start/end words used in the
+    text-fragment directive. Entries expire after
+    `_FRAGMENT_URL_CACHE_TTL_SECONDS` and the map is cleared wholesale when
+    full — eviction bookkeeping would cost more than the recompute it saves.
     """
     if not isinstance(base_url, str) or not isinstance(text_snippet, str):
         return _build_text_fragment_url(base_url, text_snippet)
 
     key = (base_url, hashlib.sha1(text_snippet.encode("utf-8", "surrogatepass")).digest())
+    now = time.monotonic()
     cached = _FRAGMENT_URL_CACHE.get(key)
     if cached is not None:
-        return cached
+        result, expires_at = cached
+        if expires_at > now:
+            return result
+        _FRAGMENT_URL_CACHE.pop(key, None)
 
     result = _build_text_fragment_url(base_url, text_snippet)
     if len(_FRAGMENT_URL_CACHE) >= _FRAGMENT_URL_CACHE_MAXSIZE:
         _FRAGMENT_URL_CACHE.clear()
-    _FRAGMENT_URL_CACHE[key] = result
+    _FRAGMENT_URL_CACHE[key] = (result, now + _FRAGMENT_URL_CACHE_TTL_SECONDS)
     return result
 
 

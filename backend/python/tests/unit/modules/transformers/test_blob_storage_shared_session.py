@@ -41,6 +41,11 @@ def _clear_sessions():
     bs_mod._shared_sessions.clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_connection_limit_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("PIPESHUB_STORAGE_CONNECTION_LIMIT", raising=False)
+
+
 class TestConnectionLimit:
     """An unbounded pool overran the storage API's listen backlog under load."""
 

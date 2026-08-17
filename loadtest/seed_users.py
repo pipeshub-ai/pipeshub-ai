@@ -65,7 +65,22 @@ def create_user(base_url: str, admin_token: str, email: str, full_name: str) -> 
         raise RuntimeError(
             f"createUser failed for {email}: HTTP {resp.status_code}: {resp.text[:300]}"
         )
-    return resp.json()
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise RuntimeError(f"createUser returned non-JSON for {email}") from e
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"createUser returned non-object JSON for {email}: {type(data).__name__}"
+        )
+    user_id = data.get("_id") or data.get("id")
+    org_id = data.get("orgId")
+    if not isinstance(user_id, str) or not user_id or not isinstance(org_id, str) or not org_id:
+        raise RuntimeError(
+            f"createUser response missing string _id/id and orgId for {email}: "
+            f"{sorted(data)}"
+        )
+    return {"_id": user_id, "id": user_id, "orgId": org_id}
 
 
 def _credential_document(user_id: str, org_id: str, hashed: str) -> dict:
@@ -207,10 +222,8 @@ def main() -> int:
         email = f"{args.prefix}-{run_id}-{i}@{args.domain}"
         try:
             user = create_user(args.base_url, admin_token, email, f"Load Test {run_id} {i}")
-            user_id = user.get("_id") or user.get("id")
-            org_id = user.get("orgId")
-            if not user_id or not org_id:
-                raise RuntimeError(f"createUser response missing _id/orgId: {sorted(user)}")
+            user_id = user["_id"]
+            org_id = user["orgId"]
             how = seed_password(args.base_url, user_id, org_id, args.password)
             login(args.base_url, email, args.password)  # prove it works now, not mid-run
             created.append((email, args.password))

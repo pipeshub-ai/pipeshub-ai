@@ -63,8 +63,12 @@ def _authenticate(base_url: str, session_token: str, email: str, password: str, 
         data = resp.json()
     except ValueError:
         raise AuthError(f"authenticate returned non-JSON for {email}") from None
+    if not isinstance(data, dict):
+        raise AuthError(
+            f"authenticate returned non-object JSON for {email}: {type(data).__name__}"
+        )
     token = data.get("accessToken")
-    if not token:
+    if not isinstance(token, str) or not token:
         # A multi-step org config answers with `nextStep` instead of a token.
         raise AuthError(
             f"authenticate returned no accessToken for {email} (keys: {sorted(data)})"

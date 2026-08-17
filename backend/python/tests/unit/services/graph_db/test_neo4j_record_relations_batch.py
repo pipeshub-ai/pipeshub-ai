@@ -112,3 +112,23 @@ class TestFailure:
             {"record_id": "p1", "relationType": "PARENT_CHILD"}
         ]
         assert p.get_parent_record_ids_by_relation_type.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_default_batch_skips_non_mapping_rows(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+        p = _provider([])
+        p.get_parent_record_ids_by_relation_type = AsyncMock(
+            return_value=[{"record_id": "p1"}, "bad-row", None]
+        )
+        p.get_child_record_ids_by_relation_type = AsyncMock(return_value=[42])
+
+        # Call the interface default, not Neo4j's specialised batch query.
+        out = await IGraphDBProvider.get_record_relations_batch(
+            p, ["a"], ["PARENT_CHILD"]
+        )
+
+        assert out["a"]["parents"] == [
+            {"record_id": "p1", "relationType": "PARENT_CHILD"}
+        ]
+        assert out["a"]["children"] == []

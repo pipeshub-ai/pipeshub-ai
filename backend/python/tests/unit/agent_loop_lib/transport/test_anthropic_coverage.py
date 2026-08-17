@@ -429,6 +429,29 @@ class TestComplete:
         _, kwargs = transport._client.messages.create.call_args
         assert kwargs["max_tokens"] == 50_000
 
+    async def test_disabled_thinking_still_sends_temperature(self) -> None:
+        transport = _transport(thinking={"type": "disabled"}, temperature=0.4)
+        transport._client.messages.create = AsyncMock(return_value=_response())
+
+        await transport.complete([UserMessage(content="hi")])
+
+        _, kwargs = transport._client.messages.create.call_args
+        assert kwargs["thinking"] == {"type": "disabled"}
+        assert kwargs["temperature"] == 0.4
+
+    async def test_enabled_thinking_suppresses_temperature(self) -> None:
+        transport = _transport(
+            thinking={"type": "enabled", "budget_tokens": 1024},
+            temperature=0.4,
+        )
+        transport._client.messages.create = AsyncMock(return_value=_response())
+
+        await transport.complete([UserMessage(content="hi")])
+
+        _, kwargs = transport._client.messages.create.call_args
+        assert "temperature" not in kwargs
+        assert kwargs["thinking"]["type"] == "enabled"
+
     async def test_tools_get_cache_breakpoint(self) -> None:
         transport = _transport()
         transport._client.messages.create = AsyncMock(return_value=_response())

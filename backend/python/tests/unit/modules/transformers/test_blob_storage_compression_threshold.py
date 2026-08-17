@@ -17,6 +17,11 @@ from app.modules.transformers.blob_storage import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_compression_threshold_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(bs_mod._COMPRESSION_THRESHOLD_ENV, raising=False)
+
+
 def _make_blob_storage() -> BlobStorage:
     return BlobStorage(logger=MagicMock(), config_service=MagicMock(), graph_provider=MagicMock())
 
