@@ -6,6 +6,8 @@ When implementing backend or repo-wide changes, also read the repository-root `A
 
 PipesHub is an AI-powered knowledge management dashboard on **Next.js** (App Router, client-rendered React).
 
+In Docker Compose the built UI is served by Express on port **3000** (same origin as `/api` and `/mcp`). When you run `PORT=3001 npm run dev` from this directory, the dashboard is on 3001 and calls Express on 3000. Do not assume 3001 is where operators open the product.
+
 **Tech Stack:**
 - Next.js 14+ (App Router, CSR-only with `'use client'`)
 - TypeScript (strict mode)

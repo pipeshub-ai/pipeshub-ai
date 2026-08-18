@@ -12,13 +12,13 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 ### Architecture
 
-The platform is a polyglot system: **5 independent Python FastAPI microservices**, **1 Node.js Express API**, and **1 Nextjs frontend**, backed by a fleet of stateful services.
+The platform is a polyglot system: **Python FastAPI microservices**, **1 Node.js Express API**, and **1 Next.js frontend**, backed by a fleet of stateful services. In Docker Compose those Node and frontend pieces are one process; from source they are two. See `AGENTS.md` for which localhost port to open.
 
 ```
 /pipeshub-ai
-├── frontend/              # React + Nextjs + TypeScript
+├── frontend/              # React + Next.js + TypeScript
 ├── backend/
-│   ├── nodejs/apps/       # Node.js Express API
+│   ├── nodejs/apps/       # Node.js Express API (and, in Docker, the built UI)
 │   └── python/            # Python FastAPI microservices
 └── deployment/            # Docker Compose configs
 ```
@@ -27,7 +27,7 @@ The platform is a polyglot system: **5 independent Python FastAPI microservices*
 
 ### Services
 
-- **Node.js API** (`backend/nodejs/apps`, port 3001) — User/org management, authentication (JWT, OAuth2, SAML), knowledge base management, object storage (S3/Azure Blob), API gateway, Kafka producers for async work.
+- **Node.js API** (`backend/nodejs/apps`) — Express defaults to port **3000**. Docker Compose maps that to the host (`APP_PORT`, default 3000) and the same process serves the dashboard from `public/`. Helm often publishes the combined service on 3001. The Next.js *dev* server in CONTRIBUTING.md is 3001 so it does not collide with Express. User/org management, authentication (JWT, OAuth2, SAML), knowledge base, object storage, API gateway, MCP, Kafka producers.
 - **Connectors** (`backend/python`, port 8088) — `app.connectors_main`. OAuth flows, token refresh, and 30+ data-source integrations (Google, Microsoft, Slack, Jira, Confluence, etc.). Uses a `ConnectorFactory` pattern; new sources live under `app/connectors/sources/`.
 - **Indexing** (`backend/python`, port 8091) — `app.indexing_main`. Document parsing, chunking, and embedding generation. Writes vectors to Qdrant and graph nodes to ArangoDB.
 - **Query** (`backend/python`, port 8000) — `app.query_main`. Retrieval-augmented generation, semantic search, and LLM orchestration via LiteLLM. Hosts the RAG pipeline and agent/workflow runtime.
