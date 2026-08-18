@@ -195,3 +195,66 @@ class TestReindexRecords:
         helper = StreamingHelper(c)
         await helper.reindex_records([])
         c.runtime.refresh_token_if_needed.assert_not_awaited()
+
+    async def test_missing_data_source_raises(self) -> None:
+        c = make_mock_connector()
+        c.data_source = None
+        helper = StreamingHelper(c)
+        with pytest.raises(Exception, match="DataSource not initialized"):
+            await helper.reindex_records([_ticket_record()])
+
+    async def test_per_record_check_error_is_skipped(self) -> None:
+        c = make_mock_connector()
+        ticket = _ticket_record()
+        other = _ticket_record(id="rec-2", external_record_id="ext-issue-2")
+        c.issues.check_and_fetch_updated_ticket_for_reindex = AsyncMock(
+            side_effect=[RuntimeError("source down"), None]
+        )
+
+        await StreamingHelper(c).reindex_records([ticket, other])
+
+        c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([other])
+
+    async def test_skips_untyped_base_records_and_folder_files(self) -> None:
+        c = make_mock_connector()
+        untyped = _record("FILE")
+        folder = FileRecord(
+            id="rec-folder", org_id="org-1", record_name="src", record_type="FILE",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="ext-folder", is_file=False, extension="",
+        )
+        code = CodeFileRecord(
+            id="rec-code", org_id="org-1", record_name="a.py", record_type="CODE_FILE",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="/1/blob/a.py", file_path="a.py",
+        )
+
+        await StreamingHelper(c).reindex_records([untyped, folder, code])
+
+        c.data_entities_processor.reindex_existing_records.assert_awaited_once_with([code])
+
+    async def test_not_implemented_reindex_is_logged_not_raised(self) -> None:
+        c = make_mock_connector()
+        ticket = _ticket_record()
+        c.issues.check_and_fetch_updated_ticket_for_reindex = AsyncMock(return_value=None)
+        c.data_entities_processor.reindex_existing_records = AsyncMock(
+            side_effect=NotImplementedError("to_kafka_record")
+        )
+
+        await StreamingHelper(c).reindex_records([ticket])
+
+        c.logger.warning.assert_called()
+
+    async def test_outer_reindex_error_propagates(self) -> None:
+        c = make_mock_connector()
+        c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("auth"))
+        with pytest.raises(RuntimeError, match="auth"):
+            await StreamingHelper(c).reindex_records([_ticket_record()])
+
+
+class TestStreamRecordTypeGuards:
+    async def test_file_type_with_base_record_raises(self) -> None:
+        c = make_mock_connector()
+        helper = StreamingHelper(c)
+        with pytest.raises(ValueError, match="Expected FileRecord"):
+            await helper.stream_record(_record("FILE"))

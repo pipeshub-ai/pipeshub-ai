@@ -873,6 +873,237 @@ class TestPruneDeletedPaths:
         c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
 
+class TestRunDispatchEdgeCases:
+    async def test_empty_default_branch_skips(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        repo.default_branch = ""
+        sync = ReposSync(c)
+        sync._full_sync = _async_return(True)
+
+        await sync.run(repo)
+
+        sync._full_sync.assert_not_awaited()
+        c.runtime.ds_call.assert_not_awaited()
+
+    async def test_branch_lookup_failure_skips(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = failed_response("404")
+        sync = ReposSync(c)
+        sync._full_sync = _async_return(True)
+
+        await sync.run(make_repo(repo_id=1))
+
+        sync._full_sync.assert_not_awaited()
+
+    async def test_missing_head_sha_skips(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = ok_response(SimpleNamespace(commit=None))
+        sync = ReposSync(c)
+        sync._full_sync = _async_return(True)
+
+        await sync.run(make_repo(repo_id=1))
+
+        sync._full_sync.assert_not_awaited()
+
+    async def test_checkpoint_read_failure_treats_as_no_checkpoint(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = ok_response(
+            type("Branch", (), {"commit": type("Commit", (), {"sha": "head-sha"})()})()
+        )
+        c.record_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("missing"))
+        sync = ReposSync(c)
+        sync._full_sync = _async_return(True)
+
+        await sync.run(make_repo(repo_id=1))
+
+        sync._full_sync.assert_awaited_once()
+
+    async def test_full_sync_error_does_not_advance_checkpoint(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = ok_response(
+            type("Branch", (), {"commit": type("Commit", (), {"sha": "head-sha"})()})()
+        )
+        c.record_sync_point.read_sync_point.return_value = None
+        sync = ReposSync(c)
+        sync._full_sync = _async_return(False)
+
+        await sync.run(make_repo(repo_id=1))
+
+        c.record_sync_point.update_sync_point.assert_not_awaited()
+
+
+class TestFullSyncFailures:
+    async def test_git_tree_failure_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = failed_response("500")
+        assert await ReposSync(c)._full_sync(make_repo(repo_id=1), "head-sha") is False
+
+    async def test_subtree_failure_returns_false_without_pruning(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        c.runtime.ds_call.return_value = failed_response("500")
+        sync = ReposSync(c)
+        sync._persist_tree_entries = AsyncMock(return_value=True)
+        sync._prune_deleted_paths = AsyncMock()
+
+        ok = await sync._full_sync_untruncated(repo, "head-sha")
+
+        assert ok is False
+        sync._prune_deleted_paths.assert_not_awaited()
+
+
+class TestIncrementalCompareLimits:
+    async def test_compare_files_cap_returns_false(self) -> None:
+        from app.connectors.sources.github_teams.constants import COMPARE_COMMITS_FILES_LIMIT
+
+        c = make_mock_connector()
+        files = [
+            make_compare_file(filename=f"f{i}.py", status="added", sha=f"s{i}")
+            for i in range(COMPARE_COMMITS_FILES_LIMIT)
+        ]
+        c.runtime.ds_call.return_value = ok_response(make_comparison(files, total_commits=1))
+        assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
+
+    async def test_compare_commits_cap_returns_false(self) -> None:
+        from app.connectors.sources.github_teams.constants import COMPARE_COMMITS_TOTAL_LIMIT
+
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = ok_response(
+            make_comparison([make_compare_file(filename="a.py", status="added")], total_commits=COMPARE_COMMITS_TOTAL_LIMIT)
+        )
+        assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
+
+    def test_copied_is_classified_as_add(self) -> None:
+        files = [make_compare_file(filename="copy.py", status="copied", sha="sha-c")]
+        _deletes, adds, _modifies, _renames = ReposSync(make_mock_connector())._classify_compare_files(files)
+        assert adds == {"copy.py": "sha-c"}
+
+    def test_rename_without_paths_is_skipped(self) -> None:
+        files = [SimpleNamespace(status="renamed", filename=None, previous_filename=None, sha="x")]
+        deletes, adds, modifies, renames = ReposSync(make_mock_connector())._classify_compare_files(files)
+        assert deletes == adds == modifies == {}
+        assert renames == []
+
+
+class TestFetchCodeFileContentErrors:
+    async def test_missing_group_id_raises(self) -> None:
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="a.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/a.py", file_path="a.py",
+        )
+        with pytest.raises(Exception, match="Repository id not found"):
+            await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+
+    async def test_repo_lookup_failure_raises(self) -> None:
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="a.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/a.py", external_record_group_id="1-code-repository",
+            file_path="a.py",
+        )
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = failed_response("404")
+        with pytest.raises(Exception, match="Failed to resolve repo"):
+            await ReposSync(c).fetch_code_file_content(record)
+
+    async def test_contents_failure_raises(self) -> None:
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="a.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/a.py", external_record_group_id="1-code-repository",
+            file_path="a.py",
+        )
+        c = make_mock_connector()
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.get_repo_by_id:
+                return ok_response(make_repo(repo_id=1))
+            if method is c.data_source.get_file_contents:
+                return failed_response("500")
+            raise AssertionError(f"unexpected {method!r}")
+
+        c.runtime.ds_call.side_effect = dispatch
+        with pytest.raises(Exception, match="Failed to fetch content"):
+            await ReposSync(c).fetch_code_file_content(record)
+
+    async def test_missing_file_path_raises(self) -> None:
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="a.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/a.py", external_record_group_id="1-code-repository",
+            file_path="",
+        )
+        with pytest.raises(Exception, match="Cannot resolve repo path"):
+            await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+
+
+class TestTimestampLifecycle:
+    async def test_cancel_is_noop_when_no_task(self) -> None:
+        sync = ReposSync(make_mock_connector())
+        await sync.timestamps.cancel()
+
+    async def test_cancel_stops_running_task(self) -> None:
+        import asyncio
+
+        c = make_mock_connector()
+        sync = ReposSync(c)
+
+        async def hang() -> None:
+            await asyncio.sleep(30)
+
+        sync.timestamps._task = asyncio.create_task(hang())
+        await sync.timestamps.cancel()
+        assert sync.timestamps._task is None
+
+    async def test_schedule_is_idempotent_while_running(self) -> None:
+        import asyncio
+
+        c = make_mock_connector()
+        sync = ReposSync(c)
+        existing = asyncio.create_task(asyncio.sleep(30))
+        sync.timestamps._task = existing
+        sync.timestamps.schedule()
+        assert sync.timestamps._task is existing
+        existing.cancel()
+        await asyncio.gather(existing, return_exceptions=True)
+
+    async def test_run_logs_and_clears_task_on_failure(self) -> None:
+        c = make_mock_connector()
+        c.projects._resolve_repos_with_filters = AsyncMock(side_effect=RuntimeError("no orgs"))
+        sync = ReposSync(c)
+        await sync.timestamps._run()
+        c.logger.error.assert_called()
+        assert sync.timestamps._task is None
+
+    async def test_apply_patches_failure_is_logged(self) -> None:
+        c = make_mock_connector()
+        c.tx_store.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db"))
+        await ReposSync(c).timestamps._apply_patches(
+            [{"id": "n1", "sourceCreatedAtTimestamp": 1}], "records", context="acme/widgets"
+        )
+        c.logger.warning.assert_called()
+
+    def test_iso_and_commit_date_helpers(self) -> None:
+        from app.connectors.sources.github_teams.timestamps import (
+            _commit_authored_ms,
+            _iso_to_ms,
+        )
+
+        assert _iso_to_ms(None) is None
+        assert _iso_to_ms("not-a-date") is None
+        assert _iso_to_ms("2024-01-05T00:00:00") == 1704412800000
+        naive = datetime(2024, 1, 5)
+        commit = SimpleNamespace(commit=SimpleNamespace(author=SimpleNamespace(date=naive)))
+        assert _commit_authored_ms(commit) == 1704412800000
+        assert _commit_authored_ms(SimpleNamespace(commit=None)) is None
+
+
 def _async_return(value: object) -> object:
     from unittest.mock import AsyncMock
     return AsyncMock(return_value=value)

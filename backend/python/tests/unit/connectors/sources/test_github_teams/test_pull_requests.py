@@ -299,6 +299,105 @@ class TestReindexCheck:
         result = await sync.check_and_fetch_updated_pr_for_reindex(record)
         assert result is None
 
+    async def test_malformed_ids_return_none(self) -> None:
+        c = make_mock_connector()
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="not-int", external_record_group_id="abc-pull-requests",
+        )
+        assert await PullRequestsSync(c).check_and_fetch_updated_pr_for_reindex(record) is None
+
+    async def test_repo_lookup_failure_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
+        )
+        assert await PullRequestsSync(c).check_and_fetch_updated_pr_for_reindex(record) is None
+
+    async def test_pr_lookup_failure_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(make_repo(repo_id=10)),
+            "get_pull": failed_response("404"),
+        })
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
+        )
+        assert await PullRequestsSync(c).check_and_fetch_updated_pr_for_reindex(record) is None
+
+
+class TestPrMappingAndFetchEdges:
+    def test_is_after_treats_naive_and_missing_as_fresh(self) -> None:
+        sync = PullRequestsSync(make_mock_connector())
+        since = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        assert sync._is_after(SimpleNamespace(updated_at=None), since) is True
+        naive = datetime(2024, 6, 1)
+        assert sync._is_after(SimpleNamespace(updated_at=naive), since) is True
+        assert sync._is_after(SimpleNamespace(updated_at=datetime(2020, 1, 1)), since) is False
+
+    async def test_process_exception_returns_none(self) -> None:
+        c = make_mock_connector()
+
+        class _BadPR:
+            number = 1
+            labels: list = []
+            assignees: list = []
+            requested_reviewers: list = []
+            user = None
+            head = None
+            updated_at = None
+            created_at = None
+            html_url = "https://github.com/acme/widgets/pull/1"
+            _rawData: dict = {}
+
+            @property
+            def title(self) -> str:
+                raise RuntimeError("bad")
+
+        assert await PullRequestsSync(c).process_pull_request(make_repo(repo_id=10), _BadPR()) is None
+
+    async def test_attachments_follow_indexing_flag(self) -> None:
+        c = make_mock_connector()
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.comments.clean_github_content = AsyncMock(return_value=("", [
+            {"type": "pdf", "href": "https://github.com/user-attachments/files/1/x.pdf"},
+        ]))
+        file_record = SimpleNamespace(indexing_status=None)
+        c.comments.make_file_records_from_list = AsyncMock(
+            return_value=[SimpleNamespace(record=file_record)]
+        )
+
+        updates = await PullRequestsSync(c)._build_pr_records(make_repo(repo_id=10), [_pr(number=1)])
+
+        assert updates[0].record.indexing_status == "AUTO_INDEX_OFF"
+        assert file_record.indexing_status == "AUTO_INDEX_OFF"
+
+    async def test_build_blocks_requires_group_id(self) -> None:
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="10/pull/5",
+        )
+        with pytest.raises(Exception, match="Repository id not found"):
+            await PullRequestsSync(make_mock_connector()).build_pull_request_blocks(record)
+
+    async def test_build_blocks_repo_failure_raises(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        record = PullRequestRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
+        )
+        with pytest.raises(Exception, match="Failed to resolve repo"):
+            await PullRequestsSync(c).build_pull_request_blocks(record)
+
 
 class TestBuildPullRequestBlocks:
     async def test_commits_and_comments_have_distinct_block_group_indices(self) -> None:

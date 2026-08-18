@@ -3734,14 +3734,33 @@ class TestOnRecordMetadataUpdateAndDelete:
 
     @pytest.mark.asyncio
     async def test_record_deleted(self):
-        """Deletes record by key."""
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "rec-1", "virtualRecordId": "v1"}]},
+            }
+        )
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        tx_store.delete_single_record.assert_awaited_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_no_event_data(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(return_value={"success": True})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("rec-1")
+
+        tx_store.delete_single_record.assert_awaited_with("rec-1")
+        proc.messaging_producer.send_message.assert_not_awaited()
 
 
 # ===========================================================================

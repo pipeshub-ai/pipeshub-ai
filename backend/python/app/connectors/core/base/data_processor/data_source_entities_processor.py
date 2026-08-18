@@ -1427,13 +1427,16 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Still shallow — KB deletes
-        # use on_records_deleted_cascade (recursive cascade + deleteRecord events).
+        """Shallow per-record delete for connectors (GitHub, GitLab, Drive, …).
+
+        Removes the record vertex, every edge on it, and its isOfType type doc.
+        Does not walk PARENT_CHILD / ATTACHMENT — connectors own hierarchy
+        (delete blobs then empty folders). Publishes deleteRecord when the
+        record had a virtualRecordId so indexing can drop Qdrant vectors.
+        """
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_parent_child_edge_to_record(record_id)
-            await tx_store.delete_record_by_key(record_id)
+            result = await tx_store.delete_single_record(record_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(

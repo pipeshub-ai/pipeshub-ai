@@ -10,10 +10,12 @@ Covers:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.sources.github.connector import GitHubPersonalProjectsSync
+from app.connectors.sources.github.connector import GitHubPersonalProjectsSync, GithubConnector
+from app.connectors.sources.github import connector as personal_mod
 from app.connectors.core.registry.filters import SyncFilterKey
 from app.models.permission import EntityType, Permission, PermissionType
 
@@ -168,3 +170,142 @@ class TestResolveReposWithFilters:
         result = await sync._resolve_repos_with_filters()
 
         assert result == []
+
+    async def test_inaccessible_repo_in_filter_is_skipped(self) -> None:
+        c = make_mock_connector()
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["me/gone", "me/kept"], operator_value="in",
+            )
+        }
+        kept = make_repo(repo_id=2, owner_login="me", name="kept")
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.get_repo:
+                _owner, name = args
+                if name == "gone":
+                    return failed_response("404")
+                return ok_response(kept)
+            raise AssertionError("unexpected ds_call")
+
+        c.runtime.ds_call.side_effect = dispatch
+
+        result = await GitHubPersonalProjectsSync(c)._resolve_repos_with_filters()
+
+        assert [r.id for r in result] == [2]
+
+
+class TestPersonalConnectorLifecycle:
+    async def test_run_sync_skips_users_and_ensures_connector_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = make_mock_connector()
+        c.creator_email = "me@example.com"
+        c.created_by = "user-1"
+        c.repos.timestamps.cancel = AsyncMock()
+        c.repos.timestamps.schedule = MagicMock()
+        c.projects.sync_all_repos = AsyncMock()
+        c.ensure_connector_group_permission = AsyncMock()
+        c._load_creator_email = AsyncMock()
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        await GithubConnector.run_sync(c)
+
+        c._load_creator_email.assert_not_awaited()
+        c.ensure_connector_group_permission.assert_awaited_once()
+        c.projects.sync_all_repos.assert_awaited_once()
+        c.repos.timestamps.schedule.assert_called_once()
+
+    async def test_run_sync_loads_creator_email_when_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = make_mock_connector()
+        c.creator_email = None
+        c.created_by = "user-1"
+        c.repos.timestamps.cancel = AsyncMock()
+        c.repos.timestamps.schedule = MagicMock()
+        c.projects.sync_all_repos = AsyncMock()
+        c.ensure_connector_group_permission = AsyncMock()
+
+        async def load_email() -> None:
+            c.creator_email = "loaded@example.com"
+
+        c._load_creator_email = AsyncMock(side_effect=load_email)
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        await GithubConnector.run_sync(c)
+
+        c._load_creator_email.assert_awaited_once()
+        c.ensure_connector_group_permission.assert_awaited_once()
+
+    async def test_run_sync_warns_when_no_creator_email(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = make_mock_connector()
+        c.creator_email = None
+        c.created_by = None
+        c.repos.timestamps.cancel = AsyncMock()
+        c.repos.timestamps.schedule = MagicMock()
+        c.projects.sync_all_repos = AsyncMock()
+        c.ensure_connector_group_permission = AsyncMock()
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        await GithubConnector.run_sync(c)
+
+        c.ensure_connector_group_permission.assert_not_awaited()
+        c.projects.sync_all_repos.assert_awaited_once()
+        c.logger.warning.assert_called()
+
+    async def test_run_sync_error_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = make_mock_connector()
+        c.creator_email = "me@example.com"
+        c.repos.timestamps.cancel = AsyncMock()
+        c.projects.sync_all_repos = AsyncMock(side_effect=RuntimeError("api down"))
+        c.ensure_connector_group_permission = AsyncMock()
+        monkeypatch.setattr(
+            personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        with pytest.raises(RuntimeError, match="api down"):
+            await GithubConnector.run_sync(c)
+
+    async def test_run_incremental_sync_delegates(self) -> None:
+        c = make_mock_connector()
+        c.run_sync = AsyncMock()
+        await GithubConnector.run_incremental_sync(c)
+        c.run_sync.assert_awaited_once()
+
+    def test_creator_user_permission_returns_cached_group_permission(self) -> None:
+        fake = MagicMock()
+        perm = Permission(entity_type=EntityType.GROUP, external_id="internal-1", type=PermissionType.OWNER)
+        fake._connector_group_permission = perm
+        assert GithubConnector.creator_user_permission(fake) is perm
+
+    async def test_create_connector_builds_personal_instance(self) -> None:
+        with patch(
+            "app.connectors.sources.github.connector.DataSourceEntitiesProcessor"
+        ) as MockProcessor:
+            mock_dep = MagicMock()
+            mock_dep.org_id = "org-1"
+            mock_dep.initialize = AsyncMock()
+            MockProcessor.return_value = mock_dep
+
+            connector = await GithubConnector.create_connector(
+                logger=MagicMock(),
+                data_store_provider=MagicMock(),
+                config_service=MagicMock(),
+                connector_id="conn-personal-1",
+                scope="personal",
+                created_by="creator-1",
+            )
+
+        assert isinstance(connector, GithubConnector)
+        assert connector.connector_id == "conn-personal-1"
+        assert connector.created_by == "creator-1"
+        mock_dep.initialize.assert_awaited_once()

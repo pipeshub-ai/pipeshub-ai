@@ -600,9 +600,14 @@ class TestOnRecordMetadataUpdate:
 class TestOnRecordDeleted:
     @pytest.mark.asyncio
     async def test_deletes_record(self):
-        """Calls delete_record_by_key within a transaction."""
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "rec-1", "virtualRecordId": "v1"}]},
+            }
+        )
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -611,7 +616,9 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
 
 # ===========================================================================

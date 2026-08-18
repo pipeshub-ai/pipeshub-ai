@@ -84,6 +84,80 @@ class TestResolveTargetOrgs:
         assert orgs_ok is True
         assert orgs == ["acme", "other"]
 
+    async def test_org_not_in_excludes_from_visible_list(self) -> None:
+        c = make_mock_connector()
+        org_filter = MagicMock()
+        org_filter.is_empty.return_value = False
+        org_filter.value = ["other"]
+        org_filter.operator_value = "not_in"
+        c.sync_filters = {users_mod.SyncFilterKey.ORG_IDS: org_filter}
+        c.runtime.ds_call.return_value = ok_response([
+            SimpleNamespace(login="acme"), SimpleNamespace(login="other"),
+        ])
+
+        orgs, ok = await UsersSync(c)._resolve_target_orgs()
+        assert ok is True
+        assert orgs == ["acme"]
+
+    async def test_repo_ids_without_slash_falls_through_to_visible_orgs(self) -> None:
+        c = make_mock_connector()
+        repo_filter = MagicMock()
+        repo_filter.is_empty.return_value = False
+        repo_filter.value = ["noslash"]
+        repo_filter.operator_value = "in"
+        c.sync_filters = {users_mod.SyncFilterKey.REPO_IDS: repo_filter}
+        c.runtime.ds_call.return_value = ok_response([SimpleNamespace(login="acme")])
+
+        orgs, ok = await UsersSync(c)._resolve_target_orgs()
+        assert ok is True
+        assert orgs == ["acme"]
+
+    async def test_list_user_orgs_failure_is_not_empty_success(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.return_value = failed_response("403")
+        orgs, ok = await UsersSync(c)._list_all_visible_orgs(None)
+        assert ok is False
+        assert orgs == []
+
+
+class TestSyncUsersGuards:
+    async def test_missing_data_source_raises(self) -> None:
+        c = make_mock_connector()
+        c.data_source = None
+        with pytest.raises(Exception, match="not initialized"):
+            await UsersSync(c).sync_users()
+
+    async def test_org_discovery_failure_aborts(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(([], False))
+        with pytest.raises(RuntimeError, match="org discovery failed"):
+            await sync.sync_users()
+
+    async def test_no_orgs_is_warning_not_abort(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        sync._resolve_target_orgs = MagicMock_async(([], True))
+        await sync.sync_users()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    async def test_invalid_org_login_skips_verified_domain_query(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        sync._member_ids = {1}
+        resolved = await sync._resolve_via_verified_domains(
+            {1: make_named_user(user_id=1, login="alice")}, {1}, ["not a valid org!!"]
+        )
+        assert resolved == {}
+        c.runtime.ds_call.assert_not_awaited()
+
+    async def test_member_without_login_is_not_enriched(self) -> None:
+        c = make_mock_connector()
+        member = SimpleNamespace(id=1, login=None, email=None)
+        enriched = await UsersSync(c)._enrich_members_with_full_profile({1: member}, {1})
+        assert enriched[1] is member
+        c.runtime.ds_call.assert_not_awaited()
+
 
 class TestSyncUsersPhases:
     async def test_phase1_visible_email_resolved_directly(self) -> None:

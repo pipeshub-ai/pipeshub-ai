@@ -18,7 +18,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.connectors.sources.github_teams.comments import CommentsHelper, _is_github_attachment_url
+from fastapi import HTTPException
+
+from app.connectors.sources.github_teams.comments import (
+    CommentsHelper,
+    _file_type_from_url,
+    _image_format_from_bytes,
+    _is_github_attachment_url,
+)
 from app.models.entities import FileRecord
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -504,6 +511,309 @@ class TestReviewCommentThreading:
 
         helper.make_block_comment_of_attachments.assert_not_awaited()
         assert remaining == []
+
+
+class TestImageFormatAndUrlGuards:
+    def test_webp_and_svg_are_sniffed_from_bytes(self) -> None:
+        webp = b"RIFF" + b"xxxx" + b"WEBP" + b"0" * 8
+        assert _image_format_from_bytes(webp) == "webp"
+        assert _image_format_from_bytes(b"<svg xmlns='x'></svg>") == "svg+xml"
+        assert _image_format_from_bytes(b"not-an-image") is None
+
+    def test_unparseable_url_is_rejected(self) -> None:
+        class _Boom:
+            def __str__(self) -> str:
+                raise RuntimeError("cannot stringify")
+
+        assert _is_github_attachment_url(_Boom()) is False  # type: ignore[arg-type]
+
+    def test_file_type_from_url_uses_filename_then_path_then_host(self) -> None:
+        assert _file_type_from_url("https://x/a", "crash.log") == "log"
+        assert _file_type_from_url("https://github.com/user-attachments/files/9/spec.pdf") == "pdf"
+        assert _file_type_from_url("https://github.com/user-attachments/assets/1") == "image"
+        assert _file_type_from_url("https://github.com/user-attachments/files/9/noext") == "file"
+        assert _file_type_from_url("https://example.com/x") == "unknown"
+
+
+class TestCleanGithubHtmlAndNonAttachment:
+    async def test_html_img_is_extracted(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        cleaned, attachments = await helper.clean_github_content(
+            '<img src="https://github.com/user-attachments/assets/9" alt="shot">'
+        )
+        assert attachments[0]["type"] == "image"
+        assert attachments[0]["href"].endswith("/assets/9")
+        assert "img" not in cleaned.lower()
+
+    async def test_non_github_markdown_image_is_left_alone(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        text = "![shot](https://example.com/pic.png)"
+        cleaned, attachments = await helper.clean_github_content(text)
+        assert attachments == []
+        assert text in cleaned
+
+    async def test_non_github_html_img_is_left_alone(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        text = '<img src="https://example.com/pic.png" alt="shot">'
+        cleaned, attachments = await helper.clean_github_content(text)
+        assert attachments == []
+        assert "example.com" in cleaned
+
+
+class TestEmbedEmptyAndSkip:
+    async def test_empty_body_returns_empty(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        assert await helper.embed_images_as_base64("") == ""
+
+    async def test_file_attachment_without_slot_is_not_embedded(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        result = await helper.embed_images_as_base64(
+            "[crash.log](https://github.com/user-attachments/files/9/crash.log)"
+        )
+        c.runtime.ds_call.assert_not_awaited()
+        assert "crash.log" not in result or "data:image" not in result
+
+
+class TestEmbedImageException:
+    async def test_fetch_exception_degrades_to_alt_text(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("network"))
+        helper = CommentsHelper(c)
+
+        result = await helper.embed_images_as_base64(
+            "![shot](https://github.com/user-attachments/assets/1)"
+        )
+
+        assert "shot" in result
+        assert "data:image" not in result
+
+
+class TestFetchAttachmentContentSizeLimit:
+    async def test_value_error_becomes_413(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+
+        async def too_big(weburl: str, max_bytes: int | None = None):
+            raise ValueError("over the limit")
+            yield b""  # pragma: no cover
+
+        c.data_source.get_attachment_files_content = too_big
+        record = _attachment_record("https://github.com/user-attachments/files/1/x.pdf")
+
+        with pytest.raises(HTTPException) as exc:
+            [chunk async for chunk in helper.fetch_attachment_content(record)]
+        assert exc.value.status_code == 413
+
+    async def test_generic_stream_error_is_wrapped(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+
+        async def boom(weburl: str, max_bytes: int | None = None):
+            raise RuntimeError("network")
+            yield b""  # pragma: no cover
+
+        c.data_source.get_attachment_files_content = boom
+        record = _attachment_record("https://github.com/user-attachments/files/1/x.pdf")
+
+        with pytest.raises(Exception, match="Failed to fetch attachment"):
+            [chunk async for chunk in helper.fetch_attachment_content(record)]
+
+
+class TestAttachmentRecordBuilding:
+    async def test_image_and_missing_href_are_skipped(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        updates = await helper.make_file_records_from_list(
+            [
+                {"type": "image", "href": "https://github.com/user-attachments/assets/1"},
+                {"type": "pdf", "href": None, "filename": "x.pdf"},
+            ],
+            _parent_ticket(),
+        )
+        assert updates == []
+
+    async def test_child_records_reuse_existing_and_create_new(self) -> None:
+        c = make_mock_connector()
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=[existing, None]
+        )
+        helper = CommentsHelper(c)
+        text = (
+            "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf) "
+            "[new.log](https://github.com/user-attachments/files/8/new.log)"
+        )
+
+        children, remaining = await helper.make_child_records_of_attachments(text, _parent_ticket())
+
+        assert [child.child_id for child in children] == ["att-1"] or len(children) == 2
+        assert any(child.child_name == "spec.pdf" for child in children)
+        assert remaining  # newly created attachment
+
+    async def test_block_comment_attachments_reuse_existing(self) -> None:
+        c = make_mock_connector()
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        helper = CommentsHelper(c)
+        text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
+
+        attachments, remaining = await helper.make_block_comment_of_attachments(text, _parent_ticket())
+
+        assert attachments[0].id == "att-1"
+        assert remaining == []
+
+
+class TestCommentBlockFailures:
+    async def test_conversation_fetch_failure_raises(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": failed_response("500"),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        with pytest.raises(Exception, match="Failed to fetch conversation comments"):
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
+
+    async def test_issue_comment_fetch_failure_raises(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {"list_issue_comments": failed_response("500")})
+        helper = CommentsHelper(c)
+        record, _ = _pr_blocks_fixture()
+
+        with pytest.raises(Exception, match="Failed to fetch comments"):
+            await helper.build_issue_comment_blocks("acme", "widgets", 1, 0, record)
+
+    async def test_reviews_failure_still_builds_conversation(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([_conv_comment(1, "hello", _dt(1))]),
+            "get_pull_reviews": failed_response("403"),
+            "get_pull_review_comments": failed_response("403"),
+            "get_pull_file_changes": ok_response([]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        assert [bg.data for bg in block_groups] == ["hello"]
+
+    async def test_file_changes_failure_raises(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": failed_response("500"),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        with pytest.raises(Exception, match="Failed to fetch file changes"):
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
+
+    async def test_oversized_file_omits_full_content(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="big.bin", status="modified", patch="@@", size=10**9),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        group = next(bg for bg in block_groups if bg.name == "File change: big.bin")
+        assert "omitted" in group.data
+        assert c.data_source.get_file_contents not in [
+            call.args[0] for call in c.runtime.ds_call.await_args_list
+        ]
+
+    async def test_file_without_name_is_skipped(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename=None, status="modified", patch="@@"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        assert not any(bg.name and bg.name.startswith("File change") for bg in block_groups)
+
+    async def test_inline_file_content_is_included(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="a.py", status="modified", patch="@@", size=10),
+            ]),
+            "get_file_contents": ok_response(SimpleNamespace(decoded_content=b"print(1)", content=None)),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: a.py")
+        assert "print(1)" in group.data
+
+    async def test_decode_content_file_from_decoded_and_base64(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+        decoded = helper._decode_content_file(SimpleNamespace(decoded_content=b"hello", content=None))
+        assert decoded == "hello"
+        import base64
+        raw = base64.b64encode(b"world").decode()
+        assert helper._decode_content_file(SimpleNamespace(decoded_content=None, content=raw)) == "world"
+        assert helper._decode_content_file(SimpleNamespace(decoded_content=None, content=None)) is None
+
+    async def test_decode_content_file_exception_returns_none(self) -> None:
+        helper = CommentsHelper(make_mock_connector())
+
+        class _Bad:
+            path = "a.py"
+
+            @property
+            def decoded_content(self) -> bytes:
+                raise RuntimeError("decode failed")
+
+            content = "%%%not-base64%%%"
+
+        assert helper._decode_content_file(_Bad()) is None
+
+    async def test_commit_fetch_failure_returns_empty(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500")})
+
+        blocks, bg = await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
+
+        assert blocks == []
+        assert bg is None
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:

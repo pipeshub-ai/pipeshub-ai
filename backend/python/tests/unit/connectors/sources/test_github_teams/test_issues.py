@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -487,8 +487,10 @@ class TestProcessIssueToTicket:
 
     @pytest.mark.parametrize(("state", "reason", "expected"), [
         ("open", None, "OPEN"),
+        ("reopened", None, "REOPENED"),
         ("closed", "completed", "DONE"),
         ("closed", "not_planned", "CANCELLED"),
+        ("closed", "duplicate", "CANCELLED"),
         ("closed", None, "DONE"),
     ])
     async def test_state_reason_distinguishes_done_from_abandoned(
@@ -599,6 +601,229 @@ class TestReindexCheck:
         )
         result = await sync.check_and_fetch_updated_ticket_for_reindex(record)
         assert result is None
+
+    async def test_repo_lookup_failure_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+        )
+        assert await IssuesSync(c).check_and_fetch_updated_ticket_for_reindex(record) is None
+
+    async def test_issue_lookup_failure_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(make_repo(repo_id=42)),
+            "get_issue": failed_response("404"),
+        })
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+        )
+        assert await IssuesSync(c).check_and_fetch_updated_ticket_for_reindex(record) is None
+
+
+class TestDatetimeFiltersAndIndexing:
+    def test_datetime_filters_drop_out_of_range_items(self) -> None:
+        items = [
+            _issue(number=1),
+            _issue(number=2),
+        ]
+        items[0].updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        items[0].created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        items[1].updated_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        items[1].created_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        kept = IssuesSync._apply_datetime_filters(
+            items,
+            modified_before=datetime(2024, 12, 1, tzinfo=timezone.utc),
+            created_after=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            created_before=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+        assert [i.number for i in kept] == [1]
+
+    def test_no_bounds_returns_items_unchanged(self) -> None:
+        items = [_issue(number=1)]
+        assert IssuesSync._apply_datetime_filters(items, None, None, None) is items
+
+    async def test_modified_after_tightens_since(self) -> None:
+        c = make_mock_connector()
+        later = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        c.datetime_range_from_sync_filter = MagicMock(
+            side_effect=lambda key: (later, None) if key == "modified" else (None, None)
+        )
+        c.runtime.ds_call.return_value = ok_response([])
+        sync = IssuesSync(c)
+        sync._get_sync_checkpoint = AsyncMock(return_value=int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000))
+
+        await sync.fetch_issues_batched(make_repo(repo_id=1))
+
+        assert c.runtime.ds_call.call_args.kwargs["since"] == later
+
+    async def test_attachments_follow_indexing_flag(self) -> None:
+        c = make_mock_connector()
+        c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.comments.clean_github_content = AsyncMock(return_value=("", [
+            {"type": "pdf", "href": "https://github.com/user-attachments/files/1/x.pdf", "filename": "x.pdf"},
+        ]))
+        file_record = SimpleNamespace(indexing_status=None)
+        c.comments.make_file_records_from_list = AsyncMock(
+            return_value=[SimpleNamespace(record=file_record)]
+        )
+
+        updates = await IssuesSync(c)._build_issue_records(make_repo(repo_id=1), [_issue(number=1)])
+
+        assert updates[0].record.indexing_status == "AUTO_INDEX_OFF"
+        assert file_record.indexing_status == "AUTO_INDEX_OFF"
+
+    async def test_processing_error_skips_the_issue(self) -> None:
+        c = make_mock_connector()
+
+        class _BadIssue:
+            number = 9
+            html_url = "https://github.com/acme/widgets/issues/9"
+
+            @property
+            def title(self) -> str:
+                raise RuntimeError("bad title")
+
+        updates = await IssuesSync(c)._build_issue_records(make_repo(repo_id=1), [_BadIssue()])
+        assert updates == []
+
+
+class TestRelatedAndParentEdges:
+    async def test_blocking_list_failure_response_degrades(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_blocking": failed_response("403"),
+        })
+        related = await IssuesSync(c)._related_from_dependencies(
+            make_repo(repo_id=42), 2, {"blocking": 1}
+        )
+        assert related == []
+
+    async def test_blocking_list_exception_degrades(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("timeout"))
+        related = await IssuesSync(c)._related_from_dependencies(
+            make_repo(repo_id=42), 2, {"blocking": 1}
+        )
+        assert related == []
+
+    async def test_non_dict_dependency_items_are_skipped(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_blocking": ok_response(["nope", {"title": "no number"}]),
+        })
+        related = await IssuesSync(c)._related_from_dependencies(
+            make_repo(repo_id=42), 2, {"blocking": 1}
+        )
+        assert related == []
+
+    async def test_unrecognised_parent_url_returns_none(self) -> None:
+        sync = IssuesSync(make_mock_connector())
+        assert await sync._parent_ticket_external_id(make_repo(repo_id=1), "not-a-url") is None
+
+
+class TestProcessNewRecordsAndCheckpoints:
+    async def test_empty_batch_is_success(self) -> None:
+        assert await IssuesSync(make_mock_connector()).process_new_records([]) is True
+
+    async def test_persist_failure_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.data_entities_processor.on_new_records = AsyncMock(side_effect=RuntimeError("db"))
+        ru = await IssuesSync(c)._process_issue_to_ticket(make_repo(repo_id=1), _issue(number=1))
+        assert await IssuesSync(c).process_new_records([ru]) is False
+
+    async def test_watermarks_accumulate_per_group(self) -> None:
+        c = make_mock_connector()
+        ru = await IssuesSync(c)._process_issue_to_ticket(make_repo(repo_id=1), _issue(number=1))
+        marks: dict[str, int] = {}
+        assert await IssuesSync(c).process_new_records([ru], marks) is True
+        assert "1-work-items" in marks
+
+    async def test_checkpoint_read_failure_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.record_sync_point.read_sync_point = AsyncMock(side_effect=RuntimeError("missing"))
+        assert await IssuesSync(c)._get_sync_checkpoint("1-work-items") is None
+
+    def test_malformed_group_id_parse_returns_none(self) -> None:
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="not-int", external_record_group_id="abc-work-items",
+        )
+        assert IssuesSync(make_mock_connector()).parse_repo_id_and_number_from_record(record) is None
+
+
+class TestBuildTicketBlocks:
+    async def test_builds_description_and_comments(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        issue = _issue(number=7, title="Crash")
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(repo),
+            "get_issue": ok_response(issue),
+        })
+        c.comments.embed_images_as_base64 = AsyncMock(return_value="body")
+        c.comments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
+        c.comments.build_issue_comment_blocks = AsyncMock(return_value=([], []))
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="Crash", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+            weburl="https://github.com/acme/widgets/issues/7",
+        )
+
+        payload = await IssuesSync(c).build_ticket_blocks(record)
+
+        assert b"Crash" in payload
+        c.comments.build_issue_comment_blocks.assert_awaited_once()
+
+    async def test_repo_resolve_failure_raises(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+        )
+        with pytest.raises(Exception, match="Failed to resolve repo"):
+            await IssuesSync(c).build_ticket_blocks(record)
+
+    async def test_issue_fetch_failure_raises(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": ok_response(make_repo(repo_id=42)),
+            "get_issue": failed_response("404"),
+        })
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7", external_record_group_id="42-work-items",
+        )
+        with pytest.raises(Exception, match="Failed to fetch issue"):
+            await IssuesSync(c).build_ticket_blocks(record)
+
+    async def test_missing_group_id_raises(self) -> None:
+        record = TicketRecord(
+            id="r1", org_id="org-1", record_name="x", record_type="TICKET",
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="42/issues/7",
+        )
+        with pytest.raises(Exception, match="Repository id not found"):
+            await IssuesSync(make_mock_connector()).build_ticket_blocks(record)
+
+
+class TestAppUserEmails:
+    async def test_directory_failure_returns_empty_map(self) -> None:
+        c = make_mock_connector()
+        c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("db"))
+        emails = await IssuesSync(c).get_app_user_emails()
+        assert emails == {}
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:

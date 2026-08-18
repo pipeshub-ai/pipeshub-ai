@@ -1,19 +1,29 @@
-"""Unit tests for GitHubTeamsConnector.run_sync wiring.
+"""Unit tests for GitHubTeamsConnector lifecycle and helper delegation.
 
-``run_sync`` is exercised as an unbound method against the shared mock
-connector: instantiating the real class would require a live config service,
-OAuth client and graph provider, none of which this behaviour depends on.
+``run_sync`` and most public methods are exercised as unbound methods against
+the shared mock connector: instantiating the real class would require a live
+config service, OAuth client and graph provider, none of which this behaviour
+depends on. ``create_connector`` is the exception — it is the factory that
+actually builds the instance.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.registry.filters import SyncFilterKey
 from app.connectors.sources.github_teams import connector as connector_mod
+from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
-from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
+from tests.unit.connectors.sources.test_github_teams.conftest import (
+    failed_response,
+    make_mock_connector,
+    ok_response,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -67,3 +77,271 @@ class TestTeamAppEdge:
             await GitHubTeamsConnector.run_sync(c)
 
         c.tx_store.ensure_team_app_edge.assert_awaited_once()
+
+
+class TestInit:
+    async def test_init_success_builds_client_and_resolves_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = make_mock_connector()
+        client = MagicMock()
+        ds = MagicMock()
+        monkeypatch.setattr(
+            connector_mod.GitHubClient, "build_from_services", AsyncMock(return_value=client)
+        )
+        monkeypatch.setattr(connector_mod, "GitHubAsyncDataSource", lambda _client: ds)
+        c._resolve_creator_identity = AsyncMock()
+
+        assert await GitHubTeamsConnector.init(c) is True
+        assert c.external_client is client
+        assert c.data_source is ds
+        c._resolve_creator_identity.assert_awaited_once()
+
+    async def test_init_failure_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        c = make_mock_connector()
+        monkeypatch.setattr(
+            connector_mod.GitHubClient,
+            "build_from_services",
+            AsyncMock(side_effect=RuntimeError("oauth down")),
+        )
+
+        assert await GitHubTeamsConnector.init(c) is False
+        c.logger.error.assert_called()
+
+
+class TestResolveCreatorIdentity:
+    async def test_sets_creator_email_and_github_login(self) -> None:
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.creator_email = None
+        c._github_login = None
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=SimpleNamespace(email="creator@example.com")
+        )
+        c.runtime.ds_call = AsyncMock(
+            return_value=ok_response(SimpleNamespace(login="octocat"))
+        )
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        assert c.creator_email == "creator@example.com"
+        assert c._github_login == "octocat"
+
+    async def test_user_lookup_failure_is_logged(self) -> None:
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.creator_email = None
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=RuntimeError("graph down")
+        )
+        c.runtime.ds_call = AsyncMock(
+            return_value=ok_response(SimpleNamespace(login="octocat"))
+        )
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        c.logger.warning.assert_called()
+        assert c._github_login == "octocat"
+
+    async def test_missing_data_source_skips_login_lookup(self) -> None:
+        c = make_mock_connector()
+        c.created_by = None
+        c.data_source = None
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        c.runtime.ds_call.assert_not_awaited()
+
+    async def test_creator_without_email_is_left_unset(self) -> None:
+        c = make_mock_connector()
+        c.created_by = "user-1"
+        c.creator_email = None
+        c.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=SimpleNamespace(email=None)
+        )
+        c.runtime.ds_call = AsyncMock(return_value=ok_response(SimpleNamespace(login="")))
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        assert c.creator_email is None
+        assert c._github_login is None
+
+    async def test_failed_authenticated_call_warns(self) -> None:
+        c = make_mock_connector()
+        c.created_by = None
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("401"))
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        assert c._github_login is None
+        c.logger.warning.assert_called()
+
+    async def test_login_lookup_exception_is_logged(self) -> None:
+        c = make_mock_connector()
+        c.created_by = None
+        c.runtime.ds_call = AsyncMock(side_effect=RuntimeError("timeout"))
+
+        await GitHubTeamsConnector._resolve_creator_identity(c)
+
+        c.logger.warning.assert_called()
+
+
+class TestConnectionAndAccess:
+    async def test_no_data_source_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.data_source = None
+        assert await GitHubTeamsConnector.test_connection_and_access(c) is False
+
+    async def test_successful_authenticated_call_returns_true(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=ok_response(SimpleNamespace(login="octocat")))
+
+        assert await GitHubTeamsConnector.test_connection_and_access(c) is True
+
+    async def test_failed_response_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call = AsyncMock(return_value=failed_response("unauthorized"))
+
+        assert await GitHubTeamsConnector.test_connection_and_access(c) is False
+
+    async def test_exception_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("network"))
+
+        assert await GitHubTeamsConnector.test_connection_and_access(c) is False
+
+
+class TestRunSyncAndIncremental:
+    async def test_run_sync_calls_users_then_projects(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = _runnable_connector()
+        order: list[str] = []
+        c.users.sync_users = AsyncMock(side_effect=lambda: order.append("users"))
+        c.projects.sync_all_repos = AsyncMock(side_effect=lambda: order.append("projects"))
+        monkeypatch.setattr(
+            connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        await GitHubTeamsConnector.run_sync(c)
+
+        assert order == ["users", "projects"]
+
+    async def test_run_incremental_sync_delegates_to_run_sync(self) -> None:
+        c = make_mock_connector()
+        c.run_sync = AsyncMock()
+        await GitHubTeamsConnector.run_incremental_sync(c)
+        c.run_sync.assert_awaited_once()
+
+
+class TestDelegationAndCleanup:
+    async def test_stream_record_delegates(self) -> None:
+        c = make_mock_connector()
+        c.streaming.stream_record = AsyncMock(return_value="stream")
+        record = MagicMock()
+        assert await GitHubTeamsConnector.stream_record(c, record) == "stream"
+        c.streaming.stream_record.assert_awaited_once_with(record)
+
+    async def test_reindex_records_delegates(self) -> None:
+        c = make_mock_connector()
+        c.streaming.reindex_records = AsyncMock()
+        records = [MagicMock()]
+        await GitHubTeamsConnector.reindex_records(c, records)
+        c.streaming.reindex_records.assert_awaited_once_with(records)
+
+    async def test_get_filter_options_delegates(self) -> None:
+        c = make_mock_connector()
+        c.filters.get_filter_options = AsyncMock(return_value="opts")
+        assert await GitHubTeamsConnector.get_filter_options(c, "org_ids") == "opts"
+        c.filters.get_filter_options.assert_awaited_once()
+
+    async def test_get_signed_url_returns_none(self) -> None:
+        c = make_mock_connector()
+        assert await GitHubTeamsConnector.get_signed_url(c, MagicMock()) is None
+
+    async def test_handle_webhook_returns_true(self) -> None:
+        c = make_mock_connector()
+        assert await GitHubTeamsConnector.handle_webhook_notification(c) is True
+
+    async def test_cleanup_cancels_backfill_and_drops_data_source(self) -> None:
+        c = make_mock_connector()
+        c.repos.timestamps.cancel = AsyncMock()
+        c.data_source = MagicMock()
+
+        await GitHubTeamsConnector.cleanup(c)
+
+        c.repos.timestamps.cancel.assert_awaited_once()
+        assert c.data_source is None
+
+
+class TestDatetimeRangeFromSyncFilter:
+    def test_no_filters_returns_none_none(self) -> None:
+        fake = MagicMock()
+        fake.sync_filters = None
+        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "modified") == (None, None)
+
+    def test_unknown_key_returns_none_none(self) -> None:
+        fake = MagicMock()
+        fake.sync_filters = {SyncFilterKey.MODIFIED: MagicMock()}
+        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "unknown") == (None, None)
+
+    def test_missing_filter_returns_none_none(self) -> None:
+        fake = MagicMock()
+        fake.sync_filters = {SyncFilterKey.MODIFIED: MagicMock()}
+        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "created") == (None, None)
+
+    def test_modified_filter_converts_ms_to_utc(self) -> None:
+        fake = MagicMock()
+        f = MagicMock()
+        f.get_datetime_start.return_value = 0
+        f.get_datetime_end.return_value = 86_400_000
+        fake.sync_filters = {SyncFilterKey.MODIFIED: f}
+
+        after, before = GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "modified")
+        assert after is not None and before is not None
+        assert after.tzinfo == timezone.utc
+        assert before > after
+
+    def test_empty_start_and_end_stay_none(self) -> None:
+        fake = MagicMock()
+        f = MagicMock()
+        f.get_datetime_start.return_value = None
+        f.get_datetime_end.return_value = None
+        fake.sync_filters = {SyncFilterKey.CREATED: f}
+
+        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "created") == (None, None)
+
+
+class TestCreateConnector:
+    async def test_factory_builds_initialized_instance(self) -> None:
+        with patch(
+            "app.connectors.sources.github_teams.connector.DataSourceEntitiesProcessor"
+        ) as MockProcessor:
+            mock_dep = MagicMock()
+            mock_dep.org_id = "org-1"
+            mock_dep.initialize = AsyncMock()
+            MockProcessor.return_value = mock_dep
+
+            connector = await GitHubTeamsConnector.create_connector(
+                logger=MagicMock(),
+                data_store_provider=MagicMock(),
+                config_service=MagicMock(),
+                connector_id="conn-1",
+                scope="team",
+                created_by="user-1",
+            )
+
+        assert isinstance(connector, GitHubTeamsConnector)
+        assert connector.connector_id == "conn-1"
+        assert connector.created_by == "user-1"
+        mock_dep.initialize.assert_awaited_once()
+
+
+class TestGitHubTeamsApp:
+    def test_registers_under_github_group(self) -> None:
+        from app.config.constants.arangodb import AppGroups, Connectors
+
+        app = GitHubTeamsApp("conn-1")
+        assert app.get_app_name() == Connectors.GITHUB_TEAMS
+        assert app.get_app_group_name() == AppGroups.GITHUB
+        assert app.get_connector_id() == "conn-1"

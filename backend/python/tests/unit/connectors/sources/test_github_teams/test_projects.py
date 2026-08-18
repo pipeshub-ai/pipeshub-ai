@@ -10,15 +10,17 @@ Covers:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.connectors.sources.github_teams.models import team_group_external_id
+from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.connectors.sources.github_teams.projects import (
     CollaboratorsUnavailable,
     ProjectsSync,
     _dedupe_highest_permissions,
+    _highest_role_from_collaborator_permissions,
     _permission_type_from_role,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -423,6 +425,146 @@ class TestRecordGroupHierarchy:
         }
 
         assert ids_before == ids_after
+
+
+class TestSyncAllReposAndResolution:
+    async def test_missing_data_source_raises(self) -> None:
+        c = make_mock_connector()
+        c.data_source = None
+        with pytest.raises(Exception, match="not initialized"):
+            await ProjectsSync(c).sync_all_repos()
+
+    async def test_no_repos_after_filters_is_noop(self) -> None:
+        c = make_mock_connector()
+        sync = ProjectsSync(c)
+        sync._resolve_repos_with_filters = AsyncMock(return_value=[])
+        await sync.sync_all_repos()
+        c.issues.fetch_issues_batched.assert_not_awaited()
+
+    async def test_per_repo_error_continues_to_next(self) -> None:
+        c = make_mock_connector()
+        sync = ProjectsSync(c)
+        first, second = make_repo(repo_id=1), make_repo(repo_id=2, name="other")
+        sync._resolve_repos_with_filters = AsyncMock(return_value=[first, second])
+        sync._sync_repo = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        sync._flush_org_record_groups = AsyncMock()
+
+        await sync.sync_all_repos()
+
+        assert sync._sync_repo.await_count == 2
+        sync._flush_org_record_groups.assert_awaited()
+
+    async def test_child_step_error_does_not_abort_repo(self) -> None:
+        c = make_mock_connector()
+        sync = ProjectsSync(c)
+        sync._sync_repo_members = AsyncMock(return_value=[])
+        c.issues.fetch_issues_batched = AsyncMock(side_effect=RuntimeError("issues down"))
+        c.pull_requests.fetch_prs_batched = AsyncMock()
+        c.repos.run = AsyncMock()
+
+        await sync._sync_repo(make_repo(repo_id=555, owner_id=777))
+
+        c.pull_requests.fetch_prs_batched.assert_awaited_once()
+        c.repos.run.assert_awaited_once()
+
+    async def test_repo_ids_in_resolves_each_repo(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=9, owner_login="acme", name="widgets")
+        c.sync_filters = {
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["acme/widgets", "badname"], operator_value=FilterOperator.IN,
+            )
+        }
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo": ok_response(repo)})
+
+        result = await ProjectsSync(c)._resolve_repos_with_filters()
+        assert [r.id for r in result] == [9]
+
+    async def test_org_in_lists_org_repos_and_applies_exclusions(self) -> None:
+        c = make_mock_connector()
+        kept = make_repo(repo_id=1, owner_login="acme", name="kept")
+        dropped = make_repo(repo_id=2, owner_login="acme", name="dropped")
+        c.sync_filters = {
+            SyncFilterKey.ORG_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["acme"], operator_value=FilterOperator.IN,
+            ),
+            SyncFilterKey.REPO_IDS: SimpleNamespace(
+                is_empty=lambda: False, value=["acme/dropped"], operator_value=FilterOperator.NOT_IN,
+            ),
+        }
+        c.runtime.ds_call.side_effect = _dispatch(c, {"list_org_repos": ok_response([kept, dropped])})
+
+        result = await ProjectsSync(c)._resolve_repos_with_filters()
+        assert [r.full_name for r in result] == ["acme/kept"]
+
+    async def test_org_discovery_failure_returns_empty(self) -> None:
+        c = make_mock_connector()
+        c.users._resolve_target_orgs = AsyncMock(return_value=([], False))
+        assert await ProjectsSync(c)._resolve_repos_with_filters() == []
+
+    async def test_org_list_failure_skips_that_org(self) -> None:
+        c = make_mock_connector()
+        c.users._resolve_target_orgs = AsyncMock(return_value=(["acme"], True))
+        c.runtime.ds_call.side_effect = _dispatch(c, {"list_org_repos": failed_response("403")})
+        assert await ProjectsSync(c)._resolve_repos_with_filters() == []
+
+
+class TestTeamAndCollaboratorEdgeCases:
+    async def test_team_403_is_debug_not_fatal(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_collaborators": ok_response([]),
+            "list_repo_teams": failed_response("forbidden", status_code=403),
+        })
+        perms = await ProjectsSync(c)._sync_repo_members("acme", "widgets")
+        assert perms == []
+
+    async def test_team_500_is_warning_not_fatal(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_collaborators": ok_response([]),
+            "list_repo_teams": failed_response("boom", status_code=500),
+        })
+        assert await ProjectsSync(c)._sync_repo_members("acme", "widgets") == []
+
+    async def test_unknown_collaborator_role_grants_nothing(self) -> None:
+        c = make_mock_connector()
+        user = make_named_user(user_id=1, login="x", permissions=SimpleNamespace(
+            admin=False, maintain=False, push=False, triage=False, pull=False,
+        ))
+        assert await ProjectsSync(c)._transform_collaborator_to_permission(user) is None
+
+    async def test_unknown_team_role_grants_nothing(self) -> None:
+        team = make_team(permission="custom")
+        assert await ProjectsSync(make_mock_connector())._transform_team_to_permission("acme", team) is None
+
+    async def test_team_member_list_failure_still_returns_group_permission(self) -> None:
+        c = make_mock_connector()
+        team = make_team(team_id=7, slug="core", permission="pull")
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_team_members": failed_response("403"),
+        })
+        c.tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
+
+        perm = await ProjectsSync(c)._transform_team_to_permission("acme", team)
+
+        assert perm is not None
+        assert perm.entity_type == EntityType.GROUP
+        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
+
+    async def test_user_group_exists_exception_returns_false(self) -> None:
+        c = make_mock_connector()
+        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx"))
+        assert await ProjectsSync(c)._user_group_exists("gid") is False
+
+    async def test_create_user_permission_exception_returns_none(self) -> None:
+        c = make_mock_connector()
+        c.tx_store.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db"))
+        assert await ProjectsSync(c)._create_user_permission("1", PermissionType.READ) is None
+
+    def test_highest_role_none_when_no_permissions(self) -> None:
+        assert _highest_role_from_collaborator_permissions(None) is None
+        assert _highest_role_from_collaborator_permissions(SimpleNamespace()) is None
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:

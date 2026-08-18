@@ -263,3 +263,98 @@ class TestGetFilterOptionsDispatch:
 
         assert resp.success is False
         assert "not initialized" in (resp.message or "").lower()
+
+    async def test_unexpected_exception_returns_failure_response(self) -> None:
+        c = make_mock_connector()
+        helper = FiltersHelper(c)
+        helper._org_filter_options = AsyncMock(side_effect=RuntimeError("picker exploded"))
+
+        resp = await helper.get_filter_options(SyncFilterKey.ORG_IDS.value)
+
+        assert resp.success is False
+        assert "picker exploded" in (resp.message or "")
+
+
+class TestClampPerPage:
+    def test_invalid_and_non_positive_fall_back_to_20(self) -> None:
+        from app.connectors.sources.github_teams.filters import _clamp_per_page
+
+        assert _clamp_per_page("nope") == 20
+        assert _clamp_per_page(0) == 20
+        assert _clamp_per_page(-3) == 20
+
+    def test_caps_at_max_per_page(self) -> None:
+        from app.connectors.sources.github_teams.constants import _FILTER_OPTIONS_MAX_PER_PAGE
+        from app.connectors.sources.github_teams.filters import _clamp_per_page
+
+        assert _clamp_per_page(10_000) == _FILTER_OPTIONS_MAX_PER_PAGE
+
+
+class TestRepoPickerEdgeCases:
+    async def test_org_scope_failure_returns_error(self) -> None:
+        c = make_mock_connector()
+        c.users._resolve_target_orgs = AsyncMock(return_value=([], False))
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+
+        assert resp.success is False
+        assert "organizations" in (resp.message or "").lower()
+
+    async def test_search_includes_user_qualifier_when_login_known(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        c._github_login = "octocat"
+        c.runtime.search_call.return_value = ok_response([])
+        helper = FiltersHelper(c)
+
+        await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, search="widgets")
+
+        query = c.runtime.search_call.call_args_list[0].args[1]
+        assert "user:octocat" in query
+
+    async def test_no_org_scope_lists_owner_repos(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, [])
+        c.runtime.ds_call.return_value = ok_response([
+            SimpleNamespace(full_name="me/personal"),
+        ])
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+
+        assert resp.success is True
+        assert [o.id for o in resp.options] == ["me/personal"]
+        assert c.runtime.ds_call.call_args.args[0] is c.data_source.list_user_repos
+
+    async def test_multi_org_merge_and_pagination(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme", "other"])
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.list_org_repos:
+                org = args[0]
+                return ok_response([
+                    SimpleNamespace(full_name=f"{org}/alpha"),
+                    SimpleNamespace(full_name=f"{org}/zeta"),
+                ])
+            raise AssertionError(f"unexpected {method!r}")
+
+        c.runtime.ds_call.side_effect = dispatch
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, page=1, limit=3)
+
+        assert resp.success is True
+        assert [o.id for o in resp.options] == ["acme/alpha", "acme/zeta", "other/alpha"]
+        assert resp.has_more is True
+
+    async def test_multi_org_all_failures_return_error(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme", "other"])
+        c.runtime.ds_call.return_value = failed_response("403")
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+
+        assert resp.success is False
