@@ -562,7 +562,7 @@ class ZendeskConnector(BaseConnector):
             return 0
 
         synced = 0
-        deleted = 0
+        removed = 0
         start_time = await self._get_start_time()
         cursor: Optional[str] = None
         max_end_time = start_time
@@ -585,14 +585,14 @@ class ZendeskConnector(BaseConnector):
             self._cache_sideloads(payload)
             tickets = self._extract_list(payload, "tickets")
 
-            removed_ids = await self._resolve_deleted_record_ids(tickets)
+            removed_ids = await self._resolve_removable_record_ids(tickets)
             if removed_ids:
                 # Cascade, not on_record_deleted: attachments are child records, and only
                 # the cascade path emits the events that purge the vectors from Qdrant.
                 await self.data_entities_processor.on_records_deleted_cascade(
                     removed_ids, self.connector_id
                 )
-                deleted += len(removed_ids)
+                removed += len(removed_ids)
 
             records_with_permissions: List[Tuple[Record, List[Permission]]] = []
             for ticket_data in tickets:
@@ -629,22 +629,42 @@ class ZendeskConnector(BaseConnector):
             SYNC_POINT_KEY,
             {"lastEndTime": max_end_time, "updatedAt": get_epoch_timestamp_in_ms()},
         )
-        if deleted:
-            self.logger.info(f"Zendesk: removed {deleted} tickets deleted at source")
+        if removed:
+            self.logger.info(
+                f"Zendesk: removed {removed} tickets deleted at source or outside the filters"
+            )
         return synced
 
     def _is_deleted_ticket(self, ticket_data: Dict[str, Any]) -> bool:
         return str(ticket_data.get("status") or "").lower() == DELETED_TICKET_STATUS
 
-    async def _resolve_deleted_record_ids(self, tickets: List[Dict[str, Any]]) -> List[str]:
-        """Record ids for tickets Zendesk reports as deleted.
+    def _is_ticket_in_scope(self, ticket_data: Dict[str, Any]) -> bool:
+        """Whether this ticket belongs in the graph at all under the current filters."""
+        if self._is_deleted_ticket(ticket_data):
+            return False
+        group_id = ticket_data.get("group_id")
+        if group_id and not self._is_group_allowed_by_filter(str(group_id)):
+            return False
+        return self._is_allowed_by_date_filters(
+            self._parse_datetime(ticket_data.get("created_at")),
+            self._parse_datetime(ticket_data.get("updated_at")),
+        )
+
+    async def _resolve_removable_record_ids(self, tickets: List[Dict[str, Any]]) -> List[str]:
+        """Record ids for tickets that must not stay in the graph.
+
+        Covers deletion at source and tickets the filters no longer admit. Narrowing
+        a filter marks the connector pendingFullSync, so the next export replays every
+        ticket and the out-of-scope ones land here. Skipping them instead would leave
+        the records behind: unreachable from the App, so the UI count looks right,
+        but still in the vector store and still answering queries.
         """
         record_ids: List[str] = []
-        deleted_tickets = [t for t in tickets if self._is_deleted_ticket(t) and t.get("id")]
-        if not deleted_tickets:
+        removable = [t for t in tickets if t.get("id") and not self._is_ticket_in_scope(t)]
+        if not removable:
             return record_ids
         async with self.data_store_provider.transaction() as tx_store:
-            for ticket_data in deleted_tickets:
+            for ticket_data in removable:
                 existing = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
                     external_id=str(ticket_data["id"]),
@@ -659,16 +679,12 @@ class ZendeskConnector(BaseConnector):
         if not ticket_id:
             return None
         # Guarded here rather than only at the call site so no caller can resurrect a
-        # ticket the same page just deleted.
-        if self._is_deleted_ticket(ticket_data):
-            return None
-        if group_id and not self._is_group_allowed_by_filter(str(group_id)):
+        # ticket the same page just removed.
+        if not self._is_ticket_in_scope(ticket_data):
             return None
 
         created_at = self._parse_datetime(ticket_data.get("created_at"))
         updated_at = self._parse_datetime(ticket_data.get("updated_at"))
-        if not self._is_allowed_by_date_filters(created_at, updated_at):
-            return None
 
         existing_record = None
         async with self.data_store_provider.transaction() as tx_store:
