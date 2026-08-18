@@ -18,7 +18,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 
-__all__ = ["parse_time_range"]
+__all__ = ["parse_time_range", "time_range_to_kh_filters"]
 
 _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -182,3 +182,33 @@ def parse_time_range(
         _TIME_RANGE_KEYS[field]: epoch_ms for field, epoch_ms in epoch_values.items()
     }
     return time_range, None
+
+
+def time_range_to_kh_filters(
+    time_range: dict[str, int] | None,
+) -> tuple[dict[str, int | None] | None, dict[str, int | None] | None]:
+    """Bridge `parse_time_range()`'s epoch-ms dict (keyed by
+    source_created_after_ms/source_created_before_ms/source_updated_after_ms/
+    source_updated_before_ms — the shape knowledgegraph__search's retrieval
+    path expects) to the `{"gte": ..., "lte": ...}` shape
+    `KnowledgeHubService.get_nodes()` expects for its `created_at`/
+    `updated_at` params. Reusing the same parser as search() (rather than a
+    second, separate ISO-parsing implementation) means navigate() gets the
+    exact same validation: rejecting timezone-naive datetimes, checking
+    after <= before, and rejecting future created_after dates.
+    """
+    if not time_range:
+        return None, None
+    created_at: dict[str, int | None] | None = None
+    if "source_created_after_ms" in time_range or "source_created_before_ms" in time_range:
+        created_at = {
+            "gte": time_range.get("source_created_after_ms"),
+            "lte": time_range.get("source_created_before_ms"),
+        }
+    updated_at: dict[str, int | None] | None = None
+    if "source_updated_after_ms" in time_range or "source_updated_before_ms" in time_range:
+        updated_at = {
+            "gte": time_range.get("source_updated_after_ms"),
+            "lte": time_range.get("source_updated_before_ms"),
+        }
+    return created_at, updated_at

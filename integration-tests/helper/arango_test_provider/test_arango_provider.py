@@ -76,8 +76,10 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         With ``scoped=True`` only records with a live ``BELONGS_TO`` → RecordGroup edge are
         counted (not ``IS_OF_TYPE``): a full sync wipes and recreates sync edges but leaves
         nodes and ``IS_OF_TYPE`` intact, so records for a project that left the filter scope
-        keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``; scoped counting also excludes placeholder
-        stubs. Default (``False``) counts every record for the connector — required by suites
+        keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``. This does *not* exclude placeholder stubs —
+        connectors that anchor stubs to a RecordGroup (e.g. Linear) leave them with a live
+        ``BELONGS_TO``; use :meth:`get_placeholder_records` to isolate those.
+        Default (``False``) counts every record for the connector — required by suites
         whose records have no RecordGroup (e.g. standalone KB uploads).
         """
         if not self.http_client:
@@ -1068,6 +1070,26 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             return None
         val = result[0]
         return str(val) if val else None
+
+    async def get_placeholder_records(self, connector_id: str) -> List[Record]:
+        """Return every placeholder stub for a connector.
+
+        ``== true`` rather than truthiness: records written before ``isPlaceholder``
+        existed have no such field, and ``null != true`` is the intended behaviour.
+        """
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.isPlaceholder == true
+                RETURN r
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        return [
+            Record.from_arango_base_record(self._translate_node_from_arango(doc))
+            for doc in (result or [])
+            if doc
+        ]
 
     async def get_typed_record_by_external_id(
         self, connector_id: str, external_record_id: str

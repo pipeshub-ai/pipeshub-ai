@@ -31,8 +31,8 @@ export const getHashedSecretKey = (): string => {
 
 export const loadConfigurationManagerConfig =
   (): ConfigurationManagerConfig => {
-    // Determine store type from KV_STORE_TYPE env variable (defaults to etcd)
-    const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'etcd';
+    // Determine store type from KV_STORE_TYPE env variable (defaults to redis)
+    const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'redis';
     const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
 
     return {

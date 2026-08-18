@@ -1,6 +1,6 @@
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { isElectron } from '@/lib/electron';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import type { ConnectorConfig, LocalSyncStatus } from '../types';
 
 export interface LocalSyncScheduledConfigPayload {

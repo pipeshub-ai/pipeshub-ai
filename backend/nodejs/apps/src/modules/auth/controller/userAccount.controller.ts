@@ -3,7 +3,6 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
-  authJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -18,7 +17,10 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
-import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
+import {
+  SESSION_INVALIDATING_ACTIVITIES,
+  userActivitiesType,
+} from '../../../libs/utils/userActivities.utils';
 import { UserActivities } from '../schema/userActivities.schema';
 import {
   AuthenticatedUserRequest,
@@ -73,18 +75,19 @@ const {
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
+const SESSION_INVALIDATE_TOKEN_DELAY_MS = 1000;
 
 @injectable()
 export class UserAccountController {
   constructor(
-    @inject('AppConfig') private config: AppConfig,
-    @inject('IamService') private iamService: IamService,
-    @inject('MailService') private mailService: MailService,
-    @inject('SessionService') private sessionService: SessionService,
+    @inject('AppConfig') protected config: AppConfig,
+    @inject('IamService') protected iamService: IamService,
+    @inject('MailService') protected mailService: MailService,
+    @inject('SessionService') protected sessionService: SessionService,
     @inject('ConfigurationManagerService')
-    private configurationManagerService: ConfigurationManagerService,
-    @inject('Logger') private logger: Logger,
-    @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
+    protected configurationManagerService: ConfigurationManagerService,
+    @inject('Logger') protected logger: Logger,
+    @inject('JitProvisioningService') protected jitProvisioningService: JitProvisioningService,
   ) { }
 
   /**
@@ -92,7 +95,7 @@ export class UserAccountController {
    * that differs from the stored/session email (which may be the UPN), correct it.
    * When a userId is provided the DB record is updated; the in-memory object is always mutated.
    */
-  private async correctEmailFromToken(
+  protected async correctEmailFromToken(
     decodedToken: Record<string, any>,
     target: Record<string, any>,
     context: string,
@@ -139,7 +142,7 @@ export class UserAccountController {
     return { otp, hashedOTP };
   }
 
-  private getBlockedUntilIso(userCredentials: IUserCredentials): string | undefined {
+  protected getBlockedUntilIso(userCredentials: IUserCredentials): string | undefined {
     const blockExpiresAt = userCredentials.blockExpiresAt;
     if (!blockExpiresAt) {
       return undefined;
@@ -153,7 +156,7 @@ export class UserAccountController {
     return blockedUntilDate.toISOString();
   }
 
-  private async ensureBlockStatus(
+  protected async ensureBlockStatus(
     userCredentials: IUserCredentials,
   ): Promise<boolean> {
     if (!userCredentials.isBlocked) {
@@ -647,7 +650,11 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
@@ -687,7 +694,11 @@ export class UserAccountController {
 
       const adminCheckResult = await this.iamService.checkAdminUser(
         userId,
-        authJwtGenerator(this.config.jwtSecret, null, userId, orgId),
+        iamUserLookupJwtGenerator(
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        ),
       );
 
       if (adminCheckResult.statusCode !== 200) {
@@ -946,6 +957,44 @@ export class UserAccountController {
     try {
       const orgId = req.tokenPayload?.orgId;
       const userId = req.tokenPayload?.userId;
+
+      // Reject refresh if logout / password change / role change happened after
+      // this refresh token was issued (same rule as access-token auth middleware).
+      if (userId && orgId) {
+        try {
+          const invalidatingActivity = await UserActivities.findOne({
+            userId,
+            orgId,
+            isDeleted: false,
+            activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
+          })
+            .sort({ createdAt: -1 })
+            .lean()
+            .exec();
+
+          if (invalidatingActivity) {
+            const tokenIssuedAt = req.tokenPayload?.iat
+              ? req.tokenPayload.iat * 1000
+              : 0;
+            const activityTimestamp =
+              invalidatingActivity.createdAt?.getTime() || 0;
+            if (
+              activityTimestamp >
+              tokenIssuedAt + SESSION_INVALIDATE_TOKEN_DELAY_MS
+            ) {
+              throw new UnauthorizedError('Session expired, please login again');
+            }
+          }
+        } catch (activityError) {
+          if (activityError instanceof UnauthorizedError) {
+            throw activityError;
+          }
+          this.logger.error(
+            'Failed to fetch session-invalidating activity on refresh',
+            activityError,
+          );
+        }
+      }
 
       await UserActivities.create({
         orgId,

@@ -234,3 +234,32 @@ export const CHAT_PASTE_MAX_SIZE_BYTES = 128 * 1024;
 
 /** Filename prefix for synthetic pasted-text attachments (`<prefix><timestamp>.txt`). */
 export const CHAT_PASTE_FILENAME_PREFIX = 'pasted-text-';
+/**
+ * Shared content column for message body and composer. The message *scroll*
+ * stays full-pane width (scrollbar on the pane edge); only the inner content
+ * and the composer use this style so their edges match.
+ */
+export const CHAT_CONTENT_MAX_WIDTH = '50rem';
+
+export const CHAT_CONTENT_PADDING_X = {
+  mobile: 'var(--space-4)',
+  desktop: 'var(--space-5)',
+} as const;
+
+export function chatContentColumnStyle(isMobile: boolean): {
+  maxWidth: string;
+  width: string;
+  minWidth: number;
+  boxSizing: 'border-box';
+  paddingLeft: string;
+  paddingRight: string;
+} {
+  return {
+    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    width: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box',
+    paddingLeft: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
+    paddingRight: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
+  };
+}

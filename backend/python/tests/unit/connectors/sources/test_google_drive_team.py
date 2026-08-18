@@ -155,6 +155,7 @@ def connector():
         dep.add_permission_to_record = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -892,8 +893,9 @@ class TestProcessDriveItem:
         existing = _make_record(record_name="test.txt", external_revision_id="rev-1", parent_external_record_id="parent-1")
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -906,8 +908,9 @@ class TestProcessDriveItem:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -920,8 +923,9 @@ class TestProcessDriveItem:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -954,8 +958,9 @@ class TestProcessDriveItem:
         existing.parent_external_record_id = "parent-1"
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
@@ -1670,15 +1675,15 @@ class TestGetDriveServiceForUser:
             await connector._get_drive_service_for_user()
 
     @pytest.mark.asyncio
-    async def test_fallback_on_impersonation_failure(self, connector):
+    async def test_impersonation_failure_raises(self, connector):
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
             MockGC.build_from_services = AsyncMock(side_effect=RuntimeError("fail"))
             connector.drive_client = MagicMock()
             connector.drive_client.get_client.return_value = MagicMock()
-            result = await connector._get_drive_service_for_user("u@t.com")
-            assert result is not None
+            with pytest.raises(RuntimeError, match="fail"):
+                await connector._get_drive_service_for_user("u@t.com")
 
 
 class TestGetFileMetadataFromDrive:
@@ -1972,6 +1977,7 @@ def connector():
         dep.add_permission_to_record = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -2709,8 +2715,9 @@ class TestProcessDriveItemFullCoverage:
         existing = _make_record(record_name="test.txt", external_revision_id="rev-1", parent_external_record_id="parent-1")
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -2723,8 +2730,9 @@ class TestProcessDriveItemFullCoverage:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -2737,8 +2745,9 @@ class TestProcessDriveItemFullCoverage:
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
         existing.parent_external_record_id = "parent-1"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
@@ -2771,8 +2780,9 @@ class TestProcessDriveItemFullCoverage:
         existing.parent_external_record_id = "parent-1"
         existing.indexing_status = "indexed"
         existing.extraction_status = "done"
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
@@ -3239,15 +3249,15 @@ class TestGetDriveServiceForUserFullCoverage:
             await connector._get_drive_service_for_user()
 
     @pytest.mark.asyncio
-    async def test_fallback_on_impersonation_failure(self, connector):
+    async def test_impersonation_failure_raises(self, connector):
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
             MockGC.build_from_services = AsyncMock(side_effect=RuntimeError("fail"))
             connector.drive_client = MagicMock()
             connector.drive_client.get_client.return_value = MagicMock()
-            result = await connector._get_drive_service_for_user("u@t.com")
-            assert result is not None
+            with pytest.raises(RuntimeError, match="fail"):
+                await connector._get_drive_service_for_user("u@t.com")
 
 
 class TestGetFileMetadataFromDriveFullCoverage:

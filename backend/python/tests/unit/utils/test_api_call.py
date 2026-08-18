@@ -18,7 +18,6 @@ from tenacity import RetryError
 
 from app.utils.api_call import ApiCallError, _should_retry, make_api_call
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

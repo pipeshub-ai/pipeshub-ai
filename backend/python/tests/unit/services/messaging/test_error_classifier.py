@@ -159,6 +159,19 @@ class TestStatusCodeExtraction:
         exc = Exception("Generic error")
         assert _extract_status_code(exc) is None
 
+    def test_extract_status_code_ignores_string_status(self):
+        """Google-style string .status must not be treated as an HTTP code."""
+        exc = Exception("Quota exceeded")
+        exc.status = "RESOURCE_EXHAUSTED"
+        exc.code = 429
+        assert _extract_status_code(exc) == 429
+
+    def test_extract_status_code_string_status_alone_returns_none(self):
+        """String-only .status is ignored so classify does not TypeError."""
+        exc = Exception("Quota exceeded")
+        exc.status = "RESOURCE_EXHAUSTED"
+        assert _extract_status_code(exc) is None
+
 
 class TestExceptionWithStatusCode:
     """Test exceptions that contain HTTP status codes."""
@@ -176,6 +189,34 @@ class TestExceptionWithStatusCode:
         exc.status_code = 404
         result = MessageErrorClassifier.classify_by_exception(exc)
         assert result == MessageErrorType.TERMINAL
+
+    def test_classify_never_raises_on_unexpected_status_shape(self):
+        """Classifier bugs must return TRANSIENT so consumers can capped-retry."""
+        exc = Exception("unexpected shape")
+        exc.status_code = "RESOURCE_EXHAUSTED"
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_google_resource_exhausted_is_transient_not_typeerror(self):
+        """Gemini ClientError: string .status + int .code=429 → TRANSIENT."""
+        exc = Exception("You exceeded your current quota")
+        exc.status = "RESOURCE_EXHAUSTED"
+        exc.code = 429
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_wrapped_google_resource_exhausted_is_transient(self):
+        """IndexingError wrapping Gemini 429 must classify as TRANSIENT."""
+        cause = Exception("You exceeded your current quota")
+        cause.status = "RESOURCE_EXHAUSTED"
+        cause.code = 429
+        wrapped = IndexingError(
+            "Failed to get embedding model: " + str(cause),
+            details={"error": str(cause)},
+        )
+        wrapped.__cause__ = cause
+        result = MessageErrorClassifier.classify_by_exception(wrapped)
+        assert result == MessageErrorType.TRANSIENT
 
     def test_exception_with_rate_limit_status_code(self):
         """Test exception with 429 rate limit status code is transient."""
@@ -295,6 +336,66 @@ class TestMessageErrorClassifier:
         """Test that unknown errors default to transient."""
         exc = RuntimeError("Unknown error")
         result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+
+class TestParsingClientErrorClassification:
+    """Test classification of ParsingClient structured errors.
+
+    PARSE_BACKPRESSURE means the parsing service is saturated but healthy
+    (its admission gate timed out) — retryable, and must never be confused
+    with a genuine content-parsing failure. Every other ParseErrorCode is a
+    content-level failure that will fail identically on retry.
+    """
+
+    def test_parse_backpressure_is_transient(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.PARSE_BACKPRESSURE,
+            message="ParsingService parse is backpressured",
+            details={"retry_after": 5.0},
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_parse_failed_is_terminal(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.PARSE_FAILED,
+            message="Docling crashed",
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TERMINAL
+
+    def test_unsupported_format_is_terminal(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.UNSUPPORTED_FORMAT,
+            message="No parser for .xyz",
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TERMINAL
+
+    def test_wrapped_parse_backpressure_is_transient(self):
+        """The consumer wraps handler exceptions in a generic Exception —
+        classification must still find PARSE_BACKPRESSURE via __cause__."""
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        original = ParsingClientError(
+            code=ParseErrorCode.PARSE_BACKPRESSURE,
+            message="ParsingService parse is backpressured",
+        )
+        wrapped = Exception(str(original))
+        wrapped.__cause__ = original
+
+        result = MessageErrorClassifier.classify_by_exception(wrapped)
         assert result == MessageErrorType.TRANSIENT
 
 

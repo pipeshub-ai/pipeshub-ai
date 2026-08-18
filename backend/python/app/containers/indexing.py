@@ -114,6 +114,7 @@ class IndexingAppContainer(BaseAppContainer):
     # These are only used when USE_PARSING_SERVICE=true is set in the environment.
     parsing_client = providers.Resource(
         container_utils.create_parsing_client,
+        config_service=config_service,
     )
 
     extraction_client = providers.Resource(

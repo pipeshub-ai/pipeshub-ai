@@ -177,7 +177,9 @@
       "usernameLabel": "Username",
       "usernamePlaceholder": "eg: user@gmail.com",
       "passwordLabel": "Password",
-      "passwordPlaceholder": "Enter Password"
+      "passwordPlaceholder": "Enter Password",
+      "saveSuccessFallback": "SMTP configuration saved.",
+      "saveErrorFallback": "Could not save SMTP configuration."
     },
     "nav": {
       "prev": "Prev",
@@ -371,7 +373,6 @@
       "subtitleExisting": "Confirm or update your PipesHub server URL.",
       "label": "Server URL",
       "submit": "Connect",
-      "changeServer": "Change server",
       "errors": {
         "empty": "Please enter a server URL.",
         "invalid": "Please enter a valid URL (e.g. http://localhost:3000).",
@@ -390,6 +391,9 @@
     "continue": "Continue",
     "confirm": "Confirm",
     "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving...",
+    "create": "Create",
     "more": "More",
     "less": "Less",
     "viewAll": "View All",
@@ -503,6 +507,10 @@
     "listening": "Listening...",
     "voiceInputNotSupported": "Voice input is not supported in this browser",
     "voiceError": "Could not access microphone",
+    "noModelsAvailable": "No AI models are configured yet",
+    "failedToLoadModels": "Failed to load AI models",
+    "failedToLoadAgentConfig": "Failed to load this agent's model configuration",
+    "openModels": "Open Models",
     "connectorsCollectionsTitle": "Connectors and Collections",
     "connectorsTooltip": "Connectors and Collections",
     "connectorsDefaultScopeHint": "All connectors and collections are searched by default. Select specific ones below if you want to narrow the scope.",
@@ -781,7 +789,8 @@
     "dark": "Dark",
     "documentation": "Documentation",
     "darkMode": "Dark Mode",
-    "lightMode": "Light Mode"
+    "lightMode": "Light Mode",
+    "organisations": "Organisations"
   },
   "workspace": {
     "users": {
@@ -867,15 +876,26 @@
         "roleMember": "Member",
         "groupLabel": "Add to a User Group",
         "groupPlaceholder": "Search or select user group(s)",
-        "importCsv": "Import CSV",
         "import": "Import",
-        "importTooltip": "Supports CSV and Excel files (.csv, .xlsx, .xls)",
+        "importFormatTitle": "CSV or Excel — any layout works",
+        "importHintHeader": "Header row optional — extra columns ignored",
+        "importHintLimit": "Up to 1000 users per file (.csv, .xlsx, .xls)",
         "cancel": "Cancel",
         "send": "Send Invite",
         "successTitle": "Invite sent!",
         "successDescription": "{{email}} has been invited",
         "invalidEmail": "Invalid email address",
-        "errorGeneric": "Failed to send invite"
+        "errorGeneric": "Failed to send invite",
+        "importNoEmails": "No email addresses found in the file",
+        "importTooMany": "File exceeds the {{max}}-user limit",
+        "importAllDuplicates": "Every address in the file is already listed",
+        "importLoaded": "{{count}} address(es) added",
+        "importLoadedDescription": "Review the list, then press Send Invite.",
+        "importSkipped": "{{invalid}} invalid, {{duplicate}} duplicate address(es)",
+        "importSkippedDescription": "Invalid entries are marked in the list — remove them before sending.",
+        "importFailed": "Import failed",
+        "importFailedDescription": "Could not read the file. Upload a valid CSV or Excel file.",
+        "adminGroupWarning": "Everyone invited here becomes a full org admin — including every address imported from a file. Admins can manage users, groups and org settings."
       }
     },
     "groups": {
@@ -898,7 +918,8 @@
         "viewGroup": "View Group",
         "delete": "Delete",
         "deleteSuccess": "Group deleted",
-        "deleteError": "Failed to delete group"
+        "deleteError": "Failed to delete group",
+        "managePermissions": "Manage Permissions"
       },
       "create": {
         "title": "Create Group",
@@ -945,6 +966,18 @@
         "deleteSuccess": "Group deleted",
         "deleteSuccessDescription": "\"{{name}}\" has been deleted",
         "deleteError": "Failed to delete group"
+      },
+      "permissions": {
+        "title": "Access Permissions",
+        "titleWithName": "{{name}} — Access Permissions",
+        "subtitle": "Control what members of this group are allowed to do.",
+        "save": "Save Changes",
+        "saving": "Saving...",
+        "discard": "Discard",
+        "saveSuccess": "Permissions saved",
+        "saveError": "Failed to save permissions",
+        "loadError": "Failed to load permissions",
+        "empty": "No permissions are defined yet."
       }
     },
     "teams": {
@@ -1162,6 +1195,66 @@
         "clientCredentialsWarning": "Client credentials tokens always access Pipeshub as the user who created this application — not as whoever calls the token endpoint. Users can still authorize this app for themselves using the authorization code flow."
       }
     },
+    "personalAccessTokens": {
+      "title": "Personal Access Tokens",
+      "subtitle": "Create long-lived tokens for your own scripts and integrations, like the MCP server. Only you see your tokens here.",
+      "newToken": "New token",
+      "emptyTitle": "No personal access tokens",
+      "emptyDescription": "Create a token to connect the PipesHub MCP server or your own scripts.",
+      "errorGeneric": "Failed to load personal access tokens",
+      "retry": "Retry",
+      "columnName": "Name",
+      "columnScopes": "Scopes",
+      "columnCreated": "Created",
+      "columnExpires": "Expires",
+      "columnLastUsed": "Last used",
+      "scopeCount": "{{count}} scopes",
+      "neverUsed": "Never",
+      "neverExpires": "Never",
+      "revokeAria": "Revoke {{name}}",
+      "revoke": {
+        "confirmTitle": "Revoke token?",
+        "confirmMessage": "Are you sure you want to revoke \"{{name}}\"? Anything using this token will stop working immediately. This action cannot be undone.",
+        "confirmButton": "Revoke",
+        "confirmLoading": "Revoking...",
+        "successTitle": "Token revoked",
+        "errorTitle": "Failed to revoke token"
+      },
+      "create": {
+        "panelTitle": "Create Personal Access Token",
+        "successPanelTitle": "Token Created",
+        "createButton": "Create token",
+        "doneButton": "Done",
+        "cancel": "Cancel",
+        "nameLabel": "Token name",
+        "namePlaceholder": "e.g. MCP server",
+        "errorNameRequired": "Enter a name for this token.",
+        "errorCreateTitle": "Failed to create token",
+        "expiryHeading": "Expiry",
+        "expiry30Days": "30 days",
+        "expiry90Days": "90 days",
+        "expiry365Days": "365 days",
+        "expiryNever": "Never",
+        "permissionsHeading": "Scopes",
+        "errorScopeRequired": "Select at least one scope.",
+        "selectAllScopes": "Select All",
+        "clearAllScopes": "Clear all",
+        "scopesLoading": "Loading scopes...",
+        "scopesLoadError": "Failed to load scopes.",
+        "scopesRetry": "Retry",
+        "successScreenTitle": "Token created",
+        "successScreenSubtitle": "Copy your token now — you won't be able to see it again.",
+        "tokenLabel": "Access token",
+        "tokenShownOnceWarning": "This token is shown only once. Store it somewhere safe.",
+        "showTokenAria": "Show token",
+        "hideTokenAria": "Hide token",
+        "copyTokenAria": "Copy token",
+        "pasteBlockLabel": "Ready to paste into your MCP config",
+        "copyPasteBlockAria": "Copy paste block",
+        "copySuccessTitle": "Copied",
+        "copyErrorTitle": "Could not copy"
+      }
+    },
     "aiModels": {
       "title": "AI Models",
       "subtitle": "Configure and manage AI models from different providers",
@@ -1320,6 +1413,7 @@
         "labs": "Labs",
         "authentication": "Authentication",
         "connectors": "Connectors",
+        "mcpServers": "MCP Servers",
         "actions": "Actions",
         "bots": "Bots",
         "services": "Services",
@@ -1328,15 +1422,20 @@
         "prompts": "Prompts",
         "developerSettings": "Developer Settings",
         "oauth2": "OAuth 2.0 Apps",
+        "personalAccessTokens": "Personal Access Tokens",
         "profile": "Profile",
         "yourConnectors": "Your Personal Connectors",
         "yourActions": "Your actions",
         "yourSkills": "Your Skills",
+        "yourMcpServers": "Your MCP Servers",
         "archivedChats": "Archived Chats",
         "users": "Users",
         "groups": "Groups",
         "teams": "Teams",
-        "webSearch": "Web Search"
+        "webSearch": "Web Search",
+        "tenants": "Tenants",
+        "superOrgs": "Organisations",
+        "oauthApps": "OAuth Apps"
       }
     },
     "actions": {
@@ -1623,7 +1722,8 @@
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
         "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0"
+        "oauth": "Configure OAuth 2.0",
+        "github": "Configure GitHub Authentication"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
@@ -1894,6 +1994,149 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      }
+    },
+    "mcpServers": {
+      "searchPlaceholder": "Search MCP servers...",
+      "loading": "Loading MCP servers…",
+      "noResults": "No MCP servers match your search",
+      "addServer": "Add Server",
+      "custom": "Custom",
+      "sharedAuth": "Shared admin auth",
+      "toolsCount_one": "{{count}} tool",
+      "toolsCount_other": "{{count}} tools",
+      "cta": {
+        "manage": "Manage",
+        "delete": "Delete",
+        "reauthenticate": "Reauthenticate",
+        "disconnect": "Disconnect",
+        "connect": "Connect",
+        "addInstance": "Add instance"
+      },
+      "status": {
+        "ready": "Ready",
+        "notConnected": "Not connected",
+        "needsAuth": "Needs auth"
+      },
+      "team": {
+        "title": "MCP Servers",
+        "subtitle": "Connect Model Context Protocol servers to extend what your team's agents can do.",
+        "emptyTitle": "No MCP servers yet",
+        "emptyDescription": "Add a server from the catalog or configure a custom one to get started."
+      },
+      "personal": {
+        "title": "MCP Servers",
+        "subtitle": "Authenticate with the MCP servers your admin has made available.",
+        "emptyTitle": "No MCP servers available",
+        "emptyDescription": "Your admin hasn't added any MCP servers yet."
+      },
+      "details": {
+        "breadcrumbLabel": "MCP Servers",
+        "refreshAll": "Refresh all",
+        "addInstance": "Add Another Instance",
+        "configuration": "CONFIGURATION",
+        "transport": "TRANSPORT",
+        "tools": "TOOLS",
+        "discoverTools": "Discover Tools",
+        "discoveredTools_one": "{{count}} tool available",
+        "discoveredTools_other": "{{count}} tools available",
+        "discovering": "Discovering tools…",
+        "discoveryError": "Tool discovery failed",
+        "discoveryNeedsAuth": "Authenticate to discover tools",
+        "retry": "Retry",
+        "noInstances": "No instances configured",
+        "authBannerTitle": "Authentication required",
+        "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
+        "authBannerAuthenticatedTitle": "Connected",
+        "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server."
+      },
+      "deleteDialog": {
+        "title": "Delete MCP server?",
+        "body": "The server named \"{{name}}\" will be permanently removed. Any team members using it will lose access."
+      },
+      "toasts": {
+        "loadError": "Failed to load MCP servers",
+        "deleted": "MCP server deleted",
+        "deleteError": "Failed to delete MCP server",
+        "updated": "MCP server updated",
+        "created": "MCP server created",
+        "saveError": "Failed to save MCP server",
+        "authenticated": "Authenticated successfully",
+        "authenticateError": "Failed to authenticate",
+        "disconnected": "Disconnected successfully",
+        "disconnectError": "Failed to disconnect",
+        "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "discoveryError": "Failed to discover tools"
+      },
+      "authDialog": {
+        "title": "Authenticate with {{name}}",
+        "description": "Enter your credentials to connect this MCP server."
+      },
+      "form": {
+        "name": "Name",
+        "description": "Description",
+        "transport": "Transport",
+        "command": "Command",
+        "args": "Arguments",
+        "argsPlaceholder": "Add an argument",
+        "requiredEnv": "Required env",
+        "requiredEnvPlaceholder": "Add an env var name (e.g. API_KEY)",
+        "url": "URL",
+        "authMode": "Auth Mode",
+        "headerName": "Header Name",
+        "authorizationUrl": "Authorization URL",
+        "dcrHint": "Leave blank — PipesHub will detect and use dynamic client registration automatically when the server supports it",
+        "tokenUrl": "Token URL",
+        "scopes": "Scopes",
+        "scopesPlaceholder": "Add a scope",
+        "useAdminAuth": "Use shared admin authentication for all users",
+        "headerValue": "{{headerName}}",
+        "apiToken": "API Token",
+        "credentialsHeading": "Credentials (optional)",
+        "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
+        "leaveBlankToKeep": "Leave blank to keep the existing value.",
+        "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
+        "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
+        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it."
+      },
+      "configPanel": {
+        "editTitle": "Edit MCP Server",
+        "createTitle": "Add MCP Server",
+        "tabs": {
+          "configuration": "Configuration",
+          "connection": "Connection & Tools"
+        }
+      },
+      "oauthConfig": {
+        "saved": "OAuth app saved",
+        "saveError": "Failed to save OAuth app",
+        "title": "Configure OAuth App",
+        "description": "PipesHub automatically detects whether this server supports dynamic client registration. Client credentials are only needed when it doesn't.",
+        "alreadyConfigured": "An OAuth app is already configured for this server.",
+        "clientId": "Client ID",
+        "clientIdPlaceholder": "Enter client ID",
+        "clientSecret": "Client Secret",
+        "clientSecretPlaceholder": "Enter client secret",
+        "dcrProbing": "Checking whether this server can register itself automatically…",
+        "dcrSupportedHint": "This server supports automatic registration. PipesHub will register itself and no client credentials are required.",
+        "dcrUnsupportedHint": "This server requires a manually registered OAuth app. Create one with the callback URL below, then enter its client ID and secret.",
+        "dcrUnknownHint": "Couldn't confirm automatic registration support. If it isn't supported, register an OAuth app with the callback URL below and enter its client ID and secret.",
+        "callbackUrlLabel": "Callback URL",
+        "copyCallbackUrl": "Copy callback URL",
+        "callbackUrlCopied": "Callback URL copied",
+        "providerDocsLink": "View provider setup documentation"
+      },
+      "oauth": {
+        "completingTitle": "Completing sign-in…",
+        "processingHint": "Please wait while we finish connecting your account.",
+        "successTitle": "Connected successfully",
+        "successBody": "You can close this window and return to PipesHub.",
+        "failedTitle": "Connection failed",
+        "retryHint": "Something went wrong. Please close this window and try again.",
+        "providerError": "The provider returned an error: {{error}}",
+        "noCode": "No authorization code was returned.",
+        "noState": "No state parameter was returned.",
+        "backendRejected": "The server rejected the authorization request."
       }
     },
     "bots": {
@@ -2419,6 +2662,185 @@
           "description": "LLM-based document classification and metadata extraction"
         }
       }
+    },
+    "tenants": {
+      "title": "Tenants",
+      "subtitle": "Create and manage tenant organisations within the workspace",
+      "createTenant": "Create Tenant",
+      "searchPlaceholder": "Search tenants...",
+      "emptyTitle": "No tenants created yet",
+      "emptyDescription": "Tenants are separate organisations you manage within this platform.",
+      "noFilterResults": "No tenants match the applied filters",
+      "noFilterResultsHint": "Try adjusting or clearing the filters above",
+      "noSearchResults": "No tenants match your search",
+      "listDeleteDescription": "This will permanently remove the tenant and all its users.",
+      "columns": {
+        "name": "Name",
+        "domain": "Domain",
+        "contactEmail": "Contact Email",
+        "accountType": "Account Type",
+        "createdOn": "Created On"
+      },
+      "actions": {
+        "tenantDetails": "Details",
+        "viewUsers": "View Users",
+        "viewUserGroups": "User Groups",
+        "delete": "Delete",
+        "deleteError": "Failed to delete tenant",
+        "deleteSuccess": "Tenant deleted",
+        "deleteSystemTooltip": "This tenant cannot be deleted"
+      },
+      "groups": {
+        "title": "User Groups",
+        "subtitle": "Manage user groups for this tenant",
+        "backToTenants": "Back to Tenants",
+        "emptyTitle": "No user groups yet",
+        "emptyDescription": "Create a user group to get started.",
+        "noSearchResults": "No groups match your search",
+        "noSearchResultsHint": "Try adjusting or clearing the search above"
+      },
+      "create": {
+        "title": "Create Tenant",
+        "accountTypeLabel": "Account Type",
+        "registeredNameLabel": "Registered Name",
+        "registeredNamePlaceholder": "e.g. Acme Corporation",
+        "shortNameLabel": "Short Name",
+        "shortNamePlaceholder": "e.g. Acme",
+        "contactEmailLabel": "Contact Email",
+        "contactEmailPlaceholder": "e.g. admin@acme.com",
+        "submit": "Create Tenant",
+        "cancel": "Cancel",
+        "successTitle": "Tenant created!",
+        "successDescription": "Tenant has been created successfully",
+        "errorGeneric": "Failed to create tenant",
+        "inheritanceTitle": "Configuration Inheritance",
+        "inheritanceDescription": "Enable to inherit settings from your organization. Disable for the tenant to manage its own.",
+        "inheritance": {
+          "aiModels": "AI Models",
+          "aiModelsHintOn": "Tenant will be ready immediately (no AI setup required)",
+          "aiModelsHintOff": "Tenant must configure its own AI models",
+          "smtp": "Mail (SMTP)",
+          "authentication": "Authentication",
+          "prompts": "System Prompts",
+          "platformSettings": "Platform Settings",
+          "connectors": "Connectors",
+          "toolsets": "Toolsets"
+        }
+      },
+      "invite": {
+        "title": "Invite User(s)",
+        "send": "Send Invite",
+        "cancel": "Cancel",
+        "tenantLabel": "Tenant",
+        "emailLabel": "Invite to",
+        "emailPlaceholder": "Enter one or more email addresses",
+        "groupLabel": "Add to a User Group",
+        "groupPlaceholder": "Search or select user group(s)",
+        "successTitle": "Invite sent!",
+        "successDescription": "{{email}} has been invited",
+        "errorGeneric": "Failed to send invite"
+      },
+      "detail": {
+        "registeredNameLabel": "Registered Name",
+        "shortNameLabel": "Short Name",
+        "contactEmailLabel": "Contact Email",
+        "domainLabel": "Domain",
+        "accountTypeLabel": "Account Type",
+        "inheritanceTitle": "Configuration Inheritance",
+        "inheritanceDescription": "When enabled, the tenant uses your organization's settings instead of its own."
+      },
+      "edit": {
+        "edit": "Edit Tenant",
+        "save": "Save Edits",
+        "cancel": "Cancel",
+        "deleteButton": "Delete Tenant",
+        "deleteTitle": "Delete '{{name}}' Tenant",
+        "deleteDescription": "Are you sure you want to delete this tenant?",
+        "deleteConfirmInputLabel": "Type \"{{name}}\" to confirm",
+        "deleteSuccess": "Tenant deleted",
+        "deleteSuccessDescription": "Tenant has been deleted",
+        "deleteError": "Failed to delete tenant",
+        "deleting": "Deleting...",
+        "saveSuccess": "Tenant updated!",
+        "saveSuccessDescription": "Tenant updated successfully",
+        "saveError": "Failed to update tenant"
+      }
+    },
+    "oauthApps": {
+      "title": "OAuth Apps",
+      "subtitle": "Manage OAuth credentials for connectors and actions. Apps marked as \"Default\" are used automatically for new connections unless overridden.",
+      "addButton": "Add OAuth App",
+      "tabs": {
+        "connectors": "Connectors",
+        "toolsets": "Actions"
+      },
+      "typeSelector": {
+        "connectorLabel": "Connector type",
+        "toolsetLabel": "Action type",
+        "loading": "Loading\u2026"
+      },
+      "scope": {
+        "team": "Team",
+        "personal": "Personal"
+      },
+      "loading": "Loading\u2026",
+      "search": {
+        "placeholder": "Search apps\u2026"
+      },
+      "empty": {
+        "title": "No OAuth apps for {{typeLabel}}",
+        "connectorDescription": "Add an OAuth app to allow connectors of this type to authenticate using your credentials.",
+        "connectorDescriptionPersonal": "Add an OAuth app to allow this connector type to authenticate on your behalf.",
+        "toolsetDescription": "Add an OAuth app to allow actions of this type to authenticate using your credentials.",
+        "noSearchResults": "No OAuth apps match your search.",
+        "addButton": "Add OAuth App"
+      },
+      "form": {
+        "titleCreate": "Add OAuth App for {{typeName}}",
+        "titleEdit": "Edit OAuth App",
+        "redirectUriTitle": "Redirect / Callback URL",
+        "redirectUriDescription": "Register this URL in your identity provider's OAuth app configuration.",
+        "copied": "Copied!",
+        "copy": "Copy",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. {{typeName}} Production",
+        "nameRequired": "Name is required.",
+        "credentialsTitle": "Credentials",
+        "fieldRequired": "{{fieldName}} is required.",
+        "settingsTitle": "Settings",
+        "isDefaultLabel": "Set as default",
+        "isDefaultDescription": "Use this app by default for new connections of this type.",
+        "allowChildOverrideLabel": "Allow child override",
+        "allowChildOverrideDescription": "Allow child orgs to configure their own OAuth app for this type.",
+        "cancelButton": "Cancel",
+        "createButton": "Create",
+        "saveButton": "Save Changes",
+        "savingLabel": "Saving\u2026",
+        "schemaError": "Failed to load schema for this type.",
+        "genericError": "An error occurred. Please try again."
+      },
+      "card": {
+        "default": "Default",
+        "locked": "Locked",
+        "edit": "Edit",
+        "delete": "Delete"
+      },
+      "delete": {
+        "title": "Delete \"{{name}}\"?",
+        "message": "This OAuth app will be permanently deleted. Any connector instances currently using it may stop working.",
+        "confirmLabel": "Delete",
+        "forceDeleteButton": "Force Delete",
+        "forceTitle": "Force delete \"{{name}}\"?",
+        "forceMessage": "This OAuth app is currently in use. Force-deleting it will remove it and may break existing connector connections that rely on it. This action cannot be undone.",
+        "forceConfirmLabel": "Force Delete",
+        "successMessage": "OAuth app \"{{name}}\" deleted."
+      },
+      "errors": {
+        "loadTypes": "Failed to load available OAuth app types.",
+        "loadConnectors": "Failed to load connector OAuth apps.",
+        "loadToolsets": "Failed to load action OAuth apps.",
+        "deleteGeneric": "Failed to delete OAuth app."
+      }
     }
   },
   "filePreview": {
@@ -2547,10 +2969,12 @@
     "startMessageLabel": "Start message",
     "modelSection": "Model",
     "toolsetsSection": "Toolsets",
+    "mcpServersSection": "MCP Servers",
     "skillsSection": "Skills",
     "inputSection": "Input",
     "responseSection": "Response",
     "connectModel": "Connect a model",
+    "usingOrgDefault": "Using organization default model",
     "optional": "Optional",
     "connectChatInput": "Connect chat input",
     "toChatOutput": "To chat output",
@@ -2620,6 +3044,12 @@
     "toolsetCredentialsTitle": "Agent toolset credentials",
     "toolsetCredentialsBadge": "Service agent",
     "toolsetCredentialsDesc": "Stored for this agent only. Runs use these credentials for everyone.",
+    "mcpCredentialsTitle": "MCP server credentials",
+    "mcpCredentialsDesc": "Authenticate this MCP server so the agent can use its tools.",
+    "mcpServerDefaultName": "MCP Server",
+    "mcpAuthUpdatedNotify": "MCP authentication updated.",
+    "mcpAuthSaveError": "Failed to save MCP credentials.",
+    "mcpAuthRemoveError": "Failed to remove MCP credentials.",
     "loadingSchema": "Loading schema…",
     "fillRequiredFields": "Please fill in all required fields.",
     "fieldRequired": "{{field}} is required",
@@ -2866,6 +3296,16 @@
       "savingToastDescription": "This will take a few seconds",
       "successToast": "Account created successfully!",
       "failToast": "Sign up failed. Please try again.",
+      "createWorkspaceTitle": "Create a New Workspace",
+      "createWorkspaceSubtitle": "Set up a new workspace for your organization.",
+      "fullNameLabel": "Full Name*",
+      "fullNamePlaceholder": "Enter your full name",
+      "verificationSentToast": "Check your inbox",
+      "verificationSentDescription": "A verification link has been sent to your email. Click it to activate your organization.",
+      "accountCreatedToast": "Account created",
+      "accountCreatedDescription": "Your organisation is ready. You can sign in now.",
+      "emailFailedToast": "Organisation created",
+      "emailFailedDescription": "We couldn't send the verification email. Please contact support.",
       "errors": {
         "firstNameRequired": "First name is required.",
         "lastNameRequired": "Last name is required.",
@@ -2875,7 +3315,8 @@
         "passwordRequired": "Password is required.",
         "confirmPasswordRequired": "Please confirm your password.",
         "passwordsMismatch": "Passwords do not match.",
-        "emailAlreadyExists": "An account with this email already exists."
+        "emailAlreadyExists": "An account with this email already exists.",
+        "fullNameRequired": "Full name is required."
       },
       "confirmDialog": {
         "title": "How PipesHub assigns permissions",
@@ -2885,7 +3326,9 @@
         "emailNotePre": "Make sure the email you registered with —",
         "emailNotePost": "— is the same one used in your organization's apps so your permissions are recognized correctly.",
         "cancelButton": "Cancel",
-        "signUpButton": "Sign Up"
+        "signUpButton": "Sign Up",
+        "verificationNoteTitle": "Verification required",
+        "verificationNoteBody": "A verification link will be sent to the email above. Your organization will only be accessible after you verify it."
       }
     },
     "login": {
@@ -2895,7 +3338,11 @@
       "emailVerifyFailedDescription": "The link may be invalid or expired.",
       "samlErrorTitle": "Error in logging in with SAML",
       "samlSignInFailedTitle": "Sign-in failed",
-      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again."
+      "samlSignInFailedDescription": "SAML SSO could not complete. Please try again.",
+      "orgEmailVerifiedTitle": "Organization verified",
+      "orgEmailVerifiedDescription": "Your organization is now active. Sign in to continue.",
+      "orgEmailVerifyFailedTitle": "Verification failed",
+      "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again."
     },
     "common": {
       "signIn": "Sign In",

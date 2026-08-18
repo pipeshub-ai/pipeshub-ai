@@ -281,9 +281,7 @@ class TestApplyBackpressure:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        for _ in range(messaging_env.max_pending_indexing_tasks + 1):
-            f = Future()
-            consumer._active_futures.add(f)
+        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True

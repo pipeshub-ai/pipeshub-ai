@@ -42,7 +42,16 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
     "true",
     "yes",
 )
-MAX_CONCURRENT_EMBEDDINGS = int(os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY", "2"))
+_ENV_MAX_CONCURRENT_EMBEDDINGS = os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY")
+MAX_CONCURRENT_EMBEDDINGS = (
+    int(_ENV_MAX_CONCURRENT_EMBEDDINGS)
+    if _ENV_MAX_CONCURRENT_EMBEDDINGS
+    else max(2, os.cpu_count() or 2)
+)
+if MAX_CONCURRENT_EMBEDDINGS < 1:
+    raise ValueError(
+        f"EMBEDDING_SERVER_MAX_CONCURRENCY must be at least 1, got {MAX_CONCURRENT_EMBEDDINGS}"
+    )
 
 # Bound any Hub HTTP call so a slow/blocked network can never hang model load
 # indefinitely. huggingface_hub reads this on import, so set it before the

@@ -9,6 +9,7 @@ import { TYPES } from '../../../libs/types/container.types';
 interface CustomSocketData {
   userId: string;
   orgId: string;
+  forceLogoutReason?: 'missing_role' | 'invalid_token';
 }
 
 type CustomSocket = Socket<
@@ -57,25 +58,51 @@ export class NotificationService {
     });
 
     this.io.use(async (socket: CustomSocket, next) => {
-      const extractedToken = this.extractToken(socket.handshake.auth.token);
-      if (!extractedToken) {
-        return next(new BadRequestError('Authentication token missing'));
-      }
-      const decodedData =
-        await this.authTokenService.verifyToken(extractedToken);
-      if (!decodedData) {
-        return next(new BadRequestError('Authentication token expired'));
-      }
+      try {
+        const extractedToken = this.extractToken(socket.handshake.auth.token);
+        if (!extractedToken) {
+          return next(new BadRequestError('Authentication token missing'));
+        }
+        const decodedData =
+          await this.authTokenService.verifyToken(extractedToken);
+        if (!decodedData) {
+          return next(new BadRequestError('Authentication token expired'));
+        }
 
-      socket.data.userId = decodedData.userId; // Store userId in socket object
-      socket.data.orgId = decodedData.orgId; // Store userId in socket object
-      next();
+        socket.data.userId = decodedData.userId;
+        socket.data.orgId = decodedData.orgId;
+
+        const role = (decodedData as { role?: unknown }).role;
+        if (role !== 'admin' && role !== 'member') {
+          // Allow the socket to connect briefly so we can emit force_logout.
+          socket.data.forceLogoutReason = 'missing_role';
+        }
+
+        next();
+      } catch (error) {
+        next(
+          error instanceof Error
+            ? error
+            : new BadRequestError('Authentication failed'),
+        );
+      }
     });
 
     // Connection event handler
     this.io.on('connection', (socket: CustomSocket) => {
       const userId = socket.data.userId;
       const orgId = socket.data.orgId;
+
+      if (socket.data.forceLogoutReason) {
+        socket.emit('force_logout', { reason: socket.data.forceLogoutReason });
+        this.logger.info('force_logout on connect (missing JWT role)', {
+          userId,
+          reason: socket.data.forceLogoutReason,
+        });
+        socket.disconnect(true);
+        return;
+      }
+
       this.logger.info('User connected', {
         userId,
         orgId,
@@ -263,6 +290,29 @@ export class NotificationService {
       return false;
     }
     this.io.to(userId).emit(event, data);
+    return true;
+  }
+
+  /**
+   * Force-logout a connected user. Does not queue — queuing would log them out
+   * again after a successful re-login.
+   */
+  emitForceLogout(
+    userId: string,
+    reason: 'role_changed' | 'missing_role' | 'invalid_token' = 'role_changed',
+  ): boolean {
+    if (!this.io || !userId) {
+      return false;
+    }
+    if (!this.isUserConnected(userId)) {
+      this.logger.debug('force_logout skipped; user not connected', {
+        userId,
+        reason,
+      });
+      return false;
+    }
+    this.sendToUserDirect(userId, 'force_logout', { reason });
+    this.logger.info('force_logout emitted', { userId, reason });
     return true;
   }
 

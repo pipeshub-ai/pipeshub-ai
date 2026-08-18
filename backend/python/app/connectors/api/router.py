@@ -31,7 +31,19 @@ from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
-from app.api.middlewares.auth import require_scopes
+from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
+from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
+from app.agents.actions.knowledge_graph.navigator import GraphNavigator
+from app.agents.actions.knowledge_graph.ops.time_range import (
+    parse_time_range,
+    time_range_to_kh_filters,
+)
+from app.agents.actions.knowledge_graph.resolver import RecordResolver
+from app.agents.actions.knowledge_graph.views import (
+    render_lookup_result,
+    render_navigation_view,
+)
+from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
@@ -65,6 +77,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.sources.local_fs.connector import LocalFsConnector
 from app.connectors.sources.local_fs.file_events import (
     _normalize_connector_type_value,
@@ -80,6 +93,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
@@ -96,6 +110,9 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 OAUTH_INSTANCE_NAME = "oauthInstanceName"
+
+# Mirrors the cap the agent's knowledgegraph__lookup_record tool applies.
+MAX_LOOKUP_IDENTIFIERS = 10
 
 def get_mime_type_from_record(record: Record) -> str:
     """
@@ -556,7 +573,7 @@ async def get_validated_connector_instance(
     # Extract user information
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     # Validate authentication
     if not user_id or not org_id:
@@ -648,7 +665,7 @@ async def require_connector_not_locked(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     instance = await connector_registry.get_connector_instance(
         connector_id=connector_id,
@@ -1090,7 +1107,7 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,
             org_id=org_id,
@@ -1585,6 +1602,230 @@ async def get_record_content(
     return {"content": content}
 
 
+async def _knowledge_graph_context(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+) -> tuple[str, str, str, ConnectorCatalog]:
+    """Resolve (user_id, org_id, user_key, catalog) for the knowledge-graph endpoints.
+
+    The catalog is built from a fresh dict per request: ConnectorCatalog.build
+    caches into the dict it is given, so a shared one would serve one user's
+    connectors to another. An empty dict carries no agent scope, so build()
+    falls through to the user-scoped get_knowledge_hub_filter_options path.
+    """
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception as e:
+        request.app.container.logger().error(f"Error resolving user {user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to resolve user",
+        ) from e
+
+    user_key = (user.get("_key") or user.get("id")) if user else None
+    if not user_key:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="User not found")
+
+    catalog = await ConnectorCatalog.build(
+        {},
+        graph_provider=graph_provider,
+        user_key=user_key,
+        org_id=org_id,
+    )
+    return user_id, org_id, user_key, catalog
+
+
+@router.get(
+    "/api/v1/knowledge-graph/navigate",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ, OAuthScopes.CONNECTOR_READ))],
+)
+async def knowledge_graph_navigate(
+    request: Request,
+    node_id: str | None = Query(
+        None,
+        description=(
+            "App / record group / record / folder id to open. Omit for the root "
+            "listing of connected apps. A URL or issue key (e.g. PA-1787) is "
+            "resolved to its record id first."
+        ),
+    ),
+    page: int = Query(1, ge=1, description="Page number (1-based)."),
+    limit: int = Query(50, ge=50, le=200, description="Children per page."),
+    depth: int = Query(
+        1,
+        ge=1,
+        le=3,
+        description="Levels of descendants returned in one call, flattened with a level per row.",
+    ),
+    node_types: list[str] | None = Query(
+        None,
+        description="Repeat per type to filter children: recordGroup, record, folder.",
+    ),
+    created_after: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    created_before: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    modified_after: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    modified_before: str | None = Query(None, description="ISO 8601 date or datetime with a timezone offset."),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Walk the knowledge graph hierarchy: App -> RecordGroup -> Record -> Child.
+
+    HTTP counterpart of the agent's knowledgegraph__navigate tool — same
+    normalisation, same underlying GraphNavigator call, and the same rendered
+    view in `text` alongside the structured fields.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    # Same parser knowledgegraph__search and navigate() use: rejects
+    # timezone-naive datetimes, inverted ranges, and a future created_after.
+    time_range, time_error = parse_time_range(
+        created_after=created_after,
+        created_before=created_before,
+        modified_after=modified_after,
+        modified_before=modified_before,
+    )
+    if time_error is not None:
+        try:
+            detail = json.loads(time_error).get("message", time_error)
+        except (json.JSONDecodeError, AttributeError):
+            detail = time_error
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=detail)
+    created_at, updated_at = time_range_to_kh_filters(time_range)
+
+    user_id, org_id, user_key, catalog = await _knowledge_graph_context(request, graph_provider)
+    connector_ids = catalog.connector_ids()
+
+    node_id = node_id.strip() if node_id else None
+    if node_id and (_is_url(node_id) or _BARE_ISSUE_KEY.match(node_id)):
+        resolver = RecordResolver(
+            graph_provider=graph_provider,
+            catalog=catalog,
+            org_id=org_id,
+            user_id=user_id,
+            user_key=user_key,
+            folder_mime_types=FOLDER_MIME_TYPES,
+            agent_connector_ids=connector_ids,
+        )
+        resolved = await resolver.resolve_many([node_id])
+        if resolved.matches:
+            node_id = resolved.matches[0].id
+
+    navigator = GraphNavigator(
+        graph_provider=graph_provider,
+        user_id=user_id,
+        user_key=user_key,
+        org_id=org_id,
+    )
+
+    try:
+        view = await navigator.navigate(
+            node_id=node_id,
+            name_filter=None,
+            page=page,
+            limit=limit,
+            connector_ids=None,
+            record_group_ids=None,
+            depth=depth,
+            created_at=created_at,
+            updated_at=updated_at,
+            node_types=node_types,
+            app_names={c.id: c.name for c in catalog.connectors},
+        )
+    except Exception as e:
+        logger.error(f"Error navigating knowledge graph for node_id={node_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to navigate knowledge graph",
+        ) from e
+
+    return {**view.model_dump(), "text": render_navigation_view(view, page)}
+
+
+@router.get(
+    "/api/v1/knowledge-graph/lookup",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ, OAuthScopes.CONNECTOR_READ))],
+)
+async def knowledge_graph_lookup(
+    request: Request,
+    identifiers: list[str] = Query(
+        ...,
+        description=(
+            "Repeat per identifier: a URL, an issue key (e.g. PA-1787), or a bare "
+            "external system id. Maximum 10."
+        ),
+    ),
+    connector_name: str | None = Query(
+        None,
+        description=(
+            "Connector hint (e.g. JIRA, CONFLUENCE, GOOGLE_DRIVE) that prioritises "
+            "resolution order. Cannot widen beyond accessible connectors."
+        ),
+    ),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Resolve URLs, issue keys, or external IDs to Record IDs.
+
+    HTTP counterpart of the agent's knowledgegraph__lookup_record tool.
+    Resolution spans every connector the caller can access. Zero matches is a
+    200 with an empty `matches` and the inputs echoed in
+    `not_found_identifiers` — not-found and no-access are deliberately
+    indistinguishable.
+    """
+    container = request.app.container
+    logger = container.logger()
+
+    idents = [i.strip() for i in identifiers if i and i.strip()]
+    if not idents:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="At least one non-blank identifier is required",
+        )
+    if len(idents) > MAX_LOOKUP_IDENTIFIERS:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"At most {MAX_LOOKUP_IDENTIFIERS} identifiers per request",
+        )
+
+    user_id, org_id, user_key, catalog = await _knowledge_graph_context(request, graph_provider)
+
+    if catalog.is_empty():
+        # No accessible connectors — skip a resolution pass that cannot match.
+        return {
+            "matches": [],
+            "ambiguous": False,
+            "not_found_identifiers": idents,
+            "searched_connectors": {},
+            "text": "Not found or no access.",
+        }
+
+    resolver = RecordResolver(
+        graph_provider=graph_provider,
+        catalog=catalog,
+        org_id=org_id,
+        user_id=user_id,
+        user_key=user_key,
+        folder_mime_types=FOLDER_MIME_TYPES,
+        agent_connector_ids=catalog.connector_ids(),
+        connector_name_hint=connector_name,
+    )
+
+    try:
+        result = await resolver.resolve_many(idents)
+    except Exception as e:
+        logger.error(f"Error resolving {len(idents)} identifiers: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to resolve identifiers",
+        ) from e
+
+    return {**result.model_dump(), "text": render_lookup_result(result)}
+
+
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def delete_record(
@@ -1622,6 +1863,11 @@ async def delete_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+
+            # This route deletes directly, bypassing the processor's cascade
+            # path, so it owns its own cache invalidation.
+            if result.get("isKb") and result.get("connectorId"):
+                await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
 
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
@@ -1819,7 +2065,7 @@ async def get_connector_stats_endpoint(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         user_org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not user_org_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
@@ -2000,7 +2246,7 @@ async def reindex_connector(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
@@ -2352,7 +2598,7 @@ async def get_connector_registry(
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
 
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         result = await connector_registry.get_all_registered_connectors(
             is_admin=is_admin,
             scope=scope,
@@ -2620,7 +2866,7 @@ async def get_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting connector instances")
         if not user_id or not org_id:
@@ -2772,7 +3018,7 @@ async def get_configured_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting configured connector instances")
         if not user_id or not org_id:
@@ -3154,7 +3400,7 @@ async def create_connector_instance(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -3431,7 +3677,7 @@ async def get_connector_instance(
     logger.info("Getting connector instance")
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     try:
         if not user_id or not org_id:
@@ -3523,7 +3769,7 @@ async def get_connector_instance_config(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -3649,7 +3895,7 @@ async def submit_connector_file_event_uploads(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -3758,7 +4004,7 @@ async def submit_connector_file_events(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload = await _parse_local_fs_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -3868,7 +4114,7 @@ async def update_connector_instance_auth_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -4212,7 +4458,7 @@ async def update_connector_instance_filters_sync_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         body = await request.json()
 
@@ -4356,7 +4602,7 @@ async def update_connector_instance_config(
 
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -4626,7 +4872,7 @@ async def update_connector_instance_name(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -4745,7 +4991,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     """
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     if not user_id or not org_id:
         raise HTTPException(
@@ -5172,7 +5418,7 @@ async def get_oauth_authorization_url(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -5376,7 +5622,7 @@ async def handle_oauth_callback(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -6556,7 +6802,7 @@ async def toggle_connector_instance(
             )
         org_id = user_info["orgId"]
         user_id = user_info["userId"]
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -6779,7 +7025,7 @@ async def delete_connector_instance(
         # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             logger.error("User not authenticated for connector deletion")
@@ -7065,7 +7311,7 @@ async def get_active_agent_instances(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(

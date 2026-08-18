@@ -45,12 +45,17 @@ def _mock_request(
     """Build a minimal mock FastAPI Request for update_connector_instance_config."""
     req = MagicMock()
 
-    user_data = user or {"userId": "user-1", "orgId": "org-1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
+    if "role" not in user_data:
+        admin_hdr = str(
+            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
+        ).lower()
+        user_data["role"] = "admin" if admin_hdr == "true" else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 

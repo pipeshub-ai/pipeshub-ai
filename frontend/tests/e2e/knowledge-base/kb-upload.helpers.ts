@@ -274,10 +274,9 @@ export function fitsInPlaywrightBuffer(sizeBytes: number): boolean {
  * Returns the file `<input>` locator, or null if the affordance is absent
  * (permission mismatch, KB not found, etc.) so callers can test.skip.
  *
- * WHY recordGroup: the sidebar navigates with nodeType=recordGroup for KB
- * roots (see @sidebar/knowledge-base/page.tsx:255).  The backend validates
- * parent_type and rejects `kb` with 400 — only recordGroup/record/app/folder
- * are accepted.
+ * WHY app: collection / KB roots are Knowledge Hub `app` nodes. The sidebar
+ * navigates with `nodeType=app` (see @sidebar/knowledge-base/page.tsx). Passing
+ * `recordGroup` for an app id returns 400: "Node type mismatch".
  *
  * WHY just waitFor the button (no waitForResponse):
  * The "New" button is inside <Header>, which only renders after this chain:
@@ -307,7 +306,7 @@ export async function openUploadSidebar(
   page: Page,
   kbId: string,
 ): Promise<Locator | null> {
-  await page.goto(`/knowledge-base/?nodeType=recordGroup&nodeId=${kbId}`);
+  await page.goto(`/knowledge-base/?nodeType=app&nodeId=${kbId}`);
 
   // data-testid="new-dropdown-trigger" is set on the header's New dropdown
   // button (both desktop Button and mobile IconButton variants in header.tsx).

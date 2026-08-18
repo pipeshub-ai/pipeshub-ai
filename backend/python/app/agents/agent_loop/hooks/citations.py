@@ -40,7 +40,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agents.agent_loop.hooks._tool_naming import INTERNAL_SEARCH_TOOL_NAMES
-from app.agents.agent_loop.tool_adapter import _to_tool_output
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
 
+from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
 
 # ---------------------------------------------------------------------------
@@ -100,43 +100,6 @@ _FETCH_FULL_RECORD_DESCRIPTION = (
     "IDs. Large records return a continuation hint giving the start_block for "
     "the next slice."
 )
-
-# Conservative default: enough for most models but safe for small/local ones.
-# Only reduced (never raised) by the known context window.
-# Override with PIPESHUB_FULL_RECORD_MAX_BLOCKS (int > 0) for deployment tuning.
-_DEFAULT_FULL_RECORD_MAX_BLOCKS = 200
-
-
-def _resolve_block_cap(model_name: str, requested_max: int | None) -> int:
-    """
-    Resolve the effective block cap for a fetch.
-
-    The cap is the minimum of the configured default and the caller's explicit
-    request. Never exceeds _DEFAULT_FULL_RECORD_MAX_BLOCKS unless the env var
-    is set higher (which is the operator's choice, not ours).
-
-    `get_context_window()` returns 128k for unknown/local models — too optimistic
-    for a small LLM — so we do NOT blindly raise the cap from the context window.
-    """
-    import os
-
-    env_raw = os.getenv("PIPESHUB_FULL_RECORD_MAX_BLOCKS", "")
-    try:
-        env_cap = int(env_raw) if env_raw.strip() else _DEFAULT_FULL_RECORD_MAX_BLOCKS
-        if env_cap <= 0:
-            env_cap = _DEFAULT_FULL_RECORD_MAX_BLOCKS
-    except ValueError:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Invalid PIPESHUB_FULL_RECORD_MAX_BLOCKS=%r, using %d",
-            env_raw, _DEFAULT_FULL_RECORD_MAX_BLOCKS,
-        )
-        env_cap = _DEFAULT_FULL_RECORD_MAX_BLOCKS
-
-    if requested_max is not None and requested_max > 0:
-        return min(env_cap, requested_max)
-    return env_cap
-
 
 class CitationCollector:
     """Read-only view over the citation-related fields of `AgentContext.tool_state`."""
@@ -191,6 +154,8 @@ class _FetchFullRecordTool(Tool):
     tool instance built once from the first snapshot.
     """
 
+    _ACCEPTED_ARGS = ("record_ids", "reason", "start_block", "max_blocks")
+
     def __init__(self, collector: CitationCollector, context: AgentContext) -> None:
         self._collector = collector
         self._context = context
@@ -234,7 +199,7 @@ class _FetchFullRecordTool(Tool):
                 type=ParameterType.STRING,
                 description="Brief explanation of why the full records are needed",
                 required=False,
-                default="Fetching full record content for comprehensive answer",
+                default=_DEFAULT_FETCH_REASON,
             ),
             ToolParameter(
                 name="start_block",
@@ -260,97 +225,51 @@ class _FetchFullRecordTool(Tool):
     def validate(self, kwargs: dict[str, Any]) -> None:
         return
 
+    def _live_virtual_records(self) -> dict[str, Any]:
+        """The mapping `_fetch_multiple_records_impl` writes downloaded records
+        back into, so it must be the object in `tool_state` and NOT
+        `CitationCollector.virtual_records`, whose `or {}` returns a throwaway
+        dict while the map is empty — losing the write-back and re-downloading
+        on every repeat fetch.
+
+        Records persisting here skip the ACL re-check a fresh id gets; safe
+        because `tool_state` is per HTTP request, hence per user.
+        """
+        state = self._context.tool_state
+        records = state.get("virtual_record_id_to_result")
+        if not isinstance(records, dict):
+            records = {}
+            state["virtual_record_id_to_result"] = records
+        return records
+
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
-        from app.utils.chat_helpers import record_to_message_content
-        from app.utils.fetch_full_record import create_fetch_full_record_tool
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
 
-        start_block: int = int(kwargs.pop("start_block", 0) or 0)
-        requested_max: int | None = kwargs.pop("max_blocks", None)
-        block_cap = _resolve_block_cap(self._context.model_name, requested_max)
-
-        # TEMPORARY token-savings experiment (opt-in, disabled by default —
-        # see `ChatQuery.enableRecordIdShortening`): an earlier retrieval/
-        # search/navigate/lookup_record/list_files call may have handed the
-        # model a short "R<n>" label instead of the full Record ID (see
-        # `RecordIdShortener` in `utils/chat_helpers.py`). Resolve it back
-        # before matching against `virtual_records`. Full ids the model
-        # copied verbatim pass through `.resolve()` unchanged. Created here
-        # (not just read) so a fetch that happens to be the first knowledge
-        # call this request still shortens the ids it prints below. `None`
-        # when the flag is off — record_ids pass through untouched.
-        from app.utils.chat_helpers import get_record_id_shortener_if_enabled
-        record_id_shortener = get_record_id_shortener_if_enabled(self._context.tool_state)
-        raw_record_ids = kwargs.get("record_ids")
-        if raw_record_ids and record_id_shortener is not None:
-            kwargs["record_ids"] = [
-                record_id_shortener.resolve(rid) for rid in raw_record_ids
-            ]
-
-        structured_tool = create_fetch_full_record_tool(
-            self._collector.virtual_records,
-            org_id=self._context.org_id,
-            graph_provider=self._context.graph_provider,
-            # Required for IDs the model got from navigate/lookup_record
-            # rather than from retrieval — those are not in the map, so the
-            # fetch has to re-check access itself.
-            user_id=self._context.user_id,
-        )
-        try:
-            result = await structured_tool.coroutine(**kwargs)
-        except Exception as exc:
-            return ToolOutput(success=False, error=str(exc))
-
-        # Mirror the chatbot path's formatting (`RecordsHandler` +
-        # `record_to_message_content()` in streaming.py) instead of handing
-        # the LLM a raw JSON dict of block_containers/context_metadata — the
-        # same records, rendered as the `<record>` text blocks the model
-        # already knows how to read from `retrieval_search_internal_knowledge`.
-        if isinstance(result, dict) and result.get("ok") and result.get("records"):
-            ref_mapper = self._collector.citation_ref_mapper
-            parts: list[str] = []
-            for record in result["records"]:
-                # Reads start at block 0 unless the caller asked otherwise.
-                # Starting at the first block retrieval matched instead drops
-                # everything before it — for a match near the end that returns
-                # a short tail as if it were the document. Oversized records are
-                # bounded by `block_cap`, which appends a continuation hint.
-                content_list, ref_mapper = record_to_message_content(
-                    record,
-                    ref_mapper=ref_mapper,
-                    start_block=start_block,
-                    max_blocks=block_cap,
-                )
-                parts.append("".join(
-                    item["text"] for item in content_list if item.get("type") == "text"
-                ))
-            self._context.tool_state["citation_ref_mapper"] = ref_mapper
-            text = "\n".join(parts)
-            # TEMPORARY token-savings experiment: shorten every "Record ID:"
-            # this fetch prints (record headers, FK table rows) back down to
-            # the same "R<n>" label the model already saw from retrieval/
-            # navigate/lookup_record — see `RecordIdShortener`.
-            if record_id_shortener is not None:
-                text = record_id_shortener.shorten_record_ids_in_text(text)
-            text += (
-                "\n\nCite facts from the above using each block's `[refN]` id "
-                "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
+        # Not forwarded as `**kwargs`: a model sending `record_id=` (singular)
+        # must get a correctable error, not a silent empty fetch.
+        unexpected = sorted(set(kwargs) - set(self._ACCEPTED_ARGS))
+        if unexpected:
+            return ToolOutput(
+                success=False,
+                error=(
+                    f"Unexpected argument(s): {', '.join(unexpected)}. "
+                    f"Accepted: {', '.join(self._ACCEPTED_ARGS)}."
+                ),
             )
-            not_available = result.get("not_available_ids", [])
-            if not_available:
-                if record_id_shortener is not None:
-                    not_available = [
-                        record_id_shortener.shorten_if_known(rid) for rid in not_available
-                    ]
-                ids_str = ", ".join(f"'{rid}'" for rid in not_available)
-                text += f"\n\nNote: The following record(s) are not available: {ids_str}"
-            # Track fetched record IDs for the gate.
-            for record in result["records"]:
-                rid = record.get("id")
-                if rid:
-                    self._context.full_records_fetched.add(rid)
-                    self._context.tool_state.setdefault("full_records_fetched", set()).add(rid)
-            return ToolOutput(success=True, data=text)
-        return _to_tool_output(result)
+
+        ref_mapper_in = self._collector.citation_ref_mapper
+        output, ref_mapper = await execute_fetch_record(
+            context=self._context,
+            virtual_records=self._live_virtual_records(),
+            citation_ref_mapper=ref_mapper_in,
+            record_ids=kwargs.get("record_ids") or [],
+            reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
+            start_block=int(kwargs.get("start_block") or 0),
+            max_blocks=kwargs.get("max_blocks"),
+        )
+        if ref_mapper is not ref_mapper_in:
+            self._context.tool_state["citation_ref_mapper"] = ref_mapper
+        return output
 
 
 def _grant(spec: "AgentSpec | None", *, require_internal_search_reference: bool) -> None:

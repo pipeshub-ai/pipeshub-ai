@@ -1,3 +1,4 @@
+/// <reference types="mocha" />
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -53,7 +54,7 @@ describe('MigrationService', () => {
   })
 
   describe('runMigration', () => {
-    it('should call connectorSyncScheduleMigration and chatKbFiltersMigration', async () => {
+    it('should call connectorSyncScheduleMigration, chatKbFiltersMigration and adminRoleMigration', async () => {
       const service = new MigrationService(mockLogger, mockKeyValueStore)
       const mockScheduler = {
         scheduleJob: sinon.stub().resolves(),
@@ -63,13 +64,17 @@ describe('MigrationService', () => {
       const mockAppConfig = {
         connectorBackend: 'http://localhost:8088',
       }
-      // Stub both migrations so they don't make real HTTP calls or DB queries
-      sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
-      sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
+      // Stub migrations so they don't make real HTTP calls or DB queries
+      const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
+      const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
+      const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
 
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
       expect(mockLogger.info.calledWith('Running migration...')).to.be.true
+      expect(connectorStub.calledOnce).to.be.true
+      expect(chatStub.calledOnce).to.be.true
+      expect(adminStub.calledOnce).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
   })

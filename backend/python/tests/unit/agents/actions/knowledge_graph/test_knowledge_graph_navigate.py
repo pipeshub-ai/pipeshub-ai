@@ -13,8 +13,8 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     KnowledgeGraph,
     _navigate_args_summary,
     _time_range_error_message,
-    _time_range_to_kh_filters,
 )
+from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import RecordType, Status, TicketRecord
 
@@ -790,28 +790,28 @@ class TestNavigateRecordIdShorteningFlag:
 
 
 class TestTimeRangeToKhFilters:
-    """`_time_range_to_kh_filters` bridges `ops.time_range.parse_time_range`'s
+    """`time_range_to_kh_filters` bridges `ops.time_range.parse_time_range`'s
     output shape (source_created_after_ms/... keys) to the {"gte":, "lte":}
     shape `KnowledgeHubService.get_nodes()` expects for created_at/updated_at."""
 
     def test_none_time_range_returns_none_none(self):
-        assert _time_range_to_kh_filters(None) == (None, None)
+        assert time_range_to_kh_filters(None) == (None, None)
 
     def test_empty_dict_returns_none_none(self):
-        assert _time_range_to_kh_filters({}) == (None, None)
+        assert time_range_to_kh_filters({}) == (None, None)
 
     def test_created_after_only(self):
-        created_at, updated_at = _time_range_to_kh_filters({"source_created_after_ms": 100})
+        created_at, updated_at = time_range_to_kh_filters({"source_created_after_ms": 100})
         assert created_at == {"gte": 100, "lte": None}
         assert updated_at is None
 
     def test_created_before_only(self):
-        created_at, updated_at = _time_range_to_kh_filters({"source_created_before_ms": 200})
+        created_at, updated_at = time_range_to_kh_filters({"source_created_before_ms": 200})
         assert created_at == {"gte": None, "lte": 200}
         assert updated_at is None
 
     def test_modified_after_and_before(self):
-        created_at, updated_at = _time_range_to_kh_filters({
+        created_at, updated_at = time_range_to_kh_filters({
             "source_updated_after_ms": 300,
             "source_updated_before_ms": 400,
         })
@@ -819,7 +819,7 @@ class TestTimeRangeToKhFilters:
         assert updated_at == {"gte": 300, "lte": 400}
 
     def test_both_created_and_modified_present(self):
-        created_at, updated_at = _time_range_to_kh_filters({
+        created_at, updated_at = time_range_to_kh_filters({
             "source_created_after_ms": 100,
             "source_updated_before_ms": 400,
         })

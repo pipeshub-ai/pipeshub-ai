@@ -11,7 +11,10 @@ from app.api.middlewares.auth import (
     extract_bearer_token,
     get_config_service,
     isJwtTokenValid,
+    is_request_admin,
+    normalize_auth_role,
     require_scopes,
+    resolve_request_role,
 )
 
 
@@ -606,6 +609,103 @@ class TestAuthMiddleware:
             await authMiddleware(request)
         assert exc_info.value.status_code == 401
         assert "not authenticated" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_session_jwt_admin_role_attached(self, mock_validate):
+        """Session JWT with role=admin is stored on request.state.user."""
+        payload = {"userId": "user-1", "role": "admin", "token_type": "regular"}
+        mock_validate.return_value = payload
+
+        request = _make_fake_request(authorization="Bearer valid.token")
+        await authMiddleware(request)
+
+        assert request.state.user["role"] == "admin"
+        assert is_request_admin(request) is True
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth._lookup_oauth_admin", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_oauth_admin_lookup_sets_admin(self, mock_validate, mock_lookup):
+        """OAuth token without role claim becomes admin when adminCheck succeeds."""
+        payload = {
+            "userId": "user-1",
+            "isOAuth": True,
+            "token_type": "regular",
+        }
+        mock_validate.return_value = payload
+        mock_lookup.return_value = True
+
+        request = _make_fake_request(authorization="Bearer oauth.token")
+        await authMiddleware(request)
+
+        assert request.state.user["role"] == "admin"
+        mock_lookup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth._lookup_oauth_admin", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_oauth_admin_lookup_fail_closed(self, mock_validate, mock_lookup):
+        """OAuth token stays member when adminCheck fails."""
+        payload = {"userId": "user-1", "isOAuth": True, "token_type": "regular"}
+        mock_validate.return_value = payload
+        mock_lookup.return_value = False
+
+        request = _make_fake_request(authorization="Bearer oauth.token")
+        await authMiddleware(request)
+
+        assert request.state.user["role"] == "member"
+        assert is_request_admin(request) is False
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_forged_x_is_admin_header_ignored(self, mock_validate):
+        """X-Is-Admin on the request does not grant admin."""
+        payload = {"userId": "user-1", "role": "member", "token_type": "regular"}
+        mock_validate.return_value = payload
+
+        request = _make_fake_request(authorization="Bearer valid.token")
+        request.headers["X-Is-Admin"] = "true"
+        request.headers["x-is-admin"] = "true"
+        await authMiddleware(request)
+
+        assert request.state.user["role"] == "member"
+        assert is_request_admin(request) is False
+
+
+# ---------------------------------------------------------------------------
+# role helpers
+# ---------------------------------------------------------------------------
+
+
+class TestAuthRoleHelpers:
+    def test_normalize_auth_role_admin_variants(self):
+        assert normalize_auth_role("admin") == "admin"
+        assert normalize_auth_role("ADMIN") == "admin"
+        assert normalize_auth_role(" Admin ") == "admin"
+
+    def test_normalize_auth_role_fail_closed(self):
+        assert normalize_auth_role(None) == "member"
+        assert normalize_auth_role("") == "member"
+        assert normalize_auth_role("member") == "member"
+        assert normalize_auth_role("superadmin") == "member"
+        assert normalize_auth_role(True) == "member"
+
+    def test_is_request_admin_reads_jwt_role_only(self):
+        request = MagicMock()
+        request.state.user = {"role": "admin"}
+        request.headers = {"X-Is-Admin": "false"}
+        assert is_request_admin(request) is True
+
+        request.state.user = {"role": "member"}
+        request.headers = {"X-Is-Admin": "true"}
+        assert is_request_admin(request) is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_skips_lookup_when_session_admin(self):
+        request = _make_fake_request()
+        role = await resolve_request_role(request, {"role": "admin"})
+        assert role == "admin"
 
 
 # ---------------------------------------------------------------------------

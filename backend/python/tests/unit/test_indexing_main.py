@@ -1479,6 +1479,19 @@ class TestLifespan:
 # ---------------------------------------------------------------------------
 # health_check (indexing)
 # ---------------------------------------------------------------------------
+def _make_health_request(governor=None):
+    """Build a minimal mock Request exposing app.state.governor, since
+    health_check reads the governor off request.app.state (see
+    app/indexing_main.py's /health route)."""
+    request = MagicMock()
+    request.app.state = MagicMock()
+    if governor is None:
+        del request.app.state.governor
+    else:
+        request.app.state.governor = governor
+    return request
+
+
 class TestIndexingHealthCheck:
     """Tests for health_check() endpoint."""
 
@@ -1487,7 +1500,7 @@ class TestIndexingHealthCheck:
         from app.indexing_main import health_check
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
-            result = await health_check()
+            result = await health_check(_make_health_request())
 
         assert result.status_code == 200
         assert result.body is not None
@@ -1498,11 +1511,26 @@ class TestIndexingHealthCheck:
         from app.indexing_main import health_check
 
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
-            result = await health_check()
+            result = await health_check(_make_health_request())
 
         body = json.loads(result.body)
         assert body["status"] == "healthy"
         assert body["timestamp"] == 1234567890
+
+    async def test_health_check_includes_governor_stats(self):
+        """When a governor is present on app.state, its stats are surfaced
+        (see Phase 1/6 of the adaptive-concurrency plan)."""
+        import json
+        from app.indexing_main import health_check
+
+        mock_governor = MagicMock()
+        mock_governor.stats.return_value = {"ceilings": {"index": 5}}
+
+        with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1234567890):
+            result = await health_check(_make_health_request(governor=mock_governor))
+
+        body = json.loads(result.body)
+        assert body["resource_governor"] == {"ceilings": {"index": 5}}
 
     async def test_health_check_general_exception(self):
         """Health check returns 500 when get_epoch_timestamp_in_ms raises on first call."""
@@ -1510,7 +1538,7 @@ class TestIndexingHealthCheck:
 
         mock_ts = MagicMock(side_effect=[RuntimeError("timestamp error"), 9999999])
         with patch("app.indexing_main.get_epoch_timestamp_in_ms", mock_ts):
-            result = await health_check()
+            result = await health_check(_make_health_request())
 
         assert result.status_code == 500
 

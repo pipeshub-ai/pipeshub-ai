@@ -49,8 +49,12 @@ def _make_request(
 ):
     """Build a minimal mock Request object used by most handler tests."""
     req = MagicMock()
-    req.state.user = {"userId": user_id, "orgId": org_id}
-    req.headers = {"X-Is-Admin": "true" if is_admin else "false"}
+    req.state.user = {
+        "userId": user_id,
+        "orgId": org_id,
+        "role": "admin" if is_admin else "member",
+    }
+    req.headers = {}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     else:

@@ -64,6 +64,21 @@ export interface FetchModelsOptions {
 }
 
 /**
+ * Thrown when the org-wide LLM list fetch fails while resolving models for an
+ * agent context (the agent's own config fetch succeeded — it just has no
+ * models of its own, so we fell back to the org list). Lets callers show an
+ * accurate error instead of blaming the agent's configuration for a failure
+ * that actually happened on the organization models endpoint.
+ */
+export class OrgModelsFetchError extends Error {
+  constructor(cause: unknown) {
+    super('Failed to fetch organization-wide AI models');
+    this.name = 'OrgModelsFetchError';
+    this.cause = cause;
+  }
+}
+
+/**
  * Fetch, cache, and normalize the model list for a given chat context.
  *
  * - `ctxKey === ASSISTANT_CTX`  → GET org LLMs (`ChatApi.fetchAvailableLlms`)
@@ -105,7 +120,19 @@ export async function fetchModelsForContext(
       models = await ChatApi.fetchAvailableLlms();
     } else {
       const { agent } = await AgentsApi.getAgent(ctxKey);
-      models = (agent?.models ?? []).map(mapAgentModelToAvailable);
+      const agentModels = agent?.models ?? [];
+      if (agentModels.length > 0) {
+        models = agentModels.map(mapAgentModelToAvailable);
+      } else {
+        // An agent with no models configured falls back to the organization's
+        // default LLM at chat time (see `usesOrgDefault` in the agent API), so
+        // show that same org-wide list here instead of an empty/error state.
+        try {
+          models = await ChatApi.fetchAvailableLlms();
+        } catch (err) {
+          throw new OrgModelsFetchError(err);
+        }
+      }
     }
 
     const s = useChatStore.getState();

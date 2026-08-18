@@ -42,7 +42,12 @@ from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E40
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]  # noqa: E402
     ConfluenceDataSource,
 )
-from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from app.config.constants.arangodb import PermissionModel  # noqa: E402
+from helper.assertions import (  # noqa: E402
+    ConnectorAssertions,
+    RecordAssertion,
+    assert_permission_model,
+)
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     FOLDER_MIME_TYPE,
     assert_api_content_matches_graph,
@@ -165,7 +170,23 @@ class TestConfluenceValidation:
         """TC-CF-008: Verify record relationships (parent/child, permissions)."""
         connector_id = confluence_connector["connector_id"]
 
+        await assert_permission_model(
+            graph_provider, connector_id, PermissionModel.RECORD_LEVEL.value,
+            context="TC-CF-008",
+        )
+
+        # RECORD_LEVEL means visibility is resolved per user, so records must be
+        # reachable through *some* ACL -- granted directly or inherited from a
+        # parent. Deliberately not asserting direct edges alone: Confluence
+        # attaches most access at the space, and jira (TC-JIRA-*) is inherit-only
+        # entirely, so a direct-edge count is the wrong invariant here.
         perm_count = await graph_provider.count_permission_edges(connector_id)
+        inherit_count = await graph_provider.count_inherit_permissions_edges(connector_id)
+        assert perm_count > 0 or inherit_count > 0, (
+            "[TC-CF-008] Connector is declared RECORD_LEVEL but its records carry "
+            "neither direct nor inherited permission edges, so per-user visibility "
+            "cannot be resolved for them."
+        )
 
         record_group_edges = await graph_provider.count_record_group_edges(connector_id)
         assert record_group_edges > 0, "Should have Record->RecordGroup BELONGS_TO edges"

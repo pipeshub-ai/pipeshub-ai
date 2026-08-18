@@ -138,6 +138,30 @@ def test_resolve_maps_code_mime_and_extension_to_txt() -> None:
     assert registry.resolve("text/x-script.python", "") is parser
     assert registry.resolve("text/x-sh", "") is parser
     assert registry.resolve("text/x-shellscript", "") is parser
+    assert registry.resolve("text/css", "") is parser
+    assert registry.resolve("", "css") is parser
+    assert registry.resolve("", "scss") is parser
+    assert registry.resolve("", "vue") is parser
+    assert registry.resolve("", "sql") is parser
+
+
+def test_supported_code_file_extensions_normalize() -> None:
+    """Every CODE_FILE gate extension must resolve to a known format key."""
+    from app.config.constants.arangodb import SUPPORTED_CODE_FILE_EXTENSIONS
+    from app.services.parsing.registry import _normalize_format
+
+    # html/htm → html; md → md; everything else text-like → txt
+    expected = {
+        "html": "html",
+        "htm": "html",
+        "md": "md",
+    }
+    for ext in SUPPORTED_CODE_FILE_EXTENSIONS:
+        format_key = _normalize_format("", ext)
+        assert format_key is not None, f"missing registry mapping for .{ext}"
+        assert format_key == expected.get(ext, "txt"), (
+            f".{ext} mapped to {format_key!r}, expected {expected.get(ext, 'txt')!r}"
+        )
 
 
 def test_resolve_maps_image_jpg_and_heic_mime() -> None:

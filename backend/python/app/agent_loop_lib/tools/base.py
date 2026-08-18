@@ -305,6 +305,15 @@ class Tool(ABC):
                 continue
 
             value = kwargs[param.name]
+
+            # LLMs frequently emit an explicit `null` for an optional
+            # parameter they don't intend to set (JSON null -> Python
+            # None here). Treat that the same as the key being absent
+            # entirely rather than failing a type check against it.
+            if value is None and not param.required:
+                kwargs[param.name] = param.default
+                continue
+
             accepted_types = _PYTHON_TYPES[param.type]
             is_bool_leaking_into_numeric = isinstance(value, bool) and param.type in (
                 ParameterType.INTEGER,

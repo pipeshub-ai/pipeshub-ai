@@ -431,7 +431,7 @@ describe('ScheduledJobsBackfillMigration', () => {
   // Auth header construction
   // ------------------------------------------------------------
   describe('auth header', () => {
-    it('mints scoped JWT with system identifiers and includes Bearer + X-Is-Admin headers', async () => {
+    it('mints scoped JWT with system identifiers and a Bearer header', async () => {
       const logger = makeLogger();
       const kv = makeKvStore(null);
       const scheduler = makeScheduler();
@@ -452,7 +452,7 @@ describe('ScheduledJobsBackfillMigration', () => {
 
       const [, , headers] = executeStub.firstCall.args;
       expect(headers.Authorization).to.equal('Bearer signed.jwt.token');
-      expect(headers['X-Is-Admin']).to.equal('true');
+      expect(headers).to.not.have.property('X-Is-Admin');
     });
   });
 });

@@ -1,13 +1,13 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from io import BytesIO
 from logging import Logger
 
 import aiohttp  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    SUPPORTED_CODE_FILE_EXTENSIONS,
     CollectionNames,
     EventTypes,
     ExtensionTypes,
@@ -20,6 +20,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -36,43 +37,6 @@ from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
 
-
-SUPPORTED_CODE_FILE_EXTENSIONS = {
-    # C
-    "c", "h",
-    # C++
-    "cpp", "cc", "cxx", "hpp", "hxx",
-    # C#
-    "cs",
-    # Java
-    "java",
-    # Python
-    "py",
-    # JavaScript
-    "js", "jsx", "mjs", "cjs",
-    # TypeScript
-    "ts", "tsx",
-    # Go
-    "go",
-    # Rust
-    "rs",
-    # Ruby
-    "rb",
-    # PHP
-    "php",
-    # Swift
-    "swift",
-    # Kotlin
-    "kt", "kts",
-    # Dart
-    "dart",
-    # Bash
-    "sh", "bash",
-    # HTML
-    "html", "htm",
-    #Markdown
-    "md"
-}
 
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
@@ -270,7 +234,12 @@ class RecordEventHandler(BaseEventService):
 
             doc = dict(record)
 
-            if (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+            # The guard stops a replayed newRecord from re-running the pipeline over
+            # an indexed corpus. An explicit reindex is the one case that must run
+            # anyway, so it opts out rather than the guard being relaxed for
+            # everyone: without this, reindex reports success while doing nothing.
+            force_reindex = bool(payload.get("forceReindex"))
+            if (not force_reindex) and (event_type == EventTypes.NEW_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value) and doc.get("indexingStatus") == ProgressStatus.COMPLETED.value:
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -373,23 +342,7 @@ class RecordEventHandler(BaseEventService):
                 )
                 return
 
-            # Gate: CODE_FILE records only index supported programming languages.
-            # Code files typically arrive as text/plain (which passes the general
-            # mime check below), so we need an explicit allowlist here.
-            if doc.get("recordType") == RecordTypes.CODE_FILE.value and (code_file_extension is None or code_file_extension not in SUPPORTED_CODE_FILE_EXTENSIONS):
-                self.logger.info(
-                    f"🔴 CODE_FILE with unsupported language extension '{code_file_extension}' "
-                    f"for record {record_id} — marking FILE_TYPE_NOT_SUPPORTED"
-                )
-                await self.__update_document_status(
-                    record_id=record_id,
-                    indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported code file extension: {code_file_extension}",
-                )
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+            is_code_file = doc.get("recordType") == RecordTypes.CODE_FILE.value
 
             supported_mime_types = [
                 MimeTypes.GMAIL.value,
@@ -499,19 +452,34 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.HTM.value,
             ]
 
-            if (
-                mime_type not in supported_mime_types
-                and extension not in supported_extensions
-            ):
+            if is_code_file:
+                # A CODE_FILE's mime is not trustworthy — connectors that walk a
+                # git tree default it to text/plain for anything they don't
+                # recognise, which would let archives and media through as text.
+                # Judge it on the filename extension alone: a known language, or
+                # a type the generic pipeline handles (images, json, yaml).
+                judged_extension = code_file_extension
+                is_supported = (
+                    code_file_extension in SUPPORTED_CODE_FILE_EXTENSIONS
+                    or code_file_extension in supported_extensions
+                )
+            else:
+                judged_extension = extension
+                is_supported = (
+                    mime_type in supported_mime_types
+                    or extension in supported_extensions
+                )
+
+            if not is_supported:
                 self.logger.info(
-                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
+                    f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {judged_extension} 🔴🔴🔴"
                 )
 
                 await self.__update_document_status(
                     record_id=record_id,
                     indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
                     extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    reason=f"Unsupported file type: {mime_type} ({extension})",
+                    reason=f"Unsupported file type: {mime_type} ({judged_extension})",
                 )
 
                 # Yield both events for unsupported file types
@@ -527,7 +495,9 @@ class RecordEventHandler(BaseEventService):
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
-                    response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
+                    response = await self._download_from_signed_url(
+                        signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                    )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
@@ -572,7 +542,7 @@ class RecordEventHandler(BaseEventService):
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     response = await make_api_call(
-                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token
+                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
                     )
 
                     event_data_for_processor = {
@@ -779,6 +749,16 @@ class RecordEventHandler(BaseEventService):
                     virtual_record_id = record.get("virtualRecordId")
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
                         await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                        if indexing_status == ProgressStatus.COMPLETED.value:
+                            # Duplicates just became searchable too. They can live in
+                            # a different KB than this record, which only the TTL
+                            # covers — the provider returns a count, not the ids.
+                            await notify_record_indexed(
+                                connector_name=record.get("connectorName"),
+                                connector_id=record.get("connectorId"),
+                                external_record_group_id=record.get("externalGroupId"),
+                                org_id=record.get("orgId"),
+                            )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
                         self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
@@ -835,7 +815,7 @@ class RecordEventHandler(BaseEventService):
             raise
 
     async def _download_from_signed_url(
-        self, signed_url: str, record_id: str, doc: dict,from_route: bool = False
+        self, signed_url: str, record_id: str, doc: dict, from_route: bool = False,
     ) -> bytes|None:
         """
         Download file from signed URL with exponential backoff retry
@@ -860,7 +840,7 @@ class RecordEventHandler(BaseEventService):
 
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
-            file_buffer = BytesIO()
+            file_buffer = bytearray()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
@@ -885,7 +865,7 @@ class RecordEventHandler(BaseEventService):
                                 async for chunk in response.content.iter_chunked(
                                     chunk_size
                                 ):
-                                    file_buffer.write(chunk)
+                                    file_buffer.extend(chunk)
                                     total_size += len(chunk)
                                     if total_size - last_logged_size >= log_interval:
                                         self.logger.debug(
@@ -897,7 +877,7 @@ class RecordEventHandler(BaseEventService):
                                     f"IO error during chunk download: {str(io_err)}"
                                 ) from io_err
 
-                            file_content = file_buffer.getvalue()
+                            file_content = bytes(file_buffer)
                             self.logger.info(
                                 f"✅ Download complete. Total size: {total_size / (1024*1024):.2f} MB"
                             )
@@ -925,6 +905,3 @@ class RecordEventHandler(BaseEventService):
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
                     ) from e
                 await asyncio.sleep(delay)
-            finally:
-                if not file_buffer.closed:
-                    file_buffer.close()

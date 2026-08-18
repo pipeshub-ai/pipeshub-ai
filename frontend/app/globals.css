@@ -480,15 +480,18 @@ summary {
   background-clip: padding-box;
 }
 
-/* Chat message list scroll area — thin styled scrollbar whose track stops above
-   the absolutely-positioned chat input overlay (margin-bottom keeps the thumb
-   out of the area covered by the input box, preventing it from being hidden).
-   NOTE: -webkit-appearance:none is required on the scrollbar element itself so
-   that min-height on the thumb is honoured by Blink/WebKit (without it the
-   property is silently ignored and the thumb can shrink to a single pixel). */
+/* Chat message list — full-pane scroll; thin thumb. scrollbar-gutter keeps the
+   content column aligned with the composer (which reserves the same gutter).
+   -webkit-appearance:none so min-height on the thumb is honoured by Blink/WebKit. */
 .chat-message-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--slate-6) transparent;
+  scrollbar-gutter: stable;
+}
+.chat-composer-row {
+  /* Match .chat-message-scroll so the centered column shares the same axis. */
+  scrollbar-gutter: stable;
+  overflow-y: auto;
 }
 .chat-message-scroll::-webkit-scrollbar {
   width: 8px;
@@ -496,9 +499,6 @@ summary {
 }
 .chat-message-scroll::-webkit-scrollbar-track {
   background: transparent;
-  /* Reserve space at the bottom so the track never overlaps the chat input overlay.
-     CHAT_INPUT_OFFSET.desktop is 128px; add 20px of extra buffer. */
-  margin-bottom: 148px;
 }
 .chat-message-scroll::-webkit-scrollbar-thumb {
   background-color: var(--slate-6);
@@ -670,25 +670,9 @@ li > blockquote {
 }
 
 /* ========================
-   Agent activity timeline — live typing cursor + entry animation
-   Used by LiveNarrationText / StatusTimelineEntry (agent-activity.tsx) for
-   the still-unsettled trailing text of a multi-step (ReAct) response.
+   Agent activity timeline — entry animation
+   Used by timeline entries (agent-activity.tsx) for fade-in on appearance.
    ======================== */
-
-@keyframes cursor-blink {
-  0%, 49% { opacity: 1; }
-  50%, 100% { opacity: 0; }
-}
-
-.typing-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  background: var(--accent-9);
-  vertical-align: text-bottom;
-  animation: cursor-blink 1s steps(1) infinite;
-}
 
 @keyframes activity-fade-in {
   from { opacity: 0; transform: translateY(4px); }

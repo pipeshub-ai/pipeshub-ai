@@ -119,6 +119,7 @@ def connector():
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -430,7 +431,9 @@ class TestProcessDriveItemComprehensive:
         existing.indexing_status = "COMPLETED"
         existing.extraction_status = "COMPLETED"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         meta = _make_file_metadata(parents=["new-parent"])
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": []

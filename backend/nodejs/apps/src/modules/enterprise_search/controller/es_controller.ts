@@ -620,6 +620,10 @@ const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'text/plain',
   'text/markdown',
   'text/mdx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'text/csv',
+  'text/tab-separated-values', // .tsv
 ]);
 
 export const uploadChatAttachments =
@@ -636,7 +640,7 @@ export const uploadChatAttachments =
       );
       if (invalidFile) {
         throw new BadRequestError(
-          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX.`,
+          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV.`,
         );
       }
 
@@ -703,7 +707,7 @@ export const deleteChatAttachment =
       const aiUrl = `${appConfig.aiBackend}/api/v1/chat/attachments/${encodeURIComponent(recordId.trim())}`;
 
       // Mirror the header-filtering that BaseCommand.sanitizeHeaders() applies.
-      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin']);
+      const allowedHeaders = new Set(['content-type', 'authorization']);
       const forwardHeaders: Record<string, string> = Object.fromEntries(
         Object.entries(req.headers as Record<string, string>).filter(([k]) =>
           allowedHeaders.has(k.toLowerCase()),

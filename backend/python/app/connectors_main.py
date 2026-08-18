@@ -17,8 +17,10 @@ from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
+from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
+from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
 from app.config.constants.service import config_node_constants
@@ -420,6 +422,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.kb_entities_processor = kb_entities_processor
     logger.info("✅ KB entities processor initialized")
 
+    # Sync completion and KB deletes happen here; both drop the query service's
+    # cached accessible-record maps.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        accessible_records_cache = await AccessibleRecordsCache.create(
+            logger, app_container.config_service()
+        )
+        app.state.accessible_records_cache = accessible_records_cache
+        init_accessible_records_invalidator(logger, accessible_records_cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -447,6 +464,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     toolset_registry.auto_discover_toolsets()
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
+
+    # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
+    logger.info("🔄 Initializing in-memory MCP server registry...")
+    mcp_registry = get_mcp_registry()
+    mcp_registry.auto_discover_templates()
+    app.state.mcp_registry = mcp_registry
+    logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
@@ -510,6 +534,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -790,6 +821,7 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)
+app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(router)
@@ -807,8 +839,28 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
-    """Run the application"""
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+    """Run the application.
+
+    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
+    matching docling/indexing/parsing's own env-var pattern). Raising this
+    above 1 gives the single-threaded event loop more headroom to serve
+    concurrent ``/stream/record`` requests during a large sync instead of
+    queuing behind it — but every uvicorn worker is a separate OS process,
+    and this service's cross-request dedup (``sync_task_manager`` /
+    ``reindex_task_manager`` in
+    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
+    per process, not shared across workers. With >1 worker, a duplicate
+    sync/reindex request landing on a different worker than the in-flight
+    one will not be recognised as a duplicate and can run concurrently.
+    Only raise this if that is an acceptable tradeoff for your deployment,
+    or once that dedup is moved to a shared store (Redis lock/lease).
+    """
+    if workers is None:
+        try:
+            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        except ValueError:
+            workers = 1
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

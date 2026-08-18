@@ -150,8 +150,6 @@ spec:
             {{- end }}
             {{- if .Values.neo4j.enabled }}
             # Neo4j config (app uses Neo4j as graph DB when DATA_STORE=neo4j)
-            - name: GRAPH_DB_TYPE
-              value: "neo4j"
             - name: DATA_STORE
               value: "neo4j"
             - name: NEO4J_URI
@@ -169,13 +167,15 @@ spec:
             
             # Message broker config
             - name: MESSAGE_BROKER
-              value: {{ .Values.messageBroker.type | default "kafka" | quote }}
+              value: {{ .Values.messageBroker.type | default "redis" | quote }}
             - name: REDIS_STREAMS_MAXLEN
               value: {{ .Values.messageBroker.redisStreamsMaxLen | default "500000" | quote }}
 
+            {{- if eq .Values.messageBroker.type "kafka" }}
             # Kafka config
             - name: KAFKA_BROKERS
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
+            {{- end }}
             
             # Redis config
             {{- /*

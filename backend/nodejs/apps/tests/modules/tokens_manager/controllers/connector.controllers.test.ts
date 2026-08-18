@@ -47,6 +47,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       user: {
         userId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
         orgId: 'bbbbbbbbbbbbbbbbbbbbbbbb',
+        role: 'admin',
       },
       params: {},
       query: {},
@@ -67,33 +68,21 @@ describe('tokens_manager/controllers/connector.controllers', () => {
     sinon.restore()
   })
 
-  // =========================================================================
-  // isUserAdmin
-  // =========================================================================
   describe('isUserAdmin', () => {
-    it('should return true when user is in admin group', async () => {
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
-
+    it('should return true when JWT role is admin', async () => {
+      req.user.role = 'admin'
       const result = await isUserAdmin(req)
       expect(result).to.be.true
     })
 
-    it('should return false when user is not in admin group', async () => {
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any)
-
+    it('should return false when JWT role is unset', async () => {
+      delete req.user.role
       const result = await isUserAdmin(req)
       expect(result).to.be.false
     })
 
-    it('should return false when user has no groups', async () => {
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([]),
-      } as any)
-
+    it('should return false when JWT role is member', async () => {
+      req.user.role = 'member'
       const result = await isUserAdmin(req)
       expect(result).to.be.false
     })
@@ -1229,12 +1218,9 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should set X-Is-Admin to true when user is admin', async () => {
+    it('does not send X-Is-Admin when user is admin', async () => {
       const handler = getConnectorRegistry(mockAppConfig)
       req.query = {}
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'admin' }]),
-      } as any)
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: [],
@@ -1243,15 +1229,13 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('true')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
 
-    it('should set X-Is-Admin to false when user is not admin', async () => {
+    it('does not send X-Is-Admin when user is not admin', async () => {
       const handler = getConnectorRegistry(mockAppConfig)
       req.query = {}
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'member' }]),
-      } as any)
+      req.user.role = 'member'
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: [],
@@ -1260,7 +1244,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('false')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
   })
 
@@ -1531,9 +1515,8 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(calledUrl).to.include('search=test')
       expect(calledUrl).to.include('page=2')
       expect(calledUrl).to.include('limit=50')
-      // X-Is-Admin header should reflect admin status
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('true')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
   })
 

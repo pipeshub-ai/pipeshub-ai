@@ -22,7 +22,7 @@ import { useToolsetTypeInstanceList } from '../hooks/use-toolset-type-instance-l
 import { UserToolsetConfigDialog } from '@/app/(main)/agents/agent-builder/components/user-toolset-config-dialog';
 import { ActionsCatalogLayout, ActionTypeDetailsLayout, type ActionInstanceAuthTab } from '../components';
 import {
-  myToolsetsGroupedToCatalogItems,
+  mergedMyToolsetsCatalogFromIncludeRegistry,
   type ActionCatalogItem,
   type MyActionsTab,
 } from '../types';
@@ -142,7 +142,7 @@ function PersonalActionsPageContent() {
             ? ('not-authenticated' as const)
             : undefined;
       const { toolsets: myRes, filterCounts } = await ToolsetsApi.getAllMyToolsets({
-        includeRegistry: false,
+        includeRegistry: true,
         limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
         search: debouncedCatalogSearch || undefined,
         authStatus,
@@ -167,7 +167,7 @@ function PersonalActionsPageContent() {
     setIsLoading(false);
   }, [toolsetTypeParam]);
 
-  const items = useMemo(() => myToolsetsGroupedToCatalogItems(myToolsets), [myToolsets]);
+  const items = useMemo(() => mergedMyToolsetsCatalogFromIncludeRegistry(myToolsets), [myToolsets]);
 
   /**
    * Type-detail header: toolset metadata from any row of this type (not only the first list row),
@@ -270,14 +270,22 @@ function PersonalActionsPageContent() {
   const resolveCta = useCallback(
     (item: ActionCatalogItem): { cta: ActionCardCta; label: string } => {
       if (!item.hasOrgInstance) {
-        return { cta: 'unavailable', label: t('workspace.actions.cta.notConfigured') };
+        if (isAdmin) {
+          return { cta: 'setup', label: t('workspace.actions.cta.setup') };
+        }
+        return {
+          cta: 'setup',
+          label: t('workspace.actions.cta.adminSetupRequired', {
+            defaultValue: 'Admin setup required',
+          }),
+        };
       }
       if (!item.isUserAuthenticated) {
         return { cta: 'authenticate', label: t('workspace.actions.cta.authenticate') };
       }
       return { cta: 'configure', label: t('workspace.actions.cta.configure') };
     },
-    [t]
+    [t, isAdmin]
   );
 
   const pushTypeDetail = useCallback(
@@ -294,6 +302,19 @@ function PersonalActionsPageContent() {
 
   const handleCta = useCallback(
     (item: ActionCatalogItem) => {
+      if (!item.hasOrgInstance) {
+        if (isAdmin) {
+          router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
+        } else {
+          addToast({
+            variant: 'info',
+            title: t('workspace.actions.adminRequiredToast', {
+              defaultValue: 'Only admins can add new actions. Ask your admin to configure this action first.',
+            }),
+          });
+        }
+        return;
+      }
       if (item.rowKind === 'byToolsetType' && item.hasOrgInstance) {
         pushTypeDetail(item);
         return;
@@ -301,7 +322,7 @@ function PersonalActionsPageContent() {
       if (!item.primaryInstance?.instanceId) return;
       setConfigureToolset(item.primaryInstance);
     },
-    [pushTypeDetail]
+    [pushTypeDetail, isAdmin, router, addToast, t]
   );
 
   const handleCardClick = useCallback(
@@ -311,8 +332,18 @@ function PersonalActionsPageContent() {
         pushTypeDetail(item);
         return;
       }
+      if (isAdmin) {
+        router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
+      } else {
+        addToast({
+          variant: 'info',
+          title: t('workspace.actions.adminRequiredToast', {
+            defaultValue: 'Only admins can add new actions. Ask your admin to configure this action first.',
+          }),
+        });
+      }
     },
-    [pushTypeDetail]
+    [pushTypeDetail, isAdmin, router, addToast, t]
   );
 
   const handleBackFromType = useCallback(() => {
@@ -415,10 +446,12 @@ function PersonalActionsPageContent() {
         emptyLabel={t('workspace.actions.empty')}
       />
 
-      {isAdmin ? (
+      {!isAdmin ? (
         <Flex px="9" pt="2">
           <Text size="1" color="gray">
-            {t('workspace.actions.personalAdminHint')}
+            {t('workspace.actions.personalNonAdminHint', {
+              defaultValue: 'Actions marked "Not configured" need to be set up by an admin before you can use them.',
+            })}
           </Text>
         </Flex>
       ) : null}

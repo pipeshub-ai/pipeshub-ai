@@ -2,6 +2,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
     OriginTypes,
+    PermissionModel,
 )
 from app.models.entities import RecordGroupType, RecordType
 
@@ -161,6 +162,10 @@ app_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [m.value for m in PermissionModel] + [None],
+            },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
@@ -1241,6 +1246,31 @@ tool_schema = {
     },
     "level": "strict",
     "message": "Document does not match the tool schema.",
+}
+
+
+# MCP Server Node Schema — per-agent attachment of an org-wide MCP instance
+# (see app/agents/mcp/service.py). No secrets: credentials live in etcd,
+# keyed by instanceId + owner id, never on this node. Mirrors toolset_schema.
+mcp_server_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "name": {"type": "string"},  # Instance display name, snapshotted at attach time
+            "displayName": {"type": "string"},
+            "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
+            "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "createdBy": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["name", "displayName", "instanceId", "userId", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the MCP server schema.",
 }
 
 

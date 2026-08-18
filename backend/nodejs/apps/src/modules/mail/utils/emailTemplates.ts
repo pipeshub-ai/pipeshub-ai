@@ -10,6 +10,7 @@ const resetPasswordTemplate = loadTemplate('src/modules/mail/views/layouts/user/
 const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetEmail.hbs');
 const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
+const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
@@ -63,5 +64,6 @@ export const resetPassword = (templateData: Record<string,any>): string => compi
 export const resetEmail = (templateData: Record<string,any>): string => compileTemplate(resetEmailTemplate, templateData);
 export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
+export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);
 
 

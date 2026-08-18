@@ -8198,7 +8198,8 @@ class TestGetAuthenticatedToolsets:
         assert len(result) == 1
         toolset = result[0]
         assert toolset["instanceId"] == "inst1"
-        assert toolset["name"] == "My Jira"
+        assert toolset["name"] == "jira"
+        assert toolset["instanceName"] == "My Jira"
         assert toolset["toolsetType"] == "jira"
         assert toolset["authType"] == "OAUTH"
         assert toolset["displayName"] == "Jira App"

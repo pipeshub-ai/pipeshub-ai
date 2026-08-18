@@ -14,6 +14,7 @@ import {
   InvalidRedirectUriError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
+import { PAT_APP_CLIENT_ID_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -294,6 +295,26 @@ describe('OAuthAppService', () => {
       }
       const filter = findStub.firstCall.args[0] as Record<string, unknown>
       expect(filter.createdBy).to.deep.equal(new Types.ObjectId(fakeUserId))
+    })
+
+    it('should exclude the synthetic pat-system app clientId from the filter', async () => {
+      // The per-org PAT app (pat-system:<orgId>) is an internal pseudo-client
+      // (see PatService) — its creator must not be able to view, edit,
+      // suspend, delete, or regenerate its secret through this CRUD surface,
+      // since verifyAccessToken never checks app status and a working
+      // secret would let them mint client_credentials tokens outside the
+      // auditable PAT list.
+      const findStub = sinon.stub(OAuthApp, 'findOne').resolves(null)
+      try {
+        await service.getAppById(fakeAppId, fakeOrgId, fakeUserId)
+      } catch {
+        // expected NotFoundError
+      }
+      const filter = findStub.firstCall.args[0] as Record<string, unknown>
+      const clientIdFilter = filter.clientId as { $not: RegExp }
+      expect(clientIdFilter.$not.source).to.equal(`^${PAT_APP_CLIENT_ID_PREFIX}`)
+      expect(clientIdFilter.$not.test(`${PAT_APP_CLIENT_ID_PREFIX}${fakeOrgId}`)).to.be.true
+      expect(clientIdFilter.$not.test('some-other-client-id')).to.be.false
     })
 
     it('should throw NotFoundError when app is not visible to caller (e.g. different creator in same org)', async () => {

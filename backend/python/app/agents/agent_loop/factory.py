@@ -57,33 +57,56 @@ from app.agent_loop_lib.core.messages import (
     ToolMessageMeta,
     UserMessage,
 )
+from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import shape_artifact_compaction
-from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
-    shape_artifact_registration,
-)
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     shape_tool_pairing_repair,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
+    shape_artifact_compaction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
+    shape_artifact_registration,
 )
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
     make_llm_summarizer,
     shape_auto_compact,
 )
-from app.agents.agent_loop.artifact_store import build_artifact_store
-from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import shape_budget_reduction
-from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import shape_deterministic_compact
-from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import shape_loop_compaction
-from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import shape_sliding_window
-from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import shape_synthesis_guard
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    shape_budget_reduction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
+    shape_deterministic_compact,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
+    shape_loop_compaction,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
+    shape_sliding_window,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
+    shape_synthesis_guard,
+)
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     shape_tool_result_clearing,
 )
-from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import RetrieveArtifactContentTool
-from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
-from app.agent_loop_lib.transport.opik_tracing import resolve_opik_gate, traced_transport_factory
+from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+    RetrieveArtifactContentTool,
+)
+from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
+from app.agent_loop_lib.transport.opik_tracing import (
+    resolve_opik_gate,
+    traced_transport_factory,
+)
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.agent_loop.artifact_store import build_artifact_store
+from app.agents.agent_loop.direct_transport import build_direct_transport
+from app.agents.agent_loop.domain_agents import (
+    plan_domain_agents,
+    register_domain_agents,
+)
 from app.agents.agent_loop.hooks import (
     CitationCollector,
     ToolErrorTracker,
@@ -93,7 +116,6 @@ from app.agents.agent_loop.hooks import (
     citation_tracking,
     completion_gate,
     conversation_enrichment,
-    looks_like_file_generation_request,
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
@@ -102,8 +124,6 @@ from app.agents.agent_loop.hooks import (
     shape_image_injection,
     stash_tool_call_metadata,
 )
-from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
-from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
@@ -121,7 +141,10 @@ from app.agents.agent_loop.loops.orchestrator import (
     register_coordination_tools,
 )
 from app.agents.agent_loop.loops.plan_execute import PLANNING_TOOL_NAMES, register_planning_tools
+from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
     build_coding_sandbox_manager,
@@ -137,11 +160,10 @@ from app.agents.agent_loop.skills_wiring import (
     register_skill_tools,
     skills_enabled,
 )
-from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
-from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.mcp.service import is_mcp_enabled
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -158,6 +180,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agent_loop_lib.core.types import Goal
+    from app.agent_loop_lib.transport.base import LLMTransport
     from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
     from app.agents.agent_loop.context import AgentContext
 
@@ -174,6 +197,39 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+
+
+DIRECT_TRANSPORT = "direct"
+LANGCHAIN_TRANSPORT = "langchain"
+
+
+def _transport_provider() -> str:
+    """Which registered transport the agent loop talks through.
+
+    Two values only: "langchain" (default) or "direct", the provider's own SDK,
+    which skips the per-token AIMessageChunk validation LangChain does. It stays
+    a binary switch because a deployment chooses *how* it talks to providers;
+    *which* provider a request uses comes from the model it selected, and
+    `build_direct_transport` resolves that per request.
+
+    "azure_direct" is accepted as a deprecated alias so existing deployments,
+    compose files and load-test scripts keep working across the rename.
+
+    Read per call rather than cached so an arm can be switched by restarting the
+    service, without a rebuild.
+    """
+    raw = os.getenv("PIPESHUB_AGENT_TRANSPORT", LANGCHAIN_TRANSPORT).strip().lower()
+    if raw in ("azure_direct", DIRECT_TRANSPORT):
+        return DIRECT_TRANSPORT
+    if raw and raw != LANGCHAIN_TRANSPORT:
+        # Anything else -- a typo, a stale value, different casing -- would reach
+        # TransportRegistry.resolve and raise RegistryError, failing every turn.
+        # A misconfigured env var should cost the optimisation, not the service.
+        logger.warning(
+            "PIPESHUB_AGENT_TRANSPORT=%r is not a known transport; using %s",
+            raw, LANGCHAIN_TRANSPORT,
+        )
+    return LANGCHAIN_TRANSPORT
 
 # Phase-1 auto-compact (gentle): protects up to 70% of budget in the tail,
 # summarizes only the oldest portion. Phase-2 (aggressive): if still over
@@ -243,6 +299,42 @@ class PipesHubAgentFactory:
                 project_name=opik_project_name,
             ),
         )
+        # Same model as "langchain" above, reached through the provider's own
+        # SDK instead. LangChain builds an AIMessageChunk per streamed token and
+        # pydantic validates each one, measured at ~9% of query-service CPU.
+        # Registered rather than substituted: selection is per ModelSpec, so
+        # "langchain" stays the default and this is revertible without a deploy.
+        # The whole configuration comes off `llm` -- not just credentials -- so
+        # both transports issue the same request; `model_key` lets this one
+        # share the learned api-mode store with the LangChain path.
+        #
+        # Which provider is decided from `llm` rather than from the env value:
+        # with several models configured, one env string cannot describe the
+        # provider of whichever model this request chose. A provider with no
+        # direct transport falls back to LangChain rather than failing.
+        #
+        # Wrapped in the same tracing factory: traced_transport_factory works on
+        # any LLMTransport, only build_langchain_opik_callbacks is LangChain-
+        # specific, so leaving this bare simply lost the spans.
+        def _direct_or_langchain() -> "LLMTransport":
+            direct = build_direct_transport(
+                llm, model_name=model_name, model_key=model_key,
+            )
+            if direct is not None:
+                return direct
+            return LangChainTransport(
+                llm, model_name=model_name,
+                opik_project_name=opik_project_name, model_key=model_key,
+            )
+
+        transport_registry.register(
+            DIRECT_TRANSPORT,
+            traced_transport_factory(
+                _direct_or_langchain,
+                opik_active=opik_active,
+                project_name=opik_project_name,
+            ),
+        )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
         # (per-request state flag -> PIPESHUB_ENABLE_CODE_EXECUTION env ->
@@ -279,6 +371,22 @@ class PipesHubAgentFactory:
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
+        # MCP servers attached to this agent (or, for the assistant/placeholder
+        # agent, every MCP instance the executing user has authenticated — see
+        # `get_authenticated_mcp_servers`) — loaded right after connector
+        # toolsets so their tools count toward every composition/lazy-disclosure
+        # decision below exactly like any other tool. `context.mcp_servers`/
+        # `mcp_server_configs` are empty for a request with no attached MCP
+        # servers, so this is a cheap no-op in the common case (see
+        # `MCPToolProvider.load_into`).
+        #
+        # Gated on `ENABLE_MCP` — belt-and-suspenders alongside `api/routes/agent.py`
+        # forcing `agent_mcp_servers` empty when disabled, so MCP tools never load
+        # into an agent regardless of entry point. The flag read is skipped when
+        # nothing is attached (nothing to gate, and it saves a settings read on
+        # every MCP-less chat).
+        if not context.mcp_servers or await is_mcp_enabled(context.config_service):
+            await MCPToolProvider().load_into(tool_registry, context)
         # Registered unconditionally (not just when lazy disclosure ends up
         # active — see `register_lazy_tool_meta_tools`'s docstring):
         # `search_tools` provides auth-aware global discovery in eager mode
@@ -377,16 +485,6 @@ class PipesHubAgentFactory:
             opik_active=opik_active,
             opik_project_name=opik_project_name,
             transport_registry=transport_registry,
-        )
-
-        # Read by `hooks/completion_gate.py` (already wired onto `hooks`
-        # above) once the agent actually runs — computed from the raw query
-        # and the ORIGINAL goal description (pre-attachment), since attachment
-        # text often contains file-format tokens (e.g. ".pdf" in a filename)
-        # that would false-positive when the user only uploaded a file for
-        # analysis, not requested one to be generated.
-        context.file_generation_requested = looks_like_file_generation_request(
-            query, goal.description,
         )
 
         # Stash model_name on context so ensure_fetch_full_record_available()
@@ -492,7 +590,7 @@ class PipesHubAgentFactory:
             # construction is equivalent to having registered it earlier;
             # it just needs `runtime` itself for `run_child()`, which
             # doesn't exist until this line.
-            register_skill_learning(hooks, skill_manager, runtime, provider="langchain", model_name=model_name)
+            register_skill_learning(hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name)
 
         # Domain-agent composition, registration half: now that the
         # AgentRuntime exists, actually build each claimed domain's child
@@ -538,7 +636,7 @@ class PipesHubAgentFactory:
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
-                provider="langchain", model_name=model_name,
+                provider=_transport_provider(), model_name=model_name,
                 lazy_tools=domain_lazy_tools,
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
@@ -554,7 +652,7 @@ class PipesHubAgentFactory:
             )
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
-                    provider="langchain", model_name=model_name,
+                    provider=_transport_provider(), model_name=model_name,
                     default_tool_names=composed_names, context=context,
                 )
             elif mode.loop_kind == "plan_execute":
@@ -573,7 +671,7 @@ class PipesHubAgentFactory:
             # pool falls back to the flat, uncomposed residual, same as
             # this feature's pre-existing behavior.
             runtime.spec_factory = domain_spec_factory(
-                provider="langchain", model_name=model_name,
+                provider=_transport_provider(), model_name=model_name,
                 default_tool_names=[
                     n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES
                 ],
@@ -659,7 +757,7 @@ class PipesHubAgentFactory:
             tool_names=tool_names,
             tool_disclosure=tool_disclosure,
             pinned_toolsets=pinned_toolsets,
-            model=ModelSpec(provider="langchain", model=model_name),
+            model=ModelSpec(provider=_transport_provider(), model=model_name),
             loop=loop,
             max_turns=_MAX_TURNS,
         )
@@ -760,6 +858,9 @@ class PipesHubAgentFactory:
                 # `_find_web_record_by_url`'s page-level fallback for why
                 # that's an acceptable, not fully solved, trade-off).
                 "dynamic__web_search", "dynamic__fetch_url",
+                # Same reasoning: fetch_full_record results carry [refN]
+                # markers that AnswerFinalizer needs to build citations.
+                "knowledgegraph__fetch_record",
             }),
         ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
@@ -805,12 +906,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
         hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
 
-        # Refuses a text-only, no-tool-call turn as "done" when the request
-        # needed a generated file and no artifact has been produced yet —
-        # see `hooks/completion_gate.py`. Registered unconditionally: it is
-        # a no-op for every request `context.file_generation_requested`
-        # ends up False for (set further up in `create()`, after intent
-        # resolves the goal).
+        # Recovers from empty model responses (no text, no tool calls).
         hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
 
         # This adapter path builds its own HookRegistry directly (never

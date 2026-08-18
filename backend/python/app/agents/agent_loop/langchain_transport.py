@@ -51,6 +51,12 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
+from app.agent_loop_lib.transport.provider_conflicts import (
+    API_SHAPE_CONFLICT_MARKERS,
+    REASONING_MANDATORY_CONFLICT_MARKERS,
+    is_api_shape_conflict,
+    is_reasoning_mandatory_conflict,
+)
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
@@ -99,27 +105,12 @@ _NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout",
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
-_API_SHAPE_CONFLICT_MARKERS = (
-    "please use /v1/responses instead",
-    "please use /v1/chat/completions instead",
-    "tool_choice.function",
-)
-
-
-def _is_api_shape_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _API_SHAPE_CONFLICT_MARKERS)
-
-
-# Substring a provider/gateway emits when it refuses to let reasoning be
-# turned off at all — observed on some OpenRouter-proxied Gemini models:
-# "Reasoning is mandatory for this endpoint and cannot be disabled."
-_REASONING_MANDATORY_CONFLICT_MARKERS = ("reasoning is mandatory",)
-
-
-def _is_reasoning_mandatory_conflict(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _REASONING_MANDATORY_CONFLICT_MARKERS)
+# Markers and predicates live in transport/provider_conflicts.py so the direct
+# SDK transport recovers from exactly the same errors this one does.
+_API_SHAPE_CONFLICT_MARKERS = API_SHAPE_CONFLICT_MARKERS
+_REASONING_MANDATORY_CONFLICT_MARKERS = REASONING_MANDATORY_CONFLICT_MARKERS
+_is_api_shape_conflict = is_api_shape_conflict
+_is_reasoning_mandatory_conflict = is_reasoning_mandatory_conflict
 
 
 def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
@@ -196,6 +187,9 @@ class LangChainTransport(LLMTransport):
         # runtime fallback below still applies either way).
         self._model_key = model_key
         self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
+        # Keyed on the turn's tool names; see `_bind_tools`. A transport is
+        # built per request, so this can never be shared across users.
+        self._bound_by_tools: dict[tuple[str, ...], BaseChatModel] = {}
 
     def _langchain_config(self) -> dict[str, Any]:
         """`config=` kwarg for every `ainvoke`/`astream` call below — see
@@ -242,6 +236,22 @@ class LangChainTransport(LLMTransport):
             logger.debug("LangChainTransport: no tools offered for this turn")
             return llm
         tool_names = [t.name for t in tools]
+
+        # Binding re-derives a pydantic JSON schema per tool every turn (5.5% of
+        # query-service CPU) for output identical whenever the tool set is. Names
+        # key it safely: one name resolves to one registry entry per request, and
+        # `fetch_tools` granting more tools changes the names, forcing a rebind.
+        # Only bindings onto `self._llm` are cached. An `llm` override is the
+        # API-shape fallback retrying on a differently-configured model, and
+        # handing it the cached original made the retry re-raise the very error
+        # it was retrying.
+        cacheable = llm is self._llm
+        cache_key = tuple(tool_names)
+        if cacheable:
+            cached = self._bound_by_tools.get(cache_key)
+            if cached is not None:
+                return cached
+
         lc_tools = convert_tool_schemas_to_langchain(tools)
         try:
             bound = llm.bind_tools(lc_tools)
@@ -259,6 +269,8 @@ class LangChainTransport(LLMTransport):
             "LangChainTransport: bound %d tool(s) to LLM call: %s",
             len(tool_names), tool_names,
         )
+        if cacheable:
+            self._bound_by_tools[cache_key] = bound
         return bound
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
@@ -457,6 +469,9 @@ class LangChainTransport(LLMTransport):
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            # Entries were bound onto the old model; keeping them would serve
+            # the shape that just failed for the rest of the run.
+            self._bound_by_tools.clear()
             await self._record_api_mode(mode)
             logger.info(
                 "LangChainTransport.complete: retry succeeded — pinned api_mode=%s for "
@@ -633,12 +648,23 @@ class LangChainTransport(LLMTransport):
                         if not isinstance(tc_chunk, dict):
                             continue
                         args_delta = tc_chunk.get("args") or ""
-                        if not args_delta:
+                        name = tc_chunk.get("name")
+                        tc_id = tc_chunk.get("id")
+                        # The agent loop reads `name` off the FIRST delta for an
+                        # index to decide whether the call is final_answer, and
+                        # OpenAI/Azure open a tool call with a metadata-only
+                        # fragment (name and id set, args "") -- verified against
+                        # the live deployment. Dropping it meant the first delta
+                        # the loop saw carried name=None, final_answer went
+                        # unrecognised, and the answer only appeared once the
+                        # turn had finished. A fragment carrying nothing at all
+                        # still tells the loop nothing, so it is still skipped.
+                        if not args_delta and not name and not tc_id:
                             continue
                         yield ToolCallDeltaEvent(
                             index=tc_chunk.get("index") or 0,
-                            id=tc_chunk.get("id"),
-                            name=tc_chunk.get("name"),
+                            id=tc_id,
+                            name=name,
                             arguments_delta=args_delta,
                         )
                 break
@@ -683,6 +709,7 @@ class LangChainTransport(LLMTransport):
             # follow) and persisted so the NEXT request for this model
             # skips straight to the working shape.
             self._llm = fallback_llm
+            self._bound_by_tools.clear()
             await self._record_api_mode(fallback_mode)
             logger.info(
                 "LangChainTransport.stream: retry succeeded — pinned api_mode=%s for "

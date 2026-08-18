@@ -37,7 +37,7 @@ from app.models.blocks import (
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
-from .common.utils import parse_item_id_from_url
+from .common.utils import parse_item_id_from_url, wire_block_group_parent_children
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
@@ -311,6 +311,7 @@ class MergeRequestsSync:
             ) if blocks else None,
         )
         block_groups.append(bg_new)
+        wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         await c.issues.process_new_records(list_remaining_attachments)
         return blocks_container.model_dump_json(indent=2).encode(GitlabLiterals.UTF_8.value)
@@ -355,9 +356,17 @@ class MergeRequestsSync:
     ) -> tuple[Record, list[Any]] | None:
         """Fetch TICKET or PULL_REQUEST from GitLab; return updated data if source revision changed."""
         c = self.c
+        # Only issues/MRs need a source refresh; CODE_FILE etc. re-queue as-is.
+        if record.record_type not in (RecordType.TICKET, RecordType.PULL_REQUEST):
+            return None
+
         parsed = self.gitlab_project_id_and_iid_from_record(record)
         if not parsed:
-            self.logger.warning("Cannot reindex-check GitLab record %s: missing weburl or external_record_group_id", record.id)
+            self.logger.warning(
+                "Cannot reindex-check GitLab %s %s: could not parse project/iid from weburl or external_record_group_id",
+                record.record_type,
+                record.id,
+            )
             return None
         project_id, iid = parsed
 

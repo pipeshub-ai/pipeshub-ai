@@ -24,18 +24,26 @@ import { useTranslation } from 'react-i18next';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
-import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
+import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
 import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { useFeatureFlagsStore, selectMcpEnabled } from '@/lib/store/feature-flags-store';
+import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
+import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
-const TAB_VALUES = ['connectors', 'collections', 'actions'] as const;
+const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcp'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
-const FIGMA_TABLIST_WIDTH = 246;
+/**
+ * Width was a fixed 246px sized for 3 tabs — scaled per-tab so a 4th ("MCP") entry doesn't
+ * crush the longer "Connectors"/"Collections" labels. Computed from the actually-rendered
+ * tab count (`visibleTabValues`) so hiding the MCP tab shrinks the tablist back down.
+ */
+const FIGMA_TABLIST_WIDTH_PER_TAB = 82;
 const FIGMA_TABLIST_HEIGHT = 32;
 const FIGMA_TABLIST_RADIUS = 4;
 
@@ -44,17 +52,25 @@ function UniversalAgentFilterTablist({
   onValueChange,
   labels,
   disabledTabs = [],
+  hiddenTabs = [],
 }: {
   value: TabValue;
   onValueChange: (next: TabValue) => void;
   labels: Record<TabValue, string>;
   disabledTabs?: TabValue[];
+  /** Tabs excluded entirely (not just disabled) — e.g. 'mcp' when ENABLE_MCP is off. */
+  hiddenTabs?: TabValue[];
 }) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
 
+  const visibleTabValues = useMemo(
+    () => TAB_VALUES.filter((v) => !hiddenTabs.includes(v)),
+    [hiddenTabs]
+  );
+
   const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH,
+    width: FIGMA_TABLIST_WIDTH_PER_TAB * visibleTabValues.length,
     maxWidth: '100%',
     height: FIGMA_TABLIST_HEIGHT,
     borderRadius: FIGMA_TABLIST_RADIUS,
@@ -83,14 +99,14 @@ function UniversalAgentFilterTablist({
   const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = TAB_VALUES.indexOf(value);
+    const i = visibleTabValues.indexOf(value);
     if (e.key === 'ArrowRight') {
       e.preventDefault();
-      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
+      const next = visibleTabValues[(i + 1) % visibleTabValues.length]!;
       if (!disabledTabs.includes(next)) onValueChange(next);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
+      const next = visibleTabValues[(i - 1 + visibleTabValues.length) % visibleTabValues.length]!;
       if (!disabledTabs.includes(next)) onValueChange(next);
     }
   };
@@ -102,7 +118,7 @@ function UniversalAgentFilterTablist({
       onKeyDown={onKeyDown}
       style={trackStyle}
     >
-      {TAB_VALUES.map((tabValue) => {
+      {visibleTabValues.map((tabValue) => {
         const selected = value === tabValue;
         const isDisabled = disabledTabs.includes(tabValue);
         return (
@@ -242,6 +258,16 @@ let _actionsPageCache: {
 } = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0 };
 
 /**
+ * Module-level MCP cache, mirroring `_actionsPageCache`. `getMyMcpServers` isn't paginated —
+ * a single fetch on mount is enough — but the same TTL-based staleness check applies so a
+ * stale prior session's data isn't served after remount.
+ */
+let _mcpCache: {
+  instances: McpMyServerEntry[];
+  lastFetchedAt: number;
+} = { instances: [], lastFetchedAt: 0 };
+
+/**
  * Build tool groups from authenticated my-toolsets.
  *
  * **Internal key format:** when a toolset has an `instanceId`, each entry in `fullNames`
@@ -303,6 +329,44 @@ function buildUniversalToolGroups(toolsets: BuilderSidebarToolset[]): Array<{
   return groups;
 }
 
+/** Row shape shared by `buildUniversalToolGroups` (Actions tab) and `buildUniversalMcpGroups` (MCP tab). */
+type UniversalResourceGroupRow = ReturnType<typeof buildUniversalToolGroups>[number];
+
+/**
+ * Build tool groups from authenticated my-mcp-servers instances. Same `${instanceId}:${rawFullName}`
+ * internal-key discriminator strategy as `buildUniversalToolGroups` — two MCP instances of the same
+ * underlying server type could otherwise expose identical `namespacedName`s.
+ */
+function buildUniversalMcpGroups(instances: McpMyServerEntry[]): UniversalResourceGroupRow[] {
+  const groups: UniversalResourceGroupRow[] = [];
+  for (const entry of instances) {
+    const rawFullNames = (entry.tools || [])
+      .map((t) => (typeof t.namespacedName === 'string' ? t.namespacedName.trim() : ''))
+      .filter(Boolean);
+    if (rawFullNames.length === 0) continue;
+
+    const fullNames = rawFullNames.map((fn) => `${entry._id}:${fn}`);
+
+    const toolDescriptions: Record<string, string> = {};
+    rawFullNames.forEach((rawFn, j) => {
+      const key = fullNames[j]!;
+      const tool = (entry.tools || [])[j];
+      const d = tool && typeof tool.description === 'string' ? tool.description.trim() : '';
+      if (d) toolDescriptions[key] = d;
+    });
+
+    groups.push({
+      label: (entry.name || 'MCP Server').trim(),
+      toolsetSlug: 'mcp',
+      instanceId: entry._id,
+      fullNames,
+      toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      isAuthenticated: Boolean(entry.isAuthenticated),
+    });
+  }
+  return groups;
+}
+
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
   viewMode?: ExpansionViewMode;
@@ -326,6 +390,7 @@ export function UniversalAgentResourcesPanel({
   const [tab, setTab] = useState<TabValue>('connectors');
   const [search, setSearch] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
@@ -341,6 +406,14 @@ export function UniversalAgentResourcesPanel({
   const setToolsLoading = useChatStore((s) => s.setUniversalAgentToolsLoading);
   const setToolsError = useChatStore((s) => s.setUniversalAgentToolsError);
 
+  const mcpGroups = useChatStore((s) => s.universalAgentMcpGroups);
+  const mcpCatalog = useChatStore((s) => s.universalAgentMcpCatalogFullNames);
+  const mcpLoading = useChatStore((s) => s.universalAgentMcpLoading);
+  const mcpError = useChatStore((s) => s.universalAgentMcpError);
+  const hydrateMcpResources = useChatStore((s) => s.hydrateUniversalAgentMcpResources);
+  const setMcpLoading = useChatStore((s) => s.setUniversalAgentMcpLoading);
+  const setMcpError = useChatStore((s) => s.setUniversalAgentMcpError);
+
   /** Detect whether a reasoning model is available for the assistant context. */
   const hasReasoningModel = useMemo(() => {
     const ctxModels = settings.availableModels[ASSISTANT_CTX]?.models ?? [];
@@ -354,16 +427,10 @@ export function UniversalAgentResourcesPanel({
   const modelsLoaded = (settings.availableModels[ASSISTANT_CTX]?.models?.length ?? 0) > 0;
   const showModelGate = modelsLoaded && !hasReasoningModel;
 
-  // ── Client-side tool cap ──
-  // Backend enforces MAX_TOOLS_LIMIT = 128 and rejects requests exceeding it
-  // with a 400. We mirror the same cap on the client so the user sees the limit
-  // in the UI before a failed request.
-  const MAX_USER_TOOLS = 128;
   const selectedCount = useMemo(() => {
-    if (selectedTools === null) return toolCatalog.length;
+    if (selectedTools === null) return toolCatalog.length + mcpCatalog.length;
     return selectedTools.length;
-  }, [selectedTools, toolCatalog.length]);
-  const atToolCap = selectedCount >= MAX_USER_TOOLS;
+  }, [selectedTools, toolCatalog.length, mcpCatalog.length]);
 
   // ── Pagination state ──
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -442,6 +509,45 @@ export function UniversalAgentResourcesPanel({
     void loadPage(_actionsPageCache.page + 1);
   }, [hasNextPage, isLoadingMore, loadPage]);
 
+  // ── MCP servers (my-mcp-servers, authenticated instances, one-shot fetch) ──
+  const isFetchingMcpRef = useRef(false);
+
+  const loadMcp = useCallback(async () => {
+    if (isFetchingMcpRef.current) return;
+    isFetchingMcpRef.current = true;
+    setMcpLoading(true);
+    try {
+      const result = await McpServersApi.getMyMcpServers(true);
+      const authenticated = (result.instances || []).filter((entry) => entry.isAuthenticated);
+      _mcpCache = { instances: authenticated, lastFetchedAt: Date.now() };
+
+      const groups = buildUniversalMcpGroups(authenticated);
+      const catalogFullNames = groups.flatMap((g) => g.fullNames);
+      hydrateMcpResources({ mcpGroups: groups, mcpCatalogFullNames: catalogFullNames });
+    } catch (err) {
+      console.error('[UniversalAgentResourcesPanel] Failed to load my-mcp-servers', err);
+      _mcpCache = { ..._mcpCache, lastFetchedAt: Date.now() };
+      setMcpError(
+        t('chat.universalAgent.mcpLoadError', { defaultValue: 'Failed to load MCP servers.' })
+      );
+      setMcpLoading(false);
+    } finally {
+      isFetchingMcpRef.current = false;
+    }
+  }, [hydrateMcpResources, setMcpLoading, setMcpError, t]);
+
+  // Initial load — skips re-fetch when the module cache has fresh data (including
+  // "success but zero authenticated servers", where mcpGroups stay empty).
+  // Skipped entirely when MCP is disabled — the tab is hidden, so there's
+  // nothing to render this data into.
+  useEffect(() => {
+    if (!mcpEnabled || mcpLoading) return;
+    const lastAt = _mcpCache.lastFetchedAt;
+    const cacheStale = lastAt <= 0 || Date.now() - lastAt > CACHE_TTL_MS;
+    if (!cacheStale) return;
+    void loadMcp();
+  }, [mcpEnabled, mcpLoading, loadMcp]);
+
   // ── Tool selection helpers (same semantics as AgentScopedResourcesPanel) ──
 
   const isToolOn = useCallback(
@@ -454,7 +560,7 @@ export function UniversalAgentResourcesPanel({
 
   const toggleTool = useCallback(
     (fullName: string) => {
-      const cat = useChatStore.getState().universalAgentToolCatalogFullNames;
+      const cat = getUniversalCombinedCatalog();
       const cur = useChatStore.getState().universalAgentStreamTools;
 
       if (cur === null) {
@@ -473,8 +579,6 @@ export function UniversalAgentResourcesPanel({
       if (next.includes(fullName)) {
         next = next.filter((x) => x !== fullName);
       } else {
-        // Enforce client-side cap before adding
-        if (next.length >= MAX_USER_TOOLS) return;
         next.push(fullName);
       }
       if (next.length === 0) {
@@ -487,7 +591,7 @@ export function UniversalAgentResourcesPanel({
         setSelectedTools(next);
       }
     },
-    [setSelectedTools, MAX_USER_TOOLS]
+    [setSelectedTools]
   );
 
   const groupCheckState = useCallback(
@@ -502,7 +606,7 @@ export function UniversalAgentResourcesPanel({
 
   const setGroupToolsEnabled = useCallback(
     (fullNames: string[], enabled: boolean) => {
-      const cat = useChatStore.getState().universalAgentToolCatalogFullNames;
+      const cat = getUniversalCombinedCatalog();
       const explicit = useChatStore.getState().universalAgentStreamTools;
 
       if (explicit === null) {
@@ -522,7 +626,6 @@ export function UniversalAgentResourcesPanel({
       const nextSet = new Set(explicit);
       if (enabled) {
         for (const fn of fullNames) {
-          if (nextSet.size >= MAX_USER_TOOLS) break; // enforce cap
           nextSet.add(fn);
         }
       } else {
@@ -553,34 +656,48 @@ export function UniversalAgentResourcesPanel({
     () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
     [internalSearchEnabled]
   );
+  const hiddenTabs = useMemo<TabValue[]>(() => (mcpEnabled ? [] : ['mcp']), [mcpEnabled]);
 
-  // If the active tab becomes disabled, switch to 'actions'
+  // If the active tab becomes disabled or hidden, switch to 'actions'
   React.useEffect(() => {
-    if (disabledTabs.includes(tab)) setTab('actions');
-  }, [disabledTabs, tab]);
+    if (disabledTabs.includes(tab) || hiddenTabs.includes(tab)) setTab('actions');
+  }, [disabledTabs, hiddenTabs, tab]);
 
   // ── Filtered views ──
 
-  const filteredToolGroups = useMemo(() => {
-    return toolGroups
-      .map((g) => ({
-        ...g,
-        fullNames: g.fullNames.filter((key) => {
-          if (!search.trim()) return true;
-          const q = search.toLowerCase();
-          const desc = (g.toolDescriptions?.[key] ?? '').toLowerCase();
-          // Strip the instanceId prefix when comparing against the search term
-          const bare = bareFullName(key);
-          return bare.toLowerCase().includes(q) || g.label.toLowerCase().includes(q) || desc.includes(q);
-        }),
-      }))
-      .filter((g) => g.fullNames.length > 0);
-  }, [toolGroups, search]);
+  const filterGroupsBySearch = useCallback(
+    (groups: UniversalResourceGroupRow[]): UniversalResourceGroupRow[] =>
+      groups
+        .map((g) => ({
+          ...g,
+          fullNames: g.fullNames.filter((key) => {
+            if (!search.trim()) return true;
+            const q = search.toLowerCase();
+            const desc = (g.toolDescriptions?.[key] ?? '').toLowerCase();
+            // Strip the instanceId prefix when comparing against the search term
+            const bare = bareFullName(key);
+            return bare.toLowerCase().includes(q) || g.label.toLowerCase().includes(q) || desc.includes(q);
+          }),
+        }))
+        .filter((g) => g.fullNames.length > 0),
+    [search]
+  );
+
+  const filteredToolGroups = useMemo(
+    () => filterGroupsBySearch(toolGroups),
+    [filterGroupsBySearch, toolGroups]
+  );
+
+  const filteredMcpGroups = useMemo(
+    () => filterGroupsBySearch(mcpGroups),
+    [filterGroupsBySearch, mcpGroups]
+  );
 
   const tabPlaceholders = [
     t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
     t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
     t('chat.agentResources.searchActions', { defaultValue: 'Search actions' }),
+    t('chat.agentResources.searchMcp', { defaultValue: 'Search MCP servers' }),
   ];
   const tabIndex = TAB_VALUES.indexOf(tab);
   const searchPlaceholder = tabPlaceholders[tabIndex >= 0 ? tabIndex : 0];
@@ -590,6 +707,7 @@ export function UniversalAgentResourcesPanel({
       connectors: t('nav.connectors', { defaultValue: 'Connectors' }),
       collections: t('nav.collections', { defaultValue: 'Collections' }),
       actions: t('chat.agentResources.actionsTab', { defaultValue: 'Actions' }),
+      mcp: t('chat.agentResources.mcpTab', { defaultValue: 'MCP' }),
     }),
     [t]
   );
@@ -604,6 +722,246 @@ export function UniversalAgentResourcesPanel({
     },
     [setFilters, settings.filters]
   );
+
+  /** Footer/empty-state "browse more" row shared by the Actions and MCP tabs. */
+  const renderBrowseMoreRow = (opts: { href: string; label: string; ariaLabel: string }) => (
+    <Flex
+      align="center"
+      justify="between"
+      gap="2"
+      style={{
+        ...OLIVE_ROW,
+        padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+      }}
+    >
+      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+        <MaterialIcon name="apps" size={18} color="var(--gray-11)" />
+        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+          {opts.label}
+        </Text>
+      </Flex>
+      <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
+        <Link href={opts.href} aria-label={opts.ariaLabel}>
+          <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
+        </Link>
+      </IconButton>
+    </Flex>
+  );
+
+  /**
+   * Shared tab body for Actions (toolsets) and MCP — identical loading/error/empty states and
+   * group-row/checkbox/expand/footer-link structure, differing only in copy, footer link target,
+   * icons, and optional pagination (`afterGroups`, used by Actions' "Load more").
+   */
+  const renderResourceGroupsTab = ({
+    groups,
+    keyPrefix,
+    loading,
+    error,
+    hasAnyBeforeFilter,
+    loadingText,
+    noDataText,
+    noMatchText,
+    footerCaption,
+    footerLinkHref,
+    footerLinkText,
+    footerLinkAriaLabel,
+    renderGroupIcon,
+    renderToolIcon,
+    afterGroups,
+  }: {
+    groups: UniversalResourceGroupRow[];
+    keyPrefix: string;
+    loading: boolean;
+    error: string | null;
+    hasAnyBeforeFilter: boolean;
+    loadingText: string;
+    noDataText: string;
+    noMatchText: string;
+    footerCaption: string;
+    footerLinkHref: string;
+    footerLinkText: string;
+    footerLinkAriaLabel: string;
+    renderGroupIcon: (group: UniversalResourceGroupRow) => React.ReactNode;
+    renderToolIcon: (bareFn: string) => React.ReactNode;
+    afterGroups?: React.ReactNode;
+  }) => {
+    if (loading) {
+      return (
+        <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-4)' }}>
+          <Spinner size="2" />
+          <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            {loadingText}
+          </Text>
+        </Flex>
+      );
+    }
+
+    if (error) {
+      return (
+        <Text size="2" style={{ color: 'var(--red-9)', padding: 'var(--space-3)' }}>
+          {error}
+        </Text>
+      );
+    }
+
+    if (groups.length === 0) {
+      return (
+        <Flex direction="column" gap="2" style={{ padding: 'var(--space-3)' }}>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {hasAnyBeforeFilter ? noMatchText : noDataText}
+          </Text>
+          {renderBrowseMoreRow({
+            href: footerLinkHref,
+            label: footerLinkText,
+            ariaLabel: footerLinkAriaLabel,
+          })}
+        </Flex>
+      );
+    }
+
+    return (
+      <>
+        {groups.map((group) => {
+          const groupKey = `${keyPrefix}:${group.instanceId}`;
+          const subtitle = toolsetSubtitle(group);
+          const expanded = Boolean(expandedGroups[groupKey]);
+          const checkState = groupCheckState(group.fullNames);
+
+          return (
+            <Flex key={groupKey} direction="column" gap="1">
+              <Flex
+                align="center"
+                justify="between"
+                gap="2"
+                style={{
+                  ...OLIVE_ROW,
+                  padding: 'var(--space-2)',
+                  cursor: 'pointer',
+                }}
+                onClick={() => toggleGroupExpanded(groupKey)}
+              >
+                <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    role="presentation"
+                    style={CHECKBOX_ALIGN}
+                  >
+                    <Checkbox
+                      size="1"
+                      checked={checkState}
+                      onCheckedChange={(v) => {
+                        setGroupToolsEnabled(group.fullNames, v === true);
+                      }}
+                    />
+                  </div>
+                  {renderGroupIcon(group)}
+                  <Flex align="center" gap="1" style={{ flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                      {group.label}
+                    </Text>
+                    {subtitle ? (
+                      <>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
+                          ·
+                        </Text>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
+                          {subtitle}
+                        </Text>
+                      </>
+                    ) : null}
+                  </Flex>
+                </Flex>
+                <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+                  <Badge size="1" variant="soft" color="green" highContrast>
+                    {t('chat.agentResources.actionsCount', {
+                      count: group.fullNames.length,
+                    })}
+                  </Badge>
+                  <IconButton
+                    type="button"
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    aria-expanded={expanded}
+                    aria-label={expanded ? t('common.collapse') : t('common.expand')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleGroupExpanded(groupKey);
+                    }}
+                  >
+                    <MaterialIcon
+                      name="chevron_right"
+                      size={18}
+                      color="var(--slate-11)"
+                      style={{
+                        transform: expanded ? 'rotate(90deg)' : undefined,
+                        transition: 'transform 0.15s ease',
+                      }}
+                    />
+                  </IconButton>
+                </Flex>
+              </Flex>
+
+              {expanded &&
+                group.fullNames.map((internalKey) => {
+                  // Strip instanceId prefix for display and icon resolution
+                  const fn = bareFullName(internalKey);
+                  const shortRaw = fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn;
+                  const short = humanizeUnderscores(shortRaw);
+                  return (
+                    <Flex
+                      key={internalKey}
+                      align="center"
+                      gap="2"
+                      onClick={() => toggleTool(internalKey)}
+                      style={{
+                        ...OLIVE_ROW,
+                        marginLeft: 'var(--space-3)',
+                        padding: 'var(--space-2) var(--space-3)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span style={CHECKBOX_ALIGN}>
+                        <Checkbox
+                          size="1"
+                          checked={isToolOn(internalKey)}
+                          onCheckedChange={() => toggleTool(internalKey)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </span>
+                      {renderToolIcon(fn)}
+                      <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
+                        <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
+                          {short}
+                        </Text>
+                        <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
+                          {fn}
+                        </Text>
+                      </Flex>
+                    </Flex>
+                  );
+                })}
+            </Flex>
+          );
+        })}
+
+        {afterGroups}
+
+        <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
+            {footerCaption}
+          </Text>
+          {renderBrowseMoreRow({
+            href: footerLinkHref,
+            label: footerLinkText,
+            ariaLabel: footerLinkAriaLabel,
+          })}
+        </Flex>
+      </>
+    );
+  };
 
   return (
     <Flex
@@ -636,6 +994,7 @@ export function UniversalAgentResourcesPanel({
           }}
           labels={tabLabels}
           disabledTabs={disabledTabs}
+          hiddenTabs={hiddenTabs}
         />
         <IconButton
           variant="ghost"
@@ -652,8 +1011,8 @@ export function UniversalAgentResourcesPanel({
         </IconButton>
       </Flex>
 
-      {/* Search (only on Actions tab) */}
-      {tab === 'actions' && (
+      {/* Search (Actions + MCP tabs only) */}
+      {(tab === 'actions' || tab === 'mcp') && (
         <Flex align="center" gap="2" style={{ width: '100%', flexShrink: 0 }}>
           <TextField.Root
             size="2"
@@ -689,258 +1048,93 @@ export function UniversalAgentResourcesPanel({
         )}
 
         {/* Actions — from my-toolsets (authenticated instances) */}
-        {tab === 'actions' && (
-          <>
-            {toolsLoading && (
-              <Flex align="center" justify="center" gap="2" style={{ padding: 'var(--space-4)' }}>
-                <Spinner size="2" />
-                <Text size="2" style={{ color: 'var(--gray-10)' }}>
-                  {t('chat.universalAgent.loadingTools', { defaultValue: 'Loading actions…' })}
-                </Text>
-              </Flex>
-            )}
-
-            {toolsError && !toolsLoading && (
-              <Text size="2" style={{ color: 'var(--red-9)', padding: 'var(--space-3)' }}>
-                {toolsError}
-              </Text>
-            )}
-
-            {!toolsLoading && !toolsError && filteredToolGroups.length === 0 && (
-              <Flex direction="column" gap="2" style={{ padding: 'var(--space-3)' }}>
-                <Text size="2" style={{ color: 'var(--slate-9)' }}>
-                  {toolGroups.length === 0
-                    ? t('chat.universalAgent.noActions', {
-                        defaultValue:
-                          'No authenticated actions found. Connect integrations in Workspace → Actions.',
-                      })
-                    : t('chat.agentResources.noActionMatches', {
-                        defaultValue: 'No actions match your search.',
-                      })}
-                </Text>
-                <Flex
-                  align="center"
-                  justify="between"
-                  gap="2"
+        {tab === 'actions' &&
+          renderResourceGroupsTab({
+            groups: filteredToolGroups,
+            keyPrefix: 'toolset',
+            loading: toolsLoading,
+            error: toolsError,
+            hasAnyBeforeFilter: toolGroups.length > 0,
+            loadingText: t('chat.universalAgent.loadingTools', { defaultValue: 'Loading actions…' }),
+            noDataText: t('chat.universalAgent.noActions', {
+              defaultValue: 'No authenticated actions found. Connect integrations in Workspace → Actions.',
+            }),
+            noMatchText: t('chat.agentResources.noActionMatches', {
+              defaultValue: 'No actions match your search.',
+            }),
+            footerCaption: t('chat.agentResources.configureMoreActions', {
+              defaultValue: 'Configure more actions',
+            }),
+            footerLinkHref: '/workspace/actions',
+            footerLinkText: t('chat.agentResources.browseWorkspaceActions', {
+              defaultValue: 'Browse workspace actions',
+            }),
+            footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceActionsAria', {
+              defaultValue: 'Open workspace actions to add or manage integrations',
+            }),
+            renderGroupIcon: (group) => (
+              <UniversalToolsetRowIcon
+                toolsetSlug={group.toolsetSlug}
+                label={group.label}
+                iconPath={group.iconPath}
+              />
+            ),
+            renderToolIcon: (fn) => {
+              const toolPrefix = fn.includes('.') ? fn.slice(0, fn.indexOf('.')) : fn;
+              return <ConnectorIcon type={resolveConnectorType(toolPrefix)} size={16} />;
+            },
+            afterGroups: hasNextPage ? (
+              <Flex align="center" style={{ paddingTop: 'var(--space-1)' }}>
+                <button
+                  type="button"
+                  onClick={handleLoadMore}
+                  disabled={isLoadingMore}
                   style={{
-                    ...OLIVE_ROW,
-                    padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: isLoadingMore ? 'default' : 'pointer',
+                    color: 'var(--olive-9)',
+                    fontSize: 12,
+                    padding: 0,
+                    textAlign: 'left',
                   }}
                 >
-                  <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                    <MaterialIcon name="apps" size={18} color="var(--gray-11)" />
-                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                      {t('chat.agentResources.browseWorkspaceActions', {
-                        defaultValue: 'Browse workspace actions',
-                      })}
-                    </Text>
-                  </Flex>
-                  <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
-                    <Link href="/workspace/actions" aria-label="Open workspace actions">
-                      <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-                    </Link>
-                  </IconButton>
-                </Flex>
+                  {isLoadingMore
+                    ? t('agentBuilder.loadingMore', { defaultValue: 'Loading more…' })
+                    : t('agentBuilder.loadMore', { defaultValue: 'Load more' })}
+                </button>
               </Flex>
-            )}
+            ) : null,
+          })}
 
-            {!toolsLoading && !toolsError && filteredToolGroups.length > 0 && (
-              <>
-                {filteredToolGroups.map((group) => {
-                  const groupKey = `toolset:${group.instanceId}`;
-                  const subtitle = toolsetSubtitle(group);
-                  const expanded = Boolean(expandedGroups[groupKey]);
-                  const checkState = groupCheckState(group.fullNames);
-
-                  return (
-                    <Flex key={groupKey} direction="column" gap="1">
-                      <Flex
-                        align="center"
-                        justify="between"
-                        gap="2"
-                        style={{
-                          ...OLIVE_ROW,
-                          padding: 'var(--space-2)',
-                          cursor: 'pointer',
-                        }}
-                        onClick={() => toggleGroupExpanded(groupKey)}
-                      >
-                        <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            role="presentation"
-                            style={CHECKBOX_ALIGN}
-                          >
-                            <Checkbox
-                              size="1"
-                              disabled={atToolCap && checkState === false}
-                              checked={checkState}
-                              onCheckedChange={(v) => {
-                                setGroupToolsEnabled(group.fullNames, v === true);
-                              }}
-                            />
-                          </div>
-                          <UniversalToolsetRowIcon
-                            toolsetSlug={group.toolsetSlug}
-                            label={group.label}
-                            iconPath={group.iconPath}
-                          />
-                          <Flex align="center" gap="1" style={{ flex: 1, minWidth: 0, flexWrap: 'wrap' }}>
-                            <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                              {group.label}
-                            </Text>
-                            {subtitle ? (
-                              <>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }}>
-                                  ·
-                                </Text>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-10)' }} truncate>
-                                  {subtitle}
-                                </Text>
-                              </>
-                            ) : null}
-                          </Flex>
-                        </Flex>
-                        <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-                          <Badge size="1" variant="soft" color="green" highContrast>
-                            {t('chat.agentResources.actionsCount', {
-                              count: group.fullNames.length,
-                            })}
-                          </Badge>
-                          <IconButton
-                            type="button"
-                            size="1"
-                            variant="ghost"
-                            color="gray"
-                            aria-expanded={expanded}
-                            aria-label={expanded ? t('common.collapse') : t('common.expand')}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleGroupExpanded(groupKey);
-                            }}
-                          >
-                            <MaterialIcon
-                              name="chevron_right"
-                              size={18}
-                              color="var(--slate-11)"
-                              style={{
-                                transform: expanded ? 'rotate(90deg)' : undefined,
-                                transition: 'transform 0.15s ease',
-                              }}
-                            />
-                          </IconButton>
-                        </Flex>
-                      </Flex>
-
-                      {expanded &&
-                        group.fullNames.map((internalKey) => {
-                          // Strip instanceId prefix for display and icon resolution
-                          const fn = bareFullName(internalKey);
-                          const shortRaw = fn.includes('.')
-                            ? fn.slice(fn.indexOf('.') + 1)
-                            : fn;
-                          const short = humanizeUnderscores(shortRaw);
-                          const toolPrefix = fn.includes('.')
-                            ? fn.slice(0, fn.indexOf('.'))
-                            : fn;
-                          return (
-                            <Flex
-                              key={internalKey}
-                              align="center"
-                              gap="2"
-                              onClick={() => toggleTool(internalKey)}
-                              style={{
-                                ...OLIVE_ROW,
-                                marginLeft: 'var(--space-3)',
-                                padding: 'var(--space-2) var(--space-3)',
-                                cursor: 'pointer',
-                              }}
-                            >
-                              <span style={CHECKBOX_ALIGN}>
-                                <Checkbox
-                                  size="1"
-                                  disabled={atToolCap && !isToolOn(internalKey)}
-                                  checked={isToolOn(internalKey)}
-                                  onCheckedChange={() => toggleTool(internalKey)}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </span>
-                              <ConnectorIcon type={resolveConnectorType(toolPrefix)} size={16} />
-                              <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
-                                <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                                  {short}
-                                </Text>
-                                <Text size="1" style={{ color: 'var(--gray-9)' }} truncate>
-                                  {fn}
-                                </Text>
-                              </Flex>
-                            </Flex>
-                          );
-                        })}
-                    </Flex>
-                  );
-                })}
-
-                {/* Load more — same pattern as the collections tab's "Load more" button */}
-                {hasNextPage && (
-                  <Flex align="center" style={{ paddingTop: 'var(--space-1)' }}>
-                    <button
-                      type="button"
-                      onClick={handleLoadMore}
-                      disabled={isLoadingMore}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        cursor: isLoadingMore ? 'default' : 'pointer',
-                        color: 'var(--olive-9)',
-                        fontSize: 12,
-                        padding: 0,
-                        textAlign: 'left',
-                      }}
-                    >
-                      {isLoadingMore
-                        ? t('agentBuilder.loadingMore', { defaultValue: 'Loading more…' })
-                        : t('agentBuilder.loadMore', { defaultValue: 'Load more' })}
-                    </button>
-                  </Flex>
-                )}
-
-                {/* Configure more actions link */}
-                <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
-                  <Text size="1" style={{ color: 'var(--gray-11)' }}>
-                    {t('chat.agentResources.configureMoreActions', {
-                      defaultValue: 'Configure more actions',
-                    })}
-                  </Text>
-                  <Flex
-                    align="center"
-                    justify="between"
-                    gap="2"
-                    style={{
-                      ...OLIVE_ROW,
-                      padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-3)',
-                    }}
-                  >
-                    <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-                      <MaterialIcon name="apps" size={18} color="var(--gray-11)" />
-                      <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                        {t('chat.agentResources.browseWorkspaceActions', {
-                          defaultValue: 'Browse workspace actions',
-                        })}
-                      </Text>
-                    </Flex>
-                    <IconButton asChild size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
-                      <Link href="/workspace/actions" aria-label="Open workspace actions">
-                        <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
-                      </Link>
-                    </IconButton>
-                  </Flex>
-                </Flex>
-              </>
-            )}
-          </>
-        )}
+        {/* MCP — from my-mcp-servers (authenticated instances) */}
+        {tab === 'mcp' &&
+          renderResourceGroupsTab({
+            groups: filteredMcpGroups,
+            keyPrefix: 'mcp',
+            loading: mcpLoading,
+            error: mcpError,
+            hasAnyBeforeFilter: mcpGroups.length > 0,
+            loadingText: t('chat.universalAgent.loadingMcp', { defaultValue: 'Loading MCP servers…' }),
+            noDataText: t('chat.universalAgent.noMcpServers', {
+              defaultValue: 'No authenticated MCP servers found. Connect one in Workspace → MCP Servers.',
+            }),
+            noMatchText: t('chat.agentResources.noMcpMatches', {
+              defaultValue: 'No MCP servers match your search.',
+            }),
+            footerCaption: t('chat.agentResources.configureMoreMcp', {
+              defaultValue: 'Configure more MCP servers',
+            }),
+            footerLinkHref: '/workspace/mcp-servers/personal',
+            footerLinkText: t('chat.agentResources.browseWorkspaceMcp', {
+              defaultValue: 'Browse MCP servers',
+            }),
+            footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
+              defaultValue: 'Open MCP servers to add or manage connections',
+            }),
+            renderGroupIcon: () => <MaterialIcon name="hub" size={18} color="var(--gray-11)" />,
+            renderToolIcon: () => <MaterialIcon name="hub" size={16} color="var(--gray-9)" />,
+          })}
       </Flex>
 
       {/* Footer */}
@@ -948,18 +1142,12 @@ export function UniversalAgentResourcesPanel({
         <Button type="button" size="1" variant="outline" color="gray" onClick={resetToDefaults}>
           {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
         </Button>
-        {tab === 'actions' && (
+        {(tab === 'actions' || tab === 'mcp') && (
           <Flex align="center" gap="2">
-            {atToolCap && (
-              <Text size="1" style={{ color: 'var(--amber-11)' }}>
-                {t('chat.universalAgent.toolCapReached', { defaultValue: 'Tool limit reached' })}
-              </Text>
-            )}
             <Text size="1" style={{ color: 'var(--gray-9)' }}>
               {t('chat.universalAgent.toolCount', {
                 count: selectedCount,
-                max: MAX_USER_TOOLS,
-                defaultValue: `{{count}} / {{max}} tools`,
+                defaultValue: `{{count}} tools`,
               })}
             </Text>
           </Flex>

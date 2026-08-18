@@ -1,5 +1,6 @@
 """Outlook-specific constants shared by Outlook Personal and Outlook (team) connectors."""
 
+import base64
 from dataclasses import dataclass
 
 from msgraph.generated.models.message import Message  # type: ignore
@@ -27,6 +28,15 @@ class OutlookThreadDetection:
     """Email thread detection (conversation index)."""
     ROOT_CONVERSATION_INDEX_LENGTH = 22
     CHILD_INDEX_SUFFIX_LENGTH = 5
+
+
+def normalize_conversation_index(value: str | bytes | None) -> str:
+    """Kiota deserializes Graph Edm.Binary conversationIndex as bytes; MailRecord stores base64 str."""
+    if value is None or value == b"" or value == "":
+        return ""
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    return value
 
 
 class OutlookFolders:

@@ -4,7 +4,7 @@ import {
   BadRequestError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
-import { Org } from '../schema/org.schema';
+import { Org } from '../../../config';
 
 export const accountTypeCheck = async (
   req: AuthenticatedUserRequest,

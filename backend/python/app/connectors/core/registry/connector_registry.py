@@ -4,7 +4,12 @@ from inspect import isclass
 from typing import Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    PermissionModel,
+    ProgressStatus,
+)
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -209,6 +214,16 @@ class ConnectorRegistry:
 
         except Exception as e:
             self.logger.error(f"Error discovering connectors: {e}")
+
+    @staticmethod
+    def _permission_model_for(metadata: dict[str, Any]) -> str:
+        """The connector's declared permission model, defaulting to RECORD_LEVEL.
+
+        RECORD_LEVEL is the safe default: it resolves visibility per user, so a
+        connector that forgets to declare can only under-share.
+        """
+        config = metadata.get('config') or {}
+        return config.get('permissionModel') or PermissionModel.RECORD_LEVEL.value
 
     def _normalize_connector_name(self, name: str) -> str:
         """
@@ -473,6 +488,10 @@ class ConnectorRegistry:
                 'appGroup': metadata['appGroup'],
                 'authType': auth_type_to_store,  # Store selected auth type (user's choice, not metadata)
                 'scope': scope,
+                'orgId': org_id,
+                # Denormalized off the decorator so the query service can route
+                # permission resolution without importing connector code.
+                'permissionModel': self._permission_model_for(metadata),
                 'isActive': False,
                 'isAgentActive': False,
                 'isConfigured': True,
@@ -593,6 +612,7 @@ class ConnectorRegistry:
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
+            stale_permission_models: list[tuple[str, str]] = []
             for document in all_documents:
                 connector_type = document.get('type')
                 is_active = document.get('isActive', False)
@@ -603,6 +623,12 @@ class ConnectorRegistry:
                 if connector_type not in self._connectors and is_active:
                     keys_to_deactivate.append(doc_key)
 
+                registered = self._connectors.get(connector_type)
+                if registered and doc_key:
+                    expected = self._permission_model_for(registered)
+                    if document.get('permissionModel') != expected:
+                        stale_permission_models.append((doc_key, expected))
+
             # Batch deactivate all instances using graph provider
             if keys_to_deactivate:
                 updated_count = await graph_provider.batch_update_connector_status(
@@ -612,6 +638,23 @@ class ConnectorRegistry:
                     is_agent_active=False,
                 )
                 self.logger.info(f"Batch deactivated {updated_count} connector instances")
+
+            # Backfill instances created before the flag existed, and pick up
+            # reclassifications. Best-effort: a failure here only costs the
+            # query service some cache sharing, never correctness.
+            for doc_key, expected in stale_permission_models:
+                try:
+                    await graph_provider.update_node(
+                        doc_key, self._collection_name, {'permissionModel': expected}
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not set permissionModel on connector instance {doc_key}: {e}"
+                    )
+            if stale_permission_models:
+                self.logger.info(
+                    f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
+                )
 
             self.logger.info("Successfully synced registry with database")
             return True

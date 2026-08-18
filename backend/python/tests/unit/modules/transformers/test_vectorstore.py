@@ -1771,6 +1771,29 @@ class TestDescribeImages:
         assert results[0]["success"] is True
         assert results[1]["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_describe_image_async_flattens_content_blocks(self):
+        """OpenAI's Responses API returns `content` as a list of blocks
+        (reasoning + text) rather than a plain string."""
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "reasoning", "summary": [], "id": "rs_1"},
+            {"type": "text", "text": "A diagram showing flow.", "annotations": []},
+        ])
+        result = await vs.describe_image_async("base64data", mock_vlm)
+        assert result == "A diagram showing flow."
+
+    @pytest.mark.asyncio
+    async def test_describe_images_with_content_blocks(self):
+        vs = _make_vectorstore()
+        mock_vlm = AsyncMock()
+        mock_vlm.ainvoke.return_value = MagicMock(content=[
+            {"type": "text", "text": "  A red square.  ", "annotations": []},
+        ])
+        results = await vs.describe_images(["img1"], mock_vlm)
+        assert results == [{"index": 0, "success": True, "description": "A red square."}]
+
 
 # ===================================================================
 # index_documents additional paths (lines 1051-1052, 1064->1061, etc.)
@@ -2464,3 +2487,48 @@ class TestRecordSummaryEdgeCases:
             if isinstance(c, Document) and (c.metadata or {}).get("isRecordSummary")
         ]
         assert summary_docs == []
+
+
+class TestResolveBatchConcurrency:
+    """EMBEDDING_BATCH_CONCURRENCY must be >= 1: asyncio.Semaphore(0) is
+    locked from creation, so a misconfigured 0/negative value would hang
+    every remote-embedding batch forever instead of failing at startup.
+
+    Exercises the pure helper directly rather than reloading the module —
+    module reload changes class identity for everything it defines
+    (VectorStore, etc.), breaking isinstance checks in unrelated tests that
+    imported the pre-reload class.
+    """
+
+    def test_zero_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("0")
+
+    def test_negative_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("-1")
+
+    def test_unset_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency(None) == 5
+
+    def test_empty_string_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("") == 5
+
+    def test_valid_positive_value_is_used(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("8") == 8
+
+    def test_module_level_constant_matches_helper_with_no_env(self):
+        """The module-level default is wired through the same helper."""
+        from app.modules.transformers import vectorstore as module
+
+        assert module._DEFAULT_CONCURRENCY_LIMIT == module._resolve_batch_concurrency(None)

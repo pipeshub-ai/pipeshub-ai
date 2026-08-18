@@ -42,11 +42,11 @@ import { ORG_CREATED_EVENT } from '../constants/constants';
 @injectable()
 export class OrgController {
   constructor(
-    @inject('AppConfig') private config: AppConfig,
-    @inject('MailService') private mailService: MailService,
-    @inject('Logger') private logger: Logger,
+    @inject('AppConfig') protected config: AppConfig,
+    @inject('MailService') protected mailService: MailService,
+    @inject('Logger') protected logger: Logger,
     @inject('EntitiesEventProducer')
-    private eventService: EntitiesEventProducer,
+    protected eventService: EntitiesEventProducer,
   ) {}
 
   getDomainFromEmail(email: string) {
@@ -69,7 +69,7 @@ export class OrgController {
    * @param svgBuffer - The SVG file buffer to validate
    * @throws BadRequestError if dangerous content is detected
    */
-  private validateSVG(svgBuffer: Buffer): void {
+  protected validateSVG(svgBuffer: Buffer): void {
     try {
       // Input length limit to prevent DoS attacks
       const MAX_SVG_SIZE = 10 * 1024 * 1024; // 10MB max
@@ -193,6 +193,7 @@ export class OrgController {
         fullName: adminFullName,
         email: contactEmail,
         orgId: org._id,
+        role: 'admin',
       });
 
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
@@ -203,13 +204,6 @@ export class OrgController {
         isDeleted: false,
         hashedPassword,
         ipAddress: req.ip,
-      });
-
-      const adminUserGroup = new UserGroups({
-        type: 'admin',
-        name: 'admin',
-        orgId: org._id,
-        users: [adminUser._id],
       });
 
       const allUsersGroup = new UserGroups({
@@ -249,7 +243,6 @@ export class OrgController {
 
         session.startTransaction();
         await orgAuthConfig.save({ session });
-        await adminUserGroup.save({ session });
         await allUsersGroup.save({ session });
         await standardUsersGroup.save({ session });
         await adminUser.save({ session });
@@ -258,7 +251,6 @@ export class OrgController {
         await session.commitTransaction();
       } else {
         await orgAuthConfig.save();
-        await adminUserGroup.save();
         await allUsersGroup.save();
         await standardUsersGroup.save();
         await adminUser.save();

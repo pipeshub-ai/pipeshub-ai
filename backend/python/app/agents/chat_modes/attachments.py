@@ -4,11 +4,11 @@ so it survives the migration to the agent loop instead of being dropped.
 
 Two attachment kinds, two different fates on this path:
 
-- Document attachments (PDF/text/markdown) resolve to the SAME `<record>`
-  text-block format `record_to_message_content()` already produces for
-  chatbot and for `dynamic_fetch_full_record` -- folded into the agent's
-  `Goal.constraints` as plain text, so citation IDs stay on the one shared
-  `CitationRefMapper` the rest of the turn uses.
+- Document attachments (PDF/text/markdown/DOCX/XLSX/CSV/TSV) resolve to the
+  SAME `<record>` text-block format `record_to_message_content()` already
+  produces for chatbot and for `dynamic_fetch_full_record` -- folded into
+  the agent's `Goal.constraints` as plain text, so citation IDs stay on the
+  one shared `CitationRefMapper` the rest of the turn uses.
 - Image attachments do NOT currently reach the agent loop's first turn as
   multimodal content. This is not a regression introduced by this
   migration: `agents/agent_loop/respond.py`'s module docstring already
@@ -34,6 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import CitationRefMapper, record_to_message_content
 
 if TYPE_CHECKING:
@@ -42,9 +43,6 @@ if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
 
 __all__ = ["ResolvedAttachments", "resolve_attachments"]
-
-_TEXT_ATTACHMENT_MIME_TYPES = frozenset({"text/plain", "text/markdown", "text/mdx"})
-_DOC_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | {"application/pdf"}
 
 
 @dataclass
@@ -62,7 +60,7 @@ def _is_image(mime_type: str) -> bool:
 
 
 def _is_doc(mime_type: str) -> bool:
-    return mime_type.lower() in _DOC_ATTACHMENT_MIME_TYPES
+    return mime_type.lower() in DOC_ATTACHMENT_MIME_TYPES
 
 
 async def resolve_attachments(

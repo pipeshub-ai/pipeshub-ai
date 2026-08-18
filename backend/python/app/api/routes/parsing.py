@@ -3,8 +3,10 @@
 Endpoints
 ---------
 POST /api/v1/parse
-    Parse a file into a BlocksContainer.  File content is sent as multipart
-    form-data (field: ``file``).  Metadata fields are passed as form fields.
+    Parse a file into blocks (or a raw parsed document for Docling-backed
+    providers, which defer block construction to the caller). File content is
+    sent as multipart form-data (field: ``file``). Metadata fields are passed
+    as form fields.
 
 GET  /api/v1/parse/providers
     List registered providers per format key.
@@ -14,8 +16,6 @@ GET  /health
 """
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -30,6 +30,12 @@ from app.services.parsing.interface import (
     ParserProvider,
 )
 from app.services.parsing.registry import ParserRegistry
+from app.services.resource_governor import (
+    acquire_gate_with_backpressure,
+    classify,
+    gate_pool,
+    parse_cost,
+)
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 
@@ -39,11 +45,17 @@ router = APIRouter(prefix="/api/v1/parse", tags=["parsing"])
 
 # How long a request will wait for a parsing slot before it's reported as
 # "saturated" (still waiting) and, ultimately, before the gate gives up and
-# returns 503 — see PARSE_GATE_TIMEOUT_SECONDS below.
+# returns 429 — see PARSE_GATE_TIMEOUT_SECONDS below.
 PARSE_QUEUE_WAIT_WARN_SECONDS = 10.0
-# Total time a request may wait for a free slot before the gate responds 503
-# (retryable — ParsingClient backs off and retries, see services/parsing/client.py).
-PARSE_GATE_TIMEOUT_SECONDS = 30.0
+# Total time a request may wait for a free slot before the gate responds 429
+# backpressure. Generous relative to the old 30s: the indexing consumer's
+# record-level timeout is 1800s with auto-renewed leases, so a record that
+# waits this long in the parsing queue and eventually gets a slot is far
+# cheaper than one that gets shed and has to re-enter the whole pipeline.
+PARSE_GATE_TIMEOUT_SECONDS = 120.0
+# Suggested client backoff before its next backpressured attempt — see
+# ParsingClient/base_client's Retry-After handling (services/base_client.py).
+PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 # Parses slower than this are logged as an outlier so pathological documents
 # are identifiable without turning on debug logging. Large PDFs (OCR/VLM
 # heavy documents) can legitimately take several minutes, so this is set
@@ -55,66 +67,6 @@ def _get_registry(request: Request) -> ParserRegistry:
     """Pull the ParserRegistry from FastAPI app state."""
     registry: ParserRegistry = request.app.state.parser_registry
     return registry
-
-
-async def _acquire_parse_slot(
-    semaphore: asyncio.Semaphore, max_slots: int, message_id: str
-) -> bool:
-    """Acquire a parsing slot, logging when the wait indicates saturation.
-
-    Returns True once a slot is acquired. Returns False if
-    ``PARSE_GATE_TIMEOUT_SECONDS`` elapses with no free slot — the caller
-    should respond 503 so the client's own retry/backoff takes over instead
-    of queuing indefinitely.
-    """
-    available = getattr(semaphore, "_value", -1)
-    SemaphoreLogger.log_semaphore_acquire_attempt(
-        "parsing", message_id, available, max_slots, 0, 0
-    )
-    start = time.monotonic()
-    # A bare `wait_for(semaphore.acquire(), ...)` cancels the acquire on
-    # timeout; retrying would create a *new* acquire() call that re-joins the
-    # semaphore's internal waiter queue at the back, so a request already
-    # waiting could lose its place — and be starved — every time it logs the
-    # saturation warning below. Run acquire() as a single Task instead and
-    # shield it from the first (warn-only) timeout so it keeps its queue
-    # position; only cancel it if we're giving up for good.
-    acquire_task = asyncio.ensure_future(semaphore.acquire())
-    try:
-        await asyncio.wait_for(asyncio.shield(acquire_task), timeout=PARSE_QUEUE_WAIT_WARN_SECONDS)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Parsing saturated: request waited >%.0fs for a slot "
-            "(max_concurrent_parsing=%d); still waiting up to %.0fs total",
-            PARSE_QUEUE_WAIT_WARN_SECONDS, max_slots, PARSE_GATE_TIMEOUT_SECONDS,
-        )
-        remaining = max(PARSE_GATE_TIMEOUT_SECONDS - PARSE_QUEUE_WAIT_WARN_SECONDS, 0.0)
-        try:
-            await asyncio.wait_for(acquire_task, timeout=remaining)
-        except asyncio.TimeoutError:
-            acquire_task.cancel()
-            # Await the cancellation so the task can't be garbage-collected
-            # while still pending (which asyncio logs as an error).
-            with contextlib.suppress(asyncio.CancelledError):
-                await acquire_task
-            logger.warning(
-                "Parsing saturated: gate timeout after %.0fs (max_concurrent_parsing=%d); "
-                "returning 503 to let the caller retry/back off",
-                PARSE_GATE_TIMEOUT_SECONDS, max_slots,
-            )
-            SemaphoreLogger.log_message_error(message_id, "parse gate timeout — 503")
-            return False
-
-    wait_ms = (time.monotonic() - start) * 1000
-    SemaphoreLogger.log_semaphore_acquired(
-        message_id, getattr(semaphore, "_value", -1), max_slots, 0, 0, wait_time_ms=wait_ms
-    )
-    if wait_ms >= 1000:
-        logger.info(
-            "Parse slot acquired after %.0fms queue wait (max_concurrent_parsing=%d)",
-            wait_ms, max_slots,
-        )
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -133,14 +85,17 @@ async def parse_file(
     provider: Annotated[str | None, Form(description="Parser provider override")] = None,
     skip_table_enrichment: Annotated[bool, Form(description="Skip LLM table summaries")] = False,
 ) -> JSONResponse:
-    """Parse *file* into a ``BlocksContainer``.
+    """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
-    The response body is ``ParseResponse`` JSON::
+    The response body is ``ParseResponse`` JSON. Exactly one of ``block_container``
+    or ``raw_document`` is populated - Docling-backed providers defer block
+    construction (and any LLM calls) to the caller so this service stays stateless::
 
         {
           "success": true,
-          "block_container": { ... },
-          "provider_used": "docling_service",
+          "block_container": { ... } | null,
+          "raw_document": "<serialized DoclingDocument>" | null,
+          "provider_used": "docling",
           "error": null
         }
     """
@@ -189,24 +144,34 @@ async def parse_file(
             })
 
     message_id = current_display_id()
+    tier = classify(extension, mime_type)
+    cost = parse_cost(tier, len(content))
     logger.info(
-        "Accepted parse request: record='%s' format=%s provider=%s size_bytes=%d",
+        "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
         record_name, extension or mime_type or "unknown", provider_enum.value, len(content),
+        tier.value, cost,
     )
 
-    semaphore: asyncio.Semaphore = request.app.state.parse_semaphore
-    max_slots: int = request.app.state.max_concurrent_parsing
+    governor = request.app.state.governor
+    gate = governor.gate(gate_pool(tier))
 
-    if not await _acquire_parse_slot(semaphore, max_slots, message_id):
+    admitted = await acquire_gate_with_backpressure(
+        gate, cost, tier, message_id,
+        logger=logger,
+        log_prefix="parsing",
+        queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
+        gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
+    )
+    if not admitted:
         return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            headers={"Retry-After": "5"},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
             content={
                 "success": False,
                 "error": {
-                    "code": ParseErrorCode.PARSE_FAILED.value,
+                    "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
                     "message": "Parsing service is at capacity; retry later.",
-                    "details": {"max_concurrent_parsing": max_slots},
+                    "details": {"tier": tier.value, "limit": gate.limit},
                 },
             },
         )
@@ -249,9 +214,9 @@ async def parse_file(
                 },
             )
     finally:
-        semaphore.release()
+        gate.release(cost)
         SemaphoreLogger.log_semaphore_release(
-            "parsing", message_id, getattr(semaphore, "_value", -1), max_slots
+            f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
         )
 
     parse_ms = (time.monotonic() - parse_start) * 1000
@@ -260,19 +225,26 @@ async def parse_file(
             "Slow parse: record='%s' provider=%s parse_ms=%.0f",
             record_name, provider_enum.value, parse_ms,
         )
+    blocks_count = len(result.block_container.blocks) if result.block_container is not None else 0
     logger.info(
-        "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d",
+        "Parse completed: record='%s' outcome=success provider_used=%s parse_ms=%.0f blocks=%d raw_document=%s",
         record_name,
         result.provider_used.value if result.provider_used is not None else "default",
         parse_ms,
-        len(result.block_container.blocks),
+        blocks_count,
+        result.raw_document is not None,
     )
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
             "success": True,
-            "block_container": json.loads(result.block_container.model_dump_json()),
+            "block_container": (
+                json.loads(result.block_container.model_dump_json())
+                if result.block_container is not None
+                else None
+            ),
+            "raw_document": result.raw_document,
             "provider_used": (
                 result.provider_used.value if result.provider_used is not None else None
             ),

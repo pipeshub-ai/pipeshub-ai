@@ -123,32 +123,31 @@ test.describe('Groups Edit Behavior', () => {
     });
   });
 
-  test('admin and everyone group names are locked with tooltip explanation', async ({ page }) => {
-    for (const groupName of [GroupType.ADMIN, GroupType.EVERYONE]) {
-      await page.goto('/workspace/groups/');
-      await page.waitForTimeout(1_000);
-      await searchGroup(page, groupName);
-      await openGroupDetailByName(page, new RegExp(groupName, 'i'));
+  test('everyone group name is locked with tooltip explanation', async ({ page }) => {
+    // Admin is now a User.role (migration soft-deletes type=admin groups).
+    await page.goto('/workspace/groups/');
+    await page.waitForTimeout(1_000);
+    await searchGroup(page, GroupType.EVERYONE);
+    await openGroupDetailByName(page, new RegExp(GroupType.EVERYONE, 'i'));
 
-      const detailDialog = page.getByRole('dialog');
-      await detailDialog.getByRole('button', { name: /Edit Group/i }).click();
+    const detailDialog = page.getByRole('dialog');
+    await detailDialog.getByRole('button', { name: /Edit Group/i }).click();
 
-      const nameInput = detailDialog.locator('input[type="text"]').first();
-      await expect(nameInput).toHaveAttribute('readonly', '');
+    const nameInput = detailDialog.locator('input[type="text"]').first();
+    await expect(nameInput).toHaveAttribute('readonly', '');
 
-      await nameInput.hover();
-      await expect(
-        page.getByRole('tooltip').filter({ hasText: /system-defined and cannot be changed/i }).first()
-      ).toBeVisible({ timeout: 5_000 });
+    await nameInput.hover();
+    await expect(
+      page.getByRole('tooltip').filter({ hasText: /system-defined and cannot be changed/i }).first()
+    ).toBeVisible({ timeout: 5_000 });
 
-      // First cancel exits edit mode; second cancel closes the panel.
-      await detailDialog.getByRole('button', { name: /Cancel/i }).click();
-      await expect(detailDialog.getByRole('button', { name: /Edit Group/i })).toBeVisible({
-        timeout: 10_000,
-      });
-      await detailDialog.getByRole('button', { name: /Cancel/i }).click();
-      await expect(detailDialog).toBeHidden({ timeout: 10_000 });
-    }
+    // First cancel exits edit mode; second cancel closes the panel.
+    await detailDialog.getByRole('button', { name: /Cancel/i }).click();
+    await expect(detailDialog.getByRole('button', { name: /Edit Group/i })).toBeVisible({
+      timeout: 10_000,
+    });
+    await detailDialog.getByRole('button', { name: /Cancel/i }).click();
+    await expect(detailDialog).toBeHidden({ timeout: 10_000 });
   });
 
   test('can add user to a custom group from edit sidebar', async ({ page, apiContext }) => {

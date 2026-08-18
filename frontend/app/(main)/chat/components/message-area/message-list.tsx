@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
-import { ASK_MORE_QUESTION_SETS } from '../../constants';
+import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
@@ -25,7 +25,6 @@ import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 const EMPTY_ARRAY: never[] = [];
 const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
 const STABLE_EMPTY_PARTS: MessagePart[] = [];
-const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
 /** Streaming: distance from bottom (px) to count as flush for resuming tail-follow */
 const STREAMING_RESUME_DIST_FLUSH_PX = 4;
 /** Streaming: wheel deltaY must be more negative than this to opt out (avoids trackpad jitter) */
@@ -541,8 +540,9 @@ export function MessageList() {
     recalcSpacerHeight();
 
     const msgHeight = lastEl.getBoundingClientRect().height;
-    const chatInputReserved = isMobileRef.current ? 120 : CHAT_INPUT_RESERVED;
-    const visibleHeight = container.clientHeight - chatInputReserved;
+    // Composer sits outside this scroll container (flex sibling), so clientHeight
+    // is already the visible message viewport — do not subtract input height again.
+    const visibleHeight = container.clientHeight;
 
     isAutoScrollingRef.current = true;
     let nextTop: number;
@@ -1083,28 +1083,24 @@ export function MessageList() {
       onScroll={handleScroll}
       className="chat-message-scroll"
       style={{
+        // Full chat-panel width so the scrollbar sits on the pane edge, not
+        // against the message column. Content is centered in the shared column.
         flex: 1,
-        overflowY: 'auto',
-        overscrollBehavior: 'contain',
-        // Instant programmatic follow while tokens arrive; smooth when idle / completed.
-        scrollBehavior: isStreaming ? 'auto' : 'smooth',
-        // Native scroll anchoring keeps the viewport stable when older messages
-        // are prepended at the top — no manual scrollTop adjustment needed.
-        overflowAnchor: 'auto',
+        minHeight: 0,
         width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        overscrollBehavior: 'contain',
+        scrollBehavior: isStreaming ? 'auto' : 'smooth',
+        overflowAnchor: 'auto',
       }}
     >
       <Box
         style={{
-          maxWidth: '50rem',
-          width: '100%',
+          ...chatContentColumnStyle(isMobile),
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
-          paddingBottom: isMobile ? 'var(--space-7)' : '100px',
-          paddingLeft: isMobile ? 'var(--space-4)' : 'var(--space-5)',
-          paddingRight: isMobile ? 'var(--space-4)' : 'var(--space-5)',
+          paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-5)',
         }}
       >
         <Flex direction="column" gap="6">

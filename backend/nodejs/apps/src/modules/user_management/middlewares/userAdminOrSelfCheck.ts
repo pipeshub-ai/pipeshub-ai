@@ -1,11 +1,12 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { UserGroups } from '../schema/userGroup.schema';
 import { Types } from 'mongoose';
 import {
   BadRequestError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { isUserOrgAdmin } from '../services/user-admin.service';
+
 export const userAdminOrSelfCheck = async (
   req: AuthenticatedUserRequest,
   _res: Response,
@@ -17,14 +18,8 @@ export const userAdminOrSelfCheck = async (
     if (!userId || !orgId) {
       throw new NotFoundError('Account not found');
     }
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('type');
 
-    const isAdmin = groups.find((usergrp) => usergrp.type === 'admin');
-
+    const isAdmin = await isUserOrgAdmin(userId, orgId);
     const { id } = req.params;
 
     if (!isAdmin && !new Types.ObjectId(userId).equals(id)) {

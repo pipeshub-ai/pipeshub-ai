@@ -48,7 +48,7 @@ def coerce_message_content_to_text(content: Any) -> str:
                 parts.append(block)
             elif isinstance(block, dict):
                 text = block.get("text")
-                if isinstance(text, str):
+                if isinstance(text, str) and text.strip():
                     parts.append(text)
             elif block is not None:
                 parts.append(str(block))
@@ -91,6 +91,22 @@ class EmbeddingProvider(Enum):
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     VOYAGE = "voyage"
+
+LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.DEFAULT.value,
+    EmbeddingProvider.HUGGING_FACE.value,
+    EmbeddingProvider.SENTENCE_TRANSFOMERS.value,
+})
+
+
+def is_local_cpu_embedding_provider(provider: str | None) -> bool:
+    """Whether *provider* embeds on local CPU via the embedding server.
+
+    ``None`` counts as local: an unconfigured deployment falls back to
+    ``get_default_embedding_model()``.
+    """
+    return provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS
+
 
 class LLMProvider(Enum):
     ANTHROPIC = "anthropic"

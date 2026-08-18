@@ -51,6 +51,14 @@ if TYPE_CHECKING:
 # signal the completion was cut off at the output-token cap.
 _TRUNCATION_FINISH_REASONS = {"length", "max_tokens"}
 
+# OpenAI's Responses API (used for gpt-5.x reasoning models, see
+# `aimodels._reasoning_effort_kwargs`) never populates `finish_reason` — it
+# reports a cut-off answer as `status="incomplete"` with the cause under
+# `incomplete_details.reason`. Only the output-token cause counts as
+# truncation; `content_filter` is a different stop the recovery path in
+# `agent/__init__.py` must not treat as "continue where you left off".
+_TRUNCATION_INCOMPLETE_REASONS = {"max_output_tokens", "max_tokens"}
+
 # OpenAI/Azure enforce max 64 characters on `tool_calls[].id` and on the
 # matching `tool_call_id` in a ToolMessage. IDs originate from three
 # sources: (1) the model's own response (`call_abc123...`), (2) persisted
@@ -317,7 +325,12 @@ def _recover_invalid_tool_call(call: dict[str, Any]) -> ToolCall:
 def _is_truncated(ai_message: AIMessage) -> bool:
     metadata = ai_message.response_metadata or {}
     finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
-    return finish_reason in _TRUNCATION_FINISH_REASONS
+    if finish_reason in _TRUNCATION_FINISH_REASONS:
+        return True
+    incomplete_details = metadata.get("incomplete_details")
+    if not isinstance(incomplete_details, dict):
+        return False
+    return incomplete_details.get("reason") in _TRUNCATION_INCOMPLETE_REASONS
 
 
 def convert_assistant_message_from_langchain(ai_message: AIMessage) -> AssistantMessage:
@@ -451,14 +464,61 @@ async def _unbound_tool_coroutine(**_kwargs: Any) -> Any:  # noqa: ANN401
     )
 
 
+_TOOL_MODEL_CACHE: dict[str, StructuredTool] = {}
+_TOOL_MODEL_CACHE_MAXSIZE = 512
+
+
+def _tool_schema_key(schema: ToolSchema) -> str:
+    """Content key for a tool schema.
+
+    `ToolSchema` is frozen but holds a dict, so it is unhashable, and
+    `ToolRegistry.schemas()` rebuilds these objects every turn — identity would
+    never match. Sorted-key JSON makes two equal schemas collide on purpose and
+    two different ones never.
+    """
+    payload = json.dumps(
+        [schema.name, schema.description, schema.input_schema],
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def convert_tool_schema_to_langchain(schema: ToolSchema) -> StructuredTool:
+    """Build the LangChain tool object for `schema`, reusing a cached one.
+
+    `create_model()` runs pydantic's full schema generation, and this ran once
+    per tool per LLM call — measured at 8.8% of query-service CPU, rebuilding
+    identical classes (26 tools on 1,820 of 1,842 binds over six hours). The
+    transport's own cache does not cover it: the transport is constructed per
+    request, so it starts empty on every chat.
+
+    Caching the class also lets pydantic's internal schema cache serve the
+    `model_json_schema()` that `convert_to_openai_tool` calls on every send.
+
+    Safe to share: the object carries only a schema — `_unbound_tool_coroutine`
+    raises if anything tries to execute it — and `bind_tools` reads the tools to
+    build a separate list of dicts rather than mutating them.
+    """
+    key = _tool_schema_key(schema)
+    cached = _TOOL_MODEL_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     args_model = _json_schema_to_pydantic_model(f"{schema.name}_Args", schema.input_schema)
-    return StructuredTool.from_function(
+    tool = StructuredTool.from_function(
         name=schema.name,
         description=schema.description,
         args_schema=args_model,
         coroutine=_unbound_tool_coroutine,
     )
+    # Cleared wholesale rather than evicted one at a time: the tool set is
+    # bounded by the registry, so this only fires if schemas are being generated
+    # dynamically, and a rebuild costs the same as the miss it replaces.
+    if len(_TOOL_MODEL_CACHE) >= _TOOL_MODEL_CACHE_MAXSIZE:
+        _TOOL_MODEL_CACHE.clear()
+    _TOOL_MODEL_CACHE[key] = tool
+    return tool
 
 
 def convert_tool_schemas_to_langchain(

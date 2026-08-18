@@ -17,11 +17,13 @@ Test cases:
   TC-LINEAR-IDX-001   — Reference issue ``indexing_status`` COMPLETED
   TC-INCR-001         — Create new issue (test-time); incremental sync; +1 record; cleanup
   TC-UPDATE-001       — Edit title (test-time); version +1; revision match; restore title
+  TC-LINEAR-PH-001    — Placeholder ancestors: minted → swept → promoted
   TC-LINEAR-EDGES-001 — Edge inventory after incremental tests
   TC-LINEAR-PERM-001  — Team privacy → ORG or GROUP permission on RecordGroup
 """
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -34,6 +36,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]  # noqa: E402
+from app.connectors.sources.linear.connector import (  # type: ignore[import-not-found]  # noqa: E402
+    PLACEHOLDER_REVISION_PREFIX,
+)
 from app.models.entities import (  # type: ignore[import-not-found]  # noqa: E402
     LinkRecord,
     RecordType,
@@ -42,6 +47,7 @@ from app.sources.external.linear.linear import LinearDataSource  # type: ignore[
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
+    apply_filter_full_sync,
     wait_for_sync_completion,
 )
 from connectors.linear.linear_expected import LinearExpected  # noqa: E402
@@ -55,12 +61,19 @@ from validation.graph_edge_validator import (  # noqa: E402
     build_record_edge_expectations,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
-from connectors.linear.constants import LINEAR_INDEXING_WAIT_SEC  # noqa: E402
+from connectors.linear.constants import (  # noqa: E402
+    LINEAR_INDEXING_WAIT_SEC,
+    LINEAR_PH_CHILD_IDENTIFIER,
+    LINEAR_PH_MODIFIED_CUT_MS,
+)
 from connectors.linear.linear_test_utils import (  # noqa: E402
     assert_linear_issues_match_graph_records,
     check_issue_exists_bool,
     count_linear_users_with_email,
+    fetch_ancestor_chain,
     get_linear_issue_updated_ms,
+    parse_linear_timestamp,
+    resolve_issue_by_identifier,
     wait_until_linear_condition,
     wait_until_record_indexing_completed,
 )
@@ -688,6 +701,264 @@ class TestLinearIndexing:
             f"Issue should have virtual_record_id after indexing COMPLETED"
         )
         logger.info("TC-LINEAR-IDX-001 passed: %s indexing completed", external_id)
+
+
+# =============================================================================
+# TestLinearPlaceholders — parent stubs: minted, swept, promoted
+# =============================================================================
+
+
+class TestLinearPlaceholders:
+    """Placeholder ancestor lifecycle driven by the ``modified`` sync filter."""
+
+    @pytest.mark.order(14)
+    async def test_tc_linear_ph_001_placeholder_sweep_and_promotion(
+        self,
+        linear_datasource: LinearDataSource,
+        pipeshub_client: PipeshubClient,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-LINEAR-PH-001: out-of-window ancestors become stubs, get swept, then promote.
+
+        Read-only against Linear — scope is driven purely by the ``modified`` filter.
+
+        Runs on a **dedicated connector** whose very first sync is already narrowed.
+        ``_handle_parent_record`` only mints a stub when no record exists for the parent,
+        and a full sync deletes sync edges but never record nodes — so narrowing the
+        module connector after it has synced the workspace would find the ancestors
+        already present as real records and produce no placeholders at all.
+
+        Phase 1 syncs with the window narrowed to the child issue. Its out-of-window
+        ancestors are minted as placeholder stubs and then backfilled (but *not* promoted)
+        by ``LinearConnector._sweep_placeholder_records``. Phase 2 widens the filter,
+        which promotes them to real records.
+
+        Only the *contiguous prefix* of ancestors below the cut becomes stubs. The first
+        in-window ancestor syncs as a real record, and the sweep stops there
+        (``connector.py`` boundary: ``not parent_record.is_placeholder``), so a chain that
+        terminates in an in-scope ancestor is the expected shape — and asserted as such.
+
+        Requires >= 2 stub ancestors: the stub minted for the immediate parent carries no
+        parent pointer, so the grandparent only reaches the graph after the sweep reads the
+        parent back from Linear and expands a second level. Depth 1 would not prove the loop ran.
+        """
+        cut = LINEAR_PH_MODIFIED_CUT_MS
+        # LINEAR_TEST_API_TOKEN is already guaranteed by the linear_datasource fixture.
+        api_token = os.getenv("LINEAR_TEST_API_TOKEN")
+        all_team_ids = [t.strip() for t in os.getenv("LINEAR_TEST_TEAM_IDS", "").split(",") if t.strip()]
+        if not all_team_ids:
+            pytest.skip("LINEAR_TEST_TEAM_IDS not set")
+
+        child = await resolve_issue_by_identifier(linear_datasource, LINEAR_PH_CHILD_IDENTIFIER)
+        assert child, f"TC-LINEAR-PH-001 setup: issue {LINEAR_PH_CHILD_IDENTIFIER!r} not found"
+        child_id = child["id"]
+
+        # Scope to the chain's own team rather than the primary one — stubs inherit the
+        # child's team, and the chain need not live in team_ids[0].
+        team_id = (child.get("team") or {}).get("id")
+        if team_id not in all_team_ids:
+            pytest.fail(
+                f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} belongs to team "
+                f"{team_id!r}, which is not in LINEAR_TEST_TEAM_IDS {all_team_ids}"
+            )
+
+        child_updated_ms = parse_linear_timestamp(child.get("updatedAt"))
+        if child_updated_ms <= cut:
+            pytest.fail(
+                f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} updatedAt="
+                f"{child_updated_ms} must be after LINEAR_PH_MODIFIED_CUT_MS={cut} "
+                "so it syncs while its ancestors do not — recompute the cut"
+            )
+
+        # Walk down the chain collecting the out-of-window prefix. The connector emits
+        # updatedAt: {gt: cut}, so an ancestor exactly on the cut is out of scope; the
+        # first ancestor above it syncs for real and bounds the sweep.
+        ancestors: list[str] = []
+        boundary_id: str | None = None
+        for ancestor in await fetch_ancestor_chain(linear_datasource, child_id):
+            if parse_linear_timestamp(ancestor.get("updatedAt")) > cut:
+                boundary_id = ancestor["id"]
+                break
+            ancestors.append(ancestor["id"])
+
+        if len(ancestors) < 2:
+            pytest.fail(
+                f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} has {len(ancestors)} "
+                f"ancestor(s) below LINEAR_PH_MODIFIED_CUT_MS={cut}; >= 2 required to "
+                "exercise multi-level expansion — lower the cut or pick a deeper chain"
+            )
+
+        stub_node_ids: Dict[str, str] = {}
+        connector_id: str | None = None
+        try:
+            # ---- Phase 1: dedicated connector, narrowed on its very first sync ----
+            instance = pipeshub_client.create_connector(
+                connector_type="Linear",
+                instance_name=f"linear-ph-test-{uuid.uuid4().hex[:8]}",
+                scope="team",
+                config={
+                    "auth": {"authType": "API_TOKEN", "apiToken": api_token},
+                    "filters": {"sync": {"values": {
+                        "team_ids": {"operator": "in", "type": "list", "value": [team_id]},
+                        "modified": {
+                            "type": "datetime",
+                            "operator": "is_after",
+                            "value": {"start": cut, "end": None},
+                        },
+                    }}},
+                },
+                auth_type="API_TOKEN",
+            )
+            connector_id = instance.connector_id
+            assert connector_id, "TC-LINEAR-PH-001: connector creation returned no id"
+
+            pipeshub_client.toggle_sync(connector_id, enable=True)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id, min_records=1, timeout=240,
+            )
+
+            synced_child = await graph_provider.get_typed_record_by_external_id(
+                connector_id, child_id,
+            )
+            assert synced_child is not None, f"phase1: child {child_id} missing after sync"
+            assert synced_child.is_placeholder is False, "phase1: child must sync as a real record"
+
+            for depth, ancestor_id in enumerate(ancestors, start=1):
+                stub = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, ancestor_id,
+                )
+                assert stub is not None, (
+                    f"phase1: ancestor {ancestor_id} (depth {depth}) absent — "
+                    "placeholder sweep did not expand this level"
+                )
+                assert stub.is_placeholder is True, (
+                    f"phase1: ancestor {ancestor_id} is out of scope and must stay a stub"
+                )
+                stub_node_ids[ancestor_id] = stub.id
+
+                expected_stub = await LinearExpected.placeholder_stub(
+                    ancestor_id,
+                    connector_id=connector_id,
+                    datasource=linear_datasource,
+                    team_id=team_id,
+                )
+                assert_graph_entity_matches(
+                    expected_stub, stub,
+                    entity="ticket_record",
+                    skip_compare=frozenset({"created_at", "updated_at"}),
+                )
+                assert not stub.virtual_record_id, (
+                    f"phase1: stub {ancestor_id} must not be indexed"
+                )
+
+            # The first in-window ancestor bounds the sweep: it syncs for real, so the BFS
+            # must stop rather than re-stub it.
+            if boundary_id:
+                boundary = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, boundary_id,
+                )
+                assert boundary is not None, f"phase1: boundary ancestor {boundary_id} missing"
+                assert boundary.is_placeholder is False, (
+                    f"phase1: boundary ancestor {boundary_id} is inside the window and must "
+                    "sync as a real record, not a stub"
+                )
+
+            # Scoped to TICKET: the sweep seeds only tickets (a Linear project has no parent
+            # project), so a PROJECT stub from unrelated workspace data is not this test's business.
+            ticket_stubs = [
+                stub
+                for stub in await graph_provider.get_placeholder_records(connector_id)
+                if stub.record_type == RecordType.TICKET
+            ]
+            assert {s.external_record_id for s in ticket_stubs} == set(ancestors), (
+                "phase1: TICKET placeholders must be exactly the out-of-window ancestors; "
+                f"expected {sorted(ancestors)}, got {sorted(s.external_record_id for s in ticket_stubs)}"
+            )
+            unswept = [s.external_record_id for s in ticket_stubs if s.external_revision_id is None]
+            assert not unswept, f"phase1: stubs never backfilled by the sweep: {unswept}"
+
+            chain = [child_id] + ancestors + ([boundary_id] if boundary_id else [])
+            for parent_id, kid_id in zip(chain[1:], chain):
+                children = await graph_provider.get_record_outgoing_relations(
+                    connector_id, parent_id, "PARENT_CHILD",
+                )
+                assert kid_id in children, (
+                    f"phase1: PARENT_CHILD edge {parent_id} -> {kid_id} missing "
+                    f"(outgoing children: {children})"
+                )
+
+            logger.info(
+                "TC-LINEAR-PH-001 phase1 passed: %d ancestor stub(s) swept", len(ancestors),
+            )
+
+            # ---- Phase 2: drop the window; the resync promotes the stubs ----
+            await apply_filter_full_sync(
+                pipeshub_client, graph_provider, connector_id,
+                {"sync": {"values": {
+                    "team_ids": {"operator": "in", "type": "list", "value": [team_id]},
+                }}},
+            )
+
+            for ancestor_id in ancestors:
+                promoted = await graph_provider.get_typed_record_by_external_id(
+                    connector_id, ancestor_id,
+                )
+                assert promoted is not None, f"phase2: ancestor {ancestor_id} missing after resync"
+                assert promoted.is_placeholder is False, (
+                    f"phase2: ancestor {ancestor_id} is back in scope and must be promoted"
+                )
+                assert promoted.id == stub_node_ids[ancestor_id], (
+                    f"phase2: ancestor {ancestor_id} was replaced (node {promoted.id}) instead "
+                    f"of promoted in place (node {stub_node_ids[ancestor_id]})"
+                )
+                promoted_revision = promoted.external_revision_id
+                assert promoted_revision and not str(promoted_revision).startswith(
+                    PLACEHOLDER_REVISION_PREFIX
+                ), (
+                    f"phase2: ancestor {ancestor_id} must carry the real issue revision, "
+                    f"got {promoted_revision!r}"
+                )
+
+                expected = await LinearExpected.ticket_record(
+                    ancestor_id, connector_id=connector_id, datasource=linear_datasource,
+                )
+                await assert_graph_entity_with_edges(
+                    expected, promoted,
+                    entity="ticket_record",
+                    connector_id=connector_id,
+                    graph_provider=graph_provider,
+                    skip_compare=frozenset({"created_at", "updated_at"}),
+                )
+
+            indexed = await wait_until_record_indexing_completed(
+                graph_provider,
+                connector_id,
+                ancestors[0],
+                timeout=LINEAR_INDEXING_WAIT_SEC,
+                description=f"TC-LINEAR-PH-001 promoted ancestor {ancestors[0]}",
+                pipeshub_client=pipeshub_client,
+            )
+            assert indexed.virtual_record_id, "phase2: a promoted record must be indexed"
+
+            logger.info("TC-LINEAR-PH-001 passed: %d ancestor(s) promoted", len(ancestors))
+
+        finally:
+            if connector_id:
+                try:
+                    pipeshub_client.toggle_sync(connector_id, enable=False)
+                    pipeshub_client.delete_connector(connector_id)
+                    pipeshub_client.wait(25)
+                    await graph_provider.assert_all_records_cleaned(
+                        connector_id,
+                        timeout=int(os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", "300")),
+                    )
+                except Exception as e:
+                    # Not re-raised: it would mask a real assertion failure from the body.
+                    # Logged at error because a leaked connector keeps polling the workspace.
+                    logger.error(
+                        "TC-LINEAR-PH-001 cleanup: connector %s leaked, delete it manually: %s",
+                        connector_id, e,
+                    )
 
 
 # =============================================================================

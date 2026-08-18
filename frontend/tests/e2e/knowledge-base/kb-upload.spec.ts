@@ -66,6 +66,15 @@ import {
  *   client-gate all       — 2 oversized files fail instantly, 0 upload requests
  *   client-gate mixed     — oversized files fail at frontend, valid files upload normally
  *   client-gate message   — failed row shows the size limit error message
+ *
+ * Selection hierarchy UI (pre-Save folder tree + compact add):
+ *   hierarchy visible     — nested folder/file rows render before Save
+ *   remove nested file    — X on a file prunes that path from the tree
+ *   remove subfolder      — X on a folder removes all files under it
+ *   compact file +        — dashed zone swaps for compact + after files selected
+ *   compact adds more     — compact input appends more files to selection
+ *   remove selected file  — X on a file row updates the file list
+ *   compact folder +      — dashed folder zone swaps for compact + after folder selected
  */
 
 const completedRows = (page: import('@playwright/test').Page) =>
@@ -245,9 +254,16 @@ test.describe('Knowledge Base Upload', () => {
     const input = await openUploadSidebar(page, kbId);
     test.skip(!input, 'Upload affordance not reachable');
 
-    await input!.setInputFiles(makeFiles(1, { prefix: 'ok-cancel' }));
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await page.waitForTimeout(750);
+    await input!.setInputFiles(makeFiles(1, { prefix: 'ok-dismiss' }));
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(1);
+
+    // Use testid — getByRole({ name: 'Cancel' }) also matches remove buttons when
+    // the filename contains "cancel" (e.g. ok-cancel-0.pdf → aria-label
+    // "Remove ok-cancel-0.pdf"), which is a Playwright strict-mode violation.
+    await page.getByTestId('upload-sidebar-cancel').click();
+    await expect(page.getByTestId('upload-sidebar-cancel')).toHaveCount(0, {
+      timeout: 5_000,
+    });
 
     expect(uploadCalls).toBe(0);
     await expect(page.getByTestId('upload-progress-tracker')).toHaveCount(0);
@@ -730,6 +746,179 @@ test.describe('Knowledge Base Upload — Client-Side Size Validation', () => {
       await expect(row).toContainText(`exceeds the ${limitMB} MB size limit`);
     } finally {
       cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Selection UI — folder hierarchy preview + compact "+" add buttons
+// (no Save / backend upload required)
+// ---------------------------------------------------------------------------
+
+test.describe('Knowledge Base Upload — Selection Hierarchy UI', () => {
+  test.describe.configure({ mode: 'serial' });
+
+  let kbId: string;
+
+  test.beforeAll(async ({ apiContext }) => {
+    const kb = await createTestKb(apiContext, makeKbName('hierarchy-ui'));
+    kbId = kb.id;
+  });
+
+  test.afterAll(async ({ apiContext }) => {
+    await deleteTestKb(apiContext, kbId);
+  });
+
+  test('folder selection shows hierarchy with nested files and folders', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-'));
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'root.pdf'), 'root');
+    writeFileSync(join(dir, 'docs', 'nested.pdf'), 'nested');
+    try {
+      await page.getByTestId('upload-input-folder').setInputFiles(dir);
+
+      const tree = page.getByTestId('upload-folder-tree');
+      await expect(tree).toBeVisible({ timeout: 10_000 });
+
+      // Root folder name is the temp dir basename; nested names must appear.
+      await expect(page.getByTestId('upload-folder-tree-row').filter({ hasText: 'root.pdf' })).toBeVisible();
+      await expect(page.getByTestId('upload-folder-tree-row').filter({ hasText: 'docs' })).toBeVisible();
+      await expect(page.getByTestId('upload-folder-tree-row').filter({ hasText: 'nested.pdf' })).toBeVisible();
+
+      await expect(
+        page.locator('[data-testid="upload-folder-tree-row"][data-kind="file"][data-path="root.pdf"]'),
+      ).toBeVisible();
+      await expect(
+        page.locator('[data-testid="upload-folder-tree-row"][data-kind="folder"][data-path="docs"]'),
+      ).toBeVisible();
+      await expect(
+        page.locator(
+          '[data-testid="upload-folder-tree-row"][data-kind="file"][data-path="docs/nested.pdf"]',
+        ),
+      ).toBeVisible();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('removing a nested file via X updates the folder tree', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-rm-file-'));
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'keep.pdf'), 'keep');
+    writeFileSync(join(dir, 'docs', 'drop.pdf'), 'drop');
+    try {
+      await page.getByTestId('upload-input-folder').setInputFiles(dir);
+      await expect(page.getByTestId('upload-folder-tree')).toBeVisible({ timeout: 10_000 });
+
+      const dropRow = page.locator(
+        '[data-testid="upload-folder-tree-row"][data-path="docs/drop.pdf"]',
+      );
+      await expect(dropRow).toBeVisible();
+      await dropRow.getByTestId('upload-folder-tree-remove').click();
+
+      await expect(dropRow).toHaveCount(0);
+      await expect(
+        page.locator('[data-testid="upload-folder-tree-row"][data-path="keep.pdf"]'),
+      ).toBeVisible();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('removing a subfolder via X removes all files under it', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-rm-folder-'));
+    mkdirSync(join(dir, 'docs'));
+    writeFileSync(join(dir, 'root.pdf'), 'root');
+    writeFileSync(join(dir, 'docs', 'a.pdf'), 'a');
+    writeFileSync(join(dir, 'docs', 'b.pdf'), 'b');
+    try {
+      await page.getByTestId('upload-input-folder').setInputFiles(dir);
+      await expect(page.getByTestId('upload-folder-tree')).toBeVisible({ timeout: 10_000 });
+
+      const docsRow = page.locator(
+        '[data-testid="upload-folder-tree-row"][data-kind="folder"][data-path="docs"]',
+      );
+      await docsRow.getByTestId('upload-folder-tree-remove').click();
+
+      await expect(docsRow).toHaveCount(0);
+      await expect(
+        page.locator('[data-testid="upload-folder-tree-row"][data-path="docs/a.pdf"]'),
+      ).toHaveCount(0);
+      await expect(
+        page.locator('[data-testid="upload-folder-tree-row"][data-path="root.pdf"]'),
+      ).toBeVisible();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('after selecting files, dashed drop zone is replaced by compact + button', async ({
+    page,
+  }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    await expect(page.getByTestId('upload-input-file')).toBeAttached();
+    await expect(page.getByTestId('upload-add-file-compact')).toHaveCount(0);
+
+    await input!.setInputFiles(makeFiles(1, { prefix: 'compact-ui' }));
+
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(1);
+    await expect(page.getByTestId('upload-add-file-compact')).toBeVisible();
+    // Large zone input is unmounted once files are selected.
+    await expect(page.getByTestId('upload-input-file')).toHaveCount(0);
+    await expect(page.getByTestId('upload-input-file-compact')).toBeAttached();
+  });
+
+  test('compact + button adds more files to the selection', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    await input!.setInputFiles(makeFiles(1, { prefix: 'compact-a' }));
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(1);
+
+    await page.getByTestId('upload-input-file-compact').setInputFiles(
+      makeFiles(1, { prefix: 'compact-b' }),
+    );
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(2);
+  });
+
+  test('removing a selected file via X updates the file list', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    await input!.setInputFiles(makeFiles(2, { prefix: 'rm-file' }));
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(2);
+
+    const first = page.getByTestId('upload-selected-file-row').first();
+    await first.getByTestId('upload-selected-file-remove').click();
+    await expect(page.getByTestId('upload-selected-file-row')).toHaveCount(1);
+  });
+
+  test('after selecting a folder, compact folder + button appears', async ({ page }) => {
+    const input = await openUploadSidebar(page, kbId);
+    expect(input, 'Upload Data entry point should be available').not.toBeNull();
+
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-hier-compact-'));
+    writeFileSync(join(dir, 'only.pdf'), 'only');
+    try {
+      await page.getByTestId('upload-input-folder').setInputFiles(dir);
+      await expect(page.getByTestId('upload-folder-tree')).toBeVisible({ timeout: 10_000 });
+
+      await expect(page.getByTestId('upload-add-folder-compact')).toBeVisible();
+      await expect(page.getByTestId('upload-input-folder')).toHaveCount(0);
+      await expect(page.getByTestId('upload-input-folder-compact')).toBeAttached();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -86,6 +86,7 @@ _MIME_TO_FORMAT: dict[str, str] = {
     "text/x-shellscript": "txt",
     "text/x-python-script": "txt",
     "text/x-script.python": "txt",
+    "text/css": "txt",
 }
 
 _EXT_TO_FORMAT: dict[str, str] = {
@@ -116,14 +117,18 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "sql_table": "sql_table",
     "sql_view": "sql_view",
     "blocks": "blocks",
-    # Source / code extensions (ExtensionTypes / CODE_FILE_EXTENSION_VALUES)
+    # Source / code / stylesheet extensions — keep aligned with
+    # SUPPORTED_CODE_FILE_EXTENSIONS in arangodb.py (text-like → txt parser).
     "py": "txt",
+    "pyi": "txt",
     "js": "txt",
     "jsx": "txt",
     "mjs": "txt",
     "cjs": "txt",
     "ts": "txt",
     "tsx": "txt",
+    "vue": "txt",
+    "svelte": "txt",
     "java": "txt",
     "c": "txt",
     "h": "txt",
@@ -140,9 +145,35 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "swift": "txt",
     "kt": "txt",
     "kts": "txt",
+    "scala": "txt",
+    "groovy": "txt",
+    "gradle": "txt",
     "dart": "txt",
     "sh": "txt",
     "bash": "txt",
+    "zsh": "txt",
+    "fish": "txt",
+    "ps1": "txt",
+    "css": "txt",
+    "scss": "txt",
+    "sass": "txt",
+    "less": "txt",
+    "lua": "txt",
+    "pl": "txt",
+    "pm": "txt",
+    "r": "txt",
+    "ex": "txt",
+    "exs": "txt",
+    "erl": "txt",
+    "hs": "txt",
+    "clj": "txt",
+    "cljs": "txt",
+    "sql": "txt",
+    "proto": "txt",
+    "graphql": "txt",
+    "gql": "txt",
+    "tf": "txt",
+    "tfvars": "txt",
 }
 
 

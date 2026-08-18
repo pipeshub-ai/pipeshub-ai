@@ -427,6 +427,7 @@ async def test_stream_record_unsupported_raises():
     bad_rec = MagicMock()
     bad_rec.external_record_id = "x"
     bad_rec.record_type = RecordType.MESSAGE
+    bad_rec.is_placeholder = False
     with patch.object(conn, "init", new_callable=AsyncMock):
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(bad_rec)
@@ -3143,27 +3144,85 @@ async def test_build_issue_records_epic_subtask_links_and_indexing_off():
 
 
 @pytest.mark.asyncio
-async def test_discover_epic_link_field_id():
+async def test_discover_hierarchy_link_field_ids_finds_both_despite_epic_first():
     conn = _make_connector()
+    fields_list = [
+        {
+            "id": "customfield_10108",
+            "name": "Epic Link",
+            "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"},
+        },
+        {
+            "id": "customfield_10014",
+            "name": "Parent Link",
+            "schema": {"custom": "com.atlassian.jpo:jpo-custom-field-parent"},
+        },
+    ]
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
-    resp.json = MagicMock(
-        return_value=[
-            {"id": "customfield_10108", "name": "Epic Link", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"}},
-        ]
-    )
     ds = MagicMock()
     ds.get_fields_v2 = AsyncMock(return_value=resp)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        with patch.object(conn, "_safe_json_parse", return_value=resp.json()):
-            await conn._discover_epic_link_field_id()
+        with patch.object(conn, "_safe_json_parse", return_value=fields_list):
+            await conn._discover_hierarchy_link_field_ids()
     assert conn._epic_link_field_id == "customfield_10108"
+    assert conn._parent_link_field_id == "customfield_10014"
+
+
+@pytest.mark.asyncio
+async def test_discover_hierarchy_link_field_ids_parent_link_absent():
+    conn = _make_connector()
+    fields_list = [
+        {
+            "id": "customfield_10108",
+            "name": "Epic Link",
+            "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"},
+        },
+    ]
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_fields_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value=fields_list):
+            await conn._discover_hierarchy_link_field_ids()
+    assert conn._epic_link_field_id == "customfield_10108"
+    assert conn._parent_link_field_id == ""
+
+
+def test_get_issue_search_fields_appends_both_link_fields():
+    conn = _make_connector()
+    conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = "customfield_10014"
+    fields = conn._get_issue_search_fields()
+    assert "customfield_10108" in fields
+    assert "customfield_10014" in fields
+
+
+def test_extract_parent_link_ref_shapes():
+    assert JiraDataCenterConnector._extract_parent_link_ref(None) == (None, None)
+    assert JiraDataCenterConnector._extract_parent_link_ref("INIT-1") == (None, "INIT-1")
+    assert JiraDataCenterConnector._extract_parent_link_ref(
+        {
+            "hasEpicLinkFieldDependency": False,
+            "showField": True,
+            "data": {"id": 10001, "key": "ABC-1"},
+        }
+    ) == ("10001", "ABC-1")
+    assert JiraDataCenterConnector._extract_parent_link_ref(
+        {"hasEpicLinkFieldDependency": False, "showField": True, "data": None}
+    ) == (None, None)
+    assert JiraDataCenterConnector._extract_parent_link_ref({"id": "9", "key": "T-9"}) == (
+        "9",
+        "T-9",
+    )
 
 
 @pytest.mark.asyncio
 async def test_resolve_hierarchy_parent_epic_link_uses_cache():
     conn = _make_connector()
     conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = ""
     fields = {"customfield_10108": "PA-24"}
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
@@ -3172,10 +3231,10 @@ async def test_resolve_hierarchy_parent_epic_link_uses_cache():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         with patch.object(conn, "_safe_json_parse", return_value={"id": "10023"}):
             first = await conn._resolve_hierarchy_parent_id(
-                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
+                fields, is_subtask=False, parent_from_parent_field=None
             )
             second = await conn._resolve_hierarchy_parent_id(
-                fields, is_subtask=False, is_epic=False, parent_from_parent_field=None
+                fields, is_subtask=False, parent_from_parent_field=None
             )
     assert first == "10023"
     assert second == "10023"
@@ -3187,6 +3246,7 @@ async def test_resolve_hierarchy_parent_epic_link_uses_cache():
 async def test_resolve_hierarchy_parent_from_epic_link_string():
     conn = _make_connector()
     conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = ""
     fields = {"customfield_10108": "PA-24"}
     resp = MagicMock()
     resp.status = HttpStatusCode.OK.value
@@ -3197,11 +3257,112 @@ async def test_resolve_hierarchy_parent_from_epic_link_string():
             parent_id = await conn._resolve_hierarchy_parent_id(
                 fields,
                 is_subtask=False,
-                is_epic=False,
                 parent_from_parent_field=None,
             )
     assert parent_id == "10023"
     assert conn._issue_key_to_id_cache["PA-24"] == "10023"
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_link_nested_data_with_id():
+    conn = _make_connector()
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    fields = {
+        "customfield_10014": {
+            "hasEpicLinkFieldDependency": False,
+            "showField": True,
+            "data": {"id": 10001, "key": "INIT-1"},
+        }
+    }
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock()
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        parent_id = await conn._resolve_hierarchy_parent_id(
+            fields, is_subtask=False, parent_from_parent_field=None
+        )
+    assert parent_id == "10001"
+    assert conn._issue_key_to_id_cache["INIT-1"] == "10001"
+    ds.get_issue_v2.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_link_nested_data_key_only():
+    conn = _make_connector()
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    fields = {
+        "customfield_10014": {
+            "hasEpicLinkFieldDependency": False,
+            "showField": True,
+            "data": {"key": "INIT-1"},
+        }
+    }
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value={"id": "10001"}):
+            parent_id = await conn._resolve_hierarchy_parent_id(
+                fields, is_subtask=False, parent_from_parent_field=None
+            )
+    assert parent_id == "10001"
+    ds.get_issue_v2.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_link_string_fallback():
+    conn = _make_connector()
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    fields = {"customfield_10014": "INIT-1"}
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resp)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_safe_json_parse", return_value={"id": "10001"}):
+            parent_id = await conn._resolve_hierarchy_parent_id(
+                fields, is_subtask=False, parent_from_parent_field=None
+            )
+    assert parent_id == "10001"
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_link_data_null():
+    conn = _make_connector()
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    fields = {
+        "customfield_10014": {
+            "hasEpicLinkFieldDependency": False,
+            "showField": True,
+            "data": None,
+        }
+    }
+    parent_id = await conn._resolve_hierarchy_parent_id(
+        fields, is_subtask=False, parent_from_parent_field=None
+    )
+    assert parent_id is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_hierarchy_parent_story_prefers_epic_link_over_parent_link():
+    conn = _make_connector()
+    conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = "customfield_10014"
+    fields = {
+        "customfield_10108": "EPIC-1",
+        "customfield_10014": {
+            "data": {"id": 999, "key": "INIT-1"},
+        },
+    }
+    conn._issue_key_to_id_cache["EPIC-1"] = "10023"
+    parent_id = await conn._resolve_hierarchy_parent_id(
+        fields, is_subtask=False, parent_from_parent_field=None
+    )
+    assert parent_id == "10023"
 
 
 @pytest.mark.asyncio
@@ -3210,6 +3371,7 @@ async def test_build_issue_records_epic_story_subtask_chain():
     conn.data_source = MagicMock()
     conn.site_url = "https://jira.example"
     conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = ""
     tx = MagicMock()
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     epic = {
@@ -3263,6 +3425,377 @@ async def test_build_issue_records_epic_story_subtask_chain():
     assert by_id["10023"].parent_external_record_id is None
     assert by_id["10024"].parent_external_record_id == "10023"
     assert by_id["10025"].parent_external_record_id == "10024"
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_epic_with_parent_link():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    epic = {
+        "id": "10023",
+        "key": "PA-24",
+        "fields": {
+            "summary": "Epic",
+            "issuetype": {"name": "Epic", "subtask": False},
+            "customfield_10014": {
+                "hasEpicLinkFieldDependency": False,
+                "showField": True,
+                "data": {"id": 10001, "key": "INIT-1"},
+            },
+            "updated": "2025-01-01T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+        rows = await conn._build_issue_records([epic], "pid", [], tx, is_new_project=False)
+    assert rows[0][0].parent_external_record_id == "10001"
+    assert rows[0][0].parent_record_type == RecordType.TICKET
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_initiative_with_parent_link():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
+    conn._epic_link_field_id = ""
+    conn._parent_link_field_id = "customfield_10014"
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=None)
+    initiative = {
+        "id": "10050",
+        "key": "INIT-1",
+        "fields": {
+            "summary": "Initiative",
+            "issuetype": {"name": "Initiative", "subtask": False},
+            "customfield_10014": {
+                "data": {"id": 10000, "key": "THEME-1"},
+            },
+            "updated": "2025-01-01T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+        rows = await conn._build_issue_records(
+            [initiative], "pid", [], tx, is_new_project=False
+        )
+    assert rows[0][0].parent_external_record_id == "10000"
+
+
+def _placeholder_ticket(
+    *,
+    external_id: str = "10026",
+    group_id: str = "10000",
+    revision: str | None = None,
+) -> TicketRecord:
+    return TicketRecord(
+        id=str(uuid4()),
+        org_id="org-dc-cov",
+        record_name=external_id,
+        record_type=RecordType.TICKET,
+        external_record_id=external_id,
+        external_revision_id=revision,
+        version=0,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.JIRA_DATA_CENTER,
+        connector_id="conn-dc-cov",
+        mime_type=MimeTypes.UNKNOWN.value,
+        external_record_group_id=group_id,
+        record_group_type=RecordGroupType.PROJECT,
+        is_placeholder=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_placeholder_backfills_with_parent_link():
+    from app.connectors.sources.atlassian.jira_data_center.connector import (
+        PLACEHOLDER_REVISION_PREFIX,
+    )
+
+    conn = _make_connector()
+    conn.site_url = "http://localhost:8080"
+    conn._epic_link_field_id = "customfield_10108"
+    conn._parent_link_field_id = "customfield_10100"
+    stub = _placeholder_ticket(external_id="10026", group_id="10000")
+    conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    conn.data_entities_processor.on_new_records = AsyncMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+
+    issue = {
+        "id": "10026",
+        "key": "PA-27",
+        "fields": {
+            "summary": "Epic with parent initiative",
+            "issuetype": {"name": "Epic", "subtask": False},
+            "project": {"id": "10000", "key": "PA"},
+            "customfield_10100": "PA-24",
+            "customfield_10108": None,
+            "updated": "2026-08-03T10:01:10.000+0000",
+            "created": "2026-08-03T09:59:14.000+0000",
+            "status": {"name": "To Do"},
+            "priority": {"name": "Medium"},
+        },
+    }
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    resolve_resp = MagicMock()
+    resolve_resp.status = HttpStatusCode.OK.value
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=resolve_resp)
+    with patch.object(conn, "_search_issues_with_retry", new_callable=AsyncMock, return_value=resp):
+        with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            with patch.object(
+                conn,
+                "_safe_json_parse",
+                side_effect=[
+                    {"issues": [issue]},
+                    {"id": "10023"},
+                ],
+            ):
+                total = await conn._sweep_placeholder_records(
+                    synced_project_ids={"10000"},
+                    full_sync_project_ids=set(),
+                )
+
+    assert total == 1
+    conn.data_entities_processor.on_new_records.assert_awaited()
+    backfills = conn.data_entities_processor.on_new_records.await_args.args[0]
+    assert len(backfills) == 1
+    record, perms = backfills[0]
+    assert record.is_placeholder is True
+    assert "PA-27" in (record.record_name or "")
+    assert record.external_revision_id.startswith(PLACEHOLDER_REVISION_PREFIX)
+    assert record.parent_external_record_id == "10023"
+    assert perms == []
+    assert record.weburl == "http://localhost:8080/browse/PA-27"
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_already_backfilled_unless_full_sync():
+    conn = _make_connector()
+    stub = _placeholder_ticket(
+        external_id="10026",
+        group_id="10000",
+        revision="placeholder:123",
+    )
+    conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    conn.data_entities_processor.on_new_records = AsyncMock()
+
+    await conn._sweep_placeholder_records(
+        synced_project_ids={"10000"},
+        full_sync_project_ids=set(),
+    )
+    conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+    with patch.object(conn, "_fetch_ancestor_level", new_callable=AsyncMock, return_value=[None]):
+        await conn._sweep_placeholder_records(
+            synced_project_ids={"10000"},
+            full_sync_project_ids={"10000"},
+        )
+    conn.data_entities_processor.on_new_records.assert_awaited()
+    resubmitted = conn.data_entities_processor.on_new_records.await_args.args[0][0][0]
+    assert resubmitted.external_record_id == "10026"
+    assert resubmitted.is_placeholder is True
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_stubs_outside_synced_projects():
+    conn = _make_connector()
+    stub = _placeholder_ticket(external_id="10026", group_id="99999")
+    conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    conn.data_entities_processor.on_new_records = AsyncMock()
+
+    await conn._sweep_placeholder_records(
+        synced_project_ids={"10000"},
+        full_sync_project_ids=set(),
+    )
+    conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sweep_stops_bfs_at_real_parent():
+    conn = _make_connector()
+    stub = _placeholder_ticket(external_id="10027", group_id="10000")
+    real_parent = _ticket_record()
+    real_parent.external_record_id = "10026"
+    real_parent.is_placeholder = False
+
+    conn.data_entities_processor.get_placeholder_records = AsyncMock(return_value=[stub])
+    conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    conn.data_entities_processor.on_new_records = AsyncMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=real_parent)
+
+    built = MagicMock()
+    built.is_placeholder = True
+    built.parent_external_record_id = "10026"
+    built.external_record_id = "10027"
+    with patch.object(conn, "_fetch_ancestor_level", new_callable=AsyncMock, return_value=[{"id": "10027"}]):
+        with patch.object(conn, "_build_ancestor_stub", new_callable=AsyncMock, return_value=built):
+            await conn._sweep_placeholder_records(
+                synced_project_ids={"10000"},
+                full_sync_project_ids=set(),
+            )
+
+    assert conn.data_entities_processor.on_new_records.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_ancestor_level_batches_jql():
+    from app.connectors.sources.atlassian.jira_data_center.connector import (
+        PLACEHOLDER_SWEEP_BATCH,
+    )
+
+    conn = _make_connector()
+    stubs = [
+        _placeholder_ticket(external_id=str(i), group_id="10000")
+        for i in range(PLACEHOLDER_SWEEP_BATCH + 10)
+    ]
+    resp = MagicMock()
+    resp.status = HttpStatusCode.OK.value
+    search = AsyncMock(return_value=resp)
+    with patch.object(conn, "_search_issues_with_retry", new=search):
+        with patch.object(conn, "_safe_json_parse", return_value={"issues": [], "total": 0}):
+            await conn._fetch_ancestor_level(stubs)
+    assert search.await_count == 2
+    assert search.await_args_list[0].kwargs["start_at"] == 0
+    assert search.await_args_list[0].kwargs["jql"].endswith("ORDER BY id ASC")
+
+
+@pytest.mark.asyncio
+async def test_search_ancestors_by_jql_paginates_with_start_at():
+    """Within one id-in chunk, page via startAt until total is exhausted."""
+    conn = _make_connector()
+    issue_ids = [str(i) for i in range(30)]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+
+    def parse_side_effect(response, _label):
+        # Infer page from how many times we've been called.
+        call_n = parse_side_effect.n
+        parse_side_effect.n += 1
+        start = call_n * 10
+        page = [{"id": str(i)} for i in range(start, min(start + 10, 30))]
+        return {"issues": page, "total": 30}
+
+    parse_side_effect.n = 0
+
+    search = AsyncMock(return_value=ok)
+    with patch.object(conn, "_search_issues_with_retry", new=search):
+        with patch.object(conn, "_safe_json_parse", side_effect=parse_side_effect):
+            with patch(
+                "app.connectors.sources.atlassian.jira_data_center.connector.DEFAULT_MAX_RESULTS",
+                10,
+            ):
+                with patch(
+                    "app.connectors.sources.atlassian.jira_data_center.connector.PLACEHOLDER_SWEEP_BATCH",
+                    50,
+                ):
+                    out = await conn._search_ancestors_by_jql(issue_ids, ["summary"])
+
+    assert len(out) == 30
+    assert search.await_count == 3
+    assert [c.kwargs["start_at"] for c in search.await_args_list] == [0, 10, 20]
+    assert all(c.kwargs["max_results"] == 10 for c in search.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_fetch_ancestor_level_falls_back_to_get_when_jql_rejects_unknown_id():
+    """DC returns HTTP 400 for the whole id-in clause if any id is unknown."""
+    conn = _make_connector()
+    stubs = [
+        _placeholder_ticket(external_id="10026", group_id="10000"),
+        _placeholder_ticket(external_id="999999", group_id="10000"),
+    ]
+    bad_resp = MagicMock()
+    bad_resp.status = HttpStatusCode.BAD_REQUEST.value
+    issue = {
+        "id": "10026",
+        "key": "PA-27",
+        "fields": {
+            "summary": "Epic",
+            "issuetype": {"name": "Epic", "subtask": False},
+            "project": {"id": "10000"},
+            "updated": "2026-08-03T10:01:10.000+0000",
+            "created": "2026-08-03T09:59:14.000+0000",
+        },
+    }
+
+    async def get_issue(issue_id, fields, expand=None, max_attempts=3):
+        resp = MagicMock()
+        if str(issue_id) == "10026":
+            resp.status = HttpStatusCode.OK.value
+        else:
+            resp.status = HttpStatusCode.NOT_FOUND.value
+        return resp
+
+    get_retry = AsyncMock(side_effect=get_issue)
+
+    with patch.object(conn, "_search_issues_with_retry", new_callable=AsyncMock, return_value=bad_resp):
+        with patch.object(conn, "_get_issue_with_retry", new=get_retry):
+            with patch.object(conn, "_safe_json_parse", return_value=issue):
+                out = await conn._fetch_ancestor_level(stubs)
+
+    assert out[0] is not None and out[0]["id"] == "10026"
+    assert out[1] is None
+    assert get_retry.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_promotes_placeholder():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.site_url = "https://jira.example"
+    stub = _placeholder_ticket(external_id="10026", group_id="pid", revision="placeholder:1")
+    # Match issue updated so non-placeholder path would skip; promotion must still emit.
+    stub.source_updated_at = 1700000000000
+    tx = MagicMock()
+    tx.get_record_by_external_id = AsyncMock(return_value=stub)
+    issue = {
+        "id": "10026",
+        "key": "PA-27",
+        "fields": {
+            "summary": "Epic",
+            "issuetype": {"name": "Epic", "subtask": False},
+            "updated": "2025-01-01T00:00:00.000+0000",
+            "created": "2025-01-01T00:00:00.000+0000",
+        },
+    }
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    conn._parse_jira_timestamp = MagicMock(return_value=1700000000000)  # type: ignore[method-assign]
+    with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+        rows = await conn._build_issue_records([issue], "pid", [], tx, is_new_project=False)
+    assert len(rows) == 1
+    assert rows[0][0].version == 0
+    assert rows[0][0].is_placeholder is False
+
+
+@pytest.mark.asyncio
+async def test_stream_record_rejects_placeholder():
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    stub = _placeholder_ticket()
+    with pytest.raises(ValueError, match="Cannot stream placeholder"):
+        await conn.stream_record(stub)
 
 
 @pytest.mark.asyncio

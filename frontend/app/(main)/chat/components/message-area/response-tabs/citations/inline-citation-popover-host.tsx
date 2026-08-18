@@ -66,10 +66,17 @@ export function InlineCitationPopoverHost() {
   };
 
   const handlePreview = activeCallbacks?.onPreview
-    ? () => activeCallbacks.onPreview?.(activeCitation)
+    ? () => {
+        activeCallbacks.onPreview?.(activeCitation);
+        // Dismiss the popover so it doesn't stay open over the preview panel.
+        close(activeKey ?? undefined);
+      }
     : undefined;
   const handleOpenInCollection = activeCallbacks?.onOpenInCollection
-    ? () => activeCallbacks.onOpenInCollection?.(activeCitation)
+    ? () => {
+        activeCallbacks.onOpenInCollection?.(activeCitation);
+        close(activeKey ?? undefined);
+      }
     : undefined;
 
   return (

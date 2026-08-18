@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.executor import ToolExecutor
@@ -92,3 +94,54 @@ class TestValidationErrorUsageHint:
 
         assert result.is_error is False
         assert "Correct usage of" not in str(result.content)
+
+
+class _RecordingTool(_RunCodeLikeTool):
+    """Records the kwargs `execute()` actually received, so a test can
+    confirm the None -> default substitution happens before `execute()` is
+    called, not just that validation passes."""
+
+    def __init__(self) -> None:
+        self.received: dict[str, Any] | None = None
+
+    async def execute(self, **kwargs: Any) -> ToolOutput:
+        self.received = kwargs
+        return ToolOutput(success=True, data="ran")
+
+
+class TestOptionalParameterExplicitNull:
+    """A model's tool call JSON can carry an explicit `null` for an optional
+    parameter it doesn't intend to set (e.g. `"sandbox_id": null`) rather
+    than omitting the key. `json.loads` turns that into Python `None`, so
+    the key IS present in `kwargs` — `validate()` must treat it the same as
+    the key being absent (apply the declared default), not reject it as a
+    type mismatch. See `Tool.validate()` in `tools/base.py`."""
+
+    @pytest.mark.parametrize(
+        ("param_name", "expected_default"),
+        [("language", "typescript"), ("packages", None)],
+    )
+    async def test_optional_param_with_none_value_uses_default(
+        self, param_name, expected_default,
+    ) -> None:
+        tool = _RecordingTool()
+        executor = ToolExecutor(_registry_with(tool))
+        call = ToolCall(
+            id="c1", name="run_code", arguments={"code": "print(1)", param_name: None},
+        )
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is False
+        assert tool.received is not None
+        assert tool.received[param_name] == expected_default
+
+    async def test_required_param_with_none_value_still_fails(self) -> None:
+        executor = ToolExecutor(_registry_with(_RunCodeLikeTool()))
+        call = ToolCall(id="c1", name="run_code", arguments={"code": None})
+
+        result = await executor.call_tool(call)
+
+        assert result.is_error is True
+        assert "expected type 'string'" in result.content
+        assert "Correct usage of `run_code`:" in result.content
