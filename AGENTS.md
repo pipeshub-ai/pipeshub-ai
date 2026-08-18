@@ -20,11 +20,11 @@ New connectors extend `ConnectorFactory` under `backend/python/app/connectors/so
 
 ## Storage is pluggable
 
-Do not import a vendor client in feature code. Talk to stores through the interface; the factory picks the backend from env. Hard-coding Qdrant, ArangoDB, or Kafka is the usual mistake — the operator may be on Neo4j, OpenSearch, or Redis Streams.
+Do not open a Neo4j, Arango, Qdrant, or Kafka client from indexing/query/connector feature code. Call `IGraphDBProvider`, `IVectorDBService`, or `MessagingFactory`. Those factories read env and construct the vendor client; your code stays the same on a Neo4j box and an Arango box.
 
 | Role | Env | Backends | Interface / factory |
 | --- | --- | --- | --- |
-| Graph | `DATA_STORE` | `arangodb` (default), `neo4j` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
+| Graph | `DATA_STORE` | `neo4j` (what `install.sh`, Helm, and `backend/env.template` ship), `arangodb` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
 | Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis` | `IVectorDBService` / `VectorDBProviderFactory` |
 | KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
 | Document | — | MongoDB | Mongoose in the Node API (users, orgs, sessions). Not swapped today |

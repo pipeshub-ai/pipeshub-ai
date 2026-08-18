@@ -14,11 +14,11 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 The platform is a polyglot system: **Python FastAPI microservices**, **1 Node.js Express API**, and **1 Next.js frontend**. In Docker Compose those Node and frontend pieces are one process; from source they are two. See `AGENTS.md` for which localhost port to open.
 
-Stateful stores are **pluggable**. Feature code talks to them through interfaces (`IGraphDBProvider`, `IVectorDBService`, `KeyValueStore`, `StorageServiceInterface`, `MessagingFactory`); the operator picks the backend with env. Do not import a Qdrant, Arango, Neo4j, or Kafka client in new feature code — the instance may be on the other vendor.
+Stateful stores are **pluggable**. Indexing, query, and connectors should call `IGraphDBProvider` / `IVectorDBService` / `MessagingFactory`, not `neo4j.GraphDatabase`, `qdrant_client`, or a Kafka producer. The same feature has to run on whichever backend that instance was installed with.
 
 | Role | Env | Backends |
 | --- | --- | --- |
-| Graph | `DATA_STORE` | ArangoDB (default), Neo4j |
+| Graph | `DATA_STORE` | Neo4j (what `install.sh`, Helm, and `backend/env.template` ship), ArangoDB |
 | Vector | `VECTOR_DB_TYPE` | Qdrant (default), OpenSearch, Redis |
 | KV / config | `KV_STORE_TYPE` | Redis (default), etcd |
 | Document | — | MongoDB (Node/Mongoose). Not swapped today |
