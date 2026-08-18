@@ -420,6 +420,84 @@ class TestDeletedTickets:
         assert zendesk_connector._is_deleted_ticket({}) is False
 
 
+class TestFilterNarrowing:
+    """Narrowing a sync filter marks the connector pendingFullSync, so the next export
+    replays every ticket. Skipping the now-excluded ones left them in the graph: the UI
+    count dropped because a full sync had deleted their edges, but the records stayed in
+    the vector store and kept answering queries."""
+
+    @staticmethod
+    def _only_group(connector, group_ids):
+        group_filter = MagicMock()
+        group_filter.get_value.return_value = group_ids
+        group_filter.get_operator.return_value = "in"
+        connector.sync_filters = {SyncFilterKey.GROUP_IDS: group_filter}
+
+    async def test_ticket_dropped_from_filter_is_removed_not_skipped(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        existing = MagicMock()
+        existing.id = "rec-99"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._only_group(zendesk_connector, ["7"])
+        TestDeletedTickets._page(zendesk_connector, [
+            {"id": 99, "subject": "Excluded group", "group_id": 42, "status": "open"},
+        ])
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-99"], "zd-conn-1"
+        )
+        mock_data_entities_processor.on_new_records.assert_not_awaited()
+
+    async def test_ticket_still_in_filter_survives(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        self._only_group(zendesk_connector, ["7"])
+        TestDeletedTickets._page(zendesk_connector, [
+            {"id": 7, "subject": "Kept", "group_id": 7, "status": "open"},
+        ])
+
+        synced = await zendesk_connector._sync_tickets()
+
+        assert synced == 1
+        mock_data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    async def test_ticket_outside_date_filter_is_removed(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ):
+        """Same trap on the date filters — narrowing the range must evict, not skip."""
+        existing = MagicMock()
+        existing.id = "rec-old"
+        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        mock_data_entities_processor.on_records_deleted_cascade = AsyncMock()
+        date_filter = MagicMock()
+        date_filter.get_value.return_value = (1767312000000, None)
+        zendesk_connector.sync_filters = {SyncFilterKey.CREATED: date_filter}
+        TestDeletedTickets._page(zendesk_connector, [
+            {"id": 5, "subject": "Too old", "group_id": 7,
+             "status": "open", "created_at": "2020-01-01T00:00:00Z"},
+        ])
+
+        await zendesk_connector._sync_tickets()
+
+        mock_data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-old"], "zd-conn-1"
+        )
+
+    def test_scope_predicate_covers_all_three_reasons(self, zendesk_connector):
+        self._only_group(zendesk_connector, ["7"])
+        assert zendesk_connector._is_ticket_in_scope({"id": 1, "group_id": 7}) is True
+        assert zendesk_connector._is_ticket_in_scope({"id": 1, "group_id": 42}) is False
+        assert zendesk_connector._is_ticket_in_scope(
+            {"id": 1, "group_id": 7, "status": "deleted"}
+        ) is False
+
+
 # ===========================================================================
 # Ticket-to-ticket links
 # ===========================================================================
