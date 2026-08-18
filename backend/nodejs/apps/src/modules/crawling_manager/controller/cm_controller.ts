@@ -34,7 +34,7 @@ export const handleConnectorResponse = (
 const validateConnectorAccess = async (req: AuthenticatedUserRequest, connectorId: string, appConfig: AppConfig) => {
   const { userId } = req.user as { userId: string };
   const isAdmin = await isUserAdmin(req);
-  const headers = buildProxyHeaders(req, isAdmin);
+  const headers = buildProxyHeaders(req);
   const connectorResponse = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
     HttpMethod.GET,

@@ -74,12 +74,17 @@ def _mock_request(
 ):
     """Build a minimal mock FastAPI request object."""
     req = MagicMock()
-    user_data = user or {"userId": "user-1", "orgId": "org-1"}
+    _headers = headers or {}
+    user_data = dict(user or {"userId": "user-1", "orgId": "org-1"})
+    if "role" not in user_data:
+        admin_hdr = str(
+            _headers.get("X-Is-Admin") or _headers.get("x-is-admin") or ""
+        ).lower()
+        user_data["role"] = "admin" if admin_hdr == "true" else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
 
-    _headers = headers or {}
     req.headers = MagicMock()
     req.headers.get = lambda k, default=None: _headers.get(k, default)
 
@@ -1434,13 +1439,13 @@ class TestStreamRecordDeepPaths:
         container = MagicMock()
         container.connectors_map = {"conn-1": connector_obj} if has_connector_obj else {}
 
-        user_data = {"userId": "u1", "orgId": "org-1"}
+        user_data = {"userId": "u1", "orgId": "org-1", "role": "member"}
         req = MagicMock()
         req.state = MagicMock()
         req.state.user = MagicMock()
         req.state.user.get = lambda k, default=None: user_data.get(k, default)
         req.headers = MagicMock()
-        req.headers.get = lambda k, default=None: {"X-Is-Admin": "false"}.get(k, default)
+        req.headers.get = lambda k, default=None: {}.get(k, default)
         req.app = MagicMock()
         req.app.container = container
         req.app.state = MagicMock()

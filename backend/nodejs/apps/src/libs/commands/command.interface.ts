@@ -56,10 +56,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     // Propagate the trace id onto every outbound service call.
     headers = injectRequestHeaders(headers);
     // Define allowed headers in lowercase.
-    const allowedHeaders = new Set([
+      const allowedHeaders = new Set([
       'content-type',
       'authorization',
-      'x-is-admin',
       HEADER_REQUEST_ID,
       'client-name'
     ]);

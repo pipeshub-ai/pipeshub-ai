@@ -1218,7 +1218,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('should set X-Is-Admin to true when user is admin', async () => {
+    it('does not send X-Is-Admin when user is admin', async () => {
       const handler = getConnectorRegistry(mockAppConfig)
       req.query = {}
       const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
@@ -1229,10 +1229,10 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('true')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
 
-    it('should set X-Is-Admin to false when user is not admin', async () => {
+    it('does not send X-Is-Admin when user is not admin', async () => {
       const handler = getConnectorRegistry(mockAppConfig)
       req.query = {}
       req.user.role = 'member'
@@ -1244,7 +1244,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('false')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
   })
 
@@ -1515,9 +1515,8 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(calledUrl).to.include('search=test')
       expect(calledUrl).to.include('page=2')
       expect(calledUrl).to.include('limit=50')
-      // X-Is-Admin header should reflect admin status
       const headers = execStub.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('true')
+      expect(headers).to.not.have.property('X-Is-Admin')
     })
   })
 

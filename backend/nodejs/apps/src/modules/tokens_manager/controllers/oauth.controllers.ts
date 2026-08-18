@@ -18,7 +18,7 @@ import {
 import { AppConfig } from '../config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
-import { buildProxyHeaders, isUserAdmin } from './connector.controllers';
+import { buildProxyHeaders } from './connector.controllers';
 
 const logger = Logger.getInstance({
   service: 'OAuth Controller',
@@ -70,9 +70,7 @@ const createOAuthApiHandler = (
 
       logger.info(`${operationName} for user ${userId}`);
 
-      // Prepare headers with admin flag
-      const isAdmin = await isUserAdmin(req);
-      const headers = buildProxyHeaders(req, isAdmin);
+      const headers = buildProxyHeaders(req);
 
       // Build payload (if applicable)
       const payload = buildPayload(req);

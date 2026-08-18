@@ -807,8 +807,8 @@ class TestGetAllOAuthConfigsExceptionInFetch:
     async def test_exception_result_logged(self):
         from app.connectors.api.router import get_all_oauth_configs
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.app.state.connector_registry.get_all_connector_names.return_value = ["GOOGLE_DRIVE"]
 
         cs = AsyncMock()
@@ -841,8 +841,8 @@ class TestUpdateOAuthConfigNameBranch:
         configs = [existing]
 
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.json = AsyncMock(return_value={
             "oauthInstanceName": "NewName",
             "config": {"clientId": "new-id"},
@@ -876,8 +876,8 @@ class TestUpdateOAuthConfigNameBranch:
         configs = [existing]
 
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d=None: {"X-Is-Admin": "true"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "admin"}.get(k, d)
+        request.headers.get = lambda k, d=None: {}.get(k, d)
         request.json = AsyncMock(return_value={})
 
         cs = AsyncMock()
@@ -918,8 +918,8 @@ class TestReindexConnectorKbAuth:
         from app.connectors.api.router import reindex_connector
         
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d="": {"X-Is-Admin": "false"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u1", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
         request.json = AsyncMock(return_value={})
         request.app.container.logger = MagicMock(return_value=MagicMock())
         
@@ -950,8 +950,8 @@ class TestReindexConnectorKbAuth:
         from app.connectors.api.router import reindex_connector
         
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u2", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d="": {"X-Is-Admin": "false"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u2", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
         request.json = AsyncMock(return_value={})
         request.app.container.logger = MagicMock(return_value=MagicMock())
         
@@ -990,8 +990,8 @@ class TestReindexConnectorKbAuth:
         from app.connectors.api.router import reindex_connector
         
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u3", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d="": {"X-Is-Admin": "false"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u3", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
         request.json = AsyncMock(return_value={})
         request.app.container.logger = MagicMock(return_value=MagicMock())
         
@@ -1029,8 +1029,8 @@ class TestReindexConnectorKbAuth:
         from app.connectors.api.router import reindex_connector
         
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u4", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d="": {"X-Is-Admin": "false"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u4", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
         request.json = AsyncMock(return_value={})
         request.app.container.logger = MagicMock(return_value=MagicMock())
         
@@ -1067,8 +1067,8 @@ class TestReindexConnectorKbAuth:
         from app.connectors.api.router import reindex_connector
         
         request = MagicMock()
-        request.state.user.get = lambda k, d=None: {"userId": "u5", "orgId": "o1"}.get(k, d)
-        request.headers.get = lambda k, d="": {"X-Is-Admin": "false"}.get(k, d)
+        request.state.user.get = lambda k, d=None: {"userId": "u5", "orgId": "o1", "role": "member"}.get(k, d)
+        request.headers.get = lambda k, d="": {}.get(k, d)
         request.json = AsyncMock(return_value={})
         request.app.container.logger = MagicMock(return_value=MagicMock())
         

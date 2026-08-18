@@ -43,7 +43,7 @@ from app.agents.actions.knowledge_graph.views import (
     render_lookup_result,
     render_navigation_view,
 )
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppStatus,
@@ -572,7 +572,7 @@ async def get_validated_connector_instance(
     # Extract user information
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     # Validate authentication
     if not user_id or not org_id:
@@ -664,7 +664,7 @@ async def require_connector_not_locked(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     instance = await connector_registry.get_connector_instance(
         connector_id=connector_id,
@@ -1106,7 +1106,7 @@ async def stream_record(
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record"
             )
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         return await _resolve_record_content_response(
             record=record,
             org_id=org_id,
@@ -2059,7 +2059,7 @@ async def get_connector_stats_endpoint(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         user_org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not user_org_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
@@ -2240,7 +2240,7 @@ async def reindex_connector(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
@@ -2592,7 +2592,7 @@ async def get_connector_registry(
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
 
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         result = await connector_registry.get_all_registered_connectors(
             is_admin=is_admin,
             scope=scope,
@@ -2860,7 +2860,7 @@ async def get_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting connector instances")
         if not user_id or not org_id:
@@ -3012,7 +3012,7 @@ async def get_configured_connector_instances(
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     try:
         logger.info("Getting configured connector instances")
         if not user_id or not org_id:
@@ -3394,7 +3394,7 @@ async def create_connector_instance(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -3671,7 +3671,7 @@ async def get_connector_instance(
     logger.info("Getting connector instance")
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     try:
         if not user_id or not org_id:
@@ -3763,7 +3763,7 @@ async def get_connector_instance_config(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -3889,7 +3889,7 @@ async def submit_connector_file_event_uploads(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload, files_by_field = await _parse_local_fs_uploaded_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -3998,7 +3998,7 @@ async def submit_connector_file_events(
     connector_registry = request.app.state.connector_registry
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
     payload = await _parse_local_fs_file_event_batch_request(request)
 
     if not user_id or not org_id:
@@ -4108,7 +4108,7 @@ async def update_connector_instance_auth_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -4452,7 +4452,7 @@ async def update_connector_instance_filters_sync_config(
         # Extract user info for later use
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         body = await request.json()
 
@@ -4596,7 +4596,7 @@ async def update_connector_instance_config(
 
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         connector_type = instance.get("type", "")
 
         body = await request.json()
@@ -4866,7 +4866,7 @@ async def update_connector_instance_name(
     try:
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -4985,7 +4985,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     """
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+    is_admin = is_request_admin(request)
 
     if not user_id or not org_id:
         raise HTTPException(
@@ -5412,7 +5412,7 @@ async def get_oauth_authorization_url(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -5616,7 +5616,7 @@ async def handle_oauth_callback(
         # ============================================================
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             raise HTTPException(
@@ -6796,7 +6796,7 @@ async def toggle_connector_instance(
             )
         org_id = user_info["orgId"]
         user_id = user_info["userId"]
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(
@@ -7019,7 +7019,7 @@ async def delete_connector_instance(
         # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
 
         if not user_id or not org_id:
             logger.error("User not authenticated for connector deletion")
@@ -7305,7 +7305,7 @@ async def get_active_agent_instances(
         connector_registry = request.app.state.connector_registry
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+        is_admin = is_request_admin(request)
         if not user_id or not org_id:
             logger.error(f"User not authenticated: {user_id} {org_id}")
             raise HTTPException(

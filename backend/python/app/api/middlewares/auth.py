@@ -2,12 +2,16 @@ import os
 from collections.abc import Callable, Coroutine
 from typing import Any, Optional
 
+import httpx
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
 from jose import JWTError, jwt
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import config_node_constants
+from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
+
+_ADMIN_CHECK_TIMEOUT_SECONDS = 5.0
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -124,6 +128,7 @@ async def isJwtTokenValid(request: Request) -> dict:
                 if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
                     payload["userId"] = payload["createdBy"]
 
+            payload["role"] = normalize_auth_role(payload.get("role"))
             return payload
 
         # Try regular JWT first (maintains backward compatibility)
@@ -193,6 +198,7 @@ async def authMiddleware(request: Request) -> Request:
         logger.debug("🚀 Starting authentication middleware")
 
         payload = await isJwtTokenValid(request)
+        payload["role"] = await resolve_request_role(request, payload)
 
         # Attach the authenticated user information to the request state
         request.state.user = payload
@@ -207,6 +213,70 @@ async def authMiddleware(request: Request) -> Request:
         raise credentials_exception
 
     return request
+
+
+def normalize_auth_role(role: Any) -> str:
+    """Map a JWT role claim to admin|member. Unknown/missing → member (fail closed)."""
+    if isinstance(role, str) and role.strip().lower() == "admin":
+        return "admin"
+    return "member"
+
+
+def is_request_admin(request: Request) -> bool:
+    """Org-admin from JWT role on request.state.user — never from X-Is-Admin."""
+    user = getattr(request.state, "user", None) or {}
+    getter = getattr(user, "get", None)
+    role = getter("role") if callable(getter) else None
+    return normalize_auth_role(role) == "admin"
+
+
+async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str:
+    """Session JWT carries role. OAuth/PAT does not — look up via Node adminCheck."""
+    role = normalize_auth_role(payload.get("role"))
+    if role == "admin":
+        return role
+    if payload.get("isOAuth"):
+        user_id = payload.get("userId")
+        if user_id and await _lookup_oauth_admin(request, str(user_id)):
+            return "admin"
+    return "member"
+
+
+async def _lookup_oauth_admin(request: Request, user_id: str) -> bool:
+    """Verify OAuth caller is org admin via Node (JWT has no role claim). Fail closed."""
+    logger = request.app.container.logger()
+    try:
+        config_service = await get_config_service(request)
+        try:
+            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+            nodejs_url = (
+                endpoints.get("nodejs", {}).get("endpoint")
+                if isinstance(endpoints, dict)
+                else None
+            ) or DefaultEndpoints.NODEJS_ENDPOINT.value
+        except Exception:
+            nodejs_url = DefaultEndpoints.NODEJS_ENDPOINT.value
+
+        auth_headers: dict[str, str] = {}
+        for header_name in ("authorization", "Authorization"):
+            val = request.headers.get(header_name)
+            if val:
+                auth_headers["authorization"] = val
+                break
+
+        async with httpx.AsyncClient(timeout=_ADMIN_CHECK_TIMEOUT_SECONDS) as client:
+            resp = await client.get(
+                f"{nodejs_url}/api/v1/users/{user_id}/adminCheck",
+                headers=auth_headers,
+            )
+            return resp.status_code == HttpStatusCode.OK.value
+    except Exception as exc:
+        logger.warning(
+            "OAuth admin lookup failed for user %s: %s. Defaulting to member.",
+            user_id,
+            exc,
+        )
+        return False
 
 
 def require_scopes(*required_scopes: str) -> Callable[..., Coroutine[Any, Any, None]]:

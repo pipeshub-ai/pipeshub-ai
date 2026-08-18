@@ -164,10 +164,9 @@ def _connector_request(
         user_data["userId"] = user_id
     if org_id is not None:
         user_data["orgId"] = org_id
+    user_data["role"] = "admin" if str(admin_header).lower() == "true" else "member"
     req.state.user.get = lambda k, default=None: user_data.get(k, default)
-    req.headers.get = lambda k, default=None: (
-        admin_header if k == "X-Is-Admin" else default
-    )
+    req.headers.get = lambda k, default=None: default
     inner_logger = MagicMock()
     req.app.container = MagicMock()
     req.app.container.logger.return_value = inner_logger

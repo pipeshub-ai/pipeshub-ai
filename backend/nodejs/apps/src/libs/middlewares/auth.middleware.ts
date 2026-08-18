@@ -207,7 +207,7 @@ export class AuthMiddleware {
     if (!fullName) {
       fullName = user.fullName;
     }
-    // Attach role so isUserAdmin / X-Is-Admin match session-JWT behavior
+    // Attach role so Node-side isUserAdmin matches session-JWT behavior
     // (OAuth access tokens do not carry a role claim).
     role = user.role === 'admin' ? 'admin' : 'member';
 

@@ -64,7 +64,7 @@ function createMockRequest(overrides: Record<string, any> = {}): any {
   }
 }
 
-/** Valid ObjectIds + role for tests that assert X-Is-Admin. */
+/** Valid ObjectIds for authenticated KB controller tests. */
 const VALID_USER_IDS = {
   userId: '507f1f77bcf86cd799439011',
   orgId: '507f1f77bcf86cd799439012',
@@ -1945,7 +1945,7 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
-      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('true')
+      expect(execStub.firstCall.args[2]).to.not.have.property('X-Is-Admin')
     })
 
     it('should reindex connector with no statusFilters (reindex all)', async () => {
@@ -1968,7 +1968,7 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
-      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('false')
+      expect(execStub.firstCall.args[2]).to.not.have.property('X-Is-Admin')
     })
   })
 
