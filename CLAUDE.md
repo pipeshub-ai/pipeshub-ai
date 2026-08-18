@@ -14,7 +14,7 @@ PipesHub is a workplace AI platform for enterprise search and workflow automatio
 
 The platform is a polyglot system: **Python FastAPI microservices**, **1 Node.js Express API**, and **1 Next.js frontend**, backed by a fleet of stateful services. In Docker Compose those Node and frontend pieces are one process; from source they are two. See `AGENTS.md` for which localhost port to open.
 
-```
+```text
 /pipeshub-ai
 ├── frontend/              # React + Next.js + TypeScript
 ├── backend/
