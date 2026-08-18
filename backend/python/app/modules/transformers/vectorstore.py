@@ -896,10 +896,46 @@ class VectorStore(Transformer):
                 points.extend(r)
         return points
 
+    @staticmethod
+    def _extract_embedding_from_response(payload: dict) -> List[float]:
+        data = payload.get("data")
+        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+            raise ValueError("response contains no embedding data")
+        embedding = data[0].get("embedding")
+        if (
+            not isinstance(embedding, list)
+            or not embedding
+            or not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in embedding
+            )
+        ):
+            raise ValueError("response contains no embedding vector")
+        return embedding
+
+    async def _post_embedding_request(
+        self, client: httpx.AsyncClient, endpoint: str, headers: dict, body: dict
+    ) -> List[float]:
+        response = await client.post(endpoint, headers=headers, json=body)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("response payload is not an object")
+        return self._extract_embedding_from_response(payload)
+
     async def _process_image_embeddings_openai_compatible(
         self, image_chunks: List[dict], image_base64s: List[str]
     ) -> List[VectorPoint]:
-        """Embed images using vLLM's multimodal OpenAI-compatible extension."""
+        """Embed images via an OpenAI-compatible ``/embeddings`` endpoint.
+
+        Two incompatible multimodal conventions exist in the wild, so we try
+        both:
+        1. Standard OpenAI schema with a data-URI string inside ``input`` —
+           used by routers such as Requesty/LiteLLM when proxying to
+           natively multimodal embedding models (e.g. Gemini Embedding 2).
+        2. vLLM's chat-``messages`` extension — used by self-hosted vLLM
+           multimodal embedding servers, which never adopted (1).
+        """
         if not self.embedding_endpoint:
             self.logger.warning(
                 "OpenAI-compatible image embedding skipped: endpoint is not configured"
@@ -925,59 +961,52 @@ class VectorStore(Transformer):
                     else f"data:image/jpeg;base64,{normalized}"
                 )
                 try:
-                    response = await client.post(
+                    embedding = await self._post_embedding_request(
+                        client,
                         endpoint,
-                        headers=headers,
-                        json={
+                        headers,
+                        {
                             "model": self.model_name,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": image_url},
-                                        }
-                                    ],
-                                }
-                            ],
+                            "input": [image_url],
                             "encoding_format": "float",
                         },
                     )
-                    response.raise_for_status()
-                    payload = response.json()
-                    if not isinstance(payload, dict):
-                        raise ValueError("response payload is not an object")
-                    data = payload.get("data")
-                    if (
-                        not isinstance(data, list)
-                        or not data
-                        or not isinstance(data[0], dict)
-                    ):
-                        raise ValueError("response contains no embedding data")
-                    embedding = data[0].get("embedding")
-                    if (
-                        not isinstance(embedding, list)
-                        or not embedding
-                        or not all(
-                            isinstance(value, (int, float)) and not isinstance(value, bool)
-                            for value in embedding
+                except Exception as standard_err:
+                    try:
+                        embedding = await self._post_embedding_request(
+                            client,
+                            endpoint,
+                            headers,
+                            {
+                                "model": self.model_name,
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {"url": image_url},
+                                            }
+                                        ],
+                                    }
+                                ],
+                                "encoding_format": "float",
+                            },
                         )
-                    ):
-                        raise ValueError("response contains no embedding vector")
-                    return VectorPoint(
-                        id=str(uuid.uuid4()),
-                        dense_vector=embedding,
-                        payload={
-                            "metadata": image_chunks[i].get("metadata", {}),
-                            "page_content": image_chunks[i].get("image_uri", ""),
-                        },
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"OpenAI-compatible image embedding failed for index {i}: {e}"
-                    )
-                    return None
+                    except Exception as vllm_err:
+                        self.logger.warning(
+                            f"OpenAI-compatible image embedding failed for index {i}: "
+                            f"input-format error={standard_err}, messages-format error={vllm_err}"
+                        )
+                        return None
+                return VectorPoint(
+                    id=str(uuid.uuid4()),
+                    dense_vector=embedding,
+                    payload={
+                        "metadata": image_chunks[i].get("metadata", {}),
+                        "page_content": image_chunks[i].get("image_uri", ""),
+                    },
+                )
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             results = await asyncio.gather(

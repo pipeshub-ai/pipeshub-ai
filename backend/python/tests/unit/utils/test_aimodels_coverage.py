@@ -228,7 +228,23 @@ class TestOpenAICompatibleEmbeddingCtxLength:
         assert call_kwargs["check_embedding_ctx_length"] is False
 
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
-    def test_normal_endpoint_checks_length(self, mock_cls):
+    def test_router_endpoint_skips_check(self, mock_cls):
+        """Routers proxy models that reject tiktoken token-ID input."""
+        mock_cls.return_value = MagicMock()
+        config = {
+            "configuration": {
+                "model": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+                "apiKey": "key",
+                "endpoint": "https://openrouter.ai/api/v1",
+            },
+            "isDefault": True,
+        }
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_endpoint_checks_length(self, mock_cls):
         mock_cls.return_value = MagicMock()
         config = {
             "configuration": {
