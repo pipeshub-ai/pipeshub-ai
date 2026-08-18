@@ -14,11 +14,23 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
-from app.agents.constants.mcp_server_constants import get_mcp_oauth_states_prefix
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_instance_credentials_prefix,
+    get_mcp_instance_path,
+    get_mcp_oauth_states_prefix,
+)
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.models import OAuthTokens
 from app.config.configuration_service import ConfigurationService
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.types import (
+    MCP_SERVERS_NOTIFICATION_LINK,
+    NotificationOrigin,
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.utils.request_context import new_system_root, reset_context, set_context
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -35,13 +47,19 @@ SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 PERIODIC_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 STATE_SWEEP_INTERVAL_SECONDS = 300
+DEAUTH_REASON_INVALID_CLIENT = "invalid_client_credentials"
 
 
 class MCPTokenRefreshService:
     """Manages background OAuth token refresh across all MCP server instances."""
 
-    def __init__(self, configuration_service: ConfigurationService) -> None:
+    def __init__(
+        self,
+        configuration_service: ConfigurationService,
+        notification_service: Optional[NotificationService] = None,
+    ) -> None:
         self.configuration_service = configuration_service
+        self._notification_service = notification_service
         self.logger = logger
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._background_tasks: list[asyncio.Task] = []
@@ -49,6 +67,7 @@ class MCPTokenRefreshService:
         self._refresh_lock = asyncio.Lock()
         self._credential_locks: Dict[str, asyncio.Lock] = {}
         self._schedule_locks: Dict[str, asyncio.Lock] = {}
+        self._instance_deauth_locks: dict[str, asyncio.Lock] = {}
         self._last_refresh_time: Dict[str, float] = {}
         self._invalid_refresh_failures: Dict[str, int] = {}
 
@@ -182,9 +201,145 @@ class MCPTokenRefreshService:
                 record["isAuthenticated"] = False
                 record["deauthReason"] = "refresh_token_invalid"
                 record["updatedAt"] = get_epoch_timestamp_in_ms()
-                await self.configuration_service.set_config(config_path, record)
+                if not await self.configuration_service.set_config(config_path, record):
+                    self.logger.error(f"Failed to persist deauthentication for MCP credential {config_path}")
         except Exception as e:
             self.logger.error(f"Error marking MCP credential {config_path} unauthenticated: {e}")
+
+    async def handle_invalid_client(self, config_path: str, error: Exception) -> None:
+        """Public entry point for on-demand callers (e.g. the `/oauth/refresh` route) that
+        hit `invalid_client` themselves — runs the same instance-wide deauth immediately
+        instead of leaving it to the next periodic sweep."""
+        await self._handle_invalid_client(config_path, error)
+
+    def _get_instance_deauth_lock(self, instance_id: str) -> asyncio.Lock:
+        if instance_id not in self._instance_deauth_locks:
+            self._instance_deauth_locks[instance_id] = asyncio.Lock()
+        return self._instance_deauth_locks[instance_id]
+
+    async def _handle_invalid_client(self, config_path: str, error: Exception) -> None:
+        """The OAuth client is shared by every credential of the instance and only an admin
+        can fix it, so no retry can succeed — the whole instance is deauthenticated at once.
+
+        Serialized per instance: when the shared client breaks, every credential's refresh
+        fails at once, and unserialized handlers could each flip a disjoint subset of
+        records — each ending with deauthed_count > 0 and each notifying admins. Under
+        the lock, the second handler finds nothing left to flip and stays silent.
+        """
+        instance_id = config_path.strip("/").split("/")[-2]
+        self.logger.error(
+            f"OAuth client credentials rejected for MCP instance {instance_id} (via {config_path}); "
+            f"marking all credentials for the instance unauthenticated: {error}"
+        )
+        async with self._get_instance_deauth_lock(instance_id):
+            org_id, deauthed_count = await self._deauthenticate_instance_credentials(instance_id, config_path)
+            self._cancel_instance_refresh_tasks_except_current(instance_id)
+            if deauthed_count > 0:
+                await self._notify_admins_invalid_client(instance_id, org_id, deauthed_count)
+
+    async def _deauthenticate_instance_credentials(self, instance_id: str, triggering_path: str) -> tuple[Optional[str], int]:
+        """Mark every credential record of the instance unauthenticated. Returns the orgId
+        found on any record (for the admin notification) and how many records were flipped."""
+        try:
+            keys = await self.configuration_service.list_keys_in_directory(
+                get_mcp_instance_credentials_prefix(instance_id)
+            )
+        except Exception as e:
+            self.logger.error(f"Error listing MCP credentials for instance {instance_id}: {e}")
+            keys = []
+
+        leaf_keys = [k for k in keys if len(k.strip("/").split("/")) == MIN_PATH_PARTS_COUNT]
+        if triggering_path not in leaf_keys:
+            leaf_keys.append(triggering_path)
+
+        org_id: Optional[str] = None
+        deauthed_count = 0
+        now_ms = get_epoch_timestamp_in_ms()
+        for key in leaf_keys:
+            try:
+                owner_id = key.strip("/").split("/")[-1]
+                # Serialize with in-flight refreshes of the same credential — an unlocked
+                # read-modify-write here could clobber a re-auth that lands between our
+                # read and our write.
+                async with mcp_token_refresh.get_refresh_lock(instance_id, owner_id):
+                    record = await self.configuration_service.get_config(key, default=None, use_cache=False)
+                    if not isinstance(record, dict):
+                        continue
+                    org_id = org_id or record.get("orgId")
+                    if not record.get("isAuthenticated"):
+                        continue
+                    record["isAuthenticated"] = False
+                    record["deauthReason"] = DEAUTH_REASON_INVALID_CLIENT
+                    record["deauthAt"] = now_ms
+                    record["updatedAt"] = now_ms
+                    # set_config returns False instead of raising — an unpersisted flip
+                    # must not count toward the admin notification.
+                    if await self.configuration_service.set_config(key, record):
+                        deauthed_count += 1
+                    else:
+                        self.logger.error(f"Failed to persist deauthentication for MCP credential {key}")
+            except Exception as e:
+                self.logger.error(f"Error marking MCP credential {key} unauthenticated: {e}")
+            finally:
+                self._invalid_refresh_failures.pop(key, None)
+        return org_id, deauthed_count
+
+    def _cancel_instance_refresh_tasks_except_current(self, instance_id: str) -> None:
+        # Cancelling the task this coroutine runs inside (a `_delayed_refresh`) would abort
+        # the rest of the invalid-client handling at the next await — skip it; its own
+        # `finally` block clears its slot.
+        prefix = f"{CREDENTIALS_PREFIX}{instance_id}/"
+        current = asyncio.current_task()
+        for path in [p for p in self._refresh_tasks if p.startswith(prefix)]:
+            if self._refresh_tasks[path] is current:
+                continue
+            self.cancel_refresh_task(path)
+
+    async def _notify_admins_invalid_client(
+        self, instance_id: str, org_id: Optional[str], deauthed_count: int
+    ) -> None:
+        if self._notification_service is None:
+            return
+        if not org_id:
+            self.logger.warning(
+                f"Cannot notify admins about invalid MCP client credentials for instance {instance_id}: "
+                "no orgId on any credential record"
+            )
+            return
+
+        instance_name = instance_id
+        try:
+            instance = await self.configuration_service.get_config(
+                get_mcp_instance_path(org_id, instance_id), default=None
+            )
+            if isinstance(instance, dict) and instance.get("name"):
+                instance_name = instance["name"]
+        except Exception as e:
+            self.logger.debug(f"Could not resolve MCP instance name for {instance_id}: {e}")
+
+        try:
+            await self._notification_service.publish_notification(
+                org_id=org_id,
+                origin=NotificationOrigin.CONNECTOR,
+                type=NotificationType.MCP_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"MCP server '{instance_name}' has invalid client credentials",
+                message=(
+                    f"Token refresh for MCP server '{instance_name}' failed because the provider rejected "
+                    f"the OAuth client credentials (invalid_client). {deauthed_count} user connection(s) "
+                    "were marked unauthenticated. Please provide the correct OAuth client ID and secret in "
+                    "the server's configuration, then reconnect."
+                ),
+                payload={
+                    "instanceId": instance_id,
+                    "deauthReason": DEAUTH_REASON_INVALID_CLIENT,
+                    "deauthedCredentials": deauthed_count,
+                },
+                redirect_link=MCP_SERVERS_NOTIFICATION_LINK,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to publish invalid-client notification for MCP instance {instance_id}: {e}")
 
     async def _refresh_credential(self, config_path: str) -> None:
         lock = self._get_credential_lock(config_path)
@@ -206,6 +361,8 @@ class MCPTokenRefreshService:
                     await self.schedule_token_refresh(config_path, new_token)
                 except oauth_client_module.MCPRefreshTokenInvalidError as e:
                     await self._handle_refresh_token_invalid(config_path, e)
+                except oauth_client_module.MCPInvalidClientError as e:
+                    await self._handle_invalid_client(config_path, e)
                 except Exception as e:
                     self.logger.error(f"Error refreshing MCP token for {config_path}: {e}", exc_info=True)
             else:

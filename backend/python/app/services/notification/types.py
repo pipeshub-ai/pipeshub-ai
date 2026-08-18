@@ -1,5 +1,12 @@
 from enum import Enum
 
+# App-relative redirect links for notifications; the frontend notification panel
+# prepends "/" and renders them as in-app links (see notification-row.tsx).
+CONNECTOR_NOTIFICATION_LINK_PREFIX = "workspace/connectors/"  # + f"{scope}/?connectorType={type}"
+ACTIONS_NOTIFICATION_LINK = "workspace/actions"
+MCP_SERVERS_NOTIFICATION_LINK = "workspace/mcp-servers/team"
+
+
 class NotificationSeverity(str, Enum):
     """Matches INotification.severity in backend/nodejs notification schema."""
 
@@ -30,6 +37,8 @@ class NotificationType(str, Enum):
     CONNECTOR_SUCCESS = "CONNECTOR_SUCCESS"
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
+    # MCP server instances — distinct from connectors and toolsets.
+    MCP_AUTH_ERROR = "MCP_AUTH_ERROR"
 
 class NotificationStatus(str, Enum):
     UNREAD = "unread"

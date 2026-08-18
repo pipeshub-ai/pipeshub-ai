@@ -15,8 +15,19 @@ if TYPE_CHECKING:
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import (
+    DEAUTH_REASON_INVALID_CLIENT,
+    DEAUTH_REASON_REFRESH_TOKEN_INVALID,
+    InvalidClientError,
     OAuthToken,
     RefreshTokenInvalidError,
+)
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.types import (
+    ACTIONS_NOTIFICATION_LINK,
+    NotificationOrigin,
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
 )
 from app.utils.oauth_config import get_oauth_config
 from app.utils.request_context import (
@@ -43,8 +54,13 @@ MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 class ToolsetTokenRefreshService:
     """Service for managing token refresh across all OAuth toolsets"""
 
-    def __init__(self, configuration_service: ConfigurationService) -> None:
+    def __init__(
+        self,
+        configuration_service: ConfigurationService,
+        notification_service: Optional[NotificationService] = None,
+    ) -> None:
         self.configuration_service = configuration_service
+        self._notification_service = notification_service
         self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
@@ -52,6 +68,7 @@ class ToolsetTokenRefreshService:
         self._processing_toolsets: set = set()  # Track toolsets currently being processed to prevent recursion
         self._toolset_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks to prevent concurrent refreshes
         self._schedule_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks for atomic task scheduling
+        self._instance_deauth_locks: dict[str, asyncio.Lock] = {}  # Per-instance invalid-client deauth serialization
         self._last_refresh_time: Dict[str, float] = {}  # Track last successful refresh time (prevents duplicates)
         self._invalid_refresh_failures: Dict[str, int] = {}  # Consecutive refresh-token rejections per toolset
 
@@ -863,24 +880,43 @@ class ToolsetTokenRefreshService:
         self._invalid_refresh_failures.pop(config_path, None)
         await self._mark_toolset_unauthenticated(config_path)
 
-    async def _mark_toolset_unauthenticated(self, config_path: str) -> None:
-        """Flip the toolset to unauthenticated so refresh scans stop until re-auth."""
+    async def _mark_toolset_unauthenticated(
+        self,
+        config_path: str,
+        *,
+        reason: str = DEAUTH_REASON_REFRESH_TOKEN_INVALID,
+        notify_owner: bool = True,
+    ) -> Optional[dict]:
+        """Flip the toolset to unauthenticated so refresh scans stop until re-auth.
+        Returns the flipped record, or None if there was nothing (left) to flip —
+        callers use that to avoid duplicate notifications."""
+        flipped: Optional[dict] = None
         try:
             config = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
-            if not config or not isinstance(config, dict):
-                return
+            if not config or not isinstance(config, dict) or not config.get("isAuthenticated"):
+                return None
 
             now_ms = get_epoch_timestamp_in_ms()
             config["isAuthenticated"] = False
-            config["deauthReason"] = "refresh_token_invalid"
+            config["deauthReason"] = reason
             config["deauthAt"] = now_ms
             config["updatedAt"] = now_ms
-            await self.configuration_service.set_config(config_path, config)
-
-            self.logger.warning(
-                f"Marked toolset {config_path} as unauthenticated — "
-                f"refresh token is invalid, re-authentication required"
-            )
+            # set_config swallows store errors and returns False — it never raises, so
+            # the except below cannot catch a failed write. An unpersisted deauth must
+            # not be reported or notified: the record is still authenticated.
+            if not await self.configuration_service.set_config(config_path, config):
+                self.logger.error(
+                    f"Failed to persist deauthentication for toolset {config_path}; "
+                    f"record remains authenticated"
+                )
+            else:
+                flipped = config
+                self.logger.warning(
+                    f"Marked toolset {config_path} as unauthenticated ({reason}) — "
+                    f"re-authentication required"
+                )
+                if notify_owner:
+                    await self._notify_toolset_deactivated(config_path, config)
         except Exception as e:
             self.logger.error(f"Error marking toolset {config_path} as unauthenticated: {e}", exc_info=False)
 
@@ -888,6 +924,156 @@ class ToolsetTokenRefreshService:
         existing_task = self._refresh_tasks.get(config_path)
         if existing_task is not None and existing_task is not asyncio.current_task():
             self._cancel_existing_refresh_task(config_path)
+        return flipped
+
+    def _get_instance_deauth_lock(self, config_path: str) -> asyncio.Lock:
+        """One lock per toolset instance (keyed by the instance path segment, or the full
+        path for legacy records) — see `_handle_invalid_client` for why."""
+        path_parts = config_path.strip("/").split("/")
+        key = path_parts[2] if len(path_parts) == MIN_PATH_PARTS_COUNT else config_path
+        if key not in self._instance_deauth_locks:
+            self._instance_deauth_locks[key] = asyncio.Lock()
+        return self._instance_deauth_locks[key]
+
+    async def _handle_invalid_client(self, config_path: str, error: Exception) -> None:
+        """The OAuth client config is shared by every user of the toolset instance and only
+        an admin can fix it, so no retry can succeed — deauthenticate the whole instance
+        immediately (no strike counter) and notify admins once.
+
+        Serialized per instance: when the shared client breaks, every user's refresh fails
+        at once, and unserialized handlers could each flip a disjoint subset of records —
+        each ending with deauthed > 0 and each notifying admins. Under the lock, the
+        second handler finds nothing left to flip and stays silent.
+        """
+        self.logger.error(
+            f"OAuth client credentials rejected for toolset {config_path}; "
+            f"deauthenticating the instance: {error}",
+            exc_info=False,
+        )
+        async with self._get_instance_deauth_lock(config_path):
+            await self._deauthenticate_instance_locked(config_path, error)
+
+    async def _deauthenticate_instance_locked(self, config_path: str, error: Exception) -> None:
+        instance_paths = await self._list_instance_credential_paths(config_path)
+
+        deauthed = 0
+        org_id: Optional[str] = None
+        toolset_type: Optional[str] = None
+        for key in instance_paths:
+            self._invalid_refresh_failures.pop(key, None)
+            record = await self._mark_toolset_unauthenticated(
+                key, reason=DEAUTH_REASON_INVALID_CLIENT, notify_owner=False
+            )
+            if record is not None:
+                deauthed += 1
+                org_id = org_id or record.get("orgId")
+                toolset_type = toolset_type or record.get("toolsetType")
+
+        # Concurrent in-flight refreshes all fail with the same error; only the handler
+        # that actually flipped records notifies, so admins get one message.
+        if deauthed > 0:
+            await self._notify_admins_invalid_client(config_path, org_id, toolset_type, deauthed)
+
+    async def _list_instance_credential_paths(self, config_path: str) -> list[str]:
+        """All per-user credential paths of the toolset instance the path belongs to.
+        Legacy-format paths (no instance UUID) stay single-record: their parent directory
+        groups unrelated toolset types, which must not be deauthed together."""
+        import uuid
+
+        path_parts = config_path.strip("/").split("/")
+        if len(path_parts) != MIN_PATH_PARTS_COUNT:
+            return [config_path]
+        try:
+            uuid.UUID(path_parts[2])
+        except (ValueError, AttributeError):
+            return [config_path]
+
+        prefix = f"/{path_parts[0]}/{path_parts[1]}/{path_parts[2]}/"
+        try:
+            keys = await self.configuration_service.list_keys_in_directory(prefix)
+        except Exception as e:
+            self.logger.error(f"Error listing toolset credentials under {prefix}: {e}", exc_info=False)
+            return [config_path]
+
+        leaf_keys = [k for k in keys if len(k.strip("/").split("/")) == MIN_PATH_PARTS_COUNT]
+        if config_path not in leaf_keys:
+            leaf_keys.append(config_path)
+        return leaf_keys
+
+    async def _notify_admins_invalid_client(
+        self,
+        config_path: str,
+        org_id: Optional[str],
+        toolset_type: Optional[str],
+        deauthed_count: int,
+    ) -> None:
+        if self._notification_service is None:
+            return
+        if not org_id:
+            self.logger.warning(
+                f"Cannot notify admins about invalid toolset client credentials for {config_path}: "
+                "no orgId on any record"
+            )
+            return
+        name = str(toolset_type or "toolset")
+        try:
+            await self._notification_service.publish_notification(
+                org_id=str(org_id),
+                origin=NotificationOrigin.CONNECTOR,
+                type=NotificationType.TOOLSET_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{name.capitalize()} action has invalid client credentials",
+                message=(
+                    f"Token refresh for the {name} action failed because the provider rejected the "
+                    f"OAuth client credentials (invalid_client). {deauthed_count} user connection(s) "
+                    "were marked unauthenticated. Please update the OAuth client ID and secret, then "
+                    "reconnect."
+                ),
+                payload={
+                    "configPath": config_path,
+                    "deauthReason": DEAUTH_REASON_INVALID_CLIENT,
+                    "deauthedCredentials": deauthed_count,
+                },
+                redirect_link=ACTIONS_NOTIFICATION_LINK,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to publish invalid-client notification for toolset {config_path}: {e}"
+            )
+
+    async def _notify_toolset_deactivated(self, config_path: str, record: dict) -> None:
+        """Best-effort; a failed publish never blocks or undoes the deauth."""
+        if self._notification_service is None:
+            return
+        org_id = record.get("orgId")
+        if not org_id:
+            self.logger.warning(
+                f"Cannot notify user about deactivated toolset {config_path}: no orgId on record"
+            )
+            return
+        user_id = record.get("userId") or config_path.strip("/").split("/")[-1]
+        toolset_type = str(record.get("toolsetType") or "toolset")
+        try:
+            await self._notification_service.publish_notification(
+                org_id=str(org_id),
+                origin=NotificationOrigin.CONNECTOR,
+                type=NotificationType.TOOLSET_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{toolset_type.capitalize()} action needs re-authentication",
+                message=(
+                    f"Your {toolset_type} action was deactivated because the provider rejected its "
+                    "refresh token. Please re-authenticate it from the Actions page."
+                ),
+                payload={
+                    "configPath": config_path,
+                    "deauthReason": record.get("deauthReason") or DEAUTH_REASON_REFRESH_TOKEN_INVALID,
+                },
+                redirect_link=ACTIONS_NOTIFICATION_LINK,
+                recipient_user_ids=[str(user_id)] if user_id else None,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to publish toolset deactivation notification for {config_path}: {e}")
 
     def _is_toolset_being_processed(self, config_path: str) -> bool:
         """Check if toolset is currently being processed."""
@@ -1032,6 +1218,8 @@ class ToolsetTokenRefreshService:
                 self.logger.error(f"RECURSION ERROR in toolset token refresh for {config_path}: {str(e)[:100]}")
             except RefreshTokenInvalidError as e:
                 await self._handle_refresh_token_invalid(config_path, e)
+            except InvalidClientError as e:
+                await self._handle_invalid_client(config_path, e)
             except Exception as e:
                 import traceback
                 error_details = traceback.format_exc()
@@ -1114,6 +1302,9 @@ class ToolsetTokenRefreshService:
             return new_token, True
         except RefreshTokenInvalidError as e:
             await self._handle_refresh_token_invalid(config_path, e)
+            return None, False
+        except InvalidClientError as e:
+            await self._handle_invalid_client(config_path, e)
             return None, False
         except Exception as e:
             self.logger.error(f"❌ Failed to perform immediate refresh for toolset {config_path}: {e}", exc_info=False)

@@ -433,7 +433,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Start token refresh service at app startup (database-agnostic)
     try:
-        await startup_service.initialize(app_container.config_service(), graph_provider)
+        await startup_service.initialize(
+            app_container.config_service(),
+            graph_provider,
+            notification_service=app_container.connector_notification_service(),
+        )
         logger.info("✅ Startup services initialized successfully")
     except Exception as e:
         logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")

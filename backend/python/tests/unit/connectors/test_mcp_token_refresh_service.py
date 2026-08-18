@@ -8,10 +8,13 @@ import pytest
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp.models import OAuthTokens
 from app.connectors.core.base.token_service.mcp_token_refresh_service import (
+    DEAUTH_REASON_INVALID_CLIENT,
     MAX_REFRESH_TOKEN_INVALID_FAILURES,
+    MCP_SERVERS_NOTIFICATION_LINK,
     PROACTIVE_REFRESH_WINDOW_SECONDS,
     MCPTokenRefreshService,
 )
+from app.services.notification.types import NotificationRecipientRole, NotificationType
 
 CONFIG_PATH = "/services/mcp/credentials/inst-1/user-1"
 
@@ -201,6 +204,383 @@ class TestHandleRefreshTokenInvalid:
             await service._handle_refresh_token_invalid(CONFIG_PATH, error)
 
         mock_config_service.set_config.assert_not_awaited()
+
+
+class TestHandleInvalidClient:
+    """`invalid_client` means the OAuth client id/secret is wrong — shared by every
+    credential of the instance, so the whole instance is deauthenticated at once, pending
+    refreshes are cancelled (no retry can succeed), and org admins are notified."""
+
+    INST1_USER2 = "/services/mcp/credentials/inst-1/user-2"
+    INSTANCE_PATH = "/services/mcp/instances/org-1/inst-1"
+
+    @pytest.fixture
+    def mock_notification_service(self) -> MagicMock:
+        svc = MagicMock()
+        svc.publish_notification = AsyncMock()
+        return svc
+
+    def _wire_instance_records(self, mock_config_service: MagicMock, records: dict) -> dict:
+        mock_config_service.list_keys_in_directory = AsyncMock(
+            return_value=[CONFIG_PATH, self.INST1_USER2, f"{CONFIG_PATH}/dcr-client"]
+        )
+
+        async def _get(path, default=None, use_cache=True) -> dict | None:
+            return records.get(path, default)
+
+        written: dict = {}
+
+        async def _set(path, record) -> bool:
+            written[path] = record
+            return True
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get)
+        mock_config_service.set_config = AsyncMock(side_effect=_set)
+        return written
+
+    @pytest.mark.asyncio
+    async def test_deauthenticates_whole_instance_and_notifies_admins(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {
+            CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+            self.INST1_USER2: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+            self.INSTANCE_PATH: {"name": "Custom Jira MCP"},
+        }
+        written = self._wire_instance_records(mock_config_service, records)
+        service._invalid_refresh_failures[CONFIG_PATH] = 2
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert set(written) == {CONFIG_PATH, self.INST1_USER2}  # nested dcr-client key untouched
+        for record in written.values():
+            assert record["isAuthenticated"] is False
+            assert record["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+            assert record["deauthAt"] > 0
+        assert CONFIG_PATH not in service._invalid_refresh_failures
+
+        mock_notification_service.publish_notification.assert_awaited_once()
+        kwargs = mock_notification_service.publish_notification.await_args.kwargs
+        assert kwargs["org_id"] == "org-1"
+        assert kwargs["type"] == NotificationType.MCP_AUTH_ERROR
+        assert kwargs["recipient_roles"] == [NotificationRecipientRole.ADMIN]
+        assert "Custom Jira MCP" in kwargs["title"]
+        assert "invalid_client" in kwargs["message"]
+        assert kwargs["payload"]["instanceId"] == "inst-1"
+        assert kwargs["payload"]["deauthedCredentials"] == 2
+        assert kwargs["redirect_link"] == MCP_SERVERS_NOTIFICATION_LINK
+
+    @pytest.mark.asyncio
+    async def test_refresh_credential_routes_invalid_client_to_handler(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        expired = _oauth_token_dict(expires_in=3600)
+        expired["createdAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": expired}
+        )
+
+        with (
+            patch.object(
+                service,
+                "_perform_token_refresh",
+                new=AsyncMock(side_effect=oauth_client_module.MCPInvalidClientError("invalid_client")),
+            ),
+            patch.object(service, "_handle_invalid_client", new=AsyncMock()) as handle_invalid_client,
+            patch.object(service, "_handle_refresh_token_invalid", new=AsyncMock()) as handle_refresh_invalid,
+            patch.object(service, "schedule_token_refresh", new=AsyncMock()) as schedule,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        handle_invalid_client.assert_awaited_once()
+        handle_refresh_invalid.assert_not_awaited()  # not the 3-strike path — immediate
+        schedule.assert_not_awaited()  # no retry is scheduled
+
+    @pytest.mark.asyncio
+    async def test_cancels_pending_tasks_for_the_instance_only(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        token = OAuthTokens(access_token="tok", expires_in=3600)
+        await service.schedule_token_refresh(CONFIG_PATH, token)
+        await service.schedule_token_refresh(self.INST1_USER2, token)
+        await service.schedule_token_refresh("/services/mcp/credentials/inst-2/user-1", token)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert CONFIG_PATH not in service._refresh_tasks
+        assert self.INST1_USER2 not in service._refresh_tasks
+        assert "/services/mcp/credentials/inst-2/user-1" in service._refresh_tasks
+        service.cancel_refresh_task("/services/mcp/credentials/inst-2/user-1")
+
+    @pytest.mark.asyncio
+    async def test_does_not_cancel_the_task_it_runs_inside(
+        self, service: MCPTokenRefreshService,
+    ) -> None:
+        """When invoked from a `_delayed_refresh` task registered for this credential,
+        cancelling that task would abort the handler itself mid-flight — it must be skipped."""
+
+        async def _run() -> None:
+            await service._handle_invalid_client(
+                CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+            )
+
+        task = asyncio.create_task(_run())
+        service._refresh_tasks[CONFIG_PATH] = task  # register before the task first runs
+        await task  # completes; no CancelledError
+        assert not task.cancelled()
+        service._refresh_tasks.pop(CONFIG_PATH, None)
+
+    @pytest.mark.asyncio
+    async def test_deauthenticates_without_notification_service(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        records = {CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()}}
+        written = self._wire_instance_records(mock_config_service, records)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert written[CONFIG_PATH]["isAuthenticated"] is False
+
+    @pytest.mark.asyncio
+    async def test_notification_failure_does_not_undo_or_raise(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        mock_notification_service.publish_notification = AsyncMock(side_effect=RuntimeError("kafka down"))
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()}}
+        written = self._wire_instance_records(mock_config_service, records)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert written[CONFIG_PATH]["isAuthenticated"] is False
+
+    @pytest.mark.asyncio
+    async def test_deauth_waits_for_in_flight_refresh_lock(
+        self, mock_config_service: MagicMock,
+    ) -> None:
+        """The deauth loop must serialize with `token_refresh`'s per-owner locks — an
+        unlocked read-modify-write could clobber a re-auth landing mid-flight."""
+        from app.agents.mcp import token_refresh as mcp_token_refresh_module
+
+        service = MCPTokenRefreshService(mock_config_service)
+        path = "/services/mcp/credentials/inst-lock/user-1"
+        records = {path: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()}}
+        mock_config_service.list_keys_in_directory = AsyncMock(return_value=[path])
+
+        async def _get(p, default=None, use_cache=True) -> dict | None:
+            return records.get(p, default)
+
+        written: dict = {}
+
+        async def _set(p, record) -> bool:
+            written[p] = record
+            return True
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get)
+        mock_config_service.set_config = AsyncMock(side_effect=_set)
+
+        lock = mcp_token_refresh_module.get_refresh_lock("inst-lock", "user-1")
+        await lock.acquire()
+        try:
+            task = asyncio.create_task(
+                service._handle_invalid_client(path, oauth_client_module.MCPInvalidClientError("invalid_client"))
+            )
+            await asyncio.sleep(0.05)
+            assert written == {}  # blocked behind the in-flight refresh's lock
+        finally:
+            lock.release()
+
+        await task
+        assert path in written
+        assert written[path]["isAuthenticated"] is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_handlers_for_same_instance_notify_once(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """When the shared client breaks, every credential's refresh fails at once — two
+        concurrent handlers must produce exactly one admin notification and flip each
+        record exactly once, not split the records between them and both notify. The
+        mocks yield on every call so unserialized handlers would interleave."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        path_1 = "/services/mcp/credentials/inst-conc/user-1"
+        path_2 = "/services/mcp/credentials/inst-conc/user-2"
+        records = {
+            path_1: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+            path_2: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+        }
+        writes: list = []
+
+        async def _list(prefix) -> list:
+            await asyncio.sleep(0)
+            return [path_1, path_2]
+
+        async def _get(path, default=None, use_cache=True) -> dict | None:
+            await asyncio.sleep(0)
+            return records.get(path, default)
+
+        async def _set(path, record) -> bool:
+            await asyncio.sleep(0)
+            records[path] = record  # persist, so the other handler observes the flip
+            writes.append(path)
+            return True
+
+        mock_config_service.list_keys_in_directory = AsyncMock(side_effect=_list)
+        mock_config_service.get_config = AsyncMock(side_effect=_get)
+        mock_config_service.set_config = AsyncMock(side_effect=_set)
+
+        await asyncio.gather(
+            service._handle_invalid_client(path_1, oauth_client_module.MCPInvalidClientError("invalid_client")),
+            service._handle_invalid_client(path_2, oauth_client_module.MCPInvalidClientError("invalid_client")),
+        )
+
+        assert sorted(writes) == sorted([path_1, path_2])
+        assert mock_notification_service.publish_notification.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_persistence_does_not_count_or_notify(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """set_config returns False instead of raising; records whose flip did not persist
+        are still authenticated and must not count toward the admin notification."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {
+            CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+        }
+        self._wire_instance_records(mock_config_service, records)
+        mock_config_service.set_config = AsyncMock(return_value=False)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        mock_notification_service.publish_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_already_deauthed_instance_does_not_renotify(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """Concurrent in-flight refreshes of the same instance all fail with invalid_client;
+        only the handler that actually flips records may notify, or admins get duplicates."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {
+            CONFIG_PATH: {"isAuthenticated": False, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+            self.INST1_USER2: {"isAuthenticated": False, "orgId": "org-1", "oauthTokens": _oauth_token_dict()},
+        }
+        written = self._wire_instance_records(mock_config_service, records)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert written == {}
+        mock_notification_service.publish_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_org_id_skips_notification(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        records = {CONFIG_PATH: {"isAuthenticated": True, "oauthTokens": _oauth_token_dict()}}
+        written = self._wire_instance_records(mock_config_service, records)
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert written[CONFIG_PATH]["isAuthenticated"] is False
+        mock_notification_service.publish_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_list_failure_still_deauthenticates_triggering_credential(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        records = {CONFIG_PATH: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": _oauth_token_dict()}}
+        written = self._wire_instance_records(mock_config_service, records)
+        mock_config_service.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("etcd down"))
+
+        await service._handle_invalid_client(
+            CONFIG_PATH, oauth_client_module.MCPInvalidClientError("invalid_client")
+        )
+
+        assert written[CONFIG_PATH]["isAuthenticated"] is False
+
+    @pytest.mark.asyncio
+    async def test_end_to_end_http_401_invalid_client_deauths_instance(
+        self, mock_config_service: MagicMock, mock_notification_service: MagicMock,
+    ) -> None:
+        """Integration-style: a real 401 invalid_client HTTP response flows through the
+        real `refresh_credential_record` and `oauth_client` classification into the
+        handler — guards the wiring (exception types, import paths), which the other
+        tests bypass by mocking `_perform_token_refresh`."""
+        service = MCPTokenRefreshService(mock_config_service, notification_service=mock_notification_service)
+        path = "/services/mcp/credentials/inst-e2e/user-1"
+        expired = _oauth_token_dict(expires_in=3600)
+        expired["createdAt"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        records = {
+            path: {"isAuthenticated": True, "orgId": "org-1", "oauthTokens": expired},
+            f"{path}/dcr-client": {"clientId": "cid", "clientSecret": "csec"},
+        }
+        mock_config_service.list_keys_in_directory = AsyncMock(return_value=[path])
+
+        async def _get(p, default=None, use_cache=True) -> dict | None:
+            return records.get(p, default)
+
+        written: dict = {}
+
+        async def _set(p, record) -> bool:
+            written[p] = record
+            return True
+
+        mock_config_service.get_config = AsyncMock(side_effect=_get)
+        mock_config_service.set_config = AsyncMock(side_effect=_set)
+
+        resp = MagicMock()
+        resp.status_code = 401
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"error":"invalid_client","error_description":"Invalid client credentials"}'
+        resp.json.return_value = {"error": "invalid_client"}
+        http_client = MagicMock()
+        http_client.post = AsyncMock(return_value=resp)
+        client_cm = MagicMock()
+        client_cm.__aenter__ = AsyncMock(return_value=http_client)
+        client_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.agents.mcp.oauth_client.httpx.AsyncClient", return_value=client_cm):
+            await service._refresh_credential(path)
+
+        assert written[path]["isAuthenticated"] is False
+        assert written[path]["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+        mock_notification_service.publish_notification.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_further_refresh_attempts_after_instance_deauth(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        """Once deauthenticated, periodic scans must skip the credential entirely — the exact
+        retry-forever loop this handling exists to break."""
+        deauthed = {
+            "isAuthenticated": False,
+            "deauthReason": DEAUTH_REASON_INVALID_CLIENT,
+            "oauthTokens": _oauth_token_dict(),
+        }
+        mock_config_service.list_keys_in_directory = AsyncMock(return_value=[CONFIG_PATH])
+        mock_config_service.get_config = AsyncMock(return_value=deauthed)
+
+        with patch.object(service, "_perform_token_refresh", new=AsyncMock()) as perform:
+            await service._refresh_all_tokens_internal()
+            await service._refresh_credential(CONFIG_PATH)
+
+        perform.assert_not_awaited()
 
 
 class TestScheduleTokenRefresh:

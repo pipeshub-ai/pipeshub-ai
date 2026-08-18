@@ -576,6 +576,69 @@ class TestOauthRouteWrappers:
             assert await refresh_oauth_token(request, "inst-1") == {"success": True}
 
     @pytest.mark.asyncio
+    async def test_refresh_oauth_token_invalid_client_triggers_instance_deauth(self) -> None:
+        """On-demand refresh hitting invalid_client must run the instance-wide deauth now,
+        not leave it to the next 5-minute background sweep."""
+        from app.agents.mcp import oauth_client as oauth_client_module
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+
+        request = _admin_request()
+        refresh_service = MagicMock()
+        refresh_service.handle_invalid_client = AsyncMock()
+        with (
+            patch(
+                "app.api.routes.mcp_servers.mcp_token_refresh.refresh_credential_record",
+                new=AsyncMock(side_effect=oauth_client_module.MCPInvalidClientError("invalid_client")),
+            ),
+            patch.object(startup_service, "get_mcp_token_refresh_service", return_value=refresh_service),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await refresh_oauth_token(request, "inst-1")
+
+        assert exc.value.status_code == 401
+        assert "administrator" in exc.value.detail.lower()
+        refresh_service.handle_invalid_client.assert_awaited_once()
+        called_path = refresh_service.handle_invalid_client.await_args.args[0]
+        assert called_path.startswith("/services/mcp/credentials/inst-1/")
+
+    @pytest.mark.asyncio
+    async def test_refresh_oauth_token_invalid_client_fallback_deauths_record(self) -> None:
+        """Without the background service (degraded startup), the route itself deauths the
+        record — with the same reason constant and timestamps the service path writes."""
+        from app.agents.mcp import oauth_client as oauth_client_module
+        from app.connectors.core.base.token_service.mcp_token_refresh_service import (
+            DEAUTH_REASON_INVALID_CLIENT,
+        )
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value={"isAuthenticated": True, "orgId": "org-1"})
+        config_service.set_config = AsyncMock(return_value=True)
+        request = _admin_request(config_service=config_service)
+
+        with (
+            patch(
+                "app.api.routes.mcp_servers.mcp_token_refresh.refresh_credential_record",
+                new=AsyncMock(side_effect=oauth_client_module.MCPInvalidClientError("invalid_client")),
+            ),
+            patch.object(startup_service, "get_mcp_token_refresh_service", return_value=None),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await refresh_oauth_token(request, "inst-1")
+
+        assert exc.value.status_code == 401
+        config_service.set_config.assert_awaited_once()
+        _, record = config_service.set_config.await_args.args
+        assert record["isAuthenticated"] is False
+        assert record["deauthReason"] == DEAUTH_REASON_INVALID_CLIENT
+        assert record["deauthAt"] > 0
+        assert record["updatedAt"] == record["deauthAt"]
+
+    @pytest.mark.asyncio
     async def test_get_oauth_config_masks_secrets(self) -> None:
         config_service = MagicMock()
         config_service.get_config = AsyncMock(
@@ -646,6 +709,27 @@ class TestDiscoveryHandlers:
         assert len(result["instances"]) == 1
         assert result["instances"][0]["isAuthenticated"] is True
         assert result["instances"][0]["tools"] == []
+        assert result["instances"][0]["deauthReason"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_my_mcp_servers_surfaces_deauth_reason(self) -> None:
+        """A background deauth (e.g. invalid client credentials) must be distinguishable
+        from "never connected" so the UI can say an admin has to fix the OAuth client."""
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": False, "deauthReason": "invalid_client_credentials"}
+        )
+        request = _admin_request(config_service=config_service)
+
+        with patch(
+            "app.api.routes.mcp_servers._load_org_instances",
+            new=AsyncMock(return_value=[_api_token_instance()]),
+        ):
+            result = await get_my_mcp_servers(request, include_tools=False)
+
+        entry = result["instances"][0]
+        assert entry["isAuthenticated"] is False
+        assert entry["deauthReason"] == "invalid_client_credentials"
 
     @pytest.mark.asyncio
     async def test_get_my_mcp_servers_records_tools_error(self) -> None:

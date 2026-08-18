@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from app.connectors.core.base.token_service.oauth_service import (
+    InvalidClientError,
     OAuthConfig,
     OAuthProvider,
     OAuthToken,
@@ -993,6 +994,37 @@ class TestRefreshAccessToken:
 
         with pytest.raises(RefreshTokenInvalidError, match="invalid_grant"):
             await provider.refresh_access_token("expired-refresh")
+
+    @pytest.mark.asyncio
+    async def test_refresh_invalid_client_raises_invalid_client_error(self, mock_config_service) -> None:
+        """invalid_client (RFC 6749 §5.2) means the client id/secret is wrong — typed so
+        callers can deactivate immediately instead of retrying."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception(
+                'OAuth token request failed with status 401. Response: {"error":"invalid_client","error_description":"Invalid client credentials"}'
+            )
+        )
+
+        with pytest.raises(InvalidClientError, match="invalid_client"):
+            await provider.refresh_access_token("some-refresh")
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_markers_win_over_invalid_client(self, mock_config_service) -> None:
+        """A body carrying both markers classifies as the narrower refresh-token error."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception(
+                'status 400. Response: {"error":"invalid_grant","error_description":"invalid_client or expired token"}'
+            )
+        )
+
+        with pytest.raises(RefreshTokenInvalidError):
+            await provider.refresh_access_token("some-refresh")
 
     @pytest.mark.asyncio
     async def test_refresh_servicenow_401_raises_refresh_token_invalid_error(self, mock_config_service):

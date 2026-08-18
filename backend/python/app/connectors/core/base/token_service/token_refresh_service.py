@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ConnectorScopes
 from app.connectors.core.constants import (
     AuthFieldKeys,
     ConnectorRequestKeys,
@@ -17,11 +17,22 @@ from app.connectors.core.constants import (
     OAuthConfigKeys,
 )
 from app.connectors.core.base.token_service.oauth_service import (
+    DEAUTH_REASON_INVALID_CLIENT,
+    DEAUTH_REASON_REFRESH_TOKEN_INVALID,
+    InvalidClientError,
     OAuthToken,
     RefreshTokenInvalidError,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.notification.notification_service import NotificationService
+from app.services.notification.types import (
+    CONNECTOR_NOTIFICATION_LINK_PREFIX,
+    NotificationOrigin,
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.utils.oauth_config import get_oauth_config
 from app.utils.request_context import (
     new_system_root,
@@ -42,10 +53,12 @@ class TokenRefreshService:
         configuration_service: ConfigurationService,
         graph_provider: IGraphDBProvider,
         messaging_producer: Optional[IMessagingProducer] = None,
+        notification_service: Optional[NotificationService] = None,
     ) -> None:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
         self._messaging_producer = messaging_producer
+        self._notification_service = notification_service
         self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._running = False
@@ -532,6 +545,19 @@ class TokenRefreshService:
         except RefreshTokenInvalidError as e:
             await self._handle_refresh_token_invalid(connector_id, e)
             raise
+        except InvalidClientError as e:
+            await self._handle_invalid_client(connector_id, e)
+            raise
+
+    async def _handle_invalid_client(self, connector_id: str, error: Exception) -> None:
+        """`invalid_client` is deterministic — the same request fails until an admin fixes
+        the stored client config — so there is no strike counter; deactivate immediately."""
+        self.logger.error(
+            f"OAuth client credentials rejected for connector {connector_id}, deactivating: {error}",
+            exc_info=False,
+        )
+        self._invalid_refresh_failures.pop(connector_id, None)
+        await self._mark_connector_unauthenticated(connector_id, reason=DEAUTH_REASON_INVALID_CLIENT)
 
     async def _handle_refresh_token_invalid(self, connector_id: str, error: Exception) -> None:
         """Deactivate the connector after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
@@ -554,16 +580,29 @@ class TokenRefreshService:
         self._invalid_refresh_failures.pop(connector_id, None)
         await self._mark_connector_unauthenticated(connector_id)
 
-    async def _mark_connector_unauthenticated(self, connector_id: str) -> None:
+    async def _mark_connector_unauthenticated(
+        self, connector_id: str, reason: str = DEAUTH_REASON_REFRESH_TOKEN_INVALID
+    ) -> None:
         """Flip the connector to unauthenticated so refresh scans stop until re-auth."""
         # Cancelling our own task here would abort the state update below.
         existing_task = self._refresh_tasks.get(connector_id)
         if existing_task is not None and existing_task is not asyncio.current_task():
             self._cancel_existing_refresh_task(connector_id)
 
+        try:
+            current = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            if current and current.get(ConnectorStateKeys.IS_AUTHENTICATED) is False:
+                self.logger.debug(
+                    f"Connector {connector_id} is already unauthenticated; skipping deauth and notification"
+                )
+                return
+        except Exception as e:
+            self.logger.warning(f"Could not pre-check auth state for connector {connector_id}: {e}")
+
         updates = {
             ConnectorStateKeys.IS_AUTHENTICATED: False,
             ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),
+            "deauthReason": reason,
         }
 
         # The appDisabled consumer owns isActive and sync-stop; write directly if it can't be reached
@@ -578,14 +617,93 @@ class TokenRefreshService:
             )
             if updated:
                 self.logger.warning(
-                    f"Marked connector {connector_id} as unauthenticated — "
-                    f"refresh token is invalid, re-authentication required"
+                    f"Marked connector {connector_id} as unauthenticated ({reason}) — "
+                    f"re-authentication required"
                 )
+                await self._notify_connector_deactivated(connector_id, reason)
             else:
                 self.logger.error(f"Failed to mark connector {connector_id} as unauthenticated")
         except Exception as e:
             self.logger.error(
                 f"Error marking connector {connector_id} as unauthenticated: {e}", exc_info=False
+            )
+
+    async def _resolve_connector_org_id(self, connector_id: str, app_doc: dict) -> Optional[str]:
+        """orgId from the app doc, falling back to the org→app relation edge."""
+        org_id = app_doc.get("orgId")
+        if org_id:
+            return org_id
+        edges = await self.graph_provider.get_edges_to_node(
+            f"{CollectionNames.APPS.value}/{connector_id}",
+            CollectionNames.ORG_APP_RELATION.value,
+        )
+        if edges:
+            from_val = edges[0].get("_from")
+            if from_val:
+                return from_val.split("/")[-1]
+        return None
+
+    async def _notify_connector_deactivated(self, connector_id: str, reason: str) -> None:
+        """The appDisabled event only updates platform state — a human still has to
+        re-authenticate. Best-effort; never blocks the deactivation."""
+        if self._notification_service is None:
+            return
+        try:
+            app_doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            if not app_doc:
+                return
+            org_id = await self._resolve_connector_org_id(connector_id, app_doc)
+            if not org_id:
+                self.logger.warning(
+                    f"Cannot notify about deactivated connector {connector_id}: no orgId resolvable"
+                )
+                return
+
+            connector_name = app_doc.get("name") or app_doc.get("type") or "connector"
+            connector_type = str(app_doc.get("type", ""))
+            scope = app_doc.get("scope") or ConnectorScopes.TEAM.value
+            created_by = app_doc.get("createdBy")
+
+            if reason == DEAUTH_REASON_INVALID_CLIENT:
+                # Only an admin can fix the client config; the owner of a personal
+                # connector is also told so they know why their connector stopped.
+                recipient_roles = [NotificationRecipientRole.ADMIN]
+                recipient_user_ids = (
+                    [str(created_by)] if scope == ConnectorScopes.PERSONAL.value and created_by else None
+                )
+                title = f"{connector_name} connector has invalid client credentials"
+                message = (
+                    f"The {connector_name} connector was deactivated because the provider rejected "
+                    "its OAuth client credentials (invalid_client). Please update the client ID and "
+                    "secret in the connector's configuration, then re-authenticate."
+                )
+            else:
+                # Personal connectors can only be re-authenticated by their owner; team ones by admins.
+                if scope == ConnectorScopes.PERSONAL.value and created_by:
+                    recipient_user_ids, recipient_roles = [str(created_by)], None
+                else:
+                    recipient_user_ids, recipient_roles = None, [NotificationRecipientRole.ADMIN]
+                title = f"{connector_name} connector needs re-authentication"
+                message = (
+                    f"The {connector_name} connector was deactivated because the provider rejected its "
+                    "refresh token. Please re-authenticate it from the Connectors page."
+                )
+
+            await self._notification_service.publish_notification(
+                org_id=str(org_id),
+                origin=NotificationOrigin.CONNECTOR,
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=title,
+                message=message,
+                payload={"connectorId": connector_id, "deauthReason": reason},
+                redirect_link=CONNECTOR_NOTIFICATION_LINK_PREFIX + f"{scope}/?connectorType={connector_type}",
+                recipient_user_ids=recipient_user_ids,
+                recipient_roles=recipient_roles,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to publish deactivation notification for connector {connector_id}: {e}"
             )
 
     async def _send_app_disabled_event(self, connector_id: str) -> bool:
@@ -599,17 +717,7 @@ class TokenRefreshService:
             if not app_doc:
                 return False
 
-            org_id = app_doc.get("orgId")
-            if not org_id:
-                edges = await self.graph_provider.get_edges_to_node(
-                    f"{CollectionNames.APPS.value}/{connector_id}",
-                    CollectionNames.ORG_APP_RELATION.value,
-                )
-                if edges:
-                    from_val = edges[0].get("_from")
-                    if from_val: 
-                        org_id = from_val.split("/")[-1]
-
+            org_id = await self._resolve_connector_org_id(connector_id, app_doc)
 
             message = {
                 "eventType": "appDisabled",
@@ -804,6 +912,8 @@ class TokenRefreshService:
             self.logger.error(f"❌ Recursion error refreshing token for connector {connector_id}: {e}", exc_info=False)
         except RefreshTokenInvalidError as e:
             await self._handle_refresh_token_invalid(connector_id, e)
+        except InvalidClientError as e:
+            await self._handle_invalid_client(connector_id, e)
         except Exception as e:
             # Use exc_info=False to avoid potential recursion in traceback formatting
             self.logger.error(f"❌ Error refreshing token for connector {connector_id}: {e}", exc_info=False)
@@ -859,6 +969,9 @@ class TokenRefreshService:
             return new_token, True
         except RefreshTokenInvalidError as e:
             await self._handle_refresh_token_invalid(connector_id, e)
+            return None, False
+        except InvalidClientError as e:
+            await self._handle_invalid_client(connector_id, e)
             return None, False
         except Exception as e:
             self.logger.error(f"❌ Failed to perform immediate refresh for connector {connector_id}: {e}", exc_info=False)
