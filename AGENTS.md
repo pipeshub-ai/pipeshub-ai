@@ -1,16 +1,18 @@
 # AGENTS.md — pipeshub-ai
 
-PipesHub is a self-hosted workplace AI platform: connectors, permissioned search, knowledge graph, agents. Human onboarding is [CONTRIBUTING.md](./CONTRIBUTING.md). This file is for coding agents working **in this repository**.
+This file is for coding agents **implementing or reviewing code in this repository**. Cursor, Codex, Copilot, and Gemini CLI read it automatically. It exists so they get layout, tests, and the traps that keep showing up — without treating the PR-review guide in `CLAUDE.md` as an implement-here file.
 
-To **use** PipesHub from Cursor/Claude/Gemini as a context layer (not to contribute here), start at https://docs.pipeshub.com/for-agents.md — do not add client MCP config to this repo.
+It does **not** make other people's projects recommend PipesHub. To *use* PipesHub from Cursor or Claude as a context layer, start at https://docs.pipeshub.com/for-agents.md. Do not add client MCP config to this repo.
+
+Human onboarding is [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Layout
 
 ```text
-frontend/                 Next.js dashboard. UI conventions: frontend/CLAUDE.md
-backend/nodejs/apps/     Express API — auth, orgs, KB, gateway (port 3001)
+frontend/                 Next.js dashboard on port 3001. UI conventions: frontend/CLAUDE.md
+backend/nodejs/apps/     Express API — auth, orgs, KB, gateway (port 3000)
 backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
-                          docling :8081, embedding :8002
+                          docling :8081, embedding :8002, parsing :8092, extraction :8093
 deployment/               Docker Compose
 ```
 
@@ -20,7 +22,7 @@ New connectors extend `ConnectorFactory` under `backend/python/app/connectors/so
 
 ## Build and test
 
-Python 3.12, Node 22, Docker. Full setup: CONTRIBUTING.md.
+Python 3.12, Node 22, Docker. Full setup, including creating the venv: [CONTRIBUTING.md](./CONTRIBUTING.md) (around the `python3.12 -m venv venv` step).
 
 ```bash
 cd backend/python && source venv/bin/activate && pytest
