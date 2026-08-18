@@ -17,15 +17,22 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from app.config.constants.arangodb import ProgressStatus  # type: ignore[import-not-found]
+from app.connectors.sources.atlassian.jira_cloud.connector import (  # type: ignore[import-not-found]
+    PLACEHOLDER_SWEEP_MAX_DEPTH,
+)
 from app.models.entities import Record  # type: ignore[import-not-found]
 from app.sources.external.jira.jira import (
     JiraDataSource,  # type: ignore[import-not-found]
 )
 from connectors.jira.constants import (  # type: ignore[import-not-found]
     JIRA_INDEXING_WAIT_SEC,
+    JIRA_IT_ARTIFACT_PREFIX,
     JIRA_TEST_SETTLE_WAIT_SEC,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
+from helper.graph_provider_utils import (  # type: ignore[import-not-found]
+    owned_record_external_ids,
+)
 
 logger = logging.getLogger("jira-test-utils")
 
@@ -175,13 +182,18 @@ async def count_jira_group_synced_members(
 async def count_jira_site_groups_bulk(datasource: JiraDataSource) -> int:
     """Count the groups the connector actually syncs into ``Group`` nodes.
 
-    ``_sync_user_groups`` skips any bulk group missing ``groupId`` or ``name``
-    (connector.py: ``if not group_id or not group_name: continue``), so mirror that filter —
-    otherwise a site group with incomplete metadata (e.g. some team-managed access groups)
-    makes the graph count trail the raw bulk count by one.
+    Mirrors ``_sync_user_groups``: skip bulk groups missing ``groupId``/``name``, and skip
+    Atlassian-managed Connect/app groups (``atlassian-addons*``) that the connector never
+    writes as ``Group`` nodes.
     """
     groups = await _jira_fetch_all_groups(datasource)
-    return sum(1 for g in groups if g.get("groupId") and g.get("name"))
+    return sum(
+        1
+        for g in groups
+        if g.get("groupId")
+        and g.get("name")
+        and not str(g.get("name")).startswith("atlassian-addons")
+    )
 
 
 async def _jira_fetch_group_member_emails_with_visible_address(
@@ -550,44 +562,6 @@ async def preview_jira_browse_projects_permission_edges_to_record_group(
 # =============================================================================
 
 
-async def count_jira_project_issues_via_jql(
-    datasource: JiraDataSource, project_key: str
-) -> int:
-    """Count issues in ``project_key`` via JQL (paginated).
-
-    Uses the enhanced ``/rest/api/3/search/jql`` endpoint. The legacy
-    ``/rest/api/3/search`` endpoint was retired by Atlassian in May 2025 and now
-    returns HTTP 410 Gone. The new endpoint uses cursor-based pagination
-    (``nextPageToken`` / ``isLast``) rather than ``startAt`` / ``total``.
-    """
-    jql = f'project = "{project_key}"'
-    total_seen = 0
-    next_token: Optional[str] = None
-    page_size = 100
-
-    while True:
-        resp = await datasource.search_and_reconsile_issues_using_jql_post(
-            jql=jql,
-            maxResults=page_size,
-            fields=["summary"],
-            nextPageToken=next_token,
-        )
-        if resp.status != 200:
-            _raise_on_auth_error(resp.status, "count_jira_project_issues_via_jql")
-            raise RuntimeError(
-                f"Jira JQL search failed for project={project_key!r}: HTTP {resp.status}"
-            )
-        data = resp.json() or {}
-        issues = data.get("issues") or []
-        total_seen += len(issues)
-        next_token = data.get("nextPageToken")
-        # New endpoint signals end-of-page via ``isLast`` or absence of ``nextPageToken``.
-        if data.get("isLast") or not next_token:
-            return total_seen
-        if not issues:
-            return total_seen
-
-
 async def assert_jira_issues_match_graph_records(
     datasource: JiraDataSource,
     graph_provider: GraphProviderProtocol,
@@ -596,15 +570,38 @@ async def assert_jira_issues_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert JQL issue count for the project equals graph TICKET-record count for the connector."""
-    api_count = await count_jira_project_issues_via_jql(datasource, project_key)
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET", scoped=True)
-    if api_count != graph_ticket_count:
+    """Assert the project's live issues and the graph's TICKETs are the same set.
+
+    Sets, not counts, so a failure names the offending issues. IT artifacts are skipped on
+    both sides: a concurrently running leg shares this Jira site, so its mutation tickets are
+    live for a few minutes and may or may not have landed inside our sync window.
+
+    The graph side is *not* ``BELONGS_TO``-guarded, so call this only before a narrowing
+    filter sync — records that lost their edge would otherwise read as unexpected extras.
+    """
+    live = await fetch_jira_project_issue_ids(datasource, project_key)
+    graph_ids = await owned_record_external_ids(
+        graph_provider, connector_id, prefix=JIRA_IT_ARTIFACT_PREFIX, record_type="TICKET",
+    )
+    missing = live - graph_ids
+    extra = graph_ids - live
+    if missing or extra:
         raise AssertionError(
-            f"{phase}: Jira JQL issue count ({api_count}) != "
-            f"graph TICKET count ({graph_ticket_count}) for connector {connector_id} "
-            f"project_key={project_key!r}"
+            f"{phase}: graph TICKETs != live Jira issues for connector {connector_id} "
+            f"project_key={project_key!r} (IT artifacts excluded from both sides). "
+            f"missing_from_graph={sorted(missing)} unexpected_in_graph={sorted(extra)}"
         )
+
+
+async def fetch_jira_project_issue_ids(datasource: JiraDataSource, project_key: str) -> set[str]:
+    """Live issue ids for ``project_key``, excluding IT artifacts."""
+    issues = await search_issues_jql(datasource, f'project = "{project_key}"', ["summary"])
+    return {str(it["id"]) for it in issues if it.get("id") and not is_jira_it_artifact(it)}
+
+
+def is_jira_it_artifact(issue: dict[str, Any]) -> bool:
+    """True if a search-result issue was created by an integration test."""
+    return JIRA_IT_ARTIFACT_PREFIX in ((issue.get("fields") or {}).get("summary") or "")
 
 
 # =============================================================================
@@ -930,6 +927,65 @@ async def issue_exists_in_project(
     return str(proj.get("key")) == str(project_key)
 
 
+async def fetch_ancestor_chain(
+    datasource: JiraDataSource,
+    issue_id_or_key: str,
+    *,
+    max_depth: int = PLACEHOLDER_SWEEP_MAX_DEPTH,
+) -> list[dict[str, Any]]:
+    """Return ancestor issues for ``issue_id_or_key``, nearest parent first.
+
+    Walked one hop at a time via ``fields.parent``. Returns full issue payloads
+    (not ids) so callers can read ``created`` without a second round-trip per
+    ancestor. ``max_depth`` mirrors the connector's own sweep cap so the walk
+    cannot claim ancestors the sweep would never reach.
+    """
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = {str(issue_id_or_key)}
+
+    resp = await jira_api_call_with_retry(
+        datasource.get_issue,
+        issueIdOrKey=issue_id_or_key,
+        fields="parent,created,updated,summary",
+        context=f"fetch_ancestor_chain({issue_id_or_key})",
+    )
+    if resp.status != 200:
+        return chain
+    current = resp.json() or {}
+    if current.get("id"):
+        seen.add(str(current["id"]))
+    if current.get("key"):
+        seen.add(str(current["key"]))
+
+    for _ in range(max_depth):
+        parent = ((current.get("fields") or {}).get("parent")) or {}
+        parent_id = parent.get("id")
+        parent_key = parent.get("key")
+        if not parent_id:
+            break
+        parent_token = str(parent_id)
+        if parent_token in seen or (parent_key and str(parent_key) in seen):
+            break
+        seen.add(parent_token)
+        if parent_key:
+            seen.add(str(parent_key))
+
+        resp = await jira_api_call_with_retry(
+            datasource.get_issue,
+            issueIdOrKey=parent_token,
+            fields="parent,created,updated,summary",
+            context=f"fetch_ancestor_chain({parent_token})",
+        )
+        if resp.status != 200:
+            break
+        current = resp.json() or {}
+        if not current.get("id"):
+            break
+        chain.append(current)
+
+    return chain
+
+
 async def discover_epic_and_child(
     datasource: JiraDataSource, project_key: str
 ) -> Optional[tuple[str, str, str, str]]:
@@ -975,17 +1031,171 @@ async def discover_task_and_subtask(
     return None
 
 
+def _wiki_attachment_filenames(text: str) -> set[str]:
+    """Filenames from Jira wiki ``!file.ext|...!`` markup (mirrors connector helper)."""
+    filenames: set[str] = set()
+    for match in re.finditer(r"!([^!]+)!", text):
+        filename_part = match.group(1).split("|", 1)[0].strip()
+        if filename_part:
+            filenames.add(filename_part.lower())
+    return filenames
+
+
+def _adf_media_filenames(node: Any) -> set[str]:
+    """ADF ``media`` / ``mediaInline`` ``alt`` filenames (+ nested wiki refs)."""
+    filenames: set[str] = set()
+    if isinstance(node, dict):
+        if node.get("type") in ("media", "mediaInline"):
+            alt = (node.get("attrs") or {}).get("alt")
+            if isinstance(alt, str) and alt.strip():
+                filenames.add(alt.strip().lower())
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                filenames |= _adf_media_filenames(value)
+            elif isinstance(value, str):
+                filenames |= _wiki_attachment_filenames(value)
+    elif isinstance(node, list):
+        for item in node:
+            filenames |= _adf_media_filenames(item)
+    return filenames
+
+
+def _attachment_ids_from_strings(node: Any) -> set[str]:
+    """Attachment ids embedded in HTML/URL strings inside ADF or free text."""
+    from app.connectors.sources.atlassian.core.html_utils import (  # type: ignore[import-not-found]
+        extract_attachment_ids,
+    )
+
+    ids: set[str] = set()
+    if isinstance(node, dict):
+        for value in node.values():
+            if isinstance(value, str):
+                ids |= extract_attachment_ids(value)
+            elif isinstance(value, (dict, list)):
+                ids |= _attachment_ids_from_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            ids |= _attachment_ids_from_strings(item)
+    return ids
+
+
+def _inline_refs_from_body(body: Any) -> tuple[set[str], set[str]]:
+    """Return ``(filenames_lower, attachment_ids)`` referenced as inline media in a body."""
+    from app.connectors.sources.atlassian.core.html_utils import (  # type: ignore[import-not-found]
+        extract_attachment_ids,
+    )
+
+    filenames: set[str] = set()
+    attachment_ids: set[str] = set()
+    if isinstance(body, dict):
+        filenames |= _adf_media_filenames(body)
+        attachment_ids |= _attachment_ids_from_strings(body)
+    elif isinstance(body, str):
+        filenames |= _wiki_attachment_filenames(body)
+        attachment_ids |= extract_attachment_ids(body)
+    return filenames, attachment_ids
+
+
+def resolve_inline_image_attachment_ids(issue_fields: dict[str, Any]) -> set[str]:
+    """Image attachment ids embedded in description/comment (sync-path parity).
+
+    Mirrors ``JiraCloudConnector._resolve_inline_image_attachment_ids``. Comment bodies
+    are only considered when ``comment`` is present on ``issue_fields`` (issue search
+    normally omits it).
+    """
+    filenames: set[str] = set()
+    referenced_ids: set[str] = set()
+
+    desc_names, desc_ids = _inline_refs_from_body(issue_fields.get("description"))
+    filenames |= desc_names
+    referenced_ids |= desc_ids
+
+    comment_field = issue_fields.get("comment")
+    if isinstance(comment_field, dict):
+        for comment in comment_field.get("comments") or []:
+            if not isinstance(comment, dict):
+                continue
+            c_names, c_ids = _inline_refs_from_body(comment.get("body"))
+            filenames |= c_names
+            referenced_ids |= c_ids
+
+    if not filenames and not referenced_ids:
+        return set()
+
+    inline_ids: set[str] = set()
+    for attachment in issue_fields.get("attachment") or []:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        mime = (attachment.get("mimeType") or "").lower()
+        if not mime.startswith("image/"):
+            continue
+        filename = (attachment.get("filename") or "").strip().lower()
+        att_id = str(attachment_id)
+        if att_id in referenced_ids or (filename and filename in filenames):
+            inline_ids.add(att_id)
+    return inline_ids
+
+
+def count_synced_file_attachments(issue_fields: dict[str, Any]) -> int:
+    """Attachments that become FILE records on a fresh sync (excludes new inline images)."""
+    attachments = issue_fields.get("attachment") or []
+    if not attachments:
+        return 0
+    inline_ids = resolve_inline_image_attachment_ids(issue_fields)
+    count = 0
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        if str(attachment_id) in inline_ids:
+            continue
+        count += 1
+    return count
+
+
+def first_synced_file_attachment(
+    issue_fields: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """First attachment that would be created as a FILE on a fresh sync, or None."""
+    attachments = issue_fields.get("attachment") or []
+    if not attachments:
+        return None
+    inline_ids = resolve_inline_image_attachment_ids(issue_fields)
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        attachment_id = attachment.get("id")
+        if attachment_id is None:
+            continue
+        if str(attachment_id) in inline_ids:
+            continue
+        return attachment
+    return None
+
+
 async def discover_attachment(
     datasource: JiraDataSource, project_key: str
 ) -> Optional[tuple[str, str, dict[str, Any]]]:
-    """Find the first issue with an attachment. Returns ``(issue_key, issue_id, attachment)`` or None."""
+    """Find an attachment that syncs as a FILE (skips new inline images).
+
+    Returns ``(issue_key, issue_id, attachment)`` or None when the project only has
+    inline-image attachments (no FileRecord created on fresh sync).
+    """
     issues = await search_issues_jql(
-        datasource, f'project = "{project_key}"', ["attachment"],
+        datasource,
+        f'project = "{project_key}"',
+        ["attachment", "description"],
     )
     for it in issues:
-        atts = (it.get("fields") or {}).get("attachment") or []
-        if atts:
-            return (it.get("key"), str(it.get("id")), atts[0])
+        fields = it.get("fields") or {}
+        attachment = first_synced_file_attachment(fields)
+        if attachment is not None:
+            return (it.get("key"), str(it.get("id")), attachment)
     return None
 
 
@@ -996,22 +1206,30 @@ async def derive_jira_scope_counts(
 
     Mirrors the connector's sync-path record creation:
       - ``ticket``: one TICKET record per issue.
-      - ``file``: one FILE record per attachment. ``_fetch_issue_attachments`` creates a
-        FileRecord for **every** ``fields.attachment`` entry — no inline-image filtering on the
-        sync path (that only affects the streamed blocks) — so this is the exact FILE count.
+      - ``file``: one FILE record per attachment that is *not* a new inline image
+        (``_fetch_issue_attachments`` skips image attachments referenced in description;
+        comment bodies are not on the issue-search payload, same as production sync).
       - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
         epic child; attachments use ATTACHMENT, not PARENT_CHILD).
+
+    IT artifacts are skipped: this project is shared with any concurrently running leg,
+    whose in-flight tickets would otherwise land in the baseline.
     """
     issues = await search_issues_jql(
-        datasource, f'project = "{project_key}"', ["parent", "attachment"],
+        datasource,
+        f'project = "{project_key}"',
+        ["parent", "attachment", "description", "summary"],
     )
-    ticket = len(issues)
+    ticket = 0
     files = 0
     parent_child = 0
     for it in issues:
+        if is_jira_it_artifact(it):
+            continue
+        ticket += 1
         f = it.get("fields") or {}
         if f.get("parent"):
             parent_child += 1
-        files += len(f.get("attachment") or [])
+        files += count_synced_file_attachments(f)
     return {"ticket": ticket, "file": files, "parent_child": parent_child}
 

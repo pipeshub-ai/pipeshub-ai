@@ -15,8 +15,8 @@ Test cases:
   TC-LINEAR-007       — Reference document WebpageRecord fields + edges (skip if none)
   TC-LINEAR-008       — Reference markdown FILE record fields + edges (skip if none)
   TC-LINEAR-IDX-001   — Reference issue ``indexing_status`` COMPLETED
-  TC-INCR-001         — Create new issue (test-time); incremental sync; +1 record; cleanup
-  TC-UPDATE-001       — Edit title (test-time); version +1; revision match; restore title
+  TC-INCR-001         — Create new issue (test-time); incremental sync picks it up; cleanup
+  TC-UPDATE-001       — Create + edit title (test-owned issue); version +1; revision match; delete
   TC-LINEAR-PH-001    — Placeholder ancestors: minted → swept → promoted
   TC-LINEAR-EDGES-001 — Edge inventory after incremental tests
   TC-LINEAR-PERM-001  — Team privacy → ORG or GROUP permission on RecordGroup
@@ -48,6 +48,8 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
+    count_owned_records,
+    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from connectors.linear.linear_expected import LinearExpected  # noqa: E402
@@ -63,8 +65,8 @@ from validation.graph_edge_validator import (  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from connectors.linear.constants import (  # noqa: E402
     LINEAR_INDEXING_WAIT_SEC,
+    LINEAR_IT_ARTIFACT_PREFIX,
     LINEAR_PH_CHILD_IDENTIFIER,
-    LINEAR_PH_MODIFIED_CUT_MS,
 )
 from connectors.linear.linear_test_utils import (  # noqa: E402
     assert_linear_issues_match_graph_records,
@@ -88,6 +90,36 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
 
+
+async def _delete_issue_and_resync(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    linear_datasource: LinearDataSource,
+    *,
+    connector_id: str,
+    issue_id: str,
+    context: str,
+) -> None:
+    """Delete a test-owned issue in Linear, then resync so the record leaves the graph.
+
+    Incremental, not full: a full sync wipes the connector's sync points, and Linear skips its
+    deleted-issues pass without a deletion checkpoint (``_sync_deleted_issues``). A leaked
+    issue keeps its IT prefix, so it stays out of owned counts either way.
+
+    Failures are logged, not raised: this runs in a ``finally`` and would otherwise mask a
+    real assertion failure from the test body.
+    """
+    try:
+        resp = await linear_datasource.issueDelete(id=issue_id)
+        if not resp.success:
+            logger.warning("%s cleanup: issueDelete failed: %s", context, resp.message)
+        _restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(
+            pipeshub_client, graph_provider, connector_id, timeout=240,
+        )
+        logger.info("%s cleanup: test issue deleted and resynced", context)
+    except Exception as e:
+        logger.error("%s cleanup failed — issue %s may be leaked: %s", context, issue_id, e)
 
 
 pytestmark = [
@@ -120,16 +152,27 @@ class TestLinearConnector:
         await graph_provider.assert_record_groups_and_edges(
             connector_id,
             min_groups=linear_connector["expected_record_groups"],
-            min_record_edges=linear_connector["full_sync_count"],
+            min_record_edges=linear_connector["expected_total_records"],
         )
         await graph_provider.assert_no_orphan_records(connector_id)
 
-        ticket_count = await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value)
+        # Baselines compare owned counts (a concurrently running leg's mutation issue can
+        # enter or leave this shared workspace mid-run); structural edge invariants below
+        # compare the raw count, since every record carries those edges, artifact or not.
+        owned_tickets = await count_owned_records(
+            graph_provider, connector_id,
+            prefix=LINEAR_IT_ARTIFACT_PREFIX, record_type=RecordType.TICKET.value,
+        )
+        owned_records = await count_owned_records(
+            graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX,
+        )
+        all_records = await graph_provider.count_records(connector_id)
         project_count = await graph_provider.count_records_by_type(connector_id, RecordType.PROJECT.value)
         link_count = await graph_provider.count_records_by_type(connector_id, RecordType.LINK.value)
         webpage_count = await graph_provider.count_records_by_type(connector_id, RecordType.WEBPAGE.value)
         file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value)
-        assert ticket_count == linear_connector["expected_ticket_count"]
+
+        assert owned_tickets == linear_connector["expected_ticket_count"]
         assert project_count == linear_connector["expected_project_count"]
         # Reference-record presence (checked in the fixture) already proves each
         # dependent type synced correctly; here we only confirm the type exists at all.
@@ -137,9 +180,9 @@ class TestLinearConnector:
         assert webpage_count >= 1, "No WEBPAGE records after sync"
         assert file_count >= 1, "No FILE records after sync"
 
-        total_records = await graph_provider.count_records(connector_id)
-        assert total_records >= linear_connector["expected_total_records"], (
-            f"total_records: graph={total_records} < expected={linear_connector['expected_total_records']}"
+        assert owned_records >= linear_connector["expected_total_records"], (
+            f"owned records: graph={owned_records} (of {all_records}) "
+            f"< expected={linear_connector['expected_total_records']}"
         )
 
         pc_edges = await graph_provider.count_parent_child_edges(connector_id)
@@ -148,12 +191,12 @@ class TestLinearConnector:
         )
 
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
-        assert rg_edges == total_records, (
-            f"BELONGS_TO record->group count {rg_edges} must equal total records {total_records}"
+        assert rg_edges == all_records, (
+            f"BELONGS_TO record->group count {rg_edges} must equal total records {all_records}"
         )
 
         inherit = await graph_provider.count_inherit_permissions_edges(connector_id)
-        assert inherit == total_records
+        assert inherit == all_records
 
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
         rgs = await graph_provider.count_record_groups(connector_id)
@@ -187,12 +230,15 @@ class TestLinearConnector:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-INCR-001: create one issue at test time, incremental sync picks it up, then delete it."""
+        """TC-INCR-001: create one issue at test time, incremental sync picks it up, then delete it.
+
+        Asserted by external id, never by a record-count delta: this workspace is shared with
+        any concurrently running leg, whose own create/delete moves the total under us.
+        """
         connector_id = linear_connector["connector_id"]
         team_id = linear_connector["primary_team_id"]
-        before_count = await graph_provider.count_records(connector_id)
 
-        title = f"LinearIT-IncrTest-{uuid.uuid4().hex[:8]}"
+        title = f"{LINEAR_IT_ARTIFACT_PREFIX}IncrTest-{uuid.uuid4().hex[:8]}"
         new_issue_id: str | None = None
 
         try:
@@ -210,26 +256,13 @@ class TestLinearConnector:
                 timeout=120,
             )
 
-            max_sync_attempts = 3
-            for sync_attempt in range(max_sync_attempts):
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
-                )
-                after_count = await graph_provider.count_records(connector_id)
-                if after_count >= before_count + 1:
-                    break
-                if sync_attempt < max_sync_attempts - 1:
-                    logger.warning(
-                        "TC-INCR-001: sync finished with %d records (need %d), "
-                        "re-triggering (attempt %d/%d)",
-                        after_count, before_count + 1,
-                        sync_attempt + 2, max_sync_attempts,
-                    )
-
-            after_count = await graph_provider.count_records(connector_id)
-            assert after_count == before_count + 1, (
-                f"Expected exactly 1 new record; before={before_count}, after={after_count}"
+            _restart_sync(pipeshub_client, connector_id)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id, timeout=240,
+            )
+            await wait_for_record_by_external_id(
+                graph_provider, connector_id, new_issue_id,
+                timeout=120, description="TC-INCR-001 new issue",
             )
 
             actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_issue_id)
@@ -250,21 +283,14 @@ class TestLinearConnector:
             )
 
             await graph_provider.assert_record_paths_or_names_contain(connector_id, [title])
-            logger.info("TC-INCR-001 passed: %d -> %d records", before_count, after_count)
+            logger.info("TC-INCR-001 passed: %s synced", new_issue_id)
 
         finally:
             if new_issue_id:
-                try:
-                    await linear_datasource.issueDelete(id=new_issue_id)
-                    logger.info("TC-INCR-001 cleanup: deleted test issue")
-                    _restart_sync(pipeshub_client, connector_id)
-                    await wait_for_sync_completion(
-                        pipeshub_client, graph_provider, connector_id,
-                        min_records=before_count, timeout=180,
-                    )
-                    logger.info("TC-INCR-001 cleanup: deletion synced, graph back to %d records", before_count)
-                except Exception as e:
-                    logger.warning("TC-INCR-001 cleanup: failed to delete/sync test issue: %s", e)
+                await _delete_issue_and_resync(
+                    pipeshub_client, graph_provider, linear_datasource,
+                    connector_id=connector_id, issue_id=new_issue_id, context="TC-INCR-001",
+                )
 
     @pytest.mark.order(9)
     async def test_tc_update_001_title_revision(
@@ -274,28 +300,44 @@ class TestLinearConnector:
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-UPDATE-001: edit title of reference issue; version += 1; revision = Linear updatedAt ms.
+        """TC-UPDATE-001: edit a test-owned issue; version += 1; revision = Linear updatedAt ms.
 
-        Restores the original title in finally.
+        The issue is created here rather than reusing the pinned reference issue: this
+        workspace is shared with any concurrently running leg, so editing a shared issue made
+        each run assert against the other's title and restore the other's value permanently.
         """
-        target_id = linear_connector.get("reference_issue_id")
-        if not target_id:
-            pytest.skip("No reference issue discovered on primary — skipping")
         connector_id = linear_connector["connector_id"]
-        before_count = await graph_provider.count_records(connector_id)
-
-        # Fetch original title to restore later.
-        issue_resp = await linear_datasource.issue(id=target_id)
-        assert issue_resp.success, f"issue({target_id}) failed: {issue_resp.message}"
-        original_title = (issue_resp.data or {}).get("issue", {}).get("title", "")
-
-        record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
-        assert record_before is not None, f"Issue {target_id} not in graph"
-        old_version = int(record_before.version)
-
-        new_title = f"LinearIT-Edited-{uuid.uuid4().hex[:8]}"
+        team_id = linear_connector["primary_team_id"]
+        target_id: str | None = None
 
         try:
+            create_resp = await linear_datasource.issueCreate(
+                input={
+                    "teamId": team_id,
+                    "title": f"{LINEAR_IT_ARTIFACT_PREFIX}UpdTest-{uuid.uuid4().hex[:8]}",
+                }
+            )
+            assert create_resp.success, f"Failed to create issue: {create_resp.message}"
+            target_id = ((create_resp.data or {}).get("issueCreate", {}).get("issue", {})).get("id")
+            assert target_id, "issueCreate returned no issue ID"
+
+            await wait_until_linear_condition(
+                check_fn=lambda: check_issue_exists_bool(linear_datasource, target_id),
+                description=f"TC-UPDATE-001: new issue fetchable ({target_id})",
+                timeout=120,
+            )
+
+            _restart_sync(pipeshub_client, connector_id)
+            await wait_for_sync_completion(
+                pipeshub_client, graph_provider, connector_id, timeout=240,
+            )
+            record_before = await wait_for_record_by_external_id(
+                graph_provider, connector_id, target_id,
+                timeout=120, description="TC-UPDATE-001 baseline record",
+            )
+            old_version = int(record_before.version)
+
+            new_title = f"{LINEAR_IT_ARTIFACT_PREFIX}Edited-{uuid.uuid4().hex[:8]}"
             edit_resp = await linear_datasource.issueUpdate(
                 id=target_id,
                 input={"title": new_title},
@@ -307,11 +349,6 @@ class TestLinearConnector:
             _restart_sync(pipeshub_client, connector_id)
             await wait_for_sync_completion(
                 pipeshub_client, graph_provider, connector_id, timeout=240,
-            )
-
-            after_count = await graph_provider.count_records(connector_id)
-            assert after_count == before_count, (
-                f"Update should keep record count stable; before={before_count}, after={after_count}"
             )
 
             record_after = await graph_provider.get_record_by_external_id(connector_id, target_id)
@@ -331,15 +368,11 @@ class TestLinearConnector:
             logger.info("TC-UPDATE-001 passed: version %s -> %s", old_version, record_after.version)
 
         finally:
-            if original_title:
-                try:
-                    await linear_datasource.issueUpdate(
-                        id=target_id,
-                        input={"title": original_title},
-                    )
-                    logger.info("TC-UPDATE-001 cleanup: restored title to '%s'", original_title)
-                except Exception as e:
-                    logger.warning("TC-UPDATE-001 cleanup: failed to restore title: %s", e)
+            if target_id:
+                await _delete_issue_and_resync(
+                    pipeshub_client, graph_provider, linear_datasource,
+                    connector_id=connector_id, issue_id=target_id, context="TC-UPDATE-001",
+                )
 
 
 # =============================================================================
@@ -741,8 +774,11 @@ class TestLinearPlaceholders:
         Requires >= 2 stub ancestors: the stub minted for the immediate parent carries no
         parent pointer, so the grandparent only reaches the graph after the sweep reads the
         parent back from Linear and expands a second level. Depth 1 would not prove the loop ran.
+
+        The cut is derived from the chain at test time rather than pinned to a constant:
+        ``updatedAt`` is mutable, so a hard-coded epoch decays the moment anything touches
+        the chain and strands the test until someone recomputes it by hand.
         """
-        cut = LINEAR_PH_MODIFIED_CUT_MS
         # LINEAR_TEST_API_TOKEN is already guaranteed by the linear_datasource fixture.
         api_token = os.getenv("LINEAR_TEST_API_TOKEN")
         all_team_ids = [t.strip() for t in os.getenv("LINEAR_TEST_TEAM_IDS", "").split(",") if t.strip()]
@@ -762,31 +798,36 @@ class TestLinearPlaceholders:
                 f"{team_id!r}, which is not in LINEAR_TEST_TEAM_IDS {all_team_ids}"
             )
 
+        chain = await fetch_ancestor_chain(linear_datasource, child_id)
+        if len(chain) < 2:
+            pytest.fail(
+                f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} has {len(chain)} "
+                "ancestor(s); >= 2 required to exercise multi-level expansion — pick a "
+                "deeper chain"
+            )
+
+        # Sit the cut on the newer of the two nearest ancestors: the connector emits
+        # ``updatedAt: {gt: cut}``, so both fall outside the window and mint stubs, while
+        # anything edited more recently stays in scope and bounds the sweep.
+        cut = max(parse_linear_timestamp(a.get("updatedAt")) for a in chain[:2])
         child_updated_ms = parse_linear_timestamp(child.get("updatedAt"))
         if child_updated_ms <= cut:
             pytest.fail(
                 f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} updatedAt="
-                f"{child_updated_ms} must be after LINEAR_PH_MODIFIED_CUT_MS={cut} "
-                "so it syncs while its ancestors do not — recompute the cut"
+                f"{child_updated_ms} is not newer than its two nearest ancestors "
+                f"({cut}) — the child must sync while they do not. Touch "
+                f"{LINEAR_PH_CHILD_IDENTIFIER} in Linear to bump its updatedAt."
             )
 
-        # Walk down the chain collecting the out-of-window prefix. The connector emits
-        # updatedAt: {gt: cut}, so an ancestor exactly on the cut is out of scope; the
-        # first ancestor above it syncs for real and bounds the sweep.
+        # Walk down the chain collecting the out-of-window prefix. An ancestor exactly on
+        # the cut is out of scope; the first one above it syncs for real and bounds the sweep.
         ancestors: list[str] = []
         boundary_id: str | None = None
-        for ancestor in await fetch_ancestor_chain(linear_datasource, child_id):
+        for ancestor in chain:
             if parse_linear_timestamp(ancestor.get("updatedAt")) > cut:
                 boundary_id = ancestor["id"]
                 break
             ancestors.append(ancestor["id"])
-
-        if len(ancestors) < 2:
-            pytest.fail(
-                f"TC-LINEAR-PH-001 setup: {LINEAR_PH_CHILD_IDENTIFIER} has {len(ancestors)} "
-                f"ancestor(s) below LINEAR_PH_MODIFIED_CUT_MS={cut}; >= 2 required to "
-                "exercise multi-level expansion — lower the cut or pick a deeper chain"
-            )
 
         stub_node_ids: Dict[str, str] = {}
         connector_id: str | None = None
@@ -975,21 +1016,26 @@ class TestLinearEdges:
         linear_connector: Dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-LINEAR-EDGES-001: structural edge invariants after mutation tests.
+        """TC-LINEAR-EDGES-001: structural edge invariants after the mutation tests.
 
-        TC-INCR-001 creates and deletes its test issue (with sync), so the graph
-        should be back at baseline counts. Validate exact equality + edge invariants.
+        Each mutation test deletes the issue it created, so the graph should be back at the
+        fixture baseline. Same split as TC-SYNC-001: the baseline compares owned records,
+        the edge invariants compare the raw count.
         """
         connector_id = linear_connector["connector_id"]
 
-        records = await graph_provider.count_records(connector_id)
-        assert records >= linear_connector["expected_total_records"], (
-            f"total_records: graph={records} < expected={linear_connector['expected_total_records']}"
+        all_records = await graph_provider.count_records(connector_id)
+        owned_records = await count_owned_records(
+            graph_provider, connector_id, prefix=LINEAR_IT_ARTIFACT_PREFIX,
+        )
+        assert owned_records >= linear_connector["expected_total_records"], (
+            f"owned records: graph={owned_records} (of {all_records}) "
+            f"< expected={linear_connector['expected_total_records']}"
         )
 
         rg_edges = await graph_provider.count_record_group_edges(connector_id)
-        assert rg_edges == records, (
-            f"BELONGS_TO record->group {rg_edges} must equal records {records}"
+        assert rg_edges == all_records, (
+            f"BELONGS_TO record->group {rg_edges} must equal records {all_records}"
         )
 
         pc = await graph_provider.count_parent_child_edges(connector_id)
@@ -998,7 +1044,9 @@ class TestLinearEdges:
         )
 
         inherit = await graph_provider.count_inherit_permissions_edges(connector_id)
-        assert inherit == records, f"INHERIT_PERMISSIONS {inherit} must equal records {records}"
+        assert inherit == all_records, (
+            f"INHERIT_PERMISSIONS {inherit} must equal records {all_records}"
+        )
 
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
         rgs = await graph_provider.count_record_groups(connector_id)
