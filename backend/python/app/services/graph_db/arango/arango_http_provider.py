@@ -4516,6 +4516,78 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record group by ID failed: {str(e)}")
             return None
 
+    async def list_record_groups(
+        self,
+        org_id: str,
+        connector_id: str,
+        group_types: list[str] | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List record groups for one connector — see interface docstring
+        for why this returns raw dicts rather than typed `RecordGroup`s
+        (callers need `shortName`/`externalGroupId` even when null)."""
+        try:
+            aql = f"""
+            FOR doc IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER doc.orgId == @org_id
+                AND doc.connectorId == @connector_id
+                FILTER @group_types == null OR doc.groupType IN @group_types
+                FILTER @query == null
+                    OR LIKE(LOWER(doc.groupName), @query_like)
+                    OR LIKE(LOWER(doc.shortName), @query_like)
+                SORT doc.groupName ASC
+                LIMIT @limit
+                RETURN doc
+            """
+            bind_vars = {
+                "org_id": org_id,
+                "connector_id": connector_id,
+                "group_types": group_types,
+                "query": query.lower() if query else None,
+                "query_like": f"%{query.lower()}%" if query else None,
+                "limit": limit,
+            }
+            results = await self.http_client.execute_aql(aql, bind_vars, txn_id=transaction)
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ list_record_groups failed for connector {connector_id}: {str(e)}")
+            return []
+
+    async def get_records_by_external_ids(
+        self,
+        connector_id: str,
+        external_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Batch-resolve external IDs to Records in one AQL query."""
+        if not external_ids:
+            return []
+        try:
+            aql = f"""
+            FOR doc IN {CollectionNames.RECORDS.value}
+                FILTER doc.connectorId == @connector_id
+                AND doc.externalRecordId IN @external_ids
+                RETURN doc
+            """
+            results = await self.http_client.execute_aql(
+                aql,
+                bind_vars={"connector_id": connector_id, "external_ids": external_ids},
+                txn_id=transaction,
+            )
+            records: list[Record] = []
+            for doc in results or []:
+                try:
+                    record_data = self._translate_node_from_arango(doc)
+                    records.append(Record.from_arango_base_record(record_data))
+                except Exception:
+                    self.logger.warning("get_records_by_external_ids: failed to translate record %s", doc.get("_key"))
+            return records
+        except Exception as e:
+            self.logger.error(f"❌ get_records_by_external_ids failed for connector {connector_id}: {str(e)}")
+            return []
+
     async def get_file_record_by_id(
         self,
         record_id: str,
@@ -5015,6 +5087,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to retrieve user groups for connector {connector_id}: {str(e)}"
             )
+            return []
+
+    async def list_roles(
+        self,
+        org_id: str,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List roles for one connector. Mirrors `get_user_groups` shape but
+        against the ROLES collection — connectors that don't sync roles
+        simply have no matching documents, which returns `[]` here (the
+        "not tracked at all" vs. "tracked but empty" distinction is made by
+        `FilterVocabularyService.roles`, not this query)."""
+        try:
+            query = f"""
+            FOR role IN {CollectionNames.ROLES.value}
+                FILTER role.connectorId == @connector_id
+                    AND role.orgId == @org_id
+                RETURN role
+            """
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"connector_id": connector_id, "org_id": org_id},
+                txn_id=transaction,
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ list_roles failed for connector {connector_id}: {str(e)}")
             return []
 
     async def batch_upsert_people(

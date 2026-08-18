@@ -9468,6 +9468,56 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def search_by_cql(
+        self,
+        cql: str,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None
+    ) -> HTTPResponse:
+        """Execute a caller-supplied CQL query verbatim against Confluence search.
+
+        Unlike ``search_full_text``, which builds CQL from structured
+        keyword arguments, this passes *cql* straight through — the
+        caller (the filtered-search `ConfluenceFilterAdapter`) is
+        responsible for producing filter-only CQL; this method does no
+        validation of clause content, only of the HTTP call shape.
+
+        HTTP GET /wiki/rest/api/search
+
+        Args:
+            cql: A complete CQL query string, e.g. ``space = "ENG" AND type = "page"``.
+            limit: Max results (capped at 50 by Confluence).
+            cursor: Pagination cursor from a previous response's ``_links.next``.
+            headers: Additional HTTP headers.
+
+        Returns:
+            HTTPResponse with CQL search results, same shape as ``search_full_text``.
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+
+        _query: Dict[str, Any] = {
+            'cql': cql,
+            'limit': min(limit, 50),
+            'expand': 'space,version,metadata.labels',
+        }
+        if cursor is not None:
+            _query['cursor'] = cursor
+
+        url = f"{self._v1_rest_api_base()}/search"
+
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(headers or {}),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
     async def search_blogposts_cql(
         self,
         search_term: str,

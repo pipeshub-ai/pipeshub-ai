@@ -2928,6 +2928,80 @@ class Neo4jProvider(IGraphDBProvider):
         """Get record group by ID"""
         return await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value, transaction)
 
+    async def list_record_groups(
+        self,
+        org_id: str,
+        connector_id: str,
+        group_types: list[str] | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List record groups for one connector — see interface docstring."""
+        try:
+            cypher = """
+            MATCH (rg:RecordGroup {orgId: $org_id, connectorId: $connector_id})
+            WHERE ($group_types IS NULL OR rg.groupType IN $group_types)
+              AND (
+                $query IS NULL
+                OR toLower(rg.groupName) CONTAINS $query
+                OR toLower(rg.shortName) CONTAINS $query
+              )
+            RETURN rg
+            ORDER BY rg.groupName ASC
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                cypher,
+                parameters={
+                    "org_id": org_id,
+                    "connector_id": connector_id,
+                    "group_types": group_types,
+                    "query": query.lower() if query else None,
+                    "limit": limit,
+                },
+                txn_id=transaction,
+            )
+            return [
+                self._neo4j_to_arango_node(dict(record["rg"]), CollectionNames.RECORD_GROUPS.value)
+                for record in results
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ list_record_groups failed for connector {connector_id}: {str(e)}")
+            return []
+
+    async def get_records_by_external_ids(
+        self,
+        connector_id: str,
+        external_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[Record]:
+        """Batch-resolve external IDs to Records in one Cypher query."""
+        if not external_ids:
+            return []
+        try:
+            cypher = """
+            MATCH (r:Record {connectorId: $connector_id})
+            WHERE r.externalRecordId IN $external_ids
+            RETURN r
+            """
+            results = await self.client.execute_query(
+                cypher,
+                parameters={"connector_id": connector_id, "external_ids": external_ids},
+                txn_id=transaction,
+            )
+            records: list[Record] = []
+            for result in results:
+                try:
+                    record_dict = self._neo4j_to_arango_node(dict(result["r"]), CollectionNames.RECORDS.value)
+                    records.append(Record.from_arango_base_record(record_dict))
+                except Exception:
+                    self.logger.warning("get_records_by_external_ids: failed to translate a record")
+            return records
+        except Exception as e:
+            self.logger.error(f"❌ get_records_by_external_ids failed for connector {connector_id}: {str(e)}")
+            return []
+
     async def get_file_record_by_id(
         self,
         record_id: str,
@@ -3239,6 +3313,33 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user groups failed: {str(e)}")
+            return []
+
+    async def list_roles(
+        self,
+        org_id: str,
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List roles for one connector. See `ArangoHttpProvider.list_roles`
+        docstring for the "not tracked" vs. "empty" distinction — this
+        query simply returns whatever role nodes exist for the connector."""
+        try:
+            query = """
+            MATCH (r:Role {connectorId: $connector_id, orgId: $org_id})
+            RETURN r
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id, "org_id": org_id},
+                txn_id=transaction,
+            )
+            return [
+                self._neo4j_to_arango_node(dict(record["r"]), CollectionNames.ROLES.value)
+                for record in results
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ list_roles failed for connector {connector_id}: {str(e)}")
             return []
 
     async def get_app_role_by_external_id(
