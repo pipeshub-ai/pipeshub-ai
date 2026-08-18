@@ -15,6 +15,7 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import os
+import math
 import re
 import time
 import uuid
@@ -906,7 +907,9 @@ class VectorStore(Transformer):
             not isinstance(embedding, list)
             or not embedding
             or not all(
-                isinstance(value, (int, float)) and not isinstance(value, bool)
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
                 for value in embedding
             )
         ):

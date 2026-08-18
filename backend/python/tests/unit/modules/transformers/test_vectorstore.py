@@ -2323,6 +2323,9 @@ class TestProcessImageEmbeddingsOpenAICompatible:
 
         assert len(points) == 1
         assert mock_client.post.await_count == 2
+        first_call = mock_client.post.await_args_list[0]
+        assert first_call.kwargs["json"]["input"] == ["data:image/jpeg;base64,aW1hZ2U="]
+        assert "messages" not in first_call.kwargs["json"]
         second_call = mock_client.post.await_args_list[1]
         content = second_call.kwargs["json"]["messages"][0]["content"]
         assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,aW1hZ2U="
@@ -2358,6 +2361,9 @@ class TestProcessImageEmbeddingsOpenAICompatible:
             {"data": [{"embedding": []}]},
             {"data": [{"embedding": [True]}]},
             {"data": [{"embedding": [0.1, "invalid"]}]},
+            {"data": [{"embedding": [0.1, float("nan")]}]},
+            {"data": [{"embedding": [0.1, float("inf")]}]},
+            {"data": [{"embedding": [0.1, float("-inf")]}]},
         ],
     )
     async def test_invalid_response_skips_image(self, payload):
