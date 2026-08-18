@@ -97,7 +97,7 @@ def make_mock_connector() -> MagicMock:
     c.issues.process_new_records = AsyncMock(return_value=True)
     c.issues.fetch_issues_batched = AsyncMock()
     c.issues.get_app_user_emails = AsyncMock(return_value={})
-    c.pull_requests.process_pull_request_stub = AsyncMock(return_value=None)
+    c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests._prs_indexing_enabled = MagicMock(return_value=True)
 

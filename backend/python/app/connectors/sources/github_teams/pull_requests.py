@@ -91,9 +91,9 @@ class PullRequestsSync:
         ``direction=desc`` with an early break at the checkpoint: the first PR
         older than the watermark means every later one is too.
 
-        The fetched page IS the batch — no re-chunking — and the checkpoint
-        advances per page, so a failure mid-repo keeps the pages already done
-        instead of discarding the whole run.
+        The fetched page IS the batch — no re-chunking. The checkpoint is
+        committed once after the sweep; any page or batch failure returns
+        before that write so already-done pages are retried next sync.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name

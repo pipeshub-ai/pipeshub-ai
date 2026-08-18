@@ -19,7 +19,7 @@ import datetime
 import os
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -530,7 +530,7 @@ class CommentsHelper:
         self, owner: str, repo: str, pr_number: int, pull_request: Any, parent_index: int, record: Record,
         start_index: int | None = None,
     ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
-        """Build conversation-comment BlockGroups, then one FULL_CODE_PATCH BlockGroup
+        """Build conversation-comment BlockGroups, then one TEXT_SECTION BlockGroup
         per changed file with that file's review comments attached.
 
         Review comments are grouped by real GitHub review thread
@@ -651,17 +651,21 @@ class CommentsHelper:
             status = getattr(file, "status", "")
             patch = getattr(file, "patch", None) or "(no textual diff available — binary or too large)"
             file_content: str | None = None
-            file_size = getattr(file, "size", None) or getattr(file, "changes", 0)
-            oversized = isinstance(file_size, int) and file_size > PR_FILE_INLINE_CONTENT_MAX_BYTES
-            if status != "removed" and head_sha and not oversized:
-                content_res = await c.runtime.ds_call(c.data_source.get_file_contents, owner, repo, filename, head_sha)
+            oversized = False
+            content_bytes: int | None = None
+            if status != "removed" and head_sha:
+                content_res = await c.runtime.ds_call(
+                    c.data_source.get_file_contents, owner, repo, filename, head_sha,
+                )
                 if content_res.success and content_res.data is not None:
-                    file_content = self._decode_content_file(content_res.data)
+                    file_content, oversized, content_bytes = self._inline_file_content(
+                        content_res.data,
+                    )
 
             data_parts = [f"[{status} file]"]
             if oversized:
                 data_parts.append(
-                    f"Full File Content: omitted ({file_size} bytes exceeds the "
+                    f"Full File Content: omitted ({content_bytes} bytes exceeds the "
                     f"{PR_FILE_INLINE_CONTENT_MAX_BYTES}-byte inline limit)"
                 )
             elif file_content:
@@ -673,7 +677,7 @@ class CommentsHelper:
                 index=block_group_number,
                 parent_index=parent_index,
                 name=f"File change: {filename}",
-                type=GroupType.FULL_CODE_PATCH,
+                type=GroupType.TEXT_SECTION,
                 format=DataFormat.MARKDOWN,
                 sub_type=GroupSubType.PR_FILE_CHANGE,
                 data="\n\n".join(data_parts),
@@ -685,6 +689,25 @@ class CommentsHelper:
             block_group_number += 1
 
         return block_groups, remaining
+
+    def _inline_file_content(
+        self, content_file: Any,
+    ) -> tuple[str | None, bool, int | None]:
+        """Embed decoded PR-file text only when it is under the byte cap.
+
+        Prefer the Contents API ``size`` (bytes) so a huge blob is never
+        decoded. Listing ``changes`` is a line count and is not consulted.
+        """
+        declared = getattr(content_file, "size", None)
+        if isinstance(declared, int) and declared > PR_FILE_INLINE_CONTENT_MAX_BYTES:
+            return None, True, declared
+        decoded = self._decode_content_file(content_file)
+        if decoded is None:
+            return None, False, declared if isinstance(declared, int) else None
+        size = len(decoded.encode("utf-8"))
+        if size > PR_FILE_INLINE_CONTENT_MAX_BYTES:
+            return None, True, size
+        return decoded, False, size
 
     def _decode_content_file(self, content_file: Any) -> str | None:
         """Decoded file text, or ``None`` when it could not be decoded.

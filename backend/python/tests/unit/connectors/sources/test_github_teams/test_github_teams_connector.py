@@ -266,12 +266,41 @@ class TestDelegationAndCleanup:
     async def test_cleanup_cancels_backfill_and_drops_data_source(self) -> None:
         c = make_mock_connector()
         c.repos.timestamps.cancel = AsyncMock()
-        c.data_source = MagicMock()
+        data_source = MagicMock()
+        data_source.aclose = AsyncMock()
+        c.data_source = data_source
 
         await GitHubTeamsConnector.cleanup(c)
 
         c.repos.timestamps.cancel.assert_awaited_once()
+        data_source.aclose.assert_awaited_once()
         assert c.data_source is None
+
+    async def test_cleanup_survives_aclose_failure(self) -> None:
+        c = make_mock_connector()
+        c.repos.timestamps.cancel = AsyncMock()
+        data_source = MagicMock()
+        data_source.aclose = AsyncMock(side_effect=RuntimeError("close failed"))
+        c.data_source = data_source
+
+        await GitHubTeamsConnector.cleanup(c)
+
+        assert c.data_source is None
+        c.logger.warning.assert_called()
+
+    async def test_run_sync_rebinds_checkpoint_org_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = _runnable_connector()
+        c.record_sync_point.org_id = "stale-org"
+        c.data_entities_processor.org_id = "real-org"
+        monkeypatch.setattr(
+            connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
+        )
+
+        await GitHubTeamsConnector.run_sync(c)
+
+        assert c.record_sync_point.org_id == "real-org"
 
 
 class TestDatetimeRangeFromSyncFilter:

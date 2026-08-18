@@ -1,8 +1,8 @@
 """Unit tests for github_teams IssuesSync.
 
 Covers:
-- fetch_issues_batched: splits issues vs. PR stubs (via ``pull_request`` attr)
-  and delegates PR stubs to PullRequestsSync instead of double-processing them.
+- fetch_issues_batched: drops PR stubs when ``html_url`` contains ``/pull/``
+  (``PullRequestsSync`` pages ``/pulls`` on its own).
 - _process_issue_to_ticket: field mapping (labels, assignees, external ids).
 - parse_repo_id_and_number_from_record: external id parsing round-trip.
 - check_and_fetch_updated_ticket_for_reindex: unchanged revision -> None;

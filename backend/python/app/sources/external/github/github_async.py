@@ -138,6 +138,11 @@ class GitHubAsyncRESTClient:
             )
         return self._client
 
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -192,6 +197,9 @@ class GitHubAsyncDataSource:
             lambda: external_client.get_client().get_token(),  # type: ignore[attr-defined]
             transport=transport,
         )
+
+    async def aclose(self) -> None:
+        await self._rest.aclose()
 
     # ------------------------------------------------------------------
     # Repositories & discovery

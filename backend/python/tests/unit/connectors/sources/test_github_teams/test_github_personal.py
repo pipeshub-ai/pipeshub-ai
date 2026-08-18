@@ -217,6 +217,7 @@ class TestPersonalConnectorLifecycle:
         c.ensure_connector_group_permission.assert_awaited_once()
         c.projects.sync_all_repos.assert_awaited_once()
         c.repos.timestamps.schedule.assert_called_once()
+        assert c.record_sync_point.org_id == c.data_entities_processor.org_id
 
     async def test_run_sync_loads_creator_email_when_missing(
         self, monkeypatch: pytest.MonkeyPatch

@@ -252,15 +252,22 @@ async def stream_with_eager_first_chunk(
     try:
         first = await aiter.__anext__()
     except StopAsyncIteration:
+        await source.aclose()
         async def _empty() -> AsyncGenerator[bytes, None]:
             return
             yield b""  # noqa: unreachable — marks function as async generator
         return _empty()
+    except Exception:
+        await source.aclose()
+        raise
 
     async def _gen() -> AsyncGenerator[bytes, None]:
-        yield first
-        async for chunk in aiter:
-            yield chunk
+        try:
+            yield first
+            async for chunk in aiter:
+                yield chunk
+        finally:
+            await source.aclose()
 
     return _gen()
 

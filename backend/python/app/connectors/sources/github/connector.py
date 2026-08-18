@@ -292,6 +292,7 @@ class GithubConnector(GitHubTeamsConnector):
     async def run_sync(self) -> None:
         """Sync every repo the configured account reaches; skip org member/email sync."""
         try:
+            self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
             self.logger.info("Starting GitHub Personal sync")

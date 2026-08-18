@@ -313,6 +313,7 @@ class GitHubTeamsConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()
             self.logger.info("Starting GitHub Teams sync")
@@ -394,6 +395,11 @@ class GitHubTeamsConnector(BaseConnector):
         """Release connector resources (background tasks, data source)."""
         self.logger.info("Cleaning up GitHub Teams connector resources.")
         await self.repos.timestamps.cancel()
+        if self.data_source is not None:
+            try:
+                await self.data_source.aclose()
+            except Exception as e:
+                self.logger.warning("Failed to close GitHub HTTP client: %s", e)
         self.data_source = None
 
     # ------------------------------------------------------------------

@@ -190,3 +190,15 @@ class TestListing:
         res = await ds.search_repositories("widgets in:name", per_page=10)
 
         assert res.data[0].full_name == "acme/widgets"
+
+    async def test_aclose_closes_cached_http_client(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"login": "octo"})
+
+        ds = _data_source(handler)
+        assert await ds.get_authenticated()
+        client = ds._rest._client
+        assert client is not None
+        await ds.aclose()
+        assert client.is_closed
+        assert ds._rest._client is None

@@ -1,11 +1,11 @@
 """Unit tests for github_teams PullRequestsSync.
 
 Covers:
-- process_pull_request_stub: field mapping (labels, assignees, merge state,
+- process_pull_request: field mapping (labels, assignees, merge state,
   last_commit_sha) and external id construction.
 - Merged PR status override ("merged" vs. raw pr.state).
 - check_and_fetch_updated_pr_for_reindex: unchanged revision -> None; changed
-  revision -> delegates to process_pull_request_stub via a synthetic stub.
+  revision -> maps the full PR returned by ``get_pull``.
 """
 from __future__ import annotations
 
@@ -267,7 +267,7 @@ class TestReindexCheck:
         result = await sync.check_and_fetch_updated_pr_for_reindex(record)
         assert result is None
 
-    async def test_changed_revision_delegates_to_process_stub(self) -> None:
+    async def test_changed_revision_maps_full_pull(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=10)
         pr = _pr(number=5, title="New title")

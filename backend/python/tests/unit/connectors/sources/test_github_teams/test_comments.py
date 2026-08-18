@@ -3,12 +3,12 @@
 Covers:
 - clean_github_content: image vs. file attachment extraction; non-attachment
   links left untouched.
-- embed_images_as_base64: dispatches through ds_call (httpx-backed),
-  never ds_call (which would crash on a coroutine-returning method).
+- embed_images_as_base64: fetches image bytes via ``ds_call(get_img_bytes)``.
 - build_pr_comment_and_diff_blocks: review comments on the same file path are
   grouped into a single 2D comment thread (the personal connector's original
   per-comment-thread bug this module fixes).
-- fetch_attachment_content: dispatches through ds_call.
+- fetch_attachment_content: streams the attachment URL directly and bypasses
+  ``ds_call``, which expects a response envelope rather than a generator.
 """
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ from app.connectors.sources.github_teams.comments import (
     _image_format_from_bytes,
     _is_github_attachment_url,
 )
+from app.connectors.sources.github_teams.constants import PR_FILE_INLINE_CONTENT_MAX_BYTES
+from app.models.blocks import GroupSubType, GroupType
 from app.models.entities import FileRecord
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -727,8 +729,11 @@ class TestCommentBlockFailures:
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([
-                SimpleNamespace(filename="big.bin", status="modified", patch="@@", size=10**9),
+                SimpleNamespace(filename="big.bin", status="modified", patch="@@", changes=12),
             ]),
+            "get_file_contents": ok_response(
+                SimpleNamespace(size=10**9, decoded_content=b"x", content=None),
+            ),
         })
         record, pull_request = _pr_blocks_fixture()
         pull_request.head = SimpleNamespace(sha="abc")
@@ -739,9 +744,59 @@ class TestCommentBlockFailures:
 
         group = next(bg for bg in block_groups if bg.name == "File change: big.bin")
         assert "omitted" in group.data
-        assert c.data_source.get_file_contents not in [
-            call.args[0] for call in c.runtime.ds_call.await_args_list
-        ]
+        assert "bytes" in group.data
+        assert group.type == GroupType.TEXT_SECTION
+        assert group.sub_type == GroupSubType.PR_FILE_CHANGE
+        assert "Full File Content:\n" not in group.data
+
+    async def test_listing_line_count_does_not_omit_small_file(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="a.py", status="modified", patch="@@", changes=10**7),
+            ]),
+            "get_file_contents": ok_response(
+                SimpleNamespace(size=8, decoded_content=b"print(1)", content=None),
+            ),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: a.py")
+        assert "print(1)" in group.data
+        assert "omitted" not in group.data
+
+    async def test_decoded_byte_length_omits_when_contents_size_missing(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        huge = b"x" * (PR_FILE_INLINE_CONTENT_MAX_BYTES + 1)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="big.py", status="modified", patch="@@"),
+            ]),
+            "get_file_contents": ok_response(
+                SimpleNamespace(decoded_content=huge, content=None),
+            ),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: big.py")
+        assert "omitted" in group.data
+        assert huge.decode() not in group.data
 
     async def test_file_without_name_is_skipped(self) -> None:
         c = make_mock_connector()

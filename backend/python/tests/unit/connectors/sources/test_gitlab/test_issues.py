@@ -5,7 +5,7 @@ Covers:
 - process_new_records: batch persist, checkpoint advancement
 - _process_issue_incident_task_to_ticket: type mapping (issue/incident/task), new vs updated
 - _get_issues_sync_checkpoint / _update_sync_checkpoint: read/write/exception
-- _issues_indexing_enabled / _comments_indexing_enabled: filter flags
+- _issues_indexing_enabled: filter flag; comments have no separate indexing gate
 """
 from __future__ import annotations
 
@@ -340,8 +340,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_file_records_from_list.assert_called_once()
@@ -373,8 +371,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 2
         c.attachments.make_files_records_from_notes.assert_called_once()
@@ -402,8 +398,6 @@ class TestBuildIssueRecords:
         issues_sync = IssuesSync(c)
         issues_sync._process_issue_incident_task_to_ticket = AsyncMock(return_value=ru)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=False)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         await issues_sync._build_issue_records([issue])
         assert ru.record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -427,8 +421,6 @@ class TestBuildIssueRecords:
 
         issues_sync = IssuesSync(c)
         issues_sync._issues_indexing_enabled = MagicMock(return_value=True)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
-
         result = await issues_sync._build_issue_records([issue])
         assert len(result) == 1
         assert result[0].metadata_changed is False
@@ -516,7 +508,6 @@ class TestBuildTicketBlocks:
         c.comments.build_comment_blocks = AsyncMock(return_value=([], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=False)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)
@@ -524,7 +515,7 @@ class TestBuildTicketBlocks:
         assert b"block_groups" in result
 
     async def test_with_comments_appended(self) -> None:
-        """When comments indexing enabled, comment blocks are included."""
+        """Comment blocks are always appended to the ticket container."""
         c = make_mock_connector()
         c._gitlab_base_url = "https://gitlab.com"
 
@@ -557,7 +548,6 @@ class TestBuildTicketBlocks:
         c.comments.build_comment_blocks = AsyncMock(return_value=([comment_bg], []))
 
         issues_sync = IssuesSync(c)
-        issues_sync._comments_indexing_enabled = MagicMock(return_value=True)
         issues_sync.process_new_records = AsyncMock()
 
         result = await issues_sync.build_ticket_blocks(record)
