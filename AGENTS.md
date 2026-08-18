@@ -16,9 +16,36 @@ backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
 deployment/               Docker Compose and Helm
 ```
 
-Stateful stores: Qdrant, ArangoDB, MongoDB, Redis, Kafka, etcd.
-
 New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
+
+## Storage is pluggable
+
+Do not import a vendor client in feature code. Talk to stores through the interface; the factory picks the backend from env. Hard-coding Qdrant, ArangoDB, or Kafka is the usual mistake — the operator may be on Neo4j, OpenSearch, or Redis Streams.
+
+| Role | Env | Backends | Interface / factory |
+| --- | --- | --- | --- |
+| Graph | `DATA_STORE` | `arangodb` (default), `neo4j` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
+| Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis` | `IVectorDBService` / `VectorDBProviderFactory` |
+| KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
+| Document | — | MongoDB | Mongoose in the Node API (users, orgs, sessions). Not swapped today |
+| Blob | storage config | local, S3, Azure Blob | `StorageServiceInterface` (`backend/nodejs/apps/src/modules/storage/`) |
+| Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams) | `MessagingFactory` |
+
+Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. PostgreSQL is a **connector** (a source to index), not PipesHub's document store.
+
+## What lives where
+
+**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, SAML, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
+
+**Python** (`backend/python/`):
+
+- **Connectors** `:8088` (`app.connectors_main`) — OAuth, token refresh, sync from Slack/Drive/Jira/… into the graph. New sources extend `ConnectorFactory`.
+- **Indexing** `:8091` (`app.indexing_main`) — parse, chunk, embed; write records through `IGraphDBProvider` and `IVectorDBService`.
+- **Query** `:8000` (`app.query_main`) — semantic search, RAG/chat, in-product agents, LLM orchestration (LiteLLM).
+- **Docling** `:8081` (`app.docling_main`) — heavy PDF/OCR for complex documents.
+- **Embedding** `:8002` (`app.embedding_main`) — local HuggingFace / SentenceTransformer embeddings, OpenAI-compatible `/v1/embeddings`.
+- **Parsing** `:8092` (`app.parsing_main`) — file bytes → `BlocksContainer` JSON.
+- **Extraction** `:8093` (`app.extraction_main`) — `BlocksContainer` → `SemanticMetadata` (LLM classification). The indexing orchestrator calls this; it does not hold its own graph connection.
 
 ## Where the UI listens
 
@@ -39,7 +66,7 @@ cd backend/python && source venv/bin/activate && pytest
 cd backend/nodejs/apps && npm test
 ```
 
-Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets). Python config reads go through `ConfigurationService`, never `KeyValueStore` directly.
+Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
 ## Review vs implement
 
@@ -51,4 +78,4 @@ PR review criteria live in [CLAUDE.md](./CLAUDE.md) (correctness, auth on new ro
 - Use OAuth `client_credentials` for anything that must act as a user. PATs carry `userId` + `orgId`.
 - Print or log personal access tokens. Newly minted PATs may have a `phpat_` prefix; strip happens in `extractToken`.
 - Trust client-supplied org/user IDs — check auth on every new route and tool.
-- Bypass factories (`ConnectorFactory`, `MessagingFactory`) with one-off integrations.
+- Bypass factories (`ConnectorFactory`, `GraphDBProviderFactory`, `VectorDBProviderFactory`, `KeyValueStoreFactory`, `MessagingFactory`) or talk to Qdrant/Arango/Neo4j/etcd clients from feature code.
