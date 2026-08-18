@@ -392,16 +392,20 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     async def _produce() -> None:
         agent: Any = None
         try:
-            # Census questions ("how many documents do we have", "list every
-            # file about X") are answered from the record set rather than by a
-            # model reading a sample of passages. A sample cannot say how many
-            # exist, and a model asked to count from one produces a number with
-            # no passage to attribute it to — taking the citations off the rest
-            # of the answer with it (#2975). No-op for every other query, so the
-            # agent path below is unchanged.
+            # A corpus-wide census ("how many documents do we have", "list all
+            # the files") is answered from the permission-filtered record set
+            # rather than by a model reading a sample of passages. A sample
+            # cannot say how many records exist, and a model asked to count from
+            # one produces a number with no passage to attribute it to, taking
+            # the citations off the rest of the answer with it (#2975).
+            #
+            # Questions carrying a constraint the census cannot apply -- "about
+            # onboarding", "in this folder", "updated last week" -- are rejected
+            # by the classifier and stay on the agent path, where retrieval can
+            # actually honour them. No-op for everything else.
             from app.modules.agents.enumeration.run import try_answer_enumeration
             try:
-                if await try_answer_enumeration(
+                if policy.has_knowledge and await try_answer_enumeration(
                     query=query_info.get("query", ""), context=context,
                     retrieval_service=retrieval_service, graph_provider=graph_provider,
                     blob_store=blob_store, filters=query_info.get("filters"),

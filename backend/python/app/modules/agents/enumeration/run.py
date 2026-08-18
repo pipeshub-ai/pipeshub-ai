@@ -21,22 +21,26 @@ logger = logging.getLogger(__name__)
 async def _fetch_summaries(
     retrieval_service: Any,
     org_id: str,
+    virtual_ids: list[str],
 ) -> dict[str, str]:
-    """Read every record summary for this org in one pass.
+    """Read the stored summaries for the records about to be listed.
 
     Summaries are written at index time as their own block, flagged
     `isRecordSummary` and keyed by virtual record id
-    (`transformers/vectorstore.py`). Nothing on the query side has ever read
-    them back. One scroll is exhaustive and costs a single round trip, which is
-    the point: a census must not depend on a document having matched a query.
+    (`transformers/vectorstore.py`); nothing on the query side had ever read
+    them back. Scoped to the ids being listed rather than the whole
+    organisation, so a large corpus does not pull every summary into memory to
+    join a couple of hundred.
 
     Returns an empty map on any failure — a listing without summaries is still
     correct and still cited, so this must never fail the answer.
     """
     summaries: dict[str, str] = {}
+    if not virtual_ids:
+        return summaries
     vector_db = getattr(retrieval_service, "vector_db_service", None)
     if vector_db is None:
-        logger.warning("enumeration: no vector_db_service on %r", type(retrieval_service).__name__)
+        logger.warning("enumeration: no vector_db_service on %s", type(retrieval_service).__name__)
         return summaries
     try:
         from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
@@ -44,18 +48,19 @@ async def _fetch_summaries(
         payload_filter = await vector_db.filter_collection(must={
             "isRecordSummary": True,
             "orgId": org_id,
+            "virtualRecordId": virtual_ids,
         })
         result = await vector_db.scroll(
             collection_name=VECTOR_DB_COLLECTION_NAME,
             scroll_filter=payload_filter,
-            limit=100000,
+            limit=max(len(virtual_ids) * 2, 10),
         )
         points = getattr(result, "points", None) or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("enumeration: summary scroll failed, listing without them: %s", exc)
         return summaries
 
-    for point in points or []:
+    for point in points:
         payload = getattr(point, "payload", None) or {}
         meta = payload.get("metadata") or {}
         vrid = meta.get("virtualRecordId")
@@ -145,7 +150,9 @@ async def try_answer_enumeration(
     state = context.tool_state
     ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
 
-    summaries = await _fetch_summaries(retrieval_service, org_id)
+    from app.modules.agents.enumeration.answer import MAX_LISTED
+    listed_ids = [vrid for vrid, _ in sorted(accessible.items())[:MAX_LISTED]]
+    summaries = await _fetch_summaries(retrieval_service, org_id, listed_ids)
     lookup = await _record_lookup_factory(graph_provider, org_id, summaries)
     result = await build_enumeration_answer(
         accessible=accessible, record_lookup=lookup, ref_mapper=ref_mapper,
@@ -163,8 +170,8 @@ async def try_answer_enumeration(
     state["citation_ref_mapper"] = ref_mapper
 
     log.info(
-        "enumeration: answered %d record(s) without an agent turn (query=%r)",
-        result.total, query[:80],
+        "enumeration: answered %d record(s), %d listed, without an agent turn (query=%r)",
+        result.total, result.listed, query[:80],
     )
     finalizer = AnswerFinalizer(context, CitationCollector(context))
     await finalizer.run(
