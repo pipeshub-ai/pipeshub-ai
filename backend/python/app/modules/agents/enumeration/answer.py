@@ -43,12 +43,24 @@ def record_landing_url(record_id: str) -> str:
     return f"/record/{record_id}"
 
 
-def compose_text(rows: list[tuple[str, str, str | None]], total: int) -> str:
+def compose_text(
+    rows: list[tuple[str, str, str | None]],
+    total: int,
+    *,
+    beyond_cap: int = 0,
+    unreadable: int = 0,
+) -> str:
     """Render the answer. `rows` is (record_name, ref, summary).
 
     The count carries no citation because it is derived from the record set
     rather than stated in any document; every record it counted is then cited
     individually.
+
+    The two reasons a record can be counted but not listed are reported
+    separately, because they mean different things to the reader. Being past
+    the listing cap says "ask for more"; failing to load says "something is
+    wrong with that record", and describing the second as the first would send
+    someone looking for a page that does not exist.
     """
     if total == 0:
         return "There are no documents that you have access to."
@@ -58,9 +70,16 @@ def compose_text(rows: list[tuple[str, str, str | None]], total: int) -> str:
     for name, ref, summary in rows:
         detail = f" — {summary.strip()}" if summary else ""
         lines.append(f"- **{name}**{detail} [source]({ref})")
-    if total > len(rows):
+    if beyond_cap > 0 or unreadable > 0:
         lines.append("")
-        lines.append(f"({total - len(rows)} more not listed above.)")
+    if beyond_cap > 0:
+        lines.append(f"({beyond_cap} more not listed above.)")
+    if unreadable > 0:
+        plural = "record" if unreadable == 1 else "records"
+        lines.append(
+            f"({unreadable} {plural} could not be read and are not listed, "
+            f"but are included in the total.)"
+        )
     return "\n".join(lines)
 
 
@@ -85,12 +104,14 @@ async def build_enumeration_answer(
     """
     ordered = sorted(accessible.items())
     total = len(ordered)
+    page = ordered[:limit]
+    beyond_cap = total - len(page)
     rows: list[tuple[str, str, str | None]] = []
     final_results: list[dict[str, Any]] = []
     vr_map: dict[str, Any] = {}
     tool_records: list[dict[str, Any]] = []
 
-    for vrid, record_id in ordered[:limit]:
+    for vrid, record_id in page:
         record = await record_lookup(vrid, record_id)
         if not record:
             # Unresolvable rows are not listed. They stay in the total, because
@@ -128,7 +149,9 @@ async def build_enumeration_answer(
         })
 
     return EnumerationAnswer(
-        text=compose_text(rows, total),
+        text=compose_text(
+            rows, total, beyond_cap=beyond_cap, unreadable=len(page) - len(rows),
+        ),
         final_results=final_results,
         virtual_record_id_to_result=vr_map,
         tool_records=tool_records,

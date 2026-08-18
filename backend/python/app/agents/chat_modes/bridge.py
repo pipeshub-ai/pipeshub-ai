@@ -408,7 +408,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 if policy.has_knowledge and await try_answer_enumeration(
                     query=query_info.get("query", ""), context=context,
                     retrieval_service=retrieval_service, graph_provider=graph_provider,
-                    blob_store=blob_store, filters=query_info.get("filters"),
+                    filters=query_info.get("filters"),
                     event_sink=context.event_sink, log=log,
                 ):
                     return

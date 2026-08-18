@@ -61,12 +61,19 @@ async def _fetch_summaries(
         return summaries
 
     for point in points:
-        payload = getattr(point, "payload", None) or {}
-        meta = payload.get("metadata") or {}
+        # A malformed point must not abandon the whole census: this loop is
+        # outside the try above, so an unguarded .get() on a non-dict payload
+        # would propagate and drop the answer back to the agent.
+        payload = getattr(point, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        meta = payload.get("metadata")
+        if not isinstance(meta, dict):
+            continue
         vrid = meta.get("virtualRecordId")
-        text = (payload.get("page_content") or "").strip()
-        if vrid and text:
-            summaries[vrid] = text
+        text = payload.get("page_content")
+        if vrid and isinstance(text, str) and text.strip():
+            summaries[vrid] = text.strip()
     return summaries
 
 
@@ -93,7 +100,7 @@ async def _record_lookup_factory(
         except Exception as exc:  # noqa: BLE001 - one bad record must not fail the count
             logger.debug("enumeration: record fetch failed for %s: %s", record_id, exc)
             return None
-        if not doc:
+        if not isinstance(doc, dict) or not doc:
             return None
         name = doc.get("recordName") or doc.get("record_name") or record_id
         return {
@@ -118,7 +125,6 @@ async def try_answer_enumeration(
     context: Any,
     retrieval_service: Any,
     graph_provider: Any,
-    blob_store: Any,
     filters: dict[str, Any] | None,
     event_sink: Any,
     log: Any = logger,
@@ -161,6 +167,14 @@ async def try_answer_enumeration(
 
     # A citation whose record never reaches these maps is discarded during
     # finalisation, so registration is not optional (utils/citations.py).
+    #
+    # Snapshot first. If finalisation fails after this point the caller falls
+    # through to the agent, and an agent turn that inherited half-registered
+    # census records would cite documents its own answer never mentioned.
+    previous = {
+        key: state.get(key)
+        for key in ("final_results", "virtual_record_id_to_result", "tool_records")
+    }
     state["final_results"] = [*state.get("final_results", []), *result.final_results]
     state["virtual_record_id_to_result"] = {
         **state.get("virtual_record_id_to_result", {}),
@@ -169,13 +183,24 @@ async def try_answer_enumeration(
     state["tool_records"] = [*state.get("tool_records", []), *result.tool_records]
     state["citation_ref_mapper"] = ref_mapper
 
+    # Deliberately no query text: a question can carry names, deal values or
+    # anything else a person typed, and logs outlive the conversation.
     log.info(
-        "enumeration: answered %d record(s), %d listed, without an agent turn (query=%r)",
-        result.total, result.listed, query[:80],
+        "enumeration: answered %d record(s), %d listed, without an agent turn",
+        result.total, result.listed,
     )
     finalizer = AnswerFinalizer(context, CitationCollector(context))
-    await finalizer.run(
-        agent_success=True, agent_error=None, agent_output=result.text,
-        event_sink=event_sink, streamed_answer="", reasoning_turns=[],
-    )
+    try:
+        await finalizer.run(
+            agent_success=True, agent_error=None, agent_output=result.text,
+            event_sink=event_sink, streamed_answer="", reasoning_turns=[],
+        )
+    except Exception:
+        for key, value in previous.items():
+            if value is None:
+                state.pop(key, None)
+            else:
+                state[key] = value
+        raise
+
     return True

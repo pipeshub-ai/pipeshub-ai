@@ -27,8 +27,11 @@ _ENUMERATION_OPERATION = r"""
     | count | counts | tally | total \s+ number | number \s+ of
     | list | lists | enumerate | inventory | catalogue | catalog
     | what (?: \s+ all )? \s+ (?: files | documents | records | docs )
-    | do \s+ we \s+ have
 """
+
+# "Do we have any NDAs?" and "do we have the Tetra document?" ask whether one
+# thing exists. Retrieval answers that; a census of everything does not. So
+# "do we have" is scope, never an operation on its own.
 
 # The unit being counted must be a RECORD. "Pages", "chapters" and "sections"
 # are units inside one document, so "how many pages are in this PDF" is not a
@@ -61,9 +64,11 @@ _TOPICAL_CONSTRAINT = r"""
 
 # Narrowed to a container, or to one document, rather than the whole corpus.
 _CONTAINER_CONSTRAINT = r"""
-      in \s+ (?: this | that | the ) \s+ (?: folder | directory | space | project
-        | channel | drive | pdf | document | doc | file | deck | report )
-    | this \s+ (?: pdf | document | doc | file | folder | deck | report )
+      in \s+ (?: this | that | the | my | our | your | their | his | her )
+        \s+ (?! knowledge \s+ base \b | corpus \b | workspace \b | system \b
+              | organisation \b | organization \b | company \b ) \w+
+    | this \s+ (?: pdf | document | doc | file | folder | deck | report
+        | contract | agreement | policy | spec )
     | pages? | chapters? | sections? | slides? | paragraphs?
     | under \s+ | inside \s+ | within \s+ (?: this | that | the )
 """
@@ -96,8 +101,11 @@ _CORPUS_SCOPE_RE = _alt(_CORPUS_SCOPE)
 # onboarding" is a filter; "what is each one about" asks for summaries of the
 # whole set and is the question in #2975. The filtering sense needs a subject
 # after it, so this is matched outside the \b...\b wrapper the others use.
+# The subject may be a number ("about 2024 plans") or quoted ("about 'Acme'"),
+# so any substantive character counts. Trailing punctuation does not: "what is
+# each one about?" has no subject and is a request for summaries.
 _TOPICAL_ABOUT_RE = re.compile(
-    r"\babout\s+(?!it\b|them\b|that\b|this\b)[a-z]", re.IGNORECASE
+    r"\babout\s+(?!it\b|them\b|that\b|this\b)[^\s?.!,;:]", re.IGNORECASE
 )
 
 _EXCLUSIONS = (

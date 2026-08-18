@@ -50,9 +50,20 @@ class TestComposeText:
         assert compose_text([("a", "ref1", None)], 1).startswith("There are 1 document:")
 
     def test_remainder_is_reported_when_listing_is_capped(self) -> None:
-        text = compose_text([("a", "ref1", None)], 500)
+        text = compose_text([("a", "ref1", None)], 500, beyond_cap=499)
         assert "There are 500 documents:" in text
         assert "499 more not listed above" in text
+        assert "could not be read" not in text
+
+    def test_unreadable_records_are_worded_differently(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3, unreadable=2)
+        assert "could not be read" in text
+        assert "more not listed above" not in text
+
+    def test_both_causes_can_be_reported_together(self) -> None:
+        text = compose_text([("a", "ref1", None)], 500, beyond_cap=298, unreadable=201)
+        assert "298 more not listed above" in text
+        assert "201 records could not be read" in text
 
 
 class TestBuildEnumerationAnswer:
@@ -106,6 +117,18 @@ class TestBuildEnumerationAnswer:
         assert result.listed == 1
         assert result.text.count("[source](ref") == 1
 
+    async def test_unreadable_records_are_described_separately_from_the_cap(self) -> None:
+        """Being past the listing cap and failing to load mean different things
+        to the reader, so the answer must not describe one as the other."""
+        recs = {"v0": _record("r0", "alpha")}
+        result = await build_enumeration_answer(
+            accessible={"v0": "r0", "v1": "r1", "v2": "r2"},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == 3
+        assert "could not be read" in result.text
+        assert "more not listed above" not in result.text
+
     async def test_listing_is_capped_but_the_total_is_exact(self) -> None:
         recs = {f"v{i}": _record(f"r{i}", f"doc {i}") for i in range(10)}
         result = await build_enumeration_answer(
@@ -116,6 +139,7 @@ class TestBuildEnumerationAnswer:
         assert result.total == 10
         assert result.listed == 3
         assert "7 more not listed above" in result.text
+        assert "could not be read" not in result.text
 
     async def test_order_is_stable_across_calls(self) -> None:
         """A map's iteration order is not a promise, and an answer that changes

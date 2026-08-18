@@ -47,6 +47,23 @@ MUST_NOT_MATCH = [
     # Anaphora: refers to an earlier result the classifier cannot see.
     ("How many of those?", "anaphora"),
     ("List all of them", "anaphora"),
+    # The subject of "about" is not always a word: a year or a quoted name
+    # narrows the set just as much as a noun does.
+    ("How many documents about 2024 plans?", "topical"),
+    ("What documents do we have about 'Acme'?", "topical"),
+    # A container can be named with a possessive, or be a document in its own
+    # right, so requiring "this/that/the" plus a known folder noun is not enough.
+    ("List all files in my folder", "container"),
+    ("List the documents in this contract", "container"),
+    ("How many records are in our project space?", "container"),
+]
+
+# Existence questions. "Do we have X" asks whether one thing is present, which
+# retrieval answers; a census of everything does not.
+EXISTENCE_QUESTIONS = [
+    "Do we have the Tetra document?",
+    "Do we have any NDAs?",
+    "Do we have a security policy?",
 ]
 
 # Ordinary questions with no enumeration intent at all.
@@ -72,6 +89,12 @@ class TestIsEnumerationQuery:
 
     @pytest.mark.parametrize("query", UNRELATED)
     def test_unrelated_questions_do_not_match(self, query: str) -> None:
+        assert is_enumeration_query(query) is False
+
+    @pytest.mark.parametrize("query", EXISTENCE_QUESTIONS)
+    def test_existence_questions_do_not_match(self, query: str) -> None:
+        """These name a specific thing. Answering them with a full inventory
+        would be a confident non-answer."""
         assert is_enumeration_query(query) is False
 
     def test_blank_input(self) -> None:
