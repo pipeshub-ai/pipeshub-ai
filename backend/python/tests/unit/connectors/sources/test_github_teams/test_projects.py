@@ -2,19 +2,17 @@
 
 Covers:
 - Collaborator role -> PermissionType mapping (admin/maintain/push/triage/pull).
-- Team role -> GROUP permission + membership edge sync.
-- Creator-only fallback when member/team listing raises.
+- Creator-only fallback when member listing raises.
 - Record-group hierarchy external ids anchored on the stable numeric repo.id
   (not owner/repo) — the core rename-survivability property.
 """
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
-from app.connectors.sources.github_teams.models import team_group_external_id
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.connectors.sources.github_teams.projects import (
     CollaboratorsUnavailable,
@@ -30,7 +28,6 @@ from tests.unit.connectors.sources.test_github_teams.conftest import (
     make_mock_connector,
     make_named_user,
     make_repo,
-    make_team,
     ok_response,
 )
 
@@ -68,7 +65,6 @@ class TestSyncRepoMembers:
         )
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_collaborators": ok_response([collaborator]),
-            "list_repo_teams": ok_response([]),
         })
         c.tx_store.get_user_by_source_id = AsyncMock(
             return_value=SimpleNamespace(email="alice@example.com")
@@ -80,30 +76,7 @@ class TestSyncRepoMembers:
         assert len(perms) == 1
         assert perms[0].email == "alice@example.com"
         assert perms[0].type == PermissionType.WRITE  # push implies WRITE
-
-    async def test_team_role_maps_to_group_permission_and_syncs_membership(self) -> None:
-        c = make_mock_connector()
-        team = make_team(team_id=7, slug="core", name="Core Team", permission="pull")
-        c.runtime.ds_call.side_effect = _dispatch(c, {
-            "list_collaborators": ok_response([]),
-            "list_repo_teams": ok_response([team]),
-            "list_team_members": ok_response([make_named_user(user_id=1, login="bob")]),
-        })
-        c.tx_store.get_user_by_source_id = AsyncMock(
-            return_value=SimpleNamespace(email="bob@example.com")
-        )
-
-        sync = ProjectsSync(c)
-        perms = await sync._sync_repo_members("acme", "widgets")
-
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.GROUP
-        assert perms[0].external_id == team_group_external_id(7)
-        assert perms[0].type == PermissionType.READ
-        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
-        # The Permission and the group node must agree; they are built separately.
-        group, _members = c.data_entities_processor.on_new_user_groups.call_args.args[0][0]
-        assert group.source_user_group_id == perms[0].external_id
+        c.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_member_listing_failure_skips_the_repo_without_touching_it(self) -> None:
         """on_new_record_groups DELETES a record group's permission edges before
@@ -509,23 +482,15 @@ class TestSyncAllReposAndResolution:
         assert await ProjectsSync(c)._resolve_repos_with_filters() == []
 
 
-class TestTeamAndCollaboratorEdgeCases:
-    async def test_team_403_is_debug_not_fatal(self) -> None:
+class TestCollaboratorEdgeCases:
+    async def test_empty_collaborator_list_grants_nothing(self) -> None:
         c = make_mock_connector()
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_collaborators": ok_response([]),
-            "list_repo_teams": failed_response("forbidden", status_code=403),
         })
         perms = await ProjectsSync(c)._sync_repo_members("acme", "widgets")
         assert perms == []
-
-    async def test_team_500_is_warning_not_fatal(self) -> None:
-        c = make_mock_connector()
-        c.runtime.ds_call.side_effect = _dispatch(c, {
-            "list_collaborators": ok_response([]),
-            "list_repo_teams": failed_response("boom", status_code=500),
-        })
-        assert await ProjectsSync(c)._sync_repo_members("acme", "widgets") == []
+        c.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_unknown_collaborator_role_grants_nothing(self) -> None:
         c = make_mock_connector()
@@ -533,29 +498,6 @@ class TestTeamAndCollaboratorEdgeCases:
             admin=False, maintain=False, push=False, triage=False, pull=False,
         ))
         assert await ProjectsSync(c)._transform_collaborator_to_permission(user) is None
-
-    async def test_unknown_team_role_grants_nothing(self) -> None:
-        team = make_team(permission="custom")
-        assert await ProjectsSync(make_mock_connector())._transform_team_to_permission("acme", team) is None
-
-    async def test_team_member_list_failure_still_returns_group_permission(self) -> None:
-        c = make_mock_connector()
-        team = make_team(team_id=7, slug="core", permission="pull")
-        c.runtime.ds_call.side_effect = _dispatch(c, {
-            "list_team_members": failed_response("403"),
-        })
-        c.tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
-
-        perm = await ProjectsSync(c)._transform_team_to_permission("acme", team)
-
-        assert perm is not None
-        assert perm.entity_type == EntityType.GROUP
-        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
-
-    async def test_user_group_exists_exception_returns_false(self) -> None:
-        c = make_mock_connector()
-        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx"))
-        assert await ProjectsSync(c)._user_group_exists("gid") is False
 
     async def test_create_user_permission_exception_returns_none(self) -> None:
         c = make_mock_connector()

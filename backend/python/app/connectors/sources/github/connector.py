@@ -17,7 +17,7 @@ Overridden here:
   repositories sync on both once named.
 - Permissions: every record group is granted to a single internal
   ``ConnectorGroup`` (via ``ensure_connector_group_permission``) and to nothing
-  else — no per-collaborator/per-team edges, and no visibility-derived ORG
+  else — no per-collaborator edges, and no visibility-derived ORG
   grant either. This is the real difference between the connectors: "I vouch
   for this content entering my workspace" versus "mirror GitHub's ACLs".
   Anyone needing the latter for an org repo should use the team connector.
@@ -254,7 +254,7 @@ class GithubConnector(GitHubTeamsConnector):
         creator is the sole USER -> GROUP member edge.
       - Every repo / work-items / PRs / code-repository ``RecordGroup``
         receives a GROUP permission edge pointing at that internal group,
-        instead of per-collaborator/per-team edges.
+        instead of per-collaborator edges.
     """
 
     def __init__(

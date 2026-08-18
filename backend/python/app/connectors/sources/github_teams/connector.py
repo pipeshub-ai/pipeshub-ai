@@ -6,7 +6,7 @@ modules and exposes the ``BaseConnector`` interface. Business logic lives in:
 
 - ``runtime.py``       — API call plumbing: timeout budget, auth-retry, search pacing
 - ``users.py``         — principal discovery + 3-phase email resolution
-- ``projects.py``      — repo -> RecordGroup sync, collaborator/team permissions
+- ``projects.py``      — repo -> RecordGroup sync, collaborator permissions
 - ``repos.py``         — code repository (blob/tree) sync — shared with personal
 - ``issues.py``        — issue (TICKET) sync + content streaming — shared
 - ``pull_requests.py`` — PR (PULL_REQUEST) sync + content streaming — shared

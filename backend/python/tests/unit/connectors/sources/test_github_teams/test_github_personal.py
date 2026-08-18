@@ -2,7 +2,7 @@
 
 Covers:
 - _sync_repo_members: routes exclusively through creator_user_permission()
-  (ConnectorGroup) — never calls list_collaborators/list_repo_teams.
+  (ConnectorGroup) — never calls list_collaborators.
 - _resolve_repos_with_filters: no filter -> list_user_repos(all); REPO_IDS
   "in" -> per-repo get_repo resolution regardless of owner; "not_in" ->
   exclusion from the discovered candidate list.

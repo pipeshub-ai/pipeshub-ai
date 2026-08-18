@@ -5,10 +5,11 @@ Responsibilities:
 - Resolve the set of repositories to sync (applying ``ORG_IDS`` / ``REPO_IDS`` filters).
 - Create the org -> repo -> {work-items, pull-requests, code-repository} ``RecordGroup``
   hierarchy, keyed by the stable numeric ``repo.id`` (never the mutable ``full_name``).
-- Map GitHub collaborator roles and team access levels to ``Permission`` objects.
-- Sync GitHub Team membership via ``on_new_user_groups`` (add/remove team member detection).
+- Map GitHub collaborator roles to USER ``Permission`` objects.
+  ``affiliation=all`` already expands team members, outside collaborators,
+  default-org-permission members, and owners — no separate team-as-group grant.
 - Grant visibility-derived read: ORG on public repos, per org-member USER on
-  internal repos. Private repos get only collaborator and team grants.
+  internal repos. Private repos get only collaborator grants.
 """
 
 from __future__ import annotations
@@ -18,11 +19,10 @@ from typing import TYPE_CHECKING, Any
 from app.sources.external.github.github_async import GhObject
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
-from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
+from app.models.entities import RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
 
 from .constants import AFFILIATION_ALL
-from .models import team_group_external_id
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -219,7 +219,12 @@ class ProjectsSync:
     # ------------------------------------------------------------------
 
     async def _sync_repo_members(self, owner: str, repo: str) -> list[Permission]:
-        """Collaborators + teams -> permissions. Overridden in the personal connector."""
+        """Collaborators -> USER permissions. Overridden in the personal connector.
+
+        ``affiliation=all`` already includes people who reach the repo through a
+        team, so a second GitHub-team AppUserGroup grant would only duplicate
+        those USER edges.
+        """
         c = self.c
         permissions: list[Permission] = []
 
@@ -242,27 +247,6 @@ class ProjectsSync:
                 "bound to a PipesHub user (they gain access once resolved) or unmapped roles.",
                 owner, repo, len(permissions), len(collaborators),
             )
-
-        teams_res = await c.runtime.ds_call(c.data_source.list_repo_teams, owner, repo)
-        if not teams_res.success:
-            status = getattr(teams_res, "status_code", None)
-            if status in (403, 404):
-                # Expected: /repos/{o}/{r}/teams needs org visibility/push access,
-                # so public or foreign-owned repos always land here. Not a fault.
-                self.logger.debug(
-                    "Teams not visible for %s/%s (HTTP %s); collaborator permissions still applied.",
-                    owner, repo, status,
-                )
-            else:
-                self.logger.warning(
-                    "Could not list teams for %s/%s: %s (collaborator permissions still applied).",
-                    owner, repo, teams_res.error,
-                )
-        else:
-            for team in teams_res.data or []:
-                perm = await self._transform_team_to_permission(owner, team)
-                if perm:
-                    permissions.append(perm)
 
         return permissions
 
@@ -320,7 +304,7 @@ class ProjectsSync:
 
     def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
         """Grants implied by the repo's visibility rather than by any explicit
-        collaborator or team relationship.
+        collaborator relationship.
 
         Visibility-derived access appears in no listing — a public repo does not
         enumerate all of GitHub as collaborators — so it has to be modelled from
@@ -339,7 +323,7 @@ class ProjectsSync:
         instead. Members of enterprise orgs this connector does not sync are
         missed — an under-grant, and the safe direction.
 
-        ``private``: nothing; access comes solely from collaborator and team grants.
+        ``private``: nothing; access comes solely from collaborator grants.
         """
         visibility = (getattr(repo, "visibility", None) or "").lower()
         if not visibility:
@@ -366,69 +350,6 @@ class ProjectsSync:
             )
             return None
         return await self._create_user_permission(str(user.id), ptype)
-
-    async def _transform_team_to_permission(self, org: str, team: GhObject) -> Permission | None:
-        """GROUP permission by team slug; also replaces the team's membership edges.
-
-        Fetching membership on every sync (rather than diffing) means
-        add/remove-team-member is picked up automatically via
-        ``on_new_user_groups``'s "delete existing edges, recreate" semantics.
-        """
-        c = self.c
-        role = getattr(team, "permission", None)
-        ptype = _permission_type_from_role(role)
-        if ptype is None:
-            self.logger.warning(
-                "Team %s/%s carries role %r, which maps to no PermissionType; granting "
-                "nothing. Custom repository roles are not yet mapped.", org, team.slug, role,
-            )
-            return None
-
-        group_external_id = team_group_external_id(team.id)
-        members_res = await c.runtime.ds_call(c.data_source.list_team_members, org, team.slug)
-        app_users = []
-        members_listed = members_res.success
-        if not members_listed:
-            self.logger.warning(
-                "Could not list members for team %s/%s: %s; membership edges will not be updated this sync.",
-                org, team.slug, members_res.error,
-            )
-        else:
-            async with c.data_store_provider.transaction() as tx_store:
-                for member in members_res.data or []:
-                    resolved_user = await tx_store.get_user_by_source_id(
-                        source_user_id=str(member.id), connector_id=c.connector_id,
-                    )
-                    if resolved_user:
-                        app_users.append(resolved_user)
-
-        # The group node is created even when the membership listing failed:
-        # the Permission below points at it, and a missing node would make the
-        # whole team's ACL be dropped downstream. Only the membership edges are
-        # conditional — on_new_user_groups replaces them, so passing an empty
-        # list on failure would wrongly clear a team's existing members.
-        if members_listed or not await self._user_group_exists(group_external_id):
-            team_group = AppUserGroup(
-                app_name=c.connector_name,
-                connector_id=c.connector_id,
-                source_user_group_id=group_external_id,
-                name=team.name,
-                org_id=c.data_entities_processor.org_id,
-            )
-            await c.data_entities_processor.on_new_user_groups([(team_group, app_users)])
-
-        return Permission(external_id=group_external_id, type=ptype, entity_type=EntityType.GROUP)
-
-    async def _user_group_exists(self, external_id: str) -> bool:
-        c = self.c
-        try:
-            async with c.data_store_provider.transaction() as tx_store:
-                return await tx_store.get_user_group_by_external_id(
-                    connector_id=c.connector_id, external_id=external_id,
-                ) is not None
-        except Exception as e:
-            self.logger.warning("Could not check for existing user group %s: %s", external_id, e)
-            return False
 
     async def _create_user_permission(self, source_user_id: str, ptype: PermissionType) -> Permission | None:
         """Look up an ``AppUser`` by GitHub numeric id and build its permission.

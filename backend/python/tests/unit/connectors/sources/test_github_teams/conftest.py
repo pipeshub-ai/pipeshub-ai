@@ -146,10 +146,6 @@ def make_named_user(
     )
 
 
-def make_team(*, team_id: int = 1, slug: str = "core", name: str = "Core", permission: str = "push") -> SimpleNamespace:
-    return SimpleNamespace(id=team_id, slug=slug, name=name, permission=permission)
-
-
 def make_tree_element(path: str, *, sha: str = "sha-abc", entry_type: str = "blob", size: int | None = 100) -> SimpleNamespace:
     return SimpleNamespace(path=path, sha=sha, type=entry_type, size=size, mode="100644")
 

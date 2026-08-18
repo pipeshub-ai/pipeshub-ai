@@ -49,17 +49,6 @@ class GitHubLiterals(str, Enum):
     IMAGE = "image"
 
 
-def team_group_external_id(team_id: int | str) -> str:
-    """External id for a GitHub team's ``AppUserGroup``.
-
-    Bare team id: teams are the only ``AppUserGroup``s this connector creates,
-    so the connector-scoped namespace is theirs alone. Keep every construction
-    behind this helper — the same id is built here and re-derived at permission
-    time, and a drift between the two silently detaches a team's ACL.
-    """
-    return str(team_id)
-
-
 class RecordUpdate(BaseModel):
     """Carries a Record together with the change flags needed by data_entities_processor.
 
