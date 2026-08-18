@@ -23,7 +23,7 @@ from app.connectors.sources.github_teams.projects import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 
-from .conftest import (
+from tests.unit.connectors.sources.test_github_teams.conftest import (
     failed_response,
     make_mock_connector,
     make_named_user,

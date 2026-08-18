@@ -18,7 +18,11 @@ import pytest
 from app.connectors.sources.github_teams.filters import FiltersHelper
 from app.connectors.core.registry.filters import SyncFilterKey
 
-from .conftest import failed_response, make_mock_connector, ok_response
+from tests.unit.connectors.sources.test_github_teams.conftest import (
+    failed_response,
+    make_mock_connector,
+    ok_response,
+)
 
 pytestmark = pytest.mark.anyio
 

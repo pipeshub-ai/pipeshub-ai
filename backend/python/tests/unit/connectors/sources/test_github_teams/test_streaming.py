@@ -15,7 +15,7 @@ import pytest
 from app.connectors.sources.github_teams.streaming import StreamingHelper
 from app.models.entities import CodeFileRecord, FileRecord, PullRequestRecord, Record, TicketRecord
 
-from .conftest import make_mock_connector
+from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
 
 pytestmark = pytest.mark.anyio
 

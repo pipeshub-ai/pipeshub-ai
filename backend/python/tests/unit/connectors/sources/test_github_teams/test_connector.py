@@ -13,7 +13,7 @@ import pytest
 from app.connectors.sources.github_teams import connector as connector_mod
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
-from .conftest import make_mock_connector
+from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
 
 pytestmark = pytest.mark.anyio
 

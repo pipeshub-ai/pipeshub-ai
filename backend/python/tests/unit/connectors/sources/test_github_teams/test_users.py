@@ -19,7 +19,12 @@ import pytest
 from app.connectors.sources.github_teams import users as users_mod
 from app.connectors.sources.github_teams.users import UsersSync, _is_noreply_email
 
-from .conftest import failed_response, make_mock_connector, make_named_user, ok_response
+from tests.unit.connectors.sources.test_github_teams.conftest import (
+    failed_response,
+    make_mock_connector,
+    make_named_user,
+    ok_response,
+)
 
 pytestmark = pytest.mark.anyio
 

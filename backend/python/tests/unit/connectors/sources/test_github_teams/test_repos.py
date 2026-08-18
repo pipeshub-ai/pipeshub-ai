@@ -34,7 +34,7 @@ from app.connectors.sources.github_teams.timestamps import (
 from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import CodeFileRecord
 
-from .conftest import (
+from tests.unit.connectors.sources.test_github_teams.conftest import (
     failed_response,
     make_comparison,
     make_compare_file,

@@ -21,7 +21,12 @@ from app.connectors.sources.github_teams.pull_requests import PullRequestsSync
 from app.models.blocks import BlocksContainer
 from app.models.entities import PullRequestRecord
 
-from .conftest import failed_response, make_mock_connector, make_repo, ok_response
+from tests.unit.connectors.sources.test_github_teams.conftest import (
+    failed_response,
+    make_mock_connector,
+    make_repo,
+    ok_response,
+)
 
 pytestmark = pytest.mark.anyio
 

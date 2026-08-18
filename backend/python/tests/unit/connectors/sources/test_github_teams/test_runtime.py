@@ -15,7 +15,7 @@ import pytest
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
 from app.sources.client.github.github import GitHubResponse
 
-from .conftest import make_mock_connector
+from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
 
 pytestmark = pytest.mark.anyio
 
