@@ -98,9 +98,79 @@ env:
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
 
 jobs:
+  # add safe-to-test label to PRs to run integration tests
+  authorize-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          AUTHOR_ASSOC: ${{ github.event.pull_request.author_association }}
+          EVENT_LABEL: ${{ github.event.label.name }}
+          ACTOR: ${{ github.actor }}
+          REQUIRED_LABEL: safe-to-test
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" != "pull_request_target" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$HEAD_REPO" = "$REPOSITORY" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$AUTHOR_ASSOC" =~ ^(MEMBER|OWNER|COLLABORATOR)$ ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_ACTION" = "labeled" ] && [ "$EVENT_LABEL" = "$REQUIRED_LABEL" ]; then
+            PERMISSION=$(gh api "repos/${REPOSITORY}/collaborators/${ACTOR}/permission" \
+              --jq '.permission' 2>/dev/null || echo "none")
+            if [[ "$PERMISSION" =~ ^(admin|maintain|write)$ ]]; then
+              echo "allowed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "::notice::Fork PR from an external contributor: integration tests are skipped. After reviewing the full PR (including Dockerfiles, build hooks, and test/fixture code), a maintainer with write access can apply the '${REQUIRED_LABEL}' label to run them."
+          echo "allowed=false" >> "$GITHUB_OUTPUT"
+
+  # A safe-to-test grant covers only the commit it was applied to. New commits
+  # on a fork PR strip the label so the next run requires a fresh review + re-label.
+  remove-stale-safe-label:
+    if: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, 'safe-to-test') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/safe-to-test"
+          gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" \
+            --body "New commits were pushed, so the \`safe-to-test\` label was removed. A maintainer must re-review and re-apply it to run integration tests."
+
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }})
-    if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
+    needs: authorize-pr
+    if: ${{ needs.authorize-pr.outputs.allowed == 'true' && (github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it')) }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 180
 
