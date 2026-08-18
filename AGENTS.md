@@ -6,7 +6,7 @@ To **use** PipesHub from Cursor/Claude/Gemini as a context layer (not to contrib
 
 ## Layout
 
-```
+```text
 frontend/                 Next.js dashboard. UI conventions: frontend/CLAUDE.md
 backend/nodejs/apps/     Express API — auth, orgs, KB, gateway (port 3001)
 backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
