@@ -15,15 +15,38 @@ On the machine running PipesHub:
 
 ```bash
 cd loadtest
-cp .env.example .env                  # then put your TOKEN in it
+cp .env.example .env                  # then put a credential in it
 pip3 install --user py-spy            # optional, for the CPU flame graph
 
 ./instrument.sh on                    # docker only; adds phase + backend timing
 ./perftest.sh baseline 8 300          # label, users, seconds
 ```
 
-`TOKEN` is a bearer JWT — browser devtools, any API request, the
-`Authorization` header. Everything else in `.env` has a working default.
+Everything else in `.env` has a working default.
+
+### Credentials
+
+Two options, and which you pick changes what the numbers mean:
+
+- **`PIPESHUB_USERS`** (`email:password,…`) — each simulated user drives a real
+  account. Required for anything the backend caches per user: with one shared
+  identity a per-user cache looks like it always hits, so an A/B of one would
+  measure a hit rate no deployment ever sees. Tokens come from password login
+  at test start, so they cannot expire mid-run.
+- **`TOKEN` / `PIPESHUB_TOKEN`** — a single bearer JWT from browser devtools.
+  Fine for absolute throughput on a stateless path; misleading for per-user
+  caches. `PIPESHUB_TOKEN` wins when both are set; `.env` documents `TOKEN`.
+
+Provision accounts on a local stack (creates users, sets passwords, verifies
+each login, and prints the `PIPESHUB_USERS` line to paste in):
+
+```bash
+PIPESHUB_ADMIN_EMAIL=admin@example.com PIPESHUB_ADMIN_PASSWORD='...' \
+    ./seed_users.py --count 8
+```
+
+Seeded users only see what the org shares with them — give them access to the
+knowledge bases the run is meant to search, or they will answer from nothing.
 
 That writes `results/baseline/`, printing the report to the terminal too:
 
@@ -180,7 +203,9 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 
 | variable | default | what it does |
 |---|---|---|
-| `TOKEN` | — | bearer JWT; required unless `users` is 0 |
+| `PIPESHUB_USERS` | — | `email:password,…`; one real account per simulated user |
+| `PIPESHUB_EMAILS` / `PIPESHUB_PASSWORD` | — | same, when the accounts share a password |
+| `TOKEN` / `PIPESHUB_TOKEN` | — | single-identity bearer JWT; used only if the two above are unset. `PIPESHUB_TOKEN` overrides `TOKEN`. One of these is required unless `users` is 0 |
 | `PIPESHUB_MODE` | `auto` | `auto` / `docker` / `native` |
 | `PIPESHUB_HOST` | `http://localhost:3000` | API gateway the load hits — the Node backend, not the frontend |
 | `PIPESHUB_CONTAINER` | `pipeshub-ai` | docker mode only |
@@ -190,6 +215,7 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 | `PIPESHUB_QUERY_FILE` | `queries.txt` | the query set users rotate through |
 | `PIPESHUB_QUERY` | — | force a single query instead of the file |
 | `PIPESHUB_THINK_TIME` | `3` | seconds between a user's turns |
+| `PIPESHUB_TURN_MAX_SECONDS` | `300` | per-turn curl timeout. Raise it when turns outlast it — a cut SSE stream still reports HTTP 200, so truncation shows only as `curl_exit=28` and a missing completion marker |
 
 `perftest.sh` probes the token before starting and aborts if it is not
 accepted — an expired token turns every request into a 401, which otherwise
@@ -228,6 +254,9 @@ elsewhere and use this only to collect:
 | `restart_query.sh` | restart only the query process, leaving the container up |
 | `locustfile_play.py` | optional locust scenario, if you prefer locust's latency percentiles |
 | `queries.txt` | the query set users draw from — **edit this for your corpus** |
+| `PERFORMANCE.md` | measured results: before/after across the worker/user matrix |
+| `PROFILE.md` | where CPU goes, and what to optimise next |
+| `baseline/` | the raw evidence — flame graphs, memory graphs, profiles, matrix data |
 | `aggregate.py` | rolls many runs' `summary.json` into one table + `matrix.csv` |
 | `_common.sh` | sourced by the rest: finds docker (with/without sudo), finds Python, checks the container is up |
 | `instr/` | the probes copied into the container, plus the report aggregators |

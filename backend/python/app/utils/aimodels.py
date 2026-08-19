@@ -92,6 +92,22 @@ class EmbeddingProvider(Enum):
     VERTEX_AI = "vertexAI"
     VOYAGE = "voyage"
 
+LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.DEFAULT.value,
+    EmbeddingProvider.HUGGING_FACE.value,
+    EmbeddingProvider.SENTENCE_TRANSFOMERS.value,
+})
+
+
+def is_local_cpu_embedding_provider(provider: str | None) -> bool:
+    """Whether *provider* embeds on local CPU via the embedding server.
+
+    ``None`` counts as local: an unconfigured deployment falls back to
+    ``get_default_embedding_model()``.
+    """
+    return provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS
+
+
 class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     AWS_BEDROCK = "bedrock"

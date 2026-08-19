@@ -94,6 +94,11 @@ class ParseErrorCode(str, Enum):
     PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
     INVALID_INPUT = "INVALID_INPUT"
     NO_PROVIDER_PROVIDED = "NO_PROVIDER_PROVIDED"
+    # The parsing service is saturated (admission gate timed out) and is
+    # explicitly asking the caller to slow down — unlike every other code
+    # here, this is retryable and must never be treated as a content
+    # failure or count against a circuit breaker.
+    PARSE_BACKPRESSURE = "PARSE_BACKPRESSURE"
 
 
 class ParseError(Exception):

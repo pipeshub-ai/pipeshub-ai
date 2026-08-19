@@ -27,7 +27,11 @@ if [ "$PIPESHUB_MODE" != "docker" ]; then
     exit 1
 fi
 
-in_container() { $DOCKER exec "$CONTAINER" "$@"; }
+# -i is required: the heredocs below pipe a script into `python3 -`, and without
+# stdin attached docker exec hands python an immediate EOF. It then executes
+# nothing, prints nothing and exits 0 — so `on` reported success while the probe
+# was never wired, and `off` never removed it.
+in_container() { $DOCKER exec -i "$CONTAINER" "$@"; }
 
 case "$ACTION" in
   on)
@@ -49,18 +53,28 @@ case "$ACTION" in
 p = "/app/python/app/utils/runtime_threads.py"
 src = open(p).read()
 line = "    from app.utils import backend_timing as _backend_timing  # noqa: F401"
+block = "try:\n" + line + "\nexcept Exception:\n    pass\n"
 if "backend_timing" in src:
     print("   already wired")
 else:
-    marker = "import"
     lines = src.splitlines(keepends=True)
     for i, ln in enumerate(lines):
         if ln.startswith("def ") or ln.startswith("class "):
-            lines.insert(i, "try:\n" + line + "\nexcept Exception:\n    pass\n\n")
+            lines.insert(i, block + "\n")
             break
+    else:
+        # runtime_threads.py is pure module-level setup with no def/class to
+        # insert before. The loop used to fall through, write the file back
+        # byte-identical and still print "wired" — so the probe never loaded
+        # and every run reported "no BACKENDAGG lines" as if uninstrumented.
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append("\n" + block)
     out = "".join(lines)
     compile(out, p, "exec")
     open(p, "w").write(out)
+    if "backend_timing" not in open(p).read():
+        raise SystemExit("!! backend probe wiring failed — backend latency unavailable")
     print("   wired")
 PY
     bash "$HERE/restart_query.sh"

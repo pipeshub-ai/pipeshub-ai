@@ -1744,7 +1744,7 @@ describe('Connector Routes - handler coverage', () => {
       await runChain('/navigate', {}, { 'x-is-admin': 'true', cookie: 'session=secret' })
 
       const headers = exec.firstCall.args[2]
-      expect(headers['X-Is-Admin']).to.equal('false')
+      expect(headers).to.not.have.property('X-Is-Admin')
       expect(headers).to.not.have.property('cookie')
     })
   })

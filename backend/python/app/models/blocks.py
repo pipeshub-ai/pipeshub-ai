@@ -509,3 +509,39 @@ class BlockGroups(BaseModel):
 class BlocksContainer(BaseModel):
     block_groups: list[BlockGroup] = Field(default_factory=list)
     blocks: list[Block] = Field(default_factory=list)
+
+    def extend(self, other: 'BlocksContainer') -> None:
+        """Append *other*'s content, rebasing its indices onto this container.
+
+        Every cross-reference in the model is positional (BlockContainerValidator
+        requires index == list position), so each one has to shift by the
+        current lengths. *other*'s items are mutated and re-parented rather
+        than copied, so merging a sequence of page/batch results never holds
+        two copies of one batch; treat *other* as consumed afterwards.
+        """
+        block_offset = len(self.blocks)
+        group_offset = len(self.block_groups)
+
+        for block in other.blocks:
+            block.index += block_offset
+            if block.parent_index is not None:
+                block.parent_index += group_offset
+            if block.parent_block_index is not None:
+                block.parent_block_index += block_offset
+            self.blocks.append(block)
+
+        for block_group in other.block_groups:
+            block_group.index += group_offset
+            if block_group.parent_index is not None:
+                block_group.parent_index += group_offset
+            if block_group.children:
+                for block_range in block_group.children.block_ranges:
+                    block_range.start += block_offset
+                    block_range.end += block_offset
+                for group_range in block_group.children.block_group_ranges:
+                    group_range.start += group_offset
+                    group_range.end += group_offset
+            self.block_groups.append(block_group)
+
+        other.blocks = []
+        other.block_groups = []

@@ -268,7 +268,6 @@ export class ScheduledJobsBackfillMigration {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
-      'X-Is-Admin': 'true',
     };
 
     const url =

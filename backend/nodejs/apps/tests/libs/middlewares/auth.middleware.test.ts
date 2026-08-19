@@ -419,7 +419,11 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
-      const userQuery = createMockQuery({ email: 'test@example.com', fullName: 'Test User' })
+      const userQuery = createMockQuery({
+        email: 'test@example.com',
+        fullName: 'Test User',
+        role: 'admin',
+      })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
@@ -435,10 +439,38 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         email: 'test@example.com',
         fullName: 'Test User',
+        role: 'admin',
         isOAuth: true,
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it('should reject OAuth tokens without a userId', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'user:read',
+        fullName: 'Test User',
+        accountType: 'premium',
+      })
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('OAuth token missing user identity')
     })
 
     it('should route a phpat_-prefixed personal access token to OAuth auth, not regular auth', async () => {

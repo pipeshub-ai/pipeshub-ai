@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import openai as openai_sdk
@@ -30,6 +30,7 @@ from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.openai import OpenAITransport
+from app.agents.agent_loop.converters import MALFORMED_TOOL_CALL_ARGS_KEY
 
 
 def _transport(**kwargs: Any) -> OpenAITransport:
@@ -220,10 +221,27 @@ class TestParseToolCalls:
         result = transport._parse_tool_calls([_raw_tool_call(arguments='{"q": "cats"}')])
         assert result == [ToolCall(id="call_1", name="search", arguments={"q": "cats"})]
 
-    def test_malformed_json_falls_back_to_empty_dict(self) -> None:
+    def test_malformed_json_carries_the_correction_sentinels(self) -> None:
+        """Not `{}`: empty args are indistinguishable from a valid no-argument
+        call, so the tool would run with nothing instead of the loop being told
+        to re-issue it. Same recovery the LangChain arm gets via
+        `converters._recover_invalid_tool_call`."""
         transport = _transport()
         result = transport._parse_tool_calls([_raw_tool_call(arguments="{not json")])
-        assert result[0].arguments == {}
+        assert MALFORMED_TOOL_CALL_ARGS_KEY in result[0].arguments
+        assert result[0].arguments[MALFORMED_TOOL_CALL_ARGS_KEY] == "{not json"
+
+    def test_repairable_json_is_repaired_rather_than_discarded(self) -> None:
+        transport = _transport()
+        result = transport._parse_tool_calls(
+            [_raw_tool_call(arguments='```json\n{"q": "hi",}\n```')]
+        )
+        assert result[0].arguments == {"q": "hi"}
+
+    def test_over_long_name_is_clamped(self) -> None:
+        transport = _transport()
+        result = transport._parse_tool_calls([_raw_tool_call(name="x" * 300, arguments="{}")])
+        assert len(result[0].name) == 128
 
     def test_empty_arguments_string_becomes_empty_dict(self) -> None:
         transport = _transport()
@@ -511,7 +529,7 @@ class TestStream:
         assert tc.name == "search"
         assert tc.arguments == {"q": "cats"}
 
-    async def test_malformed_tool_call_json_becomes_empty_args(self) -> None:
+    async def test_malformed_tool_call_json_carries_the_correction_sentinels(self) -> None:
         transport = _transport()
         chunks = [
             _stream_chunk(tool_calls=[_tc_delta(0, id_="call_1", name="search", arguments="{not json")]),
@@ -519,7 +537,7 @@ class TestStream:
         transport._client.chat.completions.create = AsyncMock(return_value=_AsyncChunkIterator(chunks))
         events = [event async for event in transport.stream([UserMessage(content="x")])]
         final = next(e for e in events if isinstance(e, StreamCompleteEvent)).response
-        assert final.message.tool_calls[0].arguments == {}
+        assert MALFORMED_TOOL_CALL_ARGS_KEY in final.message.tool_calls[0].arguments
 
     async def test_tool_call_missing_id_gets_generated_placeholder(self) -> None:
         transport = _transport()
@@ -580,3 +598,67 @@ class TestStream:
         assert kwargs["reasoning_effort"] == "low"
         assert kwargs["stream"] is True
         assert kwargs["stream_options"] == {"include_usage": True}
+
+
+class TestRequestShapeRecoveryIsNotAzureOnly:
+    """The LangChain arm applies its shape fallback to ANY model exposing
+    use_responses_api -- plain ChatOpenAI, openai_compatible, litellm_proxy,
+    openrouter -- all of which now dispatch to OpenAITransport on the direct
+    arm. While the recovery lived on the Azure subclass, a gpt-5-family
+    "reasoning + bound tools" 400 failed the turn here and never learned.
+    """
+
+    @pytest.mark.asyncio
+    async def test_openai_retries_a_shape_conflict_and_switches_endpoint(self) -> None:
+        from app.agent_loop_lib.transport.openai import RequestDefaults
+
+        transport = _transport()
+        transport._defaults = RequestDefaults(reasoning_effort="low", model="gpt-4o")
+        chat_calls: list = []
+        resp_calls: list = []
+
+        async def _chat(**kwargs):
+            chat_calls.append(kwargs)
+            raise RuntimeError("Please use /v1/responses instead")
+
+        class _Empty:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return None
+
+            async def iter_bytes(self):
+                yield b"data: [DONE]\n\n"
+
+        def _resp(**kwargs):
+            resp_calls.append(kwargs)
+            return _Empty()
+
+        transport._client.chat.completions.create = AsyncMock(side_effect=_chat)
+        transport._client.responses.with_streaming_response.create = MagicMock(
+            side_effect=_resp
+        )
+
+        [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        assert len(chat_calls) == 1, "first attempt on Chat Completions"
+        assert len(resp_calls) == 1, "retry must reach the Responses API"
+        assert transport._defaults.use_responses_api is True, "working shape is pinned"
+
+    @pytest.mark.asyncio
+    async def test_unrelated_errors_still_are_not_retried(self) -> None:
+        from app.agent_loop_lib.transport.openai import RequestDefaults
+
+        transport = _transport()
+        transport._defaults = RequestDefaults(reasoning_effort="low", model="gpt-4o")
+        calls: list = []
+
+        async def _create(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("rate limit exceeded")
+
+        transport._client.chat.completions.create = AsyncMock(side_effect=_create)
+        with pytest.raises(Exception, match="rate limit"):
+            [e async for e in transport.stream([UserMessage(content="hi")])]
+        assert len(calls) == 1

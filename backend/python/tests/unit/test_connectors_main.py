@@ -1208,6 +1208,109 @@ class TestRun:
             workers=4,
         )
 
+    def test_run_defaults_to_connector_uvicorn_workers_env_var(self):
+        """workers=None (the default) reads CONNECTOR_UVICORN_WORKERS."""
+        from app.connectors_main import run
+
+        with (
+            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "3"}),
+        ):
+            run(reload=False)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.connectors_main:app",
+            host="0.0.0.0",
+            port=8088,
+            log_level="info",
+            reload=False,
+            workers=3,
+        )
+
+    def test_run_defaults_to_one_worker_when_env_var_unset(self):
+        """No CONNECTOR_UVICORN_WORKERS set -> preserves the pre-existing
+        single-worker default (in-memory sync/reindex dedup is per-process,
+        see run()'s docstring)."""
+        from app.connectors_main import run
+
+        with (
+            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import os
+            os.environ.pop("CONNECTOR_UVICORN_WORKERS", None)
+            run(reload=False)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.connectors_main:app",
+            host="0.0.0.0",
+            port=8088,
+            log_level="info",
+            reload=False,
+            workers=1,
+        )
+
+    def test_run_falls_back_to_one_worker_when_env_var_invalid(self):
+        """A malformed CONNECTOR_UVICORN_WORKERS value should not crash
+        startup; fall back to 1 worker instead of raising ValueError."""
+        from app.connectors_main import run
+
+        for invalid_value in ("abc", ""):
+            with (
+                patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+                patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": invalid_value}),
+            ):
+                run(reload=False)
+
+            mock_uvicorn.assert_called_once_with(
+                "app.connectors_main:app",
+                host="0.0.0.0",
+                port=8088,
+                log_level="info",
+                reload=False,
+                workers=1,
+            )
+
+    def test_run_reload_with_multiple_workers_forces_single_worker(self):
+        """reload=True always clamps to 1 worker, even with an explicit
+        CONNECTOR_UVICORN_WORKERS override, matching docling/indexing/
+        parsing's own reload-safety clamp."""
+        from app.connectors_main import run
+
+        with (
+            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "4"}),
+        ):
+            run(reload=True)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.connectors_main:app",
+            host="0.0.0.0",
+            port=8088,
+            log_level="info",
+            reload=True,
+            workers=1,
+        )
+
+    def test_run_explicit_workers_argument_overrides_env_var(self):
+        """An explicit workers= argument takes priority over the env var."""
+        from app.connectors_main import run
+
+        with (
+            patch("app.connectors_main.uvicorn.run") as mock_uvicorn,
+            patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "5"}),
+        ):
+            run(workers=2, reload=False)
+
+        mock_uvicorn.assert_called_once_with(
+            "app.connectors_main:app",
+            host="0.0.0.0",
+            port=8088,
+            log_level="info",
+            reload=False,
+            workers=2,
+        )
+
 
 # ---------------------------------------------------------------------------
 # EXCLUDE_PATHS

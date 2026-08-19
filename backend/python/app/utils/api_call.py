@@ -100,6 +100,7 @@ async def make_api_call(route: str, token: str) -> dict:
         # its traceback intact.
         raise
     except ApiCallError:
+        # Re-raise unwrapped; the generic handler below would hide status_code.
         raise
     except Exception as e:
         raise ApiCallError(f"Failed to make API call to {route}: {e}") from e

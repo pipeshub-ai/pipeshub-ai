@@ -2,6 +2,8 @@
 
 import asyncio
 import hashlib
+import json
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -2963,3 +2965,199 @@ class TestCreateConnectorFactory:
                 logger, dsp, cs, "wc-factory", "team", "test-user-id"
             )
             assert isinstance(conn, WebConnector)
+
+
+# ---------------------------------------------------------------------------
+# Storage upload (S3 presigned PUT redirect)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStorageResponse:
+    def __init__(self, status: int, text: str = "", headers: Optional[dict] = None):
+        self.status = status
+        self._text = text
+        self.headers = headers or {}
+
+    async def text(self) -> str:
+        return self._text
+
+    async def json(self):
+        return json.loads(self._text) if self._text else {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeStorageSession:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def _take(self, method: str, url: str, **kwargs) -> _FakeStorageResponse:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if not self._responses:
+            raise AssertionError(f"Unexpected {method} {url}: no response queued")
+        expected_method, response = self._responses.pop(0)
+        assert expected_method == method, (
+            f"Expected next call to be {expected_method}, got {method}"
+        )
+        return response
+
+    def post(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("post", url, data=data, headers=headers, **kwargs)
+
+    def put(self, url, *, data=None, headers=None, **kwargs):
+        return self._take("put", url, data=data, headers=headers, **kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class TestUploadNewToStorage:
+    def _prepare(self, connector, monkeypatch, session: _FakeStorageSession):
+        connector._get_storage_url = AsyncMock(return_value="http://storage.local")
+        connector._get_storage_token = AsyncMock(return_value="tok")
+        monkeypatch.setattr(
+            "app.connectors.sources.web.connector.aiohttp.ClientSession",
+            lambda *a, **kw: session,
+        )
+
+    @pytest.mark.asyncio
+    async def test_inline_200_returns_id(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            ("post", _FakeStorageResponse(200, json.dumps({"_id": "doc-inline"}))),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"%PDF-1.4", "Asics 2023 Report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-inline"
+        assert session.calls[0]["method"] == "post"
+        assert session.calls[0].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_308_puts_raw_bytes_to_presigned_url(self, monkeypatch):
+        connector = _make_connector()
+        presigned = (
+            "https://bucket.s3.amazonaws.com/org/Asics%202023%20Report.pdf"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        )
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    json.dumps({"document": {"_id": "doc-presigned"}}),
+                    headers={
+                        "Location": presigned,
+                        "x-document-id": "doc-presigned",
+                    },
+                ),
+            ),
+            ("put", _FakeStorageResponse(200, "")),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        content = b"%PDF-large-file"
+        doc_id = await connector._upload_new_to_storage(
+            content, "Asics 2023 Report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-presigned"
+        assert session.calls[0]["method"] == "post"
+        assert session.calls[0].get("allow_redirects") is False
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == presigned
+        assert session.calls[1]["data"] == content
+        assert session.calls[1]["headers"]["Content-Length"] == str(len(content))
+        assert session.calls[1].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_presigned_put_does_not_follow_redirect_to_another_host(self, monkeypatch):
+        """The presigned-URL PUT must pin allow_redirects=False so a redirecting
+        response (e.g. a compromised/malicious presigned target) can't cause the
+        raw file bytes to be re-sent to an unrelated host."""
+        connector = _make_connector()
+        presigned = "https://bucket.s3.amazonaws.com/org/report.pdf?X-Amz-Signature=abc"
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    "{}",
+                    headers={"Location": presigned, "x-document-id": "doc-presigned"},
+                ),
+            ),
+            (
+                "put",
+                _FakeStorageResponse(
+                    200, "", headers={"Location": "https://attacker.example/exfil"}
+                ),
+            ),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        content = b"%PDF-secret"
+        doc_id = await connector._upload_new_to_storage(
+            content, "report", "pdf", "application/pdf"
+        )
+        assert doc_id == "doc-presigned"
+        # Only the POST and the single presigned PUT should have happened; the
+        # fake session's response Location must never trigger a follow-up call.
+        assert len(session.calls) == 2
+        assert session.calls[1]["method"] == "put"
+        assert session.calls[1]["url"] == presigned
+        assert session.calls[1].get("allow_redirects") is False
+
+    @pytest.mark.asyncio
+    async def test_308_put_failure_returns_none(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            (
+                "post",
+                _FakeStorageResponse(
+                    308,
+                    "{}",
+                    headers={"Location": "https://s3.example/p", "x-document-id": "doc-x"},
+                ),
+            ),
+            ("put", _FakeStorageResponse(403, "SignatureDoesNotMatch")),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"pdf", "report", "pdf", "application/pdf"
+        )
+        assert doc_id is None
+
+    @pytest.mark.asyncio
+    async def test_308_missing_location_returns_none(self, monkeypatch):
+        connector = _make_connector()
+        session = _FakeStorageSession([
+            ("post", _FakeStorageResponse(308, "{}", headers={})),
+        ])
+        self._prepare(connector, monkeypatch, session)
+
+        doc_id = await connector._upload_new_to_storage(
+            b"pdf", "report", "pdf", "application/pdf"
+        )
+        assert doc_id is None
+        assert len(session.calls) == 1
+
+    def test_storage_document_id_from_nested_document(self):
+        connector = _make_connector()
+        assert connector._storage_document_id_from_upload(
+            {"x-document-id": "hdr-id"},
+            {"document": {"_id": "nested-id"}},
+        ) == "hdr-id"
+        assert connector._storage_document_id_from_upload(
+            {},
+            {"document": {"_id": "nested-id"}},
+        ) == "nested-id"

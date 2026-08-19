@@ -2843,14 +2843,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             List[Dict]: Matching nodes
         """
+        # `id` is not a stored attribute here: _translate_node_to_arango moves it
+        # to `_key` on write, so `FILTER doc.id IN ...` matches nothing and the
+        # caller silently gets an empty batch. Callers use the generic `id`
+        # because that is what the Neo4j provider stores, so the translation
+        # belongs here rather than in every call site.
+        filter_field = "_key" if field == "id" else field
+
         if return_fields:
-            return_expr = "{" + ", ".join([f"{f}: doc.{f}" for f in return_fields]) + "}"
+            # `id` has to be projected back out of `_key`, or a caller asking
+            # for it gets null and cannot key results to what it requested.
+            projected = ", ".join(
+                f"id: doc._key" if f == "id" else f"{f}: doc.{f}"
+                for f in return_fields
+            )
+            return_expr = "{" + projected + "}"
         else:
             return_expr = "doc"
 
         query = f"""
         FOR doc IN {collection}
-            FILTER doc.{field} IN @values
+            FILTER doc.{filter_field} IN @values
             RETURN {return_expr}
         """
 

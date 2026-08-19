@@ -151,11 +151,9 @@ class TestApplyBackpressure:
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
 
-        # Add futures to reach capacity
+        # Simulate reaching capacity via gate waiters
         with consumer._futures_lock:
-            for _ in range(messaging_env.max_pending_indexing_tasks):
-                f = Future()
-                consumer._active_futures.add(f)
+            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()

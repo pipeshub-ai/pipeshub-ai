@@ -4,11 +4,15 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
+import pytest
 
 from app.models.blocks import BlocksContainer
-from app.services.base_client import ServiceCallError, ServiceUnavailableError
+from app.services.base_client import (
+    ServiceBackpressureError,
+    ServiceCallError,
+    ServiceUnavailableError,
+)
 from app.services.parsing.client import ParsingClient, ParsingClientError
 from app.services.parsing.interface import ParseErrorCode, ParseResult, ParserProvider
 
@@ -155,6 +159,31 @@ async def test_parse_raises_parsing_client_error_on_service_failure() -> None:
             await client.parse(file_content=b"data", record_name="test.pdf")
 
     assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+
+
+@pytest.mark.asyncio
+async def test_parse_surfaces_exhausted_backpressure_as_retryable_error() -> None:
+    """When base_client exhausts its backpressure budget, parse() must
+    surface a retryable ParsingClientError(PARSE_BACKPRESSURE), not let the
+    raw ServiceBackpressureError propagate unclassified."""
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+
+    with patch.object(
+        client,
+        "_post_multipart",
+        new=AsyncMock(
+            side_effect=ServiceBackpressureError(
+                "ParsingService parse is backpressured",
+                retry_after=5.0,
+                service_name="ParsingService",
+            )
+        ),
+    ):
+        with pytest.raises(ParsingClientError) as exc_info:
+            await client.parse(file_content=b"data", record_name="test.pdf")
+
+    assert exc_info.value.code == ParseErrorCode.PARSE_BACKPRESSURE
+    assert exc_info.value.details["retry_after"] == 5.0
 
 
 @pytest.mark.asyncio

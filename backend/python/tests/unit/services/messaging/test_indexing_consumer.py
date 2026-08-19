@@ -33,6 +33,9 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
     _compute_retry_backoff_seconds,
 )
+from app.services.resource_governor import Pool
+from app.services.resource_governor.models import ParseTier
+from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 
 # ---------------------------------------------------------------------------
@@ -183,11 +186,9 @@ class TestApplyBackpressure:
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
 
-        # Add futures to reach capacity
+        # Simulate reaching capacity via gate waiters
         with consumer._futures_lock:
-            for _ in range(messaging_env.max_pending_indexing_tasks):
-                f = Future()
-                consumer._active_futures.add(f)
+            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called_once()
@@ -228,6 +229,74 @@ class TestApplyBackpressure:
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_not_called()
+
+
+class TestApplyBackpressureDownstreamCoordinator:
+    """__apply_backpressure must also pause partitions purely from a
+    downstream 429+Retry-After signal, independent of active task count."""
+
+    def test_pauses_when_downstream_signalled_even_below_capacity(self, consumer):
+        consumer.consumer = MagicMock()
+        assigned = {MagicMock(), MagicMock()}
+        consumer.consumer.assignment.return_value = assigned
+        consumer.consumer.paused.return_value = set()
+
+        coordinator = MagicMock()
+        coordinator.is_paused.return_value = True
+        coordinator.paused_services = frozenset({"ParsingService"})
+        coordinator.pause_remaining.return_value = 4.0
+        consumer.backpressure_coordinator = coordinator
+
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+
+        consumer.consumer.pause.assert_called_once()
+        assert consumer._backpressure_logged is True
+
+    def test_stays_paused_while_downstream_signalled_even_if_capacity_frees_up(self, consumer):
+        """A partition that's only paused, not in-flight, must not be
+        resumed while downstream is still saturated — resuming would just
+        re-admit work for the still-backpressured service."""
+        consumer.consumer = MagicMock()
+        paused = {MagicMock()}
+        consumer.consumer.paused.return_value = paused
+        consumer.consumer.assignment.return_value = set()
+        consumer._backpressure_logged = True
+
+        coordinator = MagicMock()
+        coordinator.is_paused.return_value = True
+        coordinator.paused_services = frozenset({"DoclingService"})
+        coordinator.pause_remaining.return_value = 2.0
+        consumer.backpressure_coordinator = coordinator
+
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+
+        consumer.consumer.resume.assert_not_called()
+        assert consumer._backpressure_logged is True
+
+    def test_resumes_once_downstream_backpressure_clears(self, consumer):
+        consumer.consumer = MagicMock()
+        paused = {MagicMock()}
+        consumer.consumer.paused.return_value = paused
+        consumer._backpressure_logged = True
+
+        coordinator = MagicMock()
+        coordinator.is_paused.return_value = False
+        consumer.backpressure_coordinator = coordinator
+
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+
+        consumer.consumer.resume.assert_called_once()
+        assert consumer._backpressure_logged is False
+
+    def test_no_coordinator_behaves_as_before(self, consumer):
+        consumer.consumer = MagicMock()
+        consumer.consumer.paused.return_value = set()
+        consumer.backpressure_coordinator = None
+
+        consumer._IndexingKafkaConsumer__apply_backpressure()
+
+        consumer.consumer.resume.assert_not_called()
+        assert consumer._backpressure_logged is False
 
 
 # ===================================================================
@@ -1296,6 +1365,223 @@ class TestProcessMessageWrapper:
         consumer.concurrency_manager.renew.assert_awaited_once()
 
 
+class TestProcessMessageWrapperWithGovernor:
+    """Phase 1: when a ResourceGovernor is injected, parsing/indexing
+    admission routes through its adaptive gates instead of the legacy
+    static semaphores, on the same START_PARSING/PARSING_COMPLETE/
+    INDEXING_COMPLETE event sequence used today."""
+
+    @pytest.fixture
+    def governor_consumer(self, logger, plain_config) -> IndexingKafkaConsumer:
+        return IndexingKafkaConsumer(
+            logger, plain_config, retry_manager=None, producer=None,
+            governor=make_test_governor(logger_name="test_indexing_governor"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_worker_loop_uses_governor_gate_for_index_pool(
+        self, governor_consumer
+    ) -> None:
+        governor_consumer._IndexingKafkaConsumer__start_worker_thread()
+        assert governor_consumer.worker_loop_ready.wait(timeout=5.0)
+        try:
+            assert governor_consumer.parsing_semaphore is None
+            assert governor_consumer.indexing_semaphore is governor_consumer.governor.gate(Pool.INDEX)
+        finally:
+            governor_consumer._IndexingKafkaConsumer__stop_worker_thread()
+
+    @pytest.mark.asyncio
+    async def test_heavy_tier_routes_to_heavy_parse_gate(
+        self, governor_consumer
+    ) -> None:
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.HEAVY, size_bytes=1024),
+            )
+            assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 1
+            assert governor_consumer.governor.gate(Pool.LIGHT_PARSE).in_use == 0
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+        assert governor_consumer.governor.gate(Pool.INDEX).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_light_tier_routes_to_light_parse_gate(
+        self, governor_consumer
+    ) -> None:
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            assert governor_consumer.governor.gate(Pool.LIGHT_PARSE).in_use == 1
+            assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        assert governor_consumer.governor.gate(Pool.LIGHT_PARSE).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_xl_heavy_document_costs_two_permits(
+        self, governor_consumer
+    ) -> None:
+        """A heavy doc over XL_HEAVY_BYTES consumes 2 HEAVY_PARSE permits
+        (plan section 4, XL_HEAVY_BYTES) — with a ceiling of 4 that leaves
+        exactly 2 free for a concurrently-parsing sibling."""
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+        xl_size = 26 * 1024 * 1024
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.HEAVY, size_bytes=xl_size),
+            )
+            assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 2
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_missing_tier_defaults_to_heavy(
+        self, governor_consumer
+    ) -> None:
+        """No tier on PipelineEventData (e.g. a handler that hasn't been
+        updated yet) must fail safe to HEAVY, never silently skip admission
+        control."""
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1"),
+            )
+            assert governor_consumer.governor.gate(Pool.HEAVY_PARSE).in_use == 1
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_distributed_lease_uses_resolved_ceiling_not_adaptive_limit(
+        self, governor_consumer
+    ) -> None:
+        """Distributed leases must be sized to the resolved ceiling (the
+        cluster-wide cap), not whatever the adaptive node-local gate limit
+        currently is — even after the node-local limit has shrunk below the
+        ceiling, the lease call still requests the full ceiling."""
+        governor_consumer.running = True
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+        governor_consumer.governor._registry.set(Pool.INDEX, 1)
+        governor_consumer.governor._registry.set(Pool.HEAVY_PARSE, 1)
+        manager = AsyncMock()
+        manager.try_acquire.return_value = True
+        governor_consumer.concurrency_manager = manager
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.HEAVY, size_bytes=1),
+            )
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        lease_limits = {
+            call.args[0]: call.args[2] for call in manager.try_acquire.await_args_list
+        }
+        assert lease_limits["indexing"] == 8  # env_index, unaffected by the shrunk node-local limit
+        assert lease_limits["parsing"] == 4  # env_parse (heavy ceiling)
+
+    @pytest.mark.asyncio
+    async def test_light_parse_lease_uses_light_ceiling_and_own_pool(
+        self, governor_consumer
+    ) -> None:
+        """Light records must not share the heavy parsing Redis lease —
+        that cap is sized for Docling and would keep LIGHT_PARSE at its
+        floor by starving it of demand."""
+        governor_consumer.running = True
+        governor_consumer.indexing_semaphore = governor_consumer.governor.gate(Pool.INDEX)
+        manager = AsyncMock()
+        manager.try_acquire.return_value = True
+        governor_consumer.concurrency_manager = manager
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1", tier=ParseTier.LIGHT, size_bytes=128),
+            )
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        governor_consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await governor_consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        lease_limits = {
+            call.args[0]: call.args[2] for call in manager.try_acquire.await_args_list
+        }
+        assert "parsing" not in lease_limits
+        assert lease_limits["parsing:light"] == governor_consumer.governor.ceilings.light
+        assert lease_limits["parsing:light"] > 4
+
+    @pytest.mark.asyncio
+    async def test_legacy_semaphore_path_unaffected_when_no_governor(
+        self, consumer
+    ) -> None:
+        """No governor injected (default) must be byte-for-byte the
+        pre-Phase-1 static-semaphore behaviour."""
+        assert consumer.governor is None
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def handler(_parsed):
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id="r1"),
+            )
+            assert consumer.parsing_semaphore._value == 0
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
+
+        consumer.message_handler = handler
+        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"))
+        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
+
+        assert result is True
+        assert consumer.parsing_semaphore._value == 1
+        assert consumer.indexing_semaphore._value == 1
+
+
 class TestWaitForActiveFutures:
     def test_no_futures(self, consumer):
         consumer._wait_for_active_futures()
@@ -1319,9 +1605,7 @@ class TestApplyBackpressureFullCoverage:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        for _ in range(messaging_env.max_pending_indexing_tasks + 1):
-            f = Future()
-            consumer._active_futures.add(f)
+        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True
@@ -1527,7 +1811,7 @@ class TestConsumeLoop:
         mock_consumer.getmany = mock_getmany
         consumer.consumer = mock_consumer
         with consumer._futures_lock:
-            consumer._active_futures.update(Future() for _ in range(39))
+            consumer._gate_waiters = 39
 
         with (
             patch.object(

@@ -54,8 +54,12 @@ def _make_request(
 ):
     """Build a minimal mock Request object used by most handler tests."""
     req = MagicMock()
-    req.state.user = {"userId": user_id, "orgId": org_id}
-    req.headers = {"X-Is-Admin": "true" if is_admin else "false"}
+    req.state.user = {
+        "userId": user_id,
+        "orgId": org_id,
+        "role": "admin" if is_admin else "member",
+    }
+    req.headers = {}
     if body is not None:
         req.json = AsyncMock(return_value=body)
     else:
@@ -142,15 +146,15 @@ class TestGetUserContext:
             _get_user_context(req)
         assert exc_info.value.status_code == 401
 
-    def test_is_admin_header_case_insensitive(self):
+    def test_is_admin_from_jwt_role_case_insensitive(self):
         req = _make_request()
-        req.headers = {"X-Is-Admin": "TRUE"}
+        req.state.user = {"userId": "u1", "orgId": "o1", "role": "Admin"}
         ctx = _get_user_context(req)
         assert ctx["is_admin"] is True
 
     def test_is_admin_default_false(self):
         req = _make_request()
-        req.headers = {"X-Is-Admin": "false"}
+        req.state.user = {"userId": "u1", "orgId": "o1", "role": "member"}
         ctx = _get_user_context(req)
         assert ctx["is_admin"] is False
 

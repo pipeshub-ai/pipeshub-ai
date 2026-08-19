@@ -26,7 +26,6 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../utils/connector.utils';
-import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
   reconcileConnectorSchedule,
@@ -66,9 +65,9 @@ const forLog = (value: unknown, maxLength = 200): string =>
     .replace(/[\r\n]/g, ' ')
     .slice(0, maxLength);
 
-const buildProxyHeaders = (
+/** Allowlisted proxy headers. Admin is JWT role on Python — never X-Is-Admin. */
+export const buildProxyHeaders = (
   req: AuthenticatedUserRequest,
-  isAdmin: boolean,
 ): Record<string, string> => {
   const headers: Record<string, string> = {};
   for (const name of PROXY_FORWARD_HEADERS) {
@@ -79,7 +78,6 @@ const buildProxyHeaders = (
       headers[name] = value.join(',');
     }
   }
-  headers['X-Is-Admin'] = isAdmin ? 'true' : 'false';
   return headers;
 };
 
@@ -186,12 +184,7 @@ const createConnectorConfigUpdateHandler = (
 
       logger.info(`${operationName} for ${connectorId}`);
 
-      // Prepare headers with admin flag
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       // Execute API call
       const connectorResponse = await executeConnectorCommand(
@@ -268,11 +261,7 @@ const fetchConnectorSnapshot = async (
   appConfig: AppConfig,
 ): Promise<ConnectorSnapshot | null> => {
   try {
-    const isAdmin = await isUserAdmin(req);
-    const headers: Record<string, string> = {
-      ...(req.headers as Record<string, string>),
-      'X-Is-Admin': isAdmin ? 'true' : 'false',
-    };
+    const headers = buildProxyHeaders(req);
 
     const resp = await executeConnectorCommand(
       `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
@@ -388,12 +377,16 @@ const fireConnectorScheduleReconcile = (
   });
 };
 
+/**
+ * Org admin from req.user.role (session JWT claim, or attached at OAuth auth).
+ * Session role changes invalidate prior tokens (ROLE_CHANGED).
+ */
 export const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
-  const { userId, orgId } = req.user || {};
+  const { userId, orgId, role } = req.user || {};
   if (!userId || !orgId) {
     throw new UnauthorizedError('User authentication required');
   }
-  return isUserOrgAdmin(userId, orgId);
+  return role === 'admin';
 };
 
 // ============================================================================
@@ -435,11 +428,7 @@ export const getConnectorRegistry =
         queryParams.append('search', String(search));
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/registry?${queryParams.toString()}`,
         HttpMethod.GET,
@@ -502,11 +491,7 @@ export const getConnectorInstances =
         throw new BadRequestError('Scope is required');
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const queryParams = new URLSearchParams();
       queryParams.append('scope', String(scope));
@@ -655,11 +640,7 @@ export const getConfiguredConnectorInstances =
 
       logger.info(`Getting configured connector instances for user ${userId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const queryParams = new URLSearchParams();
       if (scope) {
@@ -737,11 +718,7 @@ export const createConnectorInstance =
         authType,
       });
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/`,
@@ -789,11 +766,7 @@ export const getConnectorInstance =
       }
 
       logger.info(`Getting connector instance ${connectorId}`);
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
@@ -839,11 +812,7 @@ export const getConnectorInstanceConfig =
 
       logger.info(`Getting connector instance config for ${connectorId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
@@ -900,11 +869,7 @@ export const updateConnectorInstanceConfig =
 
       logger.info(`Updating connector instance config for ${connectorId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
@@ -1020,11 +985,7 @@ export const deleteConnectorInstance =
 
       logger.info(`Deleting connector instance ${connectorId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       // Fetch snapshot before the DELETE so we still know the connector type
       // once Python has removed it.
@@ -1118,11 +1079,7 @@ export const updateConnectorInstanceName =
         throw new BadRequestError('instanceName is required');
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/name`,
@@ -1179,11 +1136,7 @@ export const getOAuthAuthorizationUrl =
         `Getting OAuth authorization URL for instance ${connectorId}`,
       );
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         authorizationUrl,
@@ -1240,11 +1193,7 @@ export const handleOAuthCallback =
 
       const callbackUrl = `${appConfig.connectorBackend}/api/v1/connectors/oauth/callback?${queryParams.toString()}`;
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
         callbackUrl,
@@ -1330,11 +1279,7 @@ export const getConnectorInstanceFilterOptions =
 
       logger.info(`Getting filter options for instance ${connectorId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
         HttpMethod.GET,
@@ -1387,15 +1332,9 @@ export const getFilterFieldOptions =
 
       logger.info(`Getting filter field options for instance ${connectorId}, filter ${filterKey}`);
 
-      const isAdmin = await isUserAdmin(req);
-      logger.info(`User admin status: ${isAdmin} for userId: ${req.user?.userId}, orgId: ${req.user?.orgId}`);
-      
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
-      
-      logger.info(`Forwarding to Python with X-Is-Admin header: ${headers['X-Is-Admin']}`);
+      const headers = buildProxyHeaders(req);
+
+      logger.info(`Forwarding to Python for filter field options`);
 
       // Build query string with cursor support
       const queryParams = new URLSearchParams();
@@ -1476,11 +1415,7 @@ export const saveConnectorInstanceFilterOptions =
 
       logger.info(`Saving filter options for instance ${connectorId}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
         HttpMethod.POST,
@@ -1538,11 +1473,7 @@ export const toggleConnectorInstance =
 
       logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
       const body: { type: string; fullSync?: boolean } = { type };
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
@@ -1605,8 +1536,7 @@ export const submitConnectorFileEvents =
         throw new BadRequestError('Connector ID is required');
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers = buildProxyHeaders(req, isAdmin);
+      const headers = buildProxyHeaders(req);
       await assertConnectorAccessible(appConfig, connectorId, headers);
       const payload = normalizeConnectorFileEventsBody(req.body);
 
@@ -1661,8 +1591,7 @@ export const submitConnectorFileEventUploads =
         throw new BadRequestError("Multipart field 'manifest' is required");
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers = buildProxyHeaders(req, isAdmin);
+      const headers = buildProxyHeaders(req);
       await assertConnectorAccessible(appConfig, connectorId, headers);
 
       const form = new FormData();
@@ -1730,11 +1659,7 @@ export const getConnectorSchema =
 
       logger.info(`Getting connector schema for ${connectorType}`);
 
-      const isAdmin = await isUserAdmin(req);
-      const headers: Record<string, string> = {
-        ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
-      };
+      const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/registry/${connectorType}/schema`,
         HttpMethod.GET,
@@ -1796,11 +1721,7 @@ async (
       queryParams.append('search', String(search));
     }
 
-    const isAdmin = await isUserAdmin(req);
-    const headers: Record<string, string> = {
-      ...(req.headers as Record<string, string>),
-      'X-Is-Admin': isAdmin ? 'true' : 'false',
-    };
+    const headers = buildProxyHeaders(req);
     const connectorResponse = await executeConnectorCommand(
       `${appConfig.connectorBackend}/api/v1/connectors/agents/active?${queryParams.toString()}`,
       HttpMethod.GET,
@@ -1853,13 +1774,7 @@ export const getConnectorStats =
         queryParams.append('org_id', orgId);
         queryParams.append('connector_id', req.params.connectorId);
 
-        // Forward the admin flag so stats visibility matches connector-list
-        // visibility (admins see team connectors they don't own).
-        const isAdmin = await isUserAdmin(req);
-        const headers: Record<string, string> = {
-          ...(req.headers as Record<string, string>),
-          'X-Is-Admin': isAdmin ? 'true' : 'false',
-        };
+        const headers = buildProxyHeaders(req);
 
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
@@ -1935,12 +1850,11 @@ export const getRecordContent =
         );
       }
 
-      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
-      // the Python side trusts it for authorization. This route needs no admin rights.
+      // Forward only the proxy allowlist (Authorization + tracing). Never raw req.headers.
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
         HttpMethod.GET,
-        buildProxyHeaders(req, false),
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -2005,12 +1919,11 @@ export const navigateKnowledgeGraph =
 
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
-      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
-      // the Python side trusts it for authorization. This route needs no admin rights.
+      // Forward only the proxy allowlist (Authorization + tracing). Never raw req.headers.
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/knowledge-graph/navigate${queryString}`,
         HttpMethod.GET,
-        buildProxyHeaders(req, false),
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -2063,7 +1976,7 @@ export const lookupRecord =
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/knowledge-graph/lookup?${queryParams.toString()}`,
         HttpMethod.GET,
-        buildProxyHeaders(req, false),
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -2176,8 +2089,7 @@ export const reindexConnector =
         reindexBody.statusFilters = statusFilters;
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers = buildProxyHeaders(req, isAdmin);
+      const headers = buildProxyHeaders(req);
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
@@ -2215,8 +2127,7 @@ export const resyncConnectorRecords =
         throw new BadRequestError('Connector ID is required');
       }
 
-      const isAdmin = await isUserAdmin(req);
-      const headers = buildProxyHeaders(req, isAdmin);
+      const headers = buildProxyHeaders(req);
 
       await validateActiveConnector(
         connectorId,

@@ -2,7 +2,8 @@ import ssl
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.config.constants.service import KafkaConfig as KafkaConstants
+from app.config.constants.service import config_node_constants
 from app.connectors.services.event_service import EventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer

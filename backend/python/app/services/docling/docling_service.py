@@ -4,12 +4,37 @@ from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.services.resource_governor import (
+    ParseTier,
+    ResourceGovernor,
+    acquire_gate_with_backpressure,
+    gate_pool,
+    parse_cost,
+)
 from app.utils.logger import create_logger
 
+logger = logging.getLogger(__name__)
+
+PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
 PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
+
+# Docling only ever handles PDFs here — always the heavy tier — so requests
+# share the same HEAVY_PARSE pool the Parsing Service gates, sized by this
+# process's own governor (see docling_main.py's lifespan). Mirrors
+# api/routes/parsing.py's constants; see admission.py for why the wait is
+# split into a short warn threshold and a much longer give-up timeout.
+DOCLING_QUEUE_WAIT_WARN_SECONDS = 5.0
+# Deliberately much smaller than the Parsing Service's 120s: this wait sits
+# in front of Docling's own PDF_PROCESSING_TIMEOUT_SECONDS (2400s) budget,
+# and DoclingClient's request timeout only has a fixed margin over that (see
+# services/docling/client.py) — a large admission wait here would eat
+# directly into that margin instead of being "free" queuing time.
+DOCLING_GATE_TIMEOUT_SECONDS = 30.0
+DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 
 
 class ParseResponse(BaseModel):
@@ -93,6 +118,68 @@ def set_docling_service(service: DoclingService) -> None:
     # Avoid using `global` assignment elsewhere; this function is the single writer
     globals()["docling_service"] = service
 
+
+# Global resource governor (to be set by app.docling_main's lifespan). This
+# module is mounted as a sub-app (see docling_main.py's app.mount("/", ...)),
+# so it has its own FastAPI `app.state` distinct from the outer app's —
+# the module-level singleton mirrors `docling_service` above for the same
+# reason: route handlers here can't reach the outer app's state.
+_resource_governor: ResourceGovernor | None = None
+
+
+def set_resource_governor(governor: ResourceGovernor) -> None:
+    """Wire an initialized ResourceGovernor for the route handlers to use."""
+    globals()["_resource_governor"] = governor
+
+
+async def _acquire_docling_gate(pdf_binary: bytes, message_id: str) -> tuple[bool, int]:
+    """Acquire a HEAVY_PARSE permit sized to *pdf_binary*, if a governor has
+    been wired. Returns ``(admitted, cost)`` — ``cost`` is 0 whenever no
+    permit was actually taken (no governor configured, standalone/test runs
+    that skip governor wiring, or the gate denied admission) so callers can
+    release unconditionally without an extra guard: ``AdmissionGate.release``
+    subtracts ``cost`` straight from ``in_use``, and a denied acquire never
+    incremented it, so releasing a non-zero cost here would under-count
+    in-flight work and let in more concurrent parses than the limit allows."""
+    if _resource_governor is None:
+        return True, 0
+    cost = parse_cost(ParseTier.HEAVY, len(pdf_binary))
+    gate = _resource_governor.gate(gate_pool(ParseTier.HEAVY))
+    admitted = await acquire_gate_with_backpressure(
+        gate, cost, ParseTier.HEAVY, message_id,
+        logger=logger,
+        log_prefix="docling",
+        queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS,
+        gate_timeout_seconds=DOCLING_GATE_TIMEOUT_SECONDS,
+    )
+    return admitted, (cost if admitted else 0)
+
+
+def _release_docling_gate(cost: int) -> None:
+    if _resource_governor is None or cost == 0:
+        return
+    _resource_governor.gate(gate_pool(ParseTier.HEAVY)).release(cost)
+
+
+def _backpressure_response() -> JSONResponse:
+    """Build the 429 backpressure response shared by the conversion routes.
+
+    A raw ``JSONResponse`` (FastAPI allows any handler to return a
+    ``Response`` directly, bypassing its declared ``response_model``) since
+    none of ``ProcessResponse``/``ParseResponse`` model a structured error
+    code — ``DoclingClient._post_with_retry`` only needs the status code and
+    a parseable ``Retry-After`` header to treat this as backpressure rather
+    than failure, independent of the body shape.
+    """
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(DOCLING_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        content={
+            "success": False,
+            "error": "PARSE_BACKPRESSURE: Docling service is at capacity; retry later.",
+        },
+    )
+
 # FastAPI app
 app = FastAPI(
     title="Docling Processing Service",
@@ -134,11 +221,14 @@ async def parse_pdf_endpoint(
     record_name: str = Form(...),
     start_page: int | None = Form(default=None),
     end_page: int | None = Form(default=None),
-) -> ParseResponse:
-    """Parse PDF document. This is the only processing Docling performs - no
-    block construction and no LLM calls, keeping the service stateless."""
+) -> ParseResponse | JSONResponse:
+    """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
+    cost = 0
     try:
         pdf_binary = await file.read()
+        admitted, cost = await _acquire_docling_gate(pdf_binary, record_name)
+        if not admitted:
+            return _backpressure_response()
 
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
@@ -173,3 +263,5 @@ async def parse_pdf_endpoint(
             success=False,
             error=f"Parsing failed: {str(e)}"
         )
+    finally:
+        _release_docling_gate(cost)

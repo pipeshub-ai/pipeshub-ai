@@ -25,27 +25,55 @@ class FakeRedisForFactory extends EventEmitter {
   }
 }
 
+const ioredisPath = require.resolve('ioredis');
+const rsPath = require.resolve(
+  '../../../src/libs/services/redis-streams.service',
+);
+const factoryPath = require.resolve(
+  '../../../src/libs/services/message-broker.factory',
+);
+
+// Other spec files (e.g. app.test.ts, which mocha loads before this file
+// because 'a' < 'l' alphabetically) may already have required
+// message-broker.factory/redis-streams.service — and cached them bound to
+// the global ioredis mock. If we simply `delete require.cache[...]` here to
+// force our own fake-ioredis reload, that stale cache entry never comes
+// back: any file loaded *after* us (e.g. kb_container.test.ts) would then
+// resolve a *different* module instance than the one already-loaded
+// consumers (kb_container.ts) closed over, so sinon stubs applied to "our"
+// instance silently never run against the real call sites. Snapshot the
+// pre-mutation cache entries so we can restore them once our own imports
+// below have captured what they need.
+const originalIoredisEntry = require.cache[ioredisPath];
+const originalRsEntry = require.cache[rsPath];
+const originalFactoryEntry = require.cache[factoryPath];
+
 function ensureIoredisMock() {
-  const ioredisPath = require.resolve('ioredis');
-  const original = require.cache[ioredisPath];
-  const FakeRedis = function (this: any, _opt: any) {
-    return Object.assign(this, new FakeRedisForFactory(_opt));
-  } as any;
-  FakeRedis.prototype = FakeRedisForFactory.prototype;
   require.cache[ioredisPath] = {
-    ...original!,
-    exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
+    ...originalIoredisEntry!,
+    exports: {
+      Redis: FakeRedisForFactory,
+      default: FakeRedisForFactory,
+      RedisOptions: {},
+    },
   } as any;
 
   // Reload the modules that import ioredis
-  const rsPath = require.resolve(
-    '../../../src/libs/services/redis-streams.service',
-  );
   delete require.cache[rsPath];
-  const factoryPath = require.resolve(
-    '../../../src/libs/services/message-broker.factory',
-  );
   delete require.cache[factoryPath];
+}
+
+function restoreIoredisMock() {
+  const restore = (key: string, entry: NodeModule | undefined) => {
+    if (entry) {
+      require.cache[key] = entry;
+    } else {
+      delete require.cache[key];
+    }
+  };
+  restore(ioredisPath, originalIoredisEntry);
+  restore(rsPath, originalRsEntry);
+  restore(factoryPath, originalFactoryEntry);
 }
 
 // Set up the mock before any module that uses ioredis is loaded
@@ -76,6 +104,14 @@ import {
   BaseRedisStreamsConsumerConnection,
   RedisStreamsAdminService,
 } from '../../../src/libs/services/redis-streams.service';
+
+// All named bindings above are now bound to our fake-ioredis-backed module
+// instances. Put require.cache back the way we found it so later-loaded
+// spec files (and anything already-loaded that transitively depends on
+// message-broker.factory/redis-streams.service) keep resolving the same
+// module instance consistently, instead of forking off a second one that
+// stubs elsewhere in the suite can't see.
+restoreIoredisMock();
 
 describe('MessageBrokerFactory', () => {
   let mockLogger: MockLogger;

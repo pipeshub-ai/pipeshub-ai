@@ -2487,3 +2487,48 @@ class TestRecordSummaryEdgeCases:
             if isinstance(c, Document) and (c.metadata or {}).get("isRecordSummary")
         ]
         assert summary_docs == []
+
+
+class TestResolveBatchConcurrency:
+    """EMBEDDING_BATCH_CONCURRENCY must be >= 1: asyncio.Semaphore(0) is
+    locked from creation, so a misconfigured 0/negative value would hang
+    every remote-embedding batch forever instead of failing at startup.
+
+    Exercises the pure helper directly rather than reloading the module —
+    module reload changes class identity for everything it defines
+    (VectorStore, etc.), breaking isinstance checks in unrelated tests that
+    imported the pre-reload class.
+    """
+
+    def test_zero_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("0")
+
+    def test_negative_raises_value_error(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        with pytest.raises(ValueError, match="EMBEDDING_BATCH_CONCURRENCY"):
+            _resolve_batch_concurrency("-1")
+
+    def test_unset_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency(None) == 5
+
+    def test_empty_string_defaults_to_five(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("") == 5
+
+    def test_valid_positive_value_is_used(self):
+        from app.modules.transformers.vectorstore import _resolve_batch_concurrency
+
+        assert _resolve_batch_concurrency("8") == 8
+
+    def test_module_level_constant_matches_helper_with_no_env(self):
+        """The module-level default is wired through the same helper."""
+        from app.modules.transformers import vectorstore as module
+
+        assert module._DEFAULT_CONCURRENCY_LIMIT == module._resolve_batch_concurrency(None)

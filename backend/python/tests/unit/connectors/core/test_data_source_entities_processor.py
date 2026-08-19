@@ -3778,6 +3778,27 @@ class TestReindexExistingRecords:
         assert [m["eventType"] for _key, m in messages] == ["reindexRecord"]
 
     @pytest.mark.asyncio
+    async def test_reindex_payload_forces_past_the_already_indexed_guard(self):
+        """The consumer skips NEW/REINDEX events for COMPLETED records. An
+        explicit reindex has to opt out or it reports success doing nothing."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        record = _make_record()
+        record.id = "rec-1"
+        record.is_internal = False
+        record.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.reindex_existing_records([record])
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        payload = messages[0][1]["payload"]
+        assert payload["forceReindex"] is True
+        # the rest of the record payload must be untouched
+        assert payload["recordName"] == record.to_kafka_record()["recordName"]
+
+    @pytest.mark.asyncio
     async def test_skips_internal_records(self):
         """Skips internal records during reindex."""
         proc = _make_processor()

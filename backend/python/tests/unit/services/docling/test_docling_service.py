@@ -287,8 +287,154 @@ class TestHealthCheckEndpoint:
         assert result == {"status": "healthy", "service": "docling"}
 
 
+class TestResourceGovernorWiring:
+    """Tests for set_resource_governor / _acquire_docling_gate / _release_docling_gate."""
+
+    def test_set_resource_governor_sets_global(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        governor = MagicMock()
+        try:
+            mod.set_resource_governor(governor)
+            assert mod._resource_governor is governor
+        finally:
+            mod._resource_governor = original
+
+    @pytest.mark.asyncio
+    async def test_acquire_gate_no_governor_admits_with_zero_cost(self):
+        """Standalone/test runs that never wire a governor must not gate at all."""
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mod._resource_governor = None
+        try:
+            from app.services.docling.docling_service import _acquire_docling_gate
+            admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is True
+            assert cost == 0
+        finally:
+            mod._resource_governor = original
+
+    @pytest.mark.asyncio
+    async def test_acquire_gate_delegates_to_governor(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_gate = MagicMock()
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = mock_gate
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _acquire_docling_gate
+            with patch(
+                "app.services.docling.docling_service.acquire_gate_with_backpressure",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_acquire:
+                admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is True
+            assert cost == 1
+            mock_acquire.assert_awaited_once()
+        finally:
+            mod._resource_governor = original
+
+    @pytest.mark.asyncio
+    async def test_acquire_gate_returns_false_on_timeout(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = MagicMock()
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _acquire_docling_gate
+            with patch(
+                "app.services.docling.docling_service.acquire_gate_with_backpressure",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                admitted, cost = await _acquire_docling_gate(b"pdf-bytes", "msg-1")
+            assert admitted is False
+            # A denied acquire never incremented the gate's in_use counter,
+            # so the cost returned to the caller must be 0 — otherwise the
+            # caller's unconditional `finally: _release_docling_gate(cost)`
+            # would decrement in_use for a permit that was never taken,
+            # inflating free capacity beyond the configured limit.
+            assert cost == 0
+        finally:
+            mod._resource_governor = original
+
+    def test_release_gate_no_governor_is_noop(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mod._resource_governor = None
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(1)  # must not raise
+        finally:
+            mod._resource_governor = original
+
+    def test_release_gate_zero_cost_is_noop(self):
+        """cost=0 means no permit was ever taken (see _acquire_docling_gate's
+        docstring) — releasing it would double-free the gate's accounting."""
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_governor = MagicMock()
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(0)
+            mock_governor.gate.assert_not_called()
+        finally:
+            mod._resource_governor = original
+
+    def test_release_gate_delegates_to_governor(self):
+        import app.services.docling.docling_service as mod
+        original = mod._resource_governor
+        mock_gate = MagicMock()
+        mock_governor = MagicMock()
+        mock_governor.gate.return_value = mock_gate
+        mod._resource_governor = mock_governor
+        try:
+            from app.services.docling.docling_service import _release_docling_gate
+            _release_docling_gate(2)
+            mock_gate.release.assert_called_once_with(2)
+        finally:
+            mod._resource_governor = original
+
+
+class TestBackpressureResponse:
+    def test_returns_429_with_retry_after_header(self):
+        from app.services.docling.docling_service import _backpressure_response
+        resp = _backpressure_response()
+        assert resp.status_code == 429
+        assert "Retry-After" in resp.headers
+
+
 class TestParsePdfEndpoint:
     """Tests for the /parse-pdf endpoint (multipart file upload)."""
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_backpressured_returns_429(self):
+        import app.services.docling.docling_service as mod
+        original_governor = mod._resource_governor
+        original_svc = mod.docling_service
+        svc = DoclingService()
+        mod.docling_service = svc
+        try:
+            with patch(
+                "app.services.docling.docling_service._acquire_docling_gate",
+                new_callable=AsyncMock,
+                return_value=(False, 0),
+            ):
+                from app.services.docling.docling_service import parse_pdf_endpoint
+                resp = await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
+                )
+            assert resp.status_code == 429
+        finally:
+            mod._resource_governor = original_governor
+            mod.docling_service = original_svc
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_service_not_available(self):
@@ -375,3 +521,37 @@ class TestParsePdfEndpoint:
             assert "parse fail" in resp.error
         finally:
             mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_releases_gate_on_processing_error(self):
+        """The gate must be released even when the handler raises — otherwise
+        a run of failures would permanently shrink the effective pool."""
+        import app.services.docling.docling_service as mod
+        original_svc = mod.docling_service
+        original_governor = mod._resource_governor
+        svc = DoclingService()
+        svc.parse_pdf_only = AsyncMock(side_effect=ValueError("boom"))
+        mod.docling_service = svc
+        try:
+            with (
+                patch(
+                    "app.services.docling.docling_service._acquire_docling_gate",
+                    new_callable=AsyncMock,
+                    return_value=(True, 1),
+                ),
+                patch(
+                    "app.services.docling.docling_service._release_docling_gate"
+                ) as mock_release,
+            ):
+                from app.services.docling.docling_service import parse_pdf_endpoint
+                resp = await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                    start_page=None,
+                    end_page=None,
+                )
+            assert resp.success is False
+            mock_release.assert_called_once_with(1)
+        finally:
+            mod.docling_service = original_svc
+            mod._resource_governor = original_governor

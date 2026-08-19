@@ -36,6 +36,7 @@ from app.utils.aimodels import (
     get_generator_model,
 )
 from app.utils.chat_helpers import (
+    GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
     get_record,
 )
@@ -45,6 +46,10 @@ from app.utils.image_utils import get_extension_from_mimetype
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
 USER_CACHE_TTL = 300  # 5 minutes
 MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
+
+# Applied when a caller passes no limit at all. Matches `search_with_filters`'s
+# own default so the None path and the omitted path retrieve the same amount.
+DEFAULT_SEARCH_LIMIT = 20
 
 # User-facing guidance when the graph/permissions yield no searchable corpus
 ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE = (
@@ -323,7 +328,7 @@ class RetrievalService:
         user_id: str,
         org_id: str,
         filter_groups: dict[str, list[str]] | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
@@ -334,6 +339,18 @@ class RetrievalService:
             # Get accessible records
             if not self.graph_provider:
                 raise ValueError("GraphProvider is required for permission checking")
+
+            # `None` reaches here from the prefetch path, which forwards the
+            # request's optional `limit` verbatim (chat_modes/bridge.py ->
+            # prefetch.py). A default argument cannot cover that -- an explicit
+            # None overrides it -- and HybridSearchRequest is a plain dataclass,
+            # so the None survived all the way to `req.limit * 2` in
+            # qdrant/utils.py and took the whole search down with a TypeError
+            # that the except below logged as "Filtered search failed",
+            # returning an empty result set. The turn then answered with no
+            # retrieved context and no visible error.
+            if limit is None:
+                limit = DEFAULT_SEARCH_LIMIT
 
             filter_groups = filter_groups or {}
 
@@ -509,39 +526,68 @@ class RetrievalService:
             files_map = {}
             mails_map = {}
 
-            async def fetch_files() -> dict:
-                if not file_record_ids_to_fetch:
+            async def _fetch_by_ids(record_ids: list[str], collection: str, label: str) -> dict:
+                """One query per collection instead of one per chunk.
+
+                The id lists are appended per search result, so a record matched
+                by several chunks was previously fetched once per chunk.
+                """
+                if not record_ids:
                     return {}
+                unique_ids = list(dict.fromkeys(record_ids))
                 try:
-                    file_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
-                        for record_id in file_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(file_record_ids_to_fetch, file_results)
-                        if result and not isinstance(result, Exception)
-                    }
+                    nodes: list[dict] = []
+                    for start in range(0, len(unique_ids), GRAPH_BATCH_CHUNK_SIZE):
+                        nodes.extend(
+                            await self.graph_provider.get_nodes_by_field_in(
+                                collection, "id", unique_ids[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                            )
+                            or []
+                        )
                 except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch files: {str(e)}")
-                    return {}
+                    self.logger.warning(
+                        f"Failed to batch fetch {label}, per-id fallback: {str(e)}"
+                    )
+                    nodes = []
+
+                resolved = {}
+                for node in nodes:
+                    key = (node or {}).get("id") or (node or {}).get("_key")
+                    if key:
+                        resolved[key] = node
+
+                # Losing the batch strips webUrl/mimeType from every record in
+                # it, and a result without mimeType is dropped outright by the
+                # required_fields filter below -- the citation disappears from
+                # the answer with no error. The except above cannot catch that:
+                # get_nodes_by_field_in swallows its own errors and returns [],
+                # so a failure looks exactly like "no rows". Recover on which
+                # ids actually came back instead.
+                missing = [rid for rid in unique_ids if rid not in resolved]
+                if missing:
+                    per_id = await asyncio.gather(
+                        *[
+                            self.graph_provider.get_document(rid, collection)
+                            for rid in missing
+                        ],
+                        return_exceptions=True,
+                    )
+                    resolved.update({
+                        rid: doc
+                        for rid, doc in zip(missing, per_id)
+                        if doc and not isinstance(doc, BaseException)
+                    })
+                return resolved
+
+            async def fetch_files() -> dict:
+                return await _fetch_by_ids(
+                    file_record_ids_to_fetch, CollectionNames.FILES.value, "files"
+                )
 
             async def fetch_mails() -> dict:
-                if not mail_record_ids_to_fetch:
-                    return {}
-                try:
-                    mail_results = await asyncio.gather(*[
-                        self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
-                        for record_id in mail_record_ids_to_fetch
-                    ], return_exceptions=True)
-                    return {
-                        record_id: result
-                        for record_id, result in zip(mail_record_ids_to_fetch, mail_results)
-                        if result and not isinstance(result, Exception)
-                    }
-                except Exception as e:
-                    self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
-                    return {}
+                return await _fetch_by_ids(
+                    mail_record_ids_to_fetch, CollectionNames.MAILS.value, "mails"
+                )
 
             async def fetch_locations() -> dict[str, str]:
                 """Resolve permission-aware Location trails for retrieved records.

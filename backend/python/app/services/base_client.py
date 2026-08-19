@@ -9,10 +9,16 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+from app.utils.request_context import inject_request_headers
+
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +30,45 @@ DEFAULT_POOL_TIMEOUT = 30.0         # seconds to acquire a pool connection
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0           # seconds; doubled on each retry (exponential)
 TRANSIENT_STATUS_CODES = (set(range(500, 600)) - {501}) | {429}
+HTTP_TOO_MANY_REQUESTS = 429
+
+# Backpressure (429 + Retry-After) gets its own, longer attempt budget so a
+# saturated-but-healthy downstream service is waited out instead of being
+# treated as a failure — see ServiceBackpressureError.
+DEFAULT_MAX_BACKPRESSURE_ATTEMPTS = 30
+DEFAULT_BACKPRESSURE_WAIT_CAP = 30.0  # seconds; clamps a misbehaving/huge Retry-After
+MIN_BACKPRESSURE_WAIT = 0.05  # seconds; avoids a hot retry loop on Retry-After: 0
 
 # ── Circuit breaker defaults ────────────────────────────────────────────────
 DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5    # consecutive failures before opening
 DEFAULT_CIRCUIT_BREAKER_COOLDOWN = 30.0  # seconds before a probe is allowed
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date) into seconds.
+
+    Returns None when the header is absent or unparseable, so callers fall
+    back to treating the response as an ordinary transient error rather than
+    a distinct backpressure signal. Public so other hand-rolled HTTP clients
+    that don't go through ``BaseServiceClient`` (e.g. ``DoclingClient``) can
+    honour the same backpressure signal without duplicating the parsing.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        target = parsedate_to_datetime(value)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
 
 
 class ServiceCallError(Exception):
@@ -50,6 +91,25 @@ class ServiceUnavailableError(ServiceCallError):
     """Raised when the remote service is unreachable or persistently 5xx."""
 
 
+class ServiceBackpressureError(ServiceCallError):
+    """Raised when a service signals sustained backpressure (429 + Retry-After).
+
+    Distinct from :class:`ServiceUnavailableError`: the service is reachable
+    and explicitly asking callers to slow down, not failing — the circuit
+    breaker must not see this as a failure (or a success), so callers should
+    treat it as a retryable/transient outcome on their own longer schedule
+    (e.g. re-queue the message) rather than opening the breaker.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: float,
+        service_name: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, status_code=HTTP_TOO_MANY_REQUESTS, service_name=service_name, details=details)
+        self.retry_after = retry_after
 def _extract_service_error_message(response: httpx.Response) -> str | None:
     """Pull a useful error message from a failed service JSON/text body."""
     try:
@@ -238,6 +298,8 @@ class BaseServiceClient:
         retry_delay: float = DEFAULT_RETRY_DELAY,
         circuit_breaker_threshold: int = DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
         circuit_breaker_cooldown: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
+        max_backpressure_attempts: int = DEFAULT_MAX_BACKPRESSURE_ATTEMPTS,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
     ) -> None:
         self.service_url = service_url.rstrip("/")
         self.service_name = service_name
@@ -254,6 +316,12 @@ class BaseServiceClient:
         )
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.max_backpressure_attempts = max_backpressure_attempts
+        # Any client sharing a coordinator with the consumer that drives it
+        # lets a 429 here also pause that consumer's event-bus reads (see
+        # app.services.messaging.backpressure) — this client's own retry
+        # budget below is unaffected either way.
+        self._backpressure_coordinator = backpressure_coordinator
         self.logger = logging.getLogger(f"{__name__}.{service_name}")
         self.circuit_breaker = CircuitBreaker(
             service_name=service_name,
@@ -304,6 +372,14 @@ class BaseServiceClient:
         rather than this method's own (possibly multi-minute) workload
         request — a real parse call would otherwise have to be capped at
         ``cooldown_seconds``, aborting legitimately slow-but-healthy calls.
+
+        A 429 carrying ``Retry-After`` is treated as backpressure, not
+        failure: it is retried on its own ``max_backpressure_attempts``
+        budget (honouring the header, capped per wait), and calls neither
+        ``record_success()`` nor ``record_failure()`` — a saturated-but-
+        healthy service must never open the circuit breaker. Every other
+        transient outcome (5xx, bare 429, transport errors) still counts
+        against ``max_retries`` and the breaker as before.
         """
         if self.circuit_breaker.should_attempt_probe():
             probe_ok = await self.health_check()
@@ -323,17 +399,23 @@ class BaseServiceClient:
             )
 
         attempt_limit = self.max_retries
-        headers = headers or {}
+        # Every inter-service call carries the caller's root request id so
+        # logs across Node/Python service boundaries can be correlated.
+        headers = inject_request_headers(headers or {})
         last_exc: Exception | None = None
         last_status: int | None = None
+        transient_attempts = 0
+        backpressure_attempts = 0
         last_error_message: str | None = None
 
         async with self._make_client() as client:
-            for attempt in range(1, attempt_limit + 1):
+            while True:
                 try:
                     self.logger.debug(
-                        "[%s] %s %s (attempt %d/%d)",
-                        self.service_name, method.upper(), url, attempt, attempt_limit,
+                        "[%s] %s %s (transient attempt %d/%d, backpressure attempt %d/%d)",
+                        self.service_name, method.upper(), url,
+                        transient_attempts + 1, attempt_limit,
+                        backpressure_attempts, self.max_backpressure_attempts,
                     )
                     kwargs: dict[str, Any] = {"headers": headers}
                     if json is not None:
@@ -353,11 +435,50 @@ class BaseServiceClient:
                         self.circuit_breaker.record_success()
                         return response
 
+                    retry_after = (
+                        parse_retry_after(response.headers.get("Retry-After"))
+                        if response.status_code == HTTP_TOO_MANY_REQUESTS
+                        else None
+                    )
+                    if retry_after is not None:
+                        # Genuine backpressure signal, not a failure: the
+                        # service is reachable and explicitly asking us to
+                        # slow down. Retried on its own budget, independent
+                        # of attempt_limit, and never touches the breaker.
+                        # Signalled on every occurrence (not just the
+                        # first) so the coordinator's pause deadline tracks
+                        # the service's latest requested wait.
+                        wait = min(max(retry_after, MIN_BACKPRESSURE_WAIT), DEFAULT_BACKPRESSURE_WAIT_CAP)
+                        if self._backpressure_coordinator is not None:
+                            self._backpressure_coordinator.signal(self.service_name, wait)
+                        backpressure_attempts += 1
+                        if backpressure_attempts > self.max_backpressure_attempts:
+                            self.logger.warning(
+                                "[%s] %s still backpressured after %d attempt(s), giving up "
+                                "(retry-after=%.1fs)",
+                                self.service_name, operation, backpressure_attempts, retry_after,
+                            )
+                            raise ServiceBackpressureError(
+                                f"{self.service_name} {operation} is backpressured "
+                                f"after {backpressure_attempts} attempts",
+                                retry_after=retry_after,
+                                service_name=self.service_name,
+                            )
+                        self.logger.debug(
+                            "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
+                            self.service_name, operation, retry_after, wait,
+                            backpressure_attempts, self.max_backpressure_attempts,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+
+                    # Transient 5xx / bare 429 (no Retry-After) — retryable.
+                    transient_attempts += 1
                     # Transient 5xx / 429 — retryable. Keep body message for final raise.
                     last_error_message = _extract_service_error_message(response)
                     self.logger.debug(
                         "[%s] %s returned %d on attempt %d",
-                        self.service_name, operation, response.status_code, attempt,
+                        self.service_name, operation, response.status_code, transient_attempts,
                     )
                 except (
                     TimeoutError,
@@ -365,9 +486,10 @@ class BaseServiceClient:
                     httpx.ConnectError,
                     httpx.WriteError,
                 ) as exc:
+                    transient_attempts += 1
                     self.logger.debug(
                         "[%s] %s transport error on attempt %d: %s",
-                        self.service_name, operation, attempt, exc,
+                        self.service_name, operation, transient_attempts, exc,
                     )
                     last_exc = exc
                 except httpx.RequestError as exc:
@@ -387,10 +509,11 @@ class BaseServiceClient:
                         service_name=self.service_name,
                     ) from exc
 
-                if attempt < attempt_limit:
-                    delay = self.retry_delay * (2 ** (attempt - 1))
-                    self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
-                    await asyncio.sleep(delay)
+                if transient_attempts >= attempt_limit:
+                    break
+                delay = self.retry_delay * (2 ** (transient_attempts - 1))
+                self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
+                await asyncio.sleep(delay)
 
         # All attempts exhausted without a usable response — a single summary
         # WARNING per failed operation, instead of one per retry attempt.

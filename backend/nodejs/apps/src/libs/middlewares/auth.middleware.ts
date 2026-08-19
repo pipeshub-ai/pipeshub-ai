@@ -181,29 +181,35 @@ export class AuthMiddleware {
       }
     }
 
-    let email: string | undefined;
-    if (userId) {
-      const user = await Users.findOne({
-        _id: userId,
-        orgId: orgId,
-        isDeleted: false,
-      })
-        .select('email fullName')
-        .lean()
-        .exec();
-
-      // Unlike session auth, OAuth/PAT tokens can outlive the user by
-      // months or years — a removed employee's token must stop working
-      // the same way an expired session would, not just lose its email.
-      if (!user) {
-        throw new UnauthorizedError('User not found, please login again');
-      }
-
-      email = user.email;
-      if (!fullName) {
-        fullName = user.fullName;
-      }
+    if (!userId) {
+      throw new UnauthorizedError('OAuth token missing user identity');
     }
+
+    let email: string | undefined;
+    let role: 'admin' | 'member' | undefined;
+    const user = await Users.findOne({
+      _id: userId,
+      orgId: orgId,
+      isDeleted: false,
+    })
+      .select('email fullName role')
+      .lean()
+      .exec();
+
+    // Unlike session auth, OAuth/PAT tokens can outlive the user by
+    // months or years — a removed employee's token must stop working
+    // the same way an expired session would, not just lose its email.
+    if (!user) {
+      throw new UnauthorizedError('User not found, please login again');
+    }
+
+    email = user.email;
+    if (!fullName) {
+      fullName = user.fullName;
+    }
+    // Attach role so Node-side isUserAdmin matches session-JWT behavior
+    // (OAuth access tokens do not carry a role claim).
+    role = user.role === 'admin' ? 'admin' : 'member';
 
     if (!accountType && isClientCredentials) {
       try {
@@ -229,6 +235,7 @@ export class AuthMiddleware {
       email,
       fullName,
       accountType,
+      role,
       isOAuth: true,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,

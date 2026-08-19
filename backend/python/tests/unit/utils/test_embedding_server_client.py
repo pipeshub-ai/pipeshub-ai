@@ -11,6 +11,7 @@ from app.config.constants.ai_models import (
     EMBEDDING_SERVER_MAX_RETRIES,
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
 )
+from app.services.messaging.backpressure import BackpressureCoordinator
 from app.utils.embedding_server_client import (
     EmbeddingServerEmbeddings,
     _embedding_server_base_url,
@@ -18,8 +19,15 @@ from app.utils.embedding_server_client import (
     _embedding_server_timeout,
     _is_retriable_embedding_error,
     _retry_delay_seconds,
+    _signal_backpressure_if_rate_limited,
     get_embedding_server_embeddings,
 )
+
+
+def _rate_limit_error(retry_after: str | None) -> openai.RateLimitError:
+    response = MagicMock()
+    response.headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return openai.RateLimitError("rate limited", response=response, body=None)
 
 
 class TestRetriableErrors:
@@ -285,6 +293,119 @@ class TestRetryExhaustion:
                     max_retries=3,
                     operation="aembed_query",
                 )
+
+
+class TestSignalBackpressureIfRateLimited:
+    def test_signals_coordinator_on_429_with_retry_after(self):
+        coordinator = BackpressureCoordinator()
+        exc = _rate_limit_error("12")
+
+        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+
+        assert coordinator.is_paused() is True
+        assert coordinator.paused_services == frozenset({"EmbeddingServer"})
+
+    def test_no_coordinator_is_a_noop(self):
+        exc = _rate_limit_error("12")
+        _signal_backpressure_if_rate_limited(exc, coordinator=None)  # must not raise
+
+    def test_non_rate_limit_error_does_not_signal(self):
+        coordinator = BackpressureCoordinator()
+        response = MagicMock()
+        response.status_code = 503
+        exc = openai.APIStatusError("service unavailable", response=response, body=None)
+
+        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+
+        assert coordinator.is_paused() is False
+
+    def test_rate_limit_without_retry_after_does_not_signal(self):
+        coordinator = BackpressureCoordinator()
+        exc = _rate_limit_error(None)
+
+        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+
+        assert coordinator.is_paused() is False
+
+
+class TestCallWithRetrySignalsBackpressure:
+    def test_call_with_retry_signals_on_every_429_before_retrying(self):
+        coordinator = BackpressureCoordinator()
+        calls = {"count": 0}
+
+        def _fn():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise _rate_limit_error("9")
+            return [0.1]
+
+        from app.utils.embedding_server_client import _call_with_retry
+
+        with patch("time.sleep", return_value=None):
+            result = _call_with_retry(
+                _fn, max_retries=3, operation="embed_query",
+                backpressure_coordinator=coordinator,
+            )
+
+        assert result == [0.1]
+        assert coordinator.paused_services == frozenset({"EmbeddingServer"})
+
+    @pytest.mark.asyncio
+    async def test_await_with_retry_signals_on_every_429_before_retrying(self):
+        coordinator = BackpressureCoordinator()
+        calls = {"count": 0}
+
+        async def _fn():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise _rate_limit_error("9")
+            return [0.2]
+
+        from app.utils.embedding_server_client import _await_with_retry
+
+        with patch(
+            "app.utils.embedding_server_client.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await _await_with_retry(
+                _fn, max_retries=3, operation="aembed_query",
+                backpressure_coordinator=coordinator,
+            )
+
+        assert result == [0.2]
+        assert coordinator.paused_services == frozenset({"EmbeddingServer"})
+
+
+class TestEmbeddingServerEmbeddingsBackpressure:
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    def test_uses_default_coordinator_when_none_passed(self, mock_openai_cls):
+        from app.services.messaging.backpressure import get_default_backpressure_coordinator
+
+        client = EmbeddingServerEmbeddings(max_retries=1)
+
+        assert client._backpressure_coordinator is get_default_backpressure_coordinator()
+
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    def test_explicit_coordinator_overrides_default(self, mock_openai_cls):
+        coordinator = BackpressureCoordinator()
+        client = EmbeddingServerEmbeddings(max_retries=1, backpressure_coordinator=coordinator)
+
+        assert client._backpressure_coordinator is coordinator
+
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    def test_embed_query_signals_coordinator_on_rate_limit(self, mock_openai_cls):
+        coordinator = BackpressureCoordinator()
+        mock_inner = MagicMock()
+        mock_inner.embed_query.side_effect = [_rate_limit_error("6"), [0.9]]
+        mock_openai_cls.return_value = mock_inner
+
+        client = EmbeddingServerEmbeddings(max_retries=2, backpressure_coordinator=coordinator)
+
+        with patch("time.sleep", return_value=None):
+            result = client.embed_query("hello")
+
+        assert result == [0.9]
+        assert coordinator.paused_services == frozenset({"EmbeddingServer"})
 
 
 class TestEmbeddingServerEmbeddings:

@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, JsonValue
 
+from app.services.resource_governor.models import ParseTier
+
 
 class MessageBrokerType(str, Enum):
     """Supported message broker backends."""
@@ -32,6 +34,12 @@ class Topic(str, Enum):
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]
+
+# Legacy static fallbacks for MAX_CONCURRENT_PARSING/INDEXING, used only when
+# no ResourceGovernor is configured (see MessagingEnvConfig.max_concurrent_*
+# below). Production sizing comes from the governor's resolved ceilings.
+_LEGACY_DEFAULT_MAX_CONCURRENT_PARSING = 5
+_LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 
 
 class IndexingEvent(str, Enum):
@@ -66,6 +74,12 @@ class PipelineEventData(BaseModel):
     record_id: Optional[str] = None
     record_name: Optional[str] = None
     count: Optional[int] = None
+    # Set by the handler when yielding START_PARSING (it already knows
+    # extension/mime/content length at that point) so the consumer can route
+    # to the right resource_governor pool instead of re-deriving format from
+    # the payload.
+    tier: ParseTier | None = None
+    size_bytes: int | None = None
 
 
 class PipelineEvent(BaseModel):
@@ -112,11 +126,43 @@ class MessagingEnvConfig:
 
     @property
     def max_concurrent_parsing(self) -> int:
-        return int(os.getenv("MAX_CONCURRENT_PARSING", "5"))
+        """Static legacy fallback, used only when no ``ResourceGovernor`` is
+        configured (sizing the pre-governor ``asyncio.Semaphore`` and the
+        cluster-wide lease limit in that fallback path — see
+        ``consumer_concurrency.parse_ceiling``). Production code should
+        prefer ``env_max_concurrent_parsing`` / the governor's resolved
+        ceiling. Deliberately reuses that same optional accessor (rather
+        than re-reading ``os.getenv`` with a string default) so an operator
+        deploying with the var set to empty — the shipped compose/helm
+        default as of Phase 6, meaning "derive" — doesn't hit
+        ``int("")`` here too.
+        """
+        return self.env_max_concurrent_parsing or _LEGACY_DEFAULT_MAX_CONCURRENT_PARSING
 
     @property
     def max_concurrent_indexing(self) -> int:
-        return int(os.getenv("MAX_CONCURRENT_INDEXING", "10"))
+        """See ``max_concurrent_parsing``. The default was previously ``10``,
+        which never matched the compose-shipped ``7`` — aligned to ``7``."""
+        return self.env_max_concurrent_indexing or _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING
+
+    @property
+    def env_max_concurrent_parsing(self) -> int | None:
+        """Raw ``MAX_CONCURRENT_PARSING`` as set by the operator, or ``None``
+        when unset/empty so ``ResourceGovernor`` derives a ceiling from
+        cgroup/CPU limits instead of falling back to
+        ``max_concurrent_parsing``'s static default. Empty string (not just
+        a missing key) must also resolve to "derive": the shipped compose
+        files pass ``${MAX_CONCURRENT_PARSING:-}`` so the var is always
+        *present* in the container's environment, just blank by default."""
+        raw = os.getenv("MAX_CONCURRENT_PARSING")
+        return int(raw) if raw else None
+
+    @property
+    def env_max_concurrent_indexing(self) -> int | None:
+        """Raw ``MAX_CONCURRENT_INDEXING`` as set by the operator, or
+        ``None`` when unset/empty — see ``env_max_concurrent_parsing``."""
+        raw = os.getenv("MAX_CONCURRENT_INDEXING")
+        return int(raw) if raw else None
 
     @property
     def distributed_concurrency_enabled(self) -> bool:
@@ -175,8 +221,17 @@ class MessagingEnvConfig:
 
     @property
     def message_batch_size_indexing(self) -> int:
-        """Batch size for indexing consumers (record events)."""
-        return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "1"))
+        """Batch size for indexing consumers (record events).
+
+        Reading one message per loop iteration adds a full consumer-loop
+        round-trip of latency between every task spawn — with high
+        MAX_CONCURRENT_* ceilings this becomes the throughput ceiling itself
+        even though ``pending_task_ceiling`` (consumer_concurrency.py)
+        already caps how many tasks can be in flight, so a bigger batch
+        here cannot cause overcommit — it only lets the consumer fill that
+        same ceiling faster.
+        """
+        return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
 
     @property
     def message_timeout_ms(self) -> int:
@@ -190,12 +245,19 @@ class MessagingEnvConfig:
 
     @property
     def max_pending_indexing_tasks(self) -> int:
-        return int(
-            os.getenv(
-                "MAX_PENDING_INDEXING_TASKS",
-                str(max(self.max_concurrent_parsing, self.max_concurrent_indexing) * 4),
-            )
-        )
+        """Static legacy fallback — prefer
+        ``consumer_concurrency.pending_task_ceiling(host)``, which derives
+        this from the governor's *resolved* ceilings (this node's actual
+        cgroup/CPU limits) and only falls back to this property when no
+        governor is configured. Reads ``os.getenv`` directly rather than via
+        its string-default form so an empty (not just missing)
+        ``MAX_PENDING_INDEXING_TASKS`` — the shipped compose/helm default as
+        of Phase 6 — also falls through to the derived expression instead of
+        raising on ``int("")``."""
+        raw = os.getenv("MAX_PENDING_INDEXING_TASKS")
+        if raw:
+            return int(raw)
+        return max(self.max_concurrent_parsing, self.max_concurrent_indexing) * 4
 
     @property
     def stale_recovery_interval_seconds(self) -> float:

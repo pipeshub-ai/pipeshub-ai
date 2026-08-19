@@ -59,7 +59,7 @@ class TestKafkaConsumerRetryConfiguration:
     async def test_batch_size_configuration(self):
         """Test that batch sizes are correctly configured."""
         assert messaging_env.message_batch_size_simple == 10
-        assert messaging_env.message_batch_size_indexing == 1
+        assert messaging_env.message_batch_size_indexing == 10
 
     @pytest.mark.asyncio
     async def test_message_timeout_configuration(self):
@@ -79,7 +79,7 @@ class TestRedisStreamsRetryBehavior:
     async def test_batch_size_configuration(self):
         """Test that batch sizes are correctly configured."""
         assert messaging_env.message_batch_size_simple == 10
-        assert messaging_env.message_batch_size_indexing == 1
+        assert messaging_env.message_batch_size_indexing == 10
 
     @pytest.mark.asyncio
     async def test_message_timeout_configuration(self):

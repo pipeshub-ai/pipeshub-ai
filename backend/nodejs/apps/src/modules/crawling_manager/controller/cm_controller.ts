@@ -6,7 +6,10 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { CrawlingJobData } from '../schema/interface';
 import { Job } from 'bullmq';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
-import { isUserAdmin } from '../../tokens_manager/controllers/connector.controllers';
+import {
+  buildProxyHeaders,
+  isUserAdmin,
+} from '../../tokens_manager/controllers/connector.controllers';
 import { executeConnectorCommand, handleBackendError } from '../../tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -31,10 +34,7 @@ export const handleConnectorResponse = (
 const validateConnectorAccess = async (req: AuthenticatedUserRequest, connectorId: string, appConfig: AppConfig) => {
   const { userId } = req.user as { userId: string };
   const isAdmin = await isUserAdmin(req);
-  const headers: Record<string, string> = {
-    ...(req.headers as Record<string, string>),
-    'X-Is-Admin': isAdmin ? 'true' : 'false',
-  };
+  const headers = buildProxyHeaders(req);
   const connectorResponse = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
     HttpMethod.GET,

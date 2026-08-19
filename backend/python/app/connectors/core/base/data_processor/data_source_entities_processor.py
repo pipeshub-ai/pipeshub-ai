@@ -43,6 +43,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1450,6 +1451,17 @@ class DataSourceEntitiesProcessor:
             }
         async with self.data_store_provider.transaction() as tx_store:
             result = await tx_store.delete_records_recursive(record_ids, connector_id)
+        if (result or {}).get("successfully_deleted"):
+            # Before publishing: the transaction has committed, so the records are
+            # already gone, and _publish_delete_events can fail. Invalidating
+            # afterwards would leave the cache serving deleted records until the
+            # TTL expired whenever publication threw. A concurrent read that
+            # repopulates between these two lines reads post-delete state, so
+            # moving this earlier cannot cache anything stale.
+            #
+            # No-ops unless connector_id is a KB; connectors invalidate on sync
+            # completion instead, so a mid-sync delete does not thrash the cache.
+            await notify_kb_records_changed(connector_id)
         await self._publish_delete_events((result or {}).get("eventData"))
         return result
 
@@ -1505,7 +1517,11 @@ class DataSourceEntitiesProcessor:
                         {
                             "eventType": "reindexRecord",
                             "timestamp": get_epoch_timestamp_in_ms(),
-                            "payload": record.to_kafka_record(),
+                            # An explicit reindex must re-run even when the record is
+                            # already COMPLETED; without this the consumer's
+                            # already-indexed guard skips it and reindex silently
+                            # does nothing for a healthy corpus.
+                            "payload": {**record.to_kafka_record(), "forceReindex": True},
                         },
                     )
                     for record in to_publish

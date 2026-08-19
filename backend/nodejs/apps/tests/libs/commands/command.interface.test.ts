@@ -209,12 +209,12 @@ describe('command.interface', () => {
       expect(result).to.have.property('authorization', 'Bearer token123')
     })
 
-    it('should keep x-is-admin header', () => {
+    it('should drop x-is-admin header', () => {
       const cmd = new TestCommand('http://example.com')
       const result = cmd.testSanitizeHeaders({
         'x-is-admin': 'true',
       })
-      expect(result).to.have.property('x-is-admin', 'true')
+      expect(result).not.to.have.property('x-is-admin')
     })
 
     it('should remove headers that are not in the allowed set', () => {
@@ -244,7 +244,7 @@ describe('command.interface', () => {
         'X-Is-Admin': 'false',
       })
       expect(result).to.have.property('authorization', 'Bearer xyz')
-      expect(result).to.have.property('x-is-admin', 'false')
+      expect(result).not.to.have.property('x-is-admin')
       expect(result).not.to.have.property('Authorization')
       expect(result).not.to.have.property('X-Is-Admin')
     })

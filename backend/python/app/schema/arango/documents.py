@@ -2,6 +2,7 @@ from app.config.constants.arangodb import (
     Connectors,
     ConnectorScopes,
     OriginTypes,
+    PermissionModel,
 )
 from app.models.entities import RecordGroupType, RecordType
 
@@ -161,6 +162,10 @@ app_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [m.value for m in PermissionModel] + [None],
+            },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},

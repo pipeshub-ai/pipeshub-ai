@@ -5,8 +5,6 @@ returns a ``BlocksContainer`` JSON.  All parser implementations live in
 ``app/services/parsing/providers/``.  The :class:`ParserRegistry` maps
 (format_key, provider) to the correct :class:`IParser`.
 """
-import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
-
 import asyncio
 import logging
 import os
@@ -17,34 +15,44 @@ from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
-from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
-from app.modules.parsers.markdown.mdx_parser import MDXParser
-from app.modules.parsers.blocks.blocks_parser import BlocksParser
-from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.json.json_parser import JSONParser
-from app.modules.parsers.pptx.ppt_parser import PPTParser
-from app.modules.parsers.yaml.yaml_parser import YAMLParser
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
+from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
+from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
+from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.json.json_parser import JSONParser
+from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
+from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    set_resource_governor as set_pdf_rasterizer_governor,
+)
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
+from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
+from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.services.docling.client import DoclingClient
+from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
@@ -52,19 +60,15 @@ from app.services.parsing.providers.ocr_parser import OCRParser
 from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
-from app.api.routes.parsing import router as parsing_router
-from app.config.constants.ai_models import OCRProvider
-from app.services.messaging.config import messaging_env
+from app.services.resource_governor import ResourceGovernor
+from app.utils.llm import is_local_cpu_embedding_configured
 
 logger = logging.getLogger("parsing_main")
 
-# Headroom on top of max_concurrent_parsing so a request's own sequential
+# Headroom on top of (heavy + light) permits so a request's own sequential
 # to_thread hops (e.g. LibreOffice write, then Excel/CSV parse) don't starve
 # for a slot while another request is mid-parse.
 PARSE_THREAD_POOL_HEADROOM = 4
-# Even with an operator-supplied MAX_CONCURRENT_PARSING, don't let effective
-# concurrency oversubscribe CPU-bound parsers (see startup log warning below).
-CPU_CONCURRENCY_MULTIPLIER = 2
 
 
 def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
@@ -218,27 +222,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.parser_registry = _build_registry(config_service, app_logger)
 
     # ------------------------------------------------------------------
-    # Concurrency gate: bound how many requests parse at once, and size the
-    # loop's default executor (used by every asyncio.to_thread offload) to
-    # match, so CPU-bound parsers can't oversubscribe the box.
+    # Resource-adaptive admission: one governor per process, derives
+    # heavy/light parse ceilings from cgroup/CPU limits (falling back to
+    # the operator's MAX_CONCURRENT_PARSING when set) and adapts the
+    # effective limits within them as load changes. The route resolves the
+    # matching gate per request (see api/routes/parsing.py).
     # ------------------------------------------------------------------
-    requested_concurrency = messaging_env.max_concurrent_parsing
-    cpu_count = os.cpu_count() or 1
-    cpu_cap = cpu_count * CPU_CONCURRENCY_MULTIPLIER
-    effective_concurrency = max(1, min(requested_concurrency, cpu_cap))
-    if effective_concurrency < requested_concurrency:
-        app_logger.warning(
-            "MAX_CONCURRENT_PARSING=%d exceeds %dx available CPUs (%d); capping "
-            "effective parsing concurrency to %d. CPU-bound parsers may still "
-            "contend — consider lowering MAX_CONCURRENT_PARSING or scaling out "
-            "via PARSING_UVICORN_WORKERS instead.",
-            requested_concurrency, CPU_CONCURRENCY_MULTIPLIER, cpu_count, effective_concurrency,
-        )
+    worker_count = max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))
+    governor = ResourceGovernor(
+        logger=app_logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=worker_count,
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            config_service, app_logger
+        ),
+    )
+    app.state.governor = governor
+    governor_task = asyncio.create_task(governor.run())
+    # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
+    # straight into the governor's fast incident path instead of only the
+    # periodic sampler noticing the pressure it already caused.
+    set_docling_processor_governor(governor)
+    set_pdf_rasterizer_governor(governor)
 
-    app.state.parse_semaphore = asyncio.Semaphore(effective_concurrency)
-    app.state.max_concurrent_parsing = effective_concurrency
-
-    thread_pool_size = effective_concurrency + PARSE_THREAD_POOL_HEADROOM
+    # Size the loop's default executor (used by every asyncio.to_thread
+    # offload) to the combined heavy+light ceiling so CPU-bound parsers
+    # can't oversubscribe the box even before the adaptive limits ramp up
+    # from their conservative warm-start floor.
+    ceilings = governor.ceilings
+    thread_pool_size = ceilings.heavy + ceilings.light + PARSE_THREAD_POOL_HEADROOM
     executor = ThreadPoolExecutor(
         max_workers=thread_pool_size,
         thread_name_prefix="parsing-worker",
@@ -248,12 +260,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app_logger.info(
         "✅ Parsing Service started — %d formats registered | "
-        "max_concurrent_parsing=%d (requested=%d, cpu_count=%d) | thread_pool_size=%d | "
+        "heavy_parse_ceiling=%d light_parse_ceiling=%d (worker_count=%d) | thread_pool_size=%d | "
         "LOCAL_DOCLING_PARSE_WORKERS=%s | PDF_RASTER_WORKERS=%s | PARSING_UVICORN_WORKERS=%s",
         len(app.state.parser_registry.list_all_formats()),
-        effective_concurrency,
-        requested_concurrency,
-        cpu_count,
+        ceilings.heavy,
+        ceilings.light,
+        worker_count,
         thread_pool_size,
         os.getenv("LOCAL_DOCLING_PARSE_WORKERS", "1"),
         os.getenv("PDF_RASTER_WORKERS", "auto"),
@@ -263,6 +275,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    governor.stop()
+    governor_task.cancel()
+    try:
+        await governor_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        app_logger.exception("Error during resource governor shutdown")
+    governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
     try:
         config_service.close()
@@ -291,23 +312,31 @@ app.include_router(parsing_router)
 @app.get("/health")
 async def health_check() -> JSONResponse:
     registry: ParserRegistry = app.state.parser_registry
-    return JSONResponse(
-        content={
-            "status": "healthy",
-            "service": "parsing",
-            "formats": list(registry.list_all_formats().keys()),
-        }
-    )
+    content: dict = {
+        "status": "healthy",
+        "service": "parsing",
+        "formats": list(registry.list_all_formats().keys()),
+    }
+    governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    if governor is not None:
+        try:
+            content["resource_governor"] = governor.stats()
+        except Exception as stats_error:
+            # Observability failure must not fail the liveness probe — the
+            # service itself is still healthy.
+            content["resource_governor"] = {"error": str(stats_error)}
+    return JSONResponse(content=content)
 
 
 def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
     """Run the Parsing Service.
 
     ``PARSING_UVICORN_WORKERS`` (default 1) scales the service across
-    multiple processes for CPU headroom beyond the in-process concurrency
-    gate (``MAX_CONCURRENT_PARSING``, capped per-process at 2x CPU count —
-    see ``lifespan``). Effective service-wide capacity is then
-    ``PARSING_UVICORN_WORKERS x effective max_concurrent_parsing``.
+    multiple processes; it's also passed to each process's own
+    ``ResourceGovernor`` so per-process heavy/light ceilings (derived from
+    cgroup/CPU limits, or from ``MAX_CONCURRENT_PARSING`` when set) are
+    divided by the worker count instead of every worker independently
+    claiming the whole box's resources (see ``lifespan``).
     """
     port = port or int(os.getenv("PARSING_SERVICE_PORT", "8092"))
     workers = workers or max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))
