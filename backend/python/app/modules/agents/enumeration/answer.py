@@ -22,7 +22,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-MAX_LISTED = 200
+# How many records the answer will name. A census over a large corpus is a
+# number plus a way to narrow it, not a wall of rows: at 200 rows with summaries
+# the answer runs past 50,000 characters, which nobody reads and which rides
+# along in the conversation history on every following turn.
+MAX_LISTED = 50
+
+# Summaries are what make a row long, so they are only worth including while
+# the whole list is still readable.
+SUMMARY_LIMIT = 20
 
 
 @dataclass
@@ -50,6 +58,7 @@ def compose_text(
     beyond_cap: int = 0,
     unreadable: int = 0,
     scoped: bool = False,
+    with_summaries: bool = True,
 ) -> str:
     """Render the answer. `rows` is (record_name, ref, summary).
 
@@ -75,12 +84,15 @@ def compose_text(
     noun = "document" if total == 1 else "documents"
     lines = [f"There are {total} {noun}{where}:", ""]
     for name, ref, summary in rows:
-        detail = f" — {summary.strip()}" if summary else ""
+        detail = f" — {summary.strip()}" if (with_summaries and summary) else ""
         lines.append(f"- **{name}**{detail} [source]({ref})")
     if beyond_cap > 0 or unreadable > 0:
         lines.append("")
     if beyond_cap > 0:
-        lines.append(f"({beyond_cap} more not listed above.)")
+        lines.append(
+            f"({beyond_cap} more not listed above. Ask about a topic, a "
+            f"department or a date range to narrow this down.)"
+        )
     if unreadable > 0:
         plural = "record" if unreadable == 1 else "records"
         lines.append(
@@ -159,7 +171,7 @@ async def build_enumeration_answer(
     return EnumerationAnswer(
         text=compose_text(
             rows, total, beyond_cap=beyond_cap, unreadable=len(page) - len(rows),
-            scoped=scoped,
+            scoped=scoped, with_summaries=total <= SUMMARY_LIMIT,
         ),
         final_results=final_results,
         virtual_record_id_to_result=vr_map,

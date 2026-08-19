@@ -167,7 +167,7 @@ async def try_answer_enumeration(
     state = context.tool_state
     ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
 
-    from app.modules.agents.enumeration.answer import MAX_LISTED
+    from app.modules.agents.enumeration.answer import MAX_LISTED  # noqa: PLC0415
     listed_ids = [vrid for vrid, _ in sorted(accessible.items())[:MAX_LISTED]]
     summaries = await _fetch_summaries(retrieval_service, org_id, listed_ids)
     lookup = await _record_lookup_factory(graph_provider, org_id, summaries)

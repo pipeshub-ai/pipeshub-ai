@@ -12,6 +12,8 @@ from __future__ import annotations
 import pytest
 
 from app.modules.agents.enumeration.answer import (
+    MAX_LISTED,
+    SUMMARY_LIMIT,
     build_enumeration_answer,
     compose_text,
     record_landing_url,
@@ -64,6 +66,47 @@ class TestComposeText:
         text = compose_text([("a", "ref1", None)], 500, beyond_cap=298, unreadable=201)
         assert "298 more not listed above" in text
         assert "201 records could not be read" in text
+
+
+class TestLargeCorpora:
+    """A census over a large corpus is a number and a way to narrow it, not a
+    wall of rows. At 200 rows with summaries the answer ran past 50,000
+    characters, which nobody reads and which rides along in the conversation
+    history on every following turn."""
+
+    async def test_short_lists_keep_their_summaries(self) -> None:
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A summary.")
+                for i in range(SUMMARY_LIMIT)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(SUMMARY_LIMIT)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert "A summary." in result.text
+
+    async def test_long_lists_drop_summaries_but_keep_names_and_citations(self) -> None:
+        n = SUMMARY_LIMIT + 5
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A summary.")
+                for i in range(n)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(n)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert "A summary." not in result.text
+        assert "doc 0" in result.text
+        assert result.text.count("[source](ref") == n
+
+    async def test_a_large_corpus_stays_readable_and_exact(self) -> None:
+        n = 5000
+        recs = {f"v{i}": _record(f"r{i}", f"doc {i}", summary="A fairly long summary. " * 8)
+                for i in range(n)}
+        result = await build_enumeration_answer(
+            accessible={f"v{i}": f"r{i}" for i in range(n)},
+            record_lookup=_lookup_from(recs), ref_mapper=FakeMapper(), org_id="o1",
+        )
+        assert result.total == n, "the count must stay exact however large the corpus"
+        assert result.listed == MAX_LISTED
+        assert len(result.text) < 10_000, "an answer this long is not read, it is scrolled past"
+        assert "narrow this down" in result.text
 
 
 class TestScopedCounts:
