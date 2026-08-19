@@ -28,6 +28,8 @@ from typing import List, Tuple, Optional, Dict, Any, Callable
 import cv2
 import numpy as np
 from PIL import Image
+from pdfminer.pdfdevice import PDFDevice
+from pdfminer.pdfinterp import PDFPageInterpreter
 
 
 # --------------------------------------------------------------------------- #
@@ -1393,13 +1395,37 @@ class DocumentRasterCache:
         return self._cache[page_number]
 
 
+class _VectorPrimitiveCounter(PDFDevice):
+    """Counts path-painting sub-paths without building any layout object.
+
+    Splits multi-``m`` shapes the same way
+    ``pdfminer.converter.PDFLayoutAnalyzer.paint_path`` does, so the total
+    matches ``len(page.lines) + len(page.rects) + len(page.curves)`` --
+    but it never allocates an ``LTLine``/``LTRect``/``LTCurve`` and never
+    touches text or images, so a page with hundreds of thousands of
+    primitives doesn't pay for materializing them just to be counted.
+    """
+
+    def __init__(self, rsrcmgr) -> None:
+        super().__init__(rsrcmgr)
+        self.count = 0
+
+    def paint_path(self, gstate, stroke, fill, evenodd, path) -> None:
+        shape = "".join(seg[0] for seg in path)
+        if shape[:1] != "m":
+            return
+        if shape.count("m") > 1:
+            for m in re.finditer(r"m[^m]+", shape):
+                self.paint_path(gstate, stroke, fill, evenodd, path[m.start(0):m.end(0)])
+        else:
+            self.count += 1
+
+
 def _count_vector_primitives(page) -> int:
     try:
-        return (
-            len(page.lines or [])
-            + len(page.rects or [])
-            + len(page.curves or [])
-        )
+        device = _VectorPrimitiveCounter(page.pdf.rsrcmgr)
+        PDFPageInterpreter(page.pdf.rsrcmgr, device).process_page(page.page_obj)
+        return device.count
     except Exception:
         return 0
 
