@@ -811,6 +811,12 @@
       "actions": {
         "viewProfile": "View Profile",
         "changeRole": "Change Role",
+        "changeRoleConfirmTitle": "Change role?",
+        "changeRoleConfirmMessage": "Are you sure you want to change {{name}} from {{currentRole}} to {{newRole}}?",
+        "changeRoleConfirmButton": "Change Role",
+        "changeRoleSuccess": "Role updated",
+        "changeRoleSuccessDescription": "{{name}} is now {{role}}",
+        "changeRoleError": "Failed to change role",
         "removeFromWorkspace": "Remove from Workplace",
         "removeUserTitle": "Remove user?",
         "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",
@@ -901,6 +907,9 @@
     "groups": {
       "title": "Groups",
       "subtitle": "Create and manage groups to control access and permissions",
+      "enterpriseTitle": "Group permissions are available on Enterprise Edition",
+      "enterpriseMessage": "Permission of group is upgraded to the Enterprise Edition.",
+      "enterpriseContact": "Contact",
       "createGroup": "Create Group",
       "searchPlaceholder": "Search...",
       "emptyTitle": "You've not created any groups yet",
