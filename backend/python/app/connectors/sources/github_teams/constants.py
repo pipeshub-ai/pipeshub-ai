@@ -22,12 +22,16 @@ from app.config.constants.arangodb import ExtensionTypes
 # (The timestamp backfill runs on GraphQL's separate point budget.)
 
 # Search API budget is a *separate*, much smaller pool: 30 req/min. Used by
-# the repo-picker search (filters.py). A semaphore this size plus an
-# inter-call delay keeps us well under the ceiling even with jitter/retries.
+# the repo-picker search (filters.py). Paced with a sliding one-minute window
+# rather than a fixed inter-call gap: the budget is per minute, so bursts
+# (the picker's scoped+public pair) are fine as long as the window total
+# holds — a fixed gap added ~2.1s of dead latency to every picker keystroke.
 GITHUB_SEARCH_RATE_LIMIT_PER_MINUTE = 30
 GITHUB_SEARCH_CONCURRENCY = 2
-# 5% slower than the raw ceiling so clock skew and retries can't push us over.
-GITHUB_SEARCH_MIN_INTERVAL_SECONDS = (60 / GITHUB_SEARCH_RATE_LIMIT_PER_MINUTE) * 1.05
+GITHUB_SEARCH_WINDOW_SECONDS = 60.0
+# 2-call safety margin absorbs clock skew and any Search call issued outside
+# this pacer (e.g. a second service instance sharing the token).
+GITHUB_SEARCH_WINDOW_BUDGET = GITHUB_SEARCH_RATE_LIMIT_PER_MINUTE - 2
 
 # ---------------------------------------------------------------------------
 # Per-operation wall-clock budget
@@ -106,6 +110,20 @@ VERIFIED_DOMAIN_EMAIL_BATCH = 100
 
 _FILTER_OPTIONS_MAX_PER_PAGE = 100
 _FILTER_OPTIONS_MAX_SCAN_PAGES = 20
+
+# GitHub's Search API refuses to page past the first 1,000 results (422),
+# regardless of per_page — stop offering more before hitting it.
+SEARCH_RESULTS_HARD_CAP = 1_000
+
+# Public-search pages fetched per picker request while filling one result
+# page (dedup against scoped rows can consume several). Bounds worst-case
+# Search-budget spend per keystroke; an under-filled page just returns short
+# with a cursor and the UI loads more.
+_SEARCH_PUBLIC_PAGES_PER_REQUEST = 3
+
+# The repo picker resolves the token's org list per request (it has no other
+# sync-state to lean on). One keystroke = one request, so cache briefly.
+_ORG_SCOPE_CACHE_TTL_SECONDS = 60.0
 
 # ---------------------------------------------------------------------------
 # Auth error markers — substring fallback for stringified errors on

@@ -363,7 +363,11 @@ class TestDsCallRetries:
 
 
 class TestSearchCall:
-    async def test_paces_when_called_too_soon(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_burst_within_window_budget_does_not_sleep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Back-to-back calls are allowed — the budget is per minute, and a
+        fixed inter-call gap added dead latency to every picker keystroke."""
         _c, runtime = _make_runtime()
         slept: list[float] = []
 
@@ -371,7 +375,34 @@ class TestSearchCall:
             slept.append(delay)
 
         monkeypatch.setattr("app.connectors.sources.github_teams.runtime.asyncio.sleep", fake_sleep)
-        runtime._last_search_call_monotonic = time.monotonic()
+
+        async def search_method() -> GitHubResponse:
+            return GitHubResponse(success=True, data=[])
+
+        for _ in range(2):
+            res = await runtime.search_call(search_method)
+            assert res.success is True
+        assert slept == []
+        assert len(runtime._search_call_times) == 2
+
+    async def test_paces_when_window_budget_is_spent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.connectors.sources.github_teams.constants import (
+            GITHUB_SEARCH_WINDOW_BUDGET,
+        )
+
+        _c, runtime = _make_runtime()
+        slept: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            slept.append(delay)
+
+        monkeypatch.setattr("app.connectors.sources.github_teams.runtime.asyncio.sleep", fake_sleep)
+        now = time.monotonic()
+        runtime._search_call_times.extend(
+            now - i * 0.001 for i in reversed(range(GITHUB_SEARCH_WINDOW_BUDGET))
+        )
 
         async def search_method() -> GitHubResponse:
             return GitHubResponse(success=True, data=[])
@@ -379,3 +410,21 @@ class TestSearchCall:
         res = await runtime.search_call(search_method)
         assert res.success is True
         assert slept and slept[0] > 0
+
+    async def test_old_calls_age_out_of_the_window(self) -> None:
+        from app.connectors.sources.github_teams.constants import (
+            GITHUB_SEARCH_WINDOW_BUDGET,
+            GITHUB_SEARCH_WINDOW_SECONDS,
+        )
+
+        _c, runtime = _make_runtime()
+        stale = time.monotonic() - GITHUB_SEARCH_WINDOW_SECONDS - 1
+        runtime._search_call_times.extend([stale] * GITHUB_SEARCH_WINDOW_BUDGET)
+
+        async def search_method() -> GitHubResponse:
+            return GitHubResponse(success=True, data=[])
+
+        res = await runtime.search_call(search_method)
+        assert res.success is True
+        # Stale entries purged; only this call remains in the window.
+        assert len(runtime._search_call_times) == 1

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +26,8 @@ from app.sources.client.github.github import GitHubResponse
 
 from .constants import (
     GITHUB_SEARCH_CONCURRENCY,
-    GITHUB_SEARCH_MIN_INTERVAL_SECONDS,
+    GITHUB_SEARCH_WINDOW_BUDGET,
+    GITHUB_SEARCH_WINDOW_SECONDS,
     HTTP_UNAUTHORIZED,
     _AUTH_ERROR_MARKERS,
     _GITHUB_MAX_RETRIES,
@@ -52,10 +54,11 @@ class RuntimeHelper:
         self.logger = connector.logger
 
         # Search API has its own 30 req/min budget, wholly separate from the
-        # 5,000 req/hr core budget. A semaphore plus a minimum inter-call gap
-        # keeps the repo-picker search from ever tripping a 403.
+        # 5,000 req/hr core budget. A semaphore plus a sliding one-minute
+        # window keeps the repo-picker search from ever tripping a 403 while
+        # letting bursts (scoped+public pair) run back-to-back.
         self._search_semaphore = asyncio.Semaphore(GITHUB_SEARCH_CONCURRENCY)
-        self._last_search_call_monotonic: float = 0.0
+        self._search_call_times: deque[float] = deque()
         self._search_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -282,16 +285,28 @@ class RuntimeHelper:
         """Run a Search API method (``search_repositories``) against
         the 30 req/min budget.
 
-        Serializes calls with a minimum inter-call gap in addition to the
-        concurrency cap, since GitHub enforces the Search budget strictly
-        and returns 403 (not a graceful 429) on overrun.
+        Paces with a sliding one-minute window (not a fixed inter-call gap):
+        GitHub's budget is per minute and 403s hard on overrun, but bursts
+        within the window are fine — a fixed gap added ~2.1s of dead latency
+        to every picker call for no extra safety.
         """
+
+        def _purge(now: float) -> None:
+            while (
+                self._search_call_times
+                and now - self._search_call_times[0] >= GITHUB_SEARCH_WINDOW_SECONDS
+            ):
+                self._search_call_times.popleft()
+
         async with self._search_semaphore:
             async with self._search_lock:
-                elapsed = time.monotonic() - self._last_search_call_monotonic
-                wait_for = GITHUB_SEARCH_MIN_INTERVAL_SECONDS - elapsed
-                if wait_for > 0:
-                    await asyncio.sleep(wait_for)
-                self._last_search_call_monotonic = time.monotonic()
+                now = time.monotonic()
+                _purge(now)
+                if len(self._search_call_times) >= GITHUB_SEARCH_WINDOW_BUDGET:
+                    wait_for = GITHUB_SEARCH_WINDOW_SECONDS - (now - self._search_call_times[0])
+                    if wait_for > 0:
+                        await asyncio.sleep(wait_for)
+                    _purge(time.monotonic())
+                self._search_call_times.append(time.monotonic())
             return await self.ds_call(method, *args, **kwargs)
 

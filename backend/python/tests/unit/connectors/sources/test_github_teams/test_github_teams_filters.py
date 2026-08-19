@@ -358,3 +358,124 @@ class TestRepoPickerEdgeCases:
         resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
 
         assert resp.success is False
+
+
+class TestRepoPickerPagination:
+    """Pins the pagination contracts: exact page size (no +1 over-fetch, which
+    shifts GitHub's page offset and skips one row per boundary), full_name
+    sort for stable multi-org merges, and cursor-exact search continuation."""
+
+    async def test_single_source_requests_exact_page_size_and_sort(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        c.runtime.ds_call.return_value = ok_response(
+            [SimpleNamespace(full_name=f"acme/r{i}") for i in range(20)]
+        )
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, page=2, limit=20)
+
+        kwargs = c.runtime.ds_call.call_args.kwargs
+        assert kwargs["per_page"] == 20
+        assert kwargs["page"] == 2
+        assert kwargs["sort"] == "full_name"
+        assert resp.has_more is True  # a full page implies more may exist
+
+    async def test_single_source_short_page_ends_pagination(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        c.runtime.ds_call.return_value = ok_response(
+            [SimpleNamespace(full_name="acme/only")]
+        )
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, page=1, limit=20)
+
+        assert [o.id for o in resp.options] == ["acme/only"]
+        assert resp.has_more is False
+
+    async def test_multi_org_pages_are_fetched_in_full_name_order(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme", "other"])
+        c.runtime.ds_call.return_value = ok_response([])
+        helper = FiltersHelper(c)
+
+        await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+
+        for call in c.runtime.ds_call.call_args_list:
+            if call.args and call.args[0] is c.data_source.list_org_repos:
+                assert call.kwargs["sort"] == "full_name"
+
+    async def test_search_queries_include_forks(self) -> None:
+        """GitHub Search silently drops forks by default; fork-heavy names
+        (searching a well-known repo) would return a fraction of the matches."""
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        c.runtime.search_call.return_value = ok_response([])
+        helper = FiltersHelper(c)
+
+        await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, search="pipeshub-ai")
+
+        for call in c.runtime.search_call.call_args_list:
+            assert "fork:true" in call.args[1]
+
+    @staticmethod
+    def _own_plus_public(c: object) -> None:
+        own = SimpleNamespace(full_name="acme/own")
+        public = [SimpleNamespace(full_name=f"pub/repo{i:03d}") for i in range(100)]
+
+        def dispatch(method: object, query: str, **kwargs: object) -> object:
+            return ok_response([own] if "org:" in query else public)
+
+        c.runtime.search_call.side_effect = dispatch
+
+    async def test_search_cursor_continues_without_skips_or_dupes(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        self._own_plus_public(c)
+        helper = FiltersHelper(c)
+
+        first = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, search="repo", limit=3)
+        assert [o.id for o in first.options] == ["acme/own", "pub/repo000", "pub/repo001"]
+        assert first.has_more is True
+        assert first.cursor
+
+        second = await helper.get_filter_options(
+            SyncFilterKey.REPO_IDS.value, search="repo", limit=3, page=2, cursor=first.cursor,
+        )
+        assert [o.id for o in second.options] == ["pub/repo002", "pub/repo003", "pub/repo004"]
+        assert second.has_more is True
+
+    async def test_search_page_fallback_without_cursor_replays_the_stream(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        self._own_plus_public(c)
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(
+            SyncFilterKey.REPO_IDS.value, search="repo", limit=3, page=2,
+        )
+        assert [o.id for o in resp.options] == ["pub/repo002", "pub/repo003", "pub/repo004"]
+
+    async def test_org_scope_is_cached_between_requests(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        c.runtime.ds_call.return_value = ok_response([])
+        helper = FiltersHelper(c)
+
+        await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+        await helper.get_filter_options(SyncFilterKey.REPO_IDS.value)
+
+        assert c.users._resolve_target_orgs.await_count == 1
+
+    async def test_scoped_search_failure_degrades_to_public_only(self) -> None:
+        c = make_mock_connector()
+        _with_orgs(c, ["acme"])
+        public = [SimpleNamespace(full_name="pub/widgets")]
+        c.runtime.search_call.side_effect = [failed_response("boom"), ok_response(public)]
+        helper = FiltersHelper(c)
+
+        resp = await helper.get_filter_options(SyncFilterKey.REPO_IDS.value, search="widgets")
+
+        assert resp.success is True
+        assert [o.id for o in resp.options] == ["pub/widgets"]

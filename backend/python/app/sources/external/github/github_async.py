@@ -218,11 +218,18 @@ class GitHubAsyncDataSource:
         type: str = "all",  # noqa: A002 - keeps the PyGithub-era signature
         per_page: int | None = None,
         page: int | None = None,
+        sort: str | None = None,
     ) -> GitHubResponse:
-        """One page when page args are given, the full listing otherwise."""
-        return await self._listing(
-            f"/orgs/{org}/repos", {"type": type}, per_page, page,
-        )
+        """One page when page args are given, the full listing otherwise.
+
+        ``sort`` (created/updated/pushed/full_name) makes GitHub's page order
+        deterministic — required when pages from several orgs are merged and
+        re-sliced locally (the repo picker); omit for full walks.
+        """
+        params: dict[str, str] = {"type": type}
+        if sort:
+            params["sort"] = sort
+        return await self._listing(f"/orgs/{org}/repos", params, per_page, page)
 
     async def list_user_repos(
         self,
@@ -230,11 +237,15 @@ class GitHubAsyncDataSource:
         type: str = "owner",  # noqa: A002
         per_page: int | None = None,
         page: int | None = None,
+        sort: str | None = None,
     ) -> GitHubResponse:
         """Authenticated listing when ``user`` is omitted; a named user's
         public repos otherwise (matching the PyGithub-era behavior)."""
         path = f"/users/{user}/repos" if user else "/user/repos"
-        return await self._listing(path, {"type": type}, per_page, page)
+        params: dict[str, str] = {"type": type}
+        if sort:
+            params["sort"] = sort
+        return await self._listing(path, params, per_page, page)
 
     async def list_user_orgs(self) -> GitHubResponse:
         """Orgs of the token-owning user; requires the ``read:org`` scope."""
