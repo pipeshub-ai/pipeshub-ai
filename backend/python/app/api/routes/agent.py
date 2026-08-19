@@ -2031,6 +2031,7 @@ async def create_agent(request: Request) -> JSONResponse:
             response_agent.get("webSearch"),
         )
         response_agent["createdBy"] = user_context["userId"]
+        response_agent["usesOrgDefault"] = not response_agent.get("models")
 
         all_failed = failed_toolsets + failed_mcp_servers
         status = "partial_success" if all_failed else "success"

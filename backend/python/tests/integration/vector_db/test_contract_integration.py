@@ -7,20 +7,20 @@ Run: pytest tests/integration/vector_db/test_contract_integration.py -m integrat
 
 import pytest
 
-from app.services.vector_db.models import FilterExpression, HybridSearchRequest, VectorPoint
+from app.services.vector_db.models import HybridSearchRequest, VectorPoint
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import DIM, make_collection_config, make_dense, org_filter, sample_points
+from tests.integration.vector_db.helpers import DIM, make_collection_config, make_dense, sample_points
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-@pytest.fixture(params=["qdrant", "opensearch", "redis"])
-async def vector_service(request):
-    """Yield the connected provider service for contract integration tests."""
-    return await request.getfixturevalue(f"{request.param}_service")
+class _VectorDBContractTests:
+    """Provider-agnostic contract. Subclasses inject `vector_service` from a
+    module-scoped fixture (qdrant_service / opensearch_service / redis_service)
+    so pytest-asyncio never has to `getfixturevalue` a module fixture from a
+    running test loop.
+    """
 
-
-class TestVectorDBContractIntegration:
     async def test_health_check_passes(self, vector_service):
         from app.services.vector_db.models import HealthStatus
 
@@ -64,18 +64,17 @@ class TestVectorDBContractIntegration:
         cfg = make_collection_config()
         try:
             await vector_service.create_collection(col, cfg)
-            many = []
-            for i in range(12):
-                many.append(
-                    VectorPoint(
-                        id=f"pt-{i}",
-                        dense_vector=make_dense([float(i % DIM)]),
-                        payload={
-                            "page_content": f"chunk {i}",
-                            "metadata": {"orgId": "org-scroll", "virtualRecordId": "vr-scroll"},
-                        },
-                    )
+            many = [
+                VectorPoint(
+                    id=f"pt-{i}",
+                    dense_vector=make_dense([float(i % DIM)]),
+                    payload={
+                        "page_content": f"chunk {i}",
+                        "metadata": {"orgId": "org-scroll", "virtualRecordId": "vr-scroll"},
+                    },
                 )
+                for i in range(12)
+            ]
             await vector_service.upsert_points(col, many)
             flt = await vector_service.filter_collection(must={"orgId": "org-scroll"})
             collected = []
@@ -89,3 +88,21 @@ class TestVectorDBContractIntegration:
             assert len({p.id for p in collected}) == 12
         finally:
             await vector_service.delete_collection(col)
+
+
+class TestQdrantContract(_VectorDBContractTests):
+    @pytest.fixture
+    async def vector_service(self, qdrant_service):
+        return qdrant_service
+
+
+class TestOpenSearchContract(_VectorDBContractTests):
+    @pytest.fixture
+    async def vector_service(self, opensearch_service):
+        return opensearch_service
+
+
+class TestRedisContract(_VectorDBContractTests):
+    @pytest.fixture
+    async def vector_service(self, redis_service):
+        return redis_service

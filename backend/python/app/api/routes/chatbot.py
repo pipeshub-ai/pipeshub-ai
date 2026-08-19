@@ -888,12 +888,13 @@ async def _generate_chat_stream_via_agent_loop(
     protocol = resolve_protocol(query_info.protocol, request)
 
     try:
-        llm, model_config, ai_models_config = await get_llm_for_chat(
+        llm_bundle = await get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
             reasoning_effort=query_info.reasoningEffort,
         )
-        if llm is None:
+        if not llm_bundle or llm_bundle[0] is None:
             raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+        llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
         if protocol == "agui":

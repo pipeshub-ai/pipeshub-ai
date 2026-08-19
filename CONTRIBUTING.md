@@ -182,10 +182,25 @@ docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9
   confluentinc/cp-kafka:7.9.0
 ```
 
+### JavaScript package directories
+
+This repository does not have a root `package.json`. Run npm commands only from one of these directories:
+
+- `backend/nodejs/apps` for the Node.js backend
+- `frontend` for the Next.js frontend
+
 ### Starting Node.js Backend Service
 ```bash
 cd backend/nodejs/apps
 cp ../../env.template .env  # Create .env file from template
+npm install
+npm run dev
+```
+
+PowerShell:
+```powershell
+cd backend/nodejs/apps
+Copy-Item ../../env.template .env  # Create .env file from template
 npm install
 npm run dev
 ```
@@ -222,6 +237,15 @@ cd frontend
 cp env.template .env  # Modify port if Node.js backend uses a different one
 npm install
 PORT=3001 npm run dev
+```
+
+PowerShell:
+```powershell
+cd frontend
+Copy-Item env.template .env  # Modify port if Node.js backend uses a different one
+npm install
+$env:PORT = '3001'
+npm run dev
 ```
 
 Then open your browser to the displayed URL (typically `http://localhost:3001` when using `PORT=3001`; Next.js defaults to port 3000 if `PORT` is unset).
