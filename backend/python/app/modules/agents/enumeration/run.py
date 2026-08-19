@@ -171,9 +171,13 @@ async def try_answer_enumeration(
     listed_ids = [vrid for vrid, _ in sorted(accessible.items())[:MAX_LISTED]]
     summaries = await _fetch_summaries(retrieval_service, org_id, listed_ids)
     lookup = await _record_lookup_factory(graph_provider, org_id, summaries)
+    # A filter narrows what "all documents" means, and the answer has to say so.
+    narrowed = bool(
+        (filters or {}).get("apps") or (filters or {}).get("kb")
+    )
     result = await build_enumeration_answer(
         accessible=accessible, record_lookup=lookup, ref_mapper=ref_mapper,
-        org_id=org_id,
+        org_id=org_id, scoped=narrowed,
     )
 
     # A citation whose record never reaches these maps is discarded during

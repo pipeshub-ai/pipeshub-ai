@@ -49,6 +49,7 @@ def compose_text(
     *,
     beyond_cap: int = 0,
     unreadable: int = 0,
+    scoped: bool = False,
 ) -> str:
     """Render the answer. `rows` is (record_name, ref, summary).
 
@@ -62,11 +63,17 @@ def compose_text(
     wrong with that record", and describing the second as the first would send
     someone looking for a page that does not exist.
     """
+    # A count taken over a narrowed set has to say so. "There are 3 documents"
+    # reads as a statement about the whole corpus, and would be wrong by orders
+    # of magnitude for someone who scoped the question to one knowledge base.
+    where = " in the sources you selected" if scoped else ""
     if total == 0:
+        if scoped:
+            return "There are no documents in the sources you selected."
         return "There are no documents that you have access to."
 
     noun = "document" if total == 1 else "documents"
-    lines = [f"There are {total} {noun}:", ""]
+    lines = [f"There are {total} {noun}{where}:", ""]
     for name, ref, summary in rows:
         detail = f" — {summary.strip()}" if summary else ""
         lines.append(f"- **{name}**{detail} [source]({ref})")
@@ -90,6 +97,7 @@ async def build_enumeration_answer(
     ref_mapper: Any,
     org_id: str,
     limit: int = MAX_LISTED,
+    scoped: bool = False,
 ) -> EnumerationAnswer:
     """Count the permission-filtered record set and cite each listed record.
 
@@ -151,6 +159,7 @@ async def build_enumeration_answer(
     return EnumerationAnswer(
         text=compose_text(
             rows, total, beyond_cap=beyond_cap, unreadable=len(page) - len(rows),
+            scoped=scoped,
         ),
         final_results=final_results,
         virtual_record_id_to_result=vr_map,

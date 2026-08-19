@@ -66,6 +66,29 @@ class TestComposeText:
         assert "201 records could not be read" in text
 
 
+class TestScopedCounts:
+    """A count over a filtered set must not read as a statement about the whole
+    corpus. Someone who scoped to one knowledge base and is told "there are 3
+    documents" has no way to know that is not the total."""
+
+    def test_unscoped_count_makes_no_claim_about_scope(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3)
+        assert "There are 3 documents:" in text
+        assert "you selected" not in text
+
+    def test_scoped_count_says_so(self) -> None:
+        text = compose_text([("a", "ref1", None)], 3, scoped=True)
+        assert "in the sources you selected" in text
+
+    def test_scoped_empty_result_says_so(self) -> None:
+        text = compose_text([], 0, scoped=True)
+        assert "in the sources you selected" in text
+        assert "[source]" not in text
+
+    def test_unscoped_empty_result_talks_about_access(self) -> None:
+        assert "you have access to" in compose_text([], 0)
+
+
 class TestBuildEnumerationAnswer:
     async def test_every_listed_record_is_cited(self) -> None:
         recs = {"v1": _record("r1", "alpha", summary="First."), "v2": _record("r2", "beta")}
