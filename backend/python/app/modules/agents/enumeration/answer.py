@@ -72,17 +72,20 @@ def compose_text(
     wrong with that record", and describing the second as the first would send
     someone looking for a page that does not exist.
     """
-    # A count taken over a narrowed set has to say so. "There are 3 documents"
-    # reads as a statement about the whole corpus, and would be wrong by orders
-    # of magnitude for someone who scoped the question to one knowledge base.
+    # Two things narrow this count, and an unqualified "there are N documents"
+    # hides both.
+    #
+    # A filter means the count covers only what was selected. And the count is
+    # over records that are indexed and searchable, which is not the same as
+    # records that exist: during a sync most of a corpus is still queued, so a
+    # knowledge base holding 300 documents can honestly report 18. Saying "I can
+    # search" rather than "there are" keeps the sentence true in both cases.
     where = " in the sources you selected" if scoped else ""
     if total == 0:
-        if scoped:
-            return "There are no documents in the sources you selected."
-        return "There are no documents that you have access to."
+        return f"There are no documents I can search{where}."
 
     noun = "document" if total == 1 else "documents"
-    lines = [f"There are {total} {noun}{where}:", ""]
+    lines = [f"There are {total} {noun} I can search{where}:", ""]
     for name, ref, summary in rows:
         detail = f" — {summary.strip()}" if (with_summaries and summary) else ""
         lines.append(f"- **{name}**{detail} [source]({ref})")

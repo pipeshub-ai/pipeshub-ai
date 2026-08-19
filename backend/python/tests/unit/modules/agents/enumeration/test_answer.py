@@ -45,15 +45,15 @@ def _lookup_from(records: dict[str, dict]):
 class TestComposeText:
     def test_empty_corpus_cites_nothing(self) -> None:
         text = compose_text([], 0)
-        assert "no documents" in text
+        assert "no documents I can search" in text
         assert "[source]" not in text
 
     def test_singular_noun(self) -> None:
-        assert compose_text([("a", "ref1", None)], 1).startswith("There are 1 document:")
+        assert compose_text([("a", "ref1", None)], 1).startswith("There are 1 document I can search:")
 
     def test_remainder_is_reported_when_listing_is_capped(self) -> None:
         text = compose_text([("a", "ref1", None)], 500, beyond_cap=499)
-        assert "There are 500 documents:" in text
+        assert "There are 500 documents I can search:" in text
         assert "499 more not listed above" in text
         assert "could not be read" not in text
 
@@ -116,7 +116,7 @@ class TestScopedCounts:
 
     def test_unscoped_count_makes_no_claim_about_scope(self) -> None:
         text = compose_text([("a", "ref1", None)], 3)
-        assert "There are 3 documents:" in text
+        assert "There are 3 documents I can search:" in text
         assert "you selected" not in text
 
     def test_scoped_count_says_so(self) -> None:
@@ -128,8 +128,13 @@ class TestScopedCounts:
         assert "in the sources you selected" in text
         assert "[source]" not in text
 
-    def test_unscoped_empty_result_talks_about_access(self) -> None:
-        assert "you have access to" in compose_text([], 0)
+    def test_unscoped_empty_result_says_what_was_searched(self) -> None:
+        """The empty answer must not claim the knowledge base is empty. It can
+        only speak for what is indexed and permitted, which during a sync is a
+        fraction of what exists."""
+        text = compose_text([], 0)
+        assert text == "There are no documents I can search."
+        assert "in the sources you selected" not in text
 
 
 class TestBuildEnumerationAnswer:
