@@ -36,6 +36,8 @@ interface ConnectorCatalogLayoutProps {
   onTabChange: (value: string) => void;
   /** Optional right-side element next to segmented control (e.g. "Your Personal Connectors →" link). */
   trailingAction?: React.ReactNode;
+  /** Optional admin actions rendered beside the search field in the header. */
+  headerActions?: React.ReactNode;
   /** Registry connectors to display as cards. */
   registryConnectors: Connector[];
   /** Active connectors to display as cards. */
@@ -64,6 +66,7 @@ export function ConnectorCatalogLayout({
   activeTab,
   onTabChange,
   trailingAction,
+  headerActions,
   registryConnectors,
   activeConnectors,
   onSetup,
@@ -190,6 +193,8 @@ export function ConnectorCatalogLayout({
             {subtitle}
           </Text>
         </Flex>
+
+        {headerActions}
 
         <TextField.Root
           size="2"

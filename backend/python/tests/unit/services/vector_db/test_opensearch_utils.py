@@ -186,6 +186,13 @@ class TestBuildConditions:
         assert len(result) == 1
         assert result[0].value == 0
 
+    def test_top_level_membership_fields_not_prefixed(self):
+        result = OpenSearchUtils.build_conditions(
+            {"connectorIds": ["c1"], "recordGroupIds": ["g1"], "orgId": "o1"}
+        )
+        keys = {c.key for c in result}
+        assert keys == {"connectorIds", "recordGroupIds", "metadata.orgId"}
+
 
 # ---------------------------------------------------------------------------
 # OpenSearchUtils._field_condition_to_clause
@@ -300,6 +307,24 @@ class TestVectorPointToDocument:
         assert doc["metadata"] == {"orgId": "org1"}
         assert doc["page_content"] == "hello world"
         assert doc["dense_embedding"] == [0.1, 0.2, 0.3]
+        assert doc["connectorIds"] == []
+        assert doc["recordGroupIds"] == []
+
+    def test_includes_membership_arrays(self):
+        point = VectorPoint(
+            id="abc-123",
+            dense_vector=[0.1],
+            payload={
+                "metadata": {"orgId": "org1"},
+                "page_content": "hello",
+                "connectorIds": ["c1", "c2"],
+                "recordGroupIds": ["g1"],
+            },
+        )
+        doc = OpenSearchUtils.vector_point_to_document(point)
+        assert doc["connectorIds"] == ["c1", "c2"]
+        assert doc["recordGroupIds"] == ["g1"]
+        assert "connectorIds" not in doc["metadata"]
 
     def test_no_dense_vector(self):
         point = VectorPoint(
@@ -348,6 +373,21 @@ class TestHitToSearchResult:
         assert result.score == 0.95
         assert result.payload["metadata"]["orgId"] == "org1"
         assert result.payload["page_content"] == "hello"
+
+    def test_membership_arrays_round_trip(self):
+        hit = {
+            "_id": "doc-1",
+            "_score": 0.5,
+            "_source": {
+                "metadata": {"orgId": "org1"},
+                "page_content": "hello",
+                "connectorIds": ["c1"],
+                "recordGroupIds": ["g1", "g2"],
+            },
+        }
+        result = OpenSearchUtils.hit_to_search_result(hit)
+        assert result.payload["connectorIds"] == ["c1"]
+        assert result.payload["recordGroupIds"] == ["g1", "g2"]
 
     def test_missing_fields(self):
         hit = {"_id": "doc-1"}

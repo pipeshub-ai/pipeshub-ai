@@ -683,14 +683,14 @@ class TokenRefreshService:
 
         try:
             # 5. Perform the token refresh
-            self.logger.info(f"🔄 Refreshing token for connector {connector_id}")
+            self.logger.debug(f"🔄 Refreshing token for connector {connector_id}")
             new_token = await oauth_provider.refresh_access_token(refresh_token)
             self.logger.info(f"✅ Successfully refreshed token for connector {connector_id}")
 
             # 6. Update stored credentials
             config['credentials'] = new_token.to_dict()
             await self.configuration_service.set_config(config_key, config)
-            self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+            self.logger.debug(f"💾 Updated stored credentials for connector {connector_id}")
 
             self._invalid_refresh_failures.pop(connector_id, None)
 
@@ -761,12 +761,12 @@ class TokenRefreshService:
 
         # If token not expired, just schedule refresh
         if not token.is_expired:
-            self.logger.info(f"✅ Token not expired for connector {connector_id}, scheduling refresh")
+            self.logger.debug(f"✅ Token not expired for connector {connector_id}, scheduling refresh")
             await self.schedule_token_refresh(connector_id, connector_type, token)
             return
 
         # Token is expired - refresh it now
-        self.logger.info(f"🔄 Token expired for connector {connector_id}, refreshing now")
+        self.logger.debug(f"🔄 Token expired for connector {connector_id}, refreshing now")
         new_token = await self._perform_token_refresh(connector_id, connector_type, token.refresh_token)
 
         # Schedule next refresh for the new token
@@ -930,7 +930,7 @@ class TokenRefreshService:
             self.logger.warning(f"⚠️ Token for connector {connector_id} has no expiry time, cannot schedule refresh")
             return
 
-        self.logger.info(f"🔄 Scheduling token refresh for connector {connector_id} (type: {connector_type})")
+        self.logger.debug(f"🔄 Scheduling token refresh for connector {connector_id} (type: {connector_type})")
 
         # Calculate refresh delay
         delay, refresh_time = self._calculate_refresh_delay(token)

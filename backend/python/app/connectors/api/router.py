@@ -90,12 +90,24 @@ from app.connectors.sources.local_fs.models import (
     LocalFsFileEventSubmissionResponse,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.vector_store_rebuild import (
+    VectorStoreRebuildBusyError,
+    VectorStoreRebuildConflictError,
+    acquire_rebuild_lock,
+    assert_no_indexing_in_flight,
+    list_rebuild_apps,
+    release_rebuild_lock,
+    schedule_vector_store_job_async,
+    start_vector_store_cleanup,
+    start_vector_store_reindex,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
@@ -2219,6 +2231,150 @@ async def reindex_record_group(
             status_code=500,
             detail=f"Internal server error while reindexing record group: {str(e)}"
         ) from e
+
+
+async def _accept_vector_store_job(
+    request: Request,
+    *,
+    operation: str,
+    kafka_service: KafkaService,
+) -> dict:
+    if not is_request_admin(request):
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Admin access required",
+        )
+    user = getattr(request.state, "user", None) or {}
+    org_id = user.get("orgId")
+    user_id = user.get("userId")
+    container: ConnectorAppContainer = request.app.container
+    logger = container.logger()
+    config_service = container.config_service()
+    graph_provider = request.app.state.graph_provider
+
+    try:
+        lock, redis = await acquire_rebuild_lock(config_service)
+    except VectorStoreRebuildBusyError as exc:
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=str(exc),
+        ) from exc
+
+    if operation == "reindex":
+        try:
+            if await get_cleanup_phase(redis) == PHASE_DROPPING:
+                await release_rebuild_lock(lock, redis)
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail="Vector-store cleanup is still dropping the collection",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            await release_rebuild_lock(lock, redis)
+            raise
+
+    # Gate on outstanding indexing before either job is scheduled. Both mutate
+    # the vector store underneath the indexing pipeline: a cleanup can wipe
+    # points a concurrent run just wrote (and that record stays COMPLETED, since
+    # the status reset skips IN_PROGRESS), and a reindex racing a live index of
+    # the same VRID can interleave delete-then-upsert into duplicates.
+    try:
+        apps = await list_rebuild_apps(graph_provider)
+        await assert_no_indexing_in_flight(graph_provider, apps)
+    except VectorStoreRebuildConflictError as exc:
+        await release_rebuild_lock(lock, redis)
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        await release_rebuild_lock(lock, redis)
+        raise
+
+    # Everything from here until the job is scheduled still owns the lock: only a
+    # scheduled job releases it (in its finally). Any failure in between —
+    # resolving the data store, or spawning the task — must release it here, or
+    # the key stays set and every later request 409s until the TTL expires.
+    job = None
+    try:
+        if operation == "cleanup":
+            job = start_vector_store_cleanup(
+                logger=logger,
+                graph_provider=graph_provider,
+                kafka_service=kafka_service,
+                lock=lock,
+                redis=redis,
+                org_id=org_id,
+                user_id=user_id,
+                apps=apps,
+            )
+        else:
+            data_store = await container.data_store()
+            job = start_vector_store_reindex(
+                logger=logger,
+                graph_provider=graph_provider,
+                data_store_provider=data_store,
+                config_service=config_service,
+                lock=lock,
+                redis=redis,
+                apps=apps,
+            )
+
+        started = await schedule_vector_store_job_async(job)
+    except Exception:
+        # Reachable only before the job was scheduled, so nothing else will ever
+        # release this lock or await this coroutine.
+        if job is not None:
+            job.close()
+        await release_rebuild_lock(lock, redis)
+        raise
+
+    # Raised outside the try: this path already released the lock, and catching
+    # it above would release a second time.
+    if not started:
+        # The coroutine was built but never scheduled; closing it keeps Python
+        # from emitting a "coroutine was never awaited" warning on a path that
+        # is otherwise a clean 409.
+        job.close()
+        await release_rebuild_lock(lock, redis)
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail="A vector-store cleanup or reindex job is already running",
+        )
+    return {"accepted": True, "operation": operation}
+
+
+@router.post(
+    "/api/v1/connectors/vector-store/cleanup",
+    status_code=HttpStatusCode.ACCEPTED.value,
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+)
+@inject
+async def cleanup_vector_store(
+    request: Request,
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
+    """Drop and recreate the shared records vector collection. Admin only."""
+    return await _accept_vector_store_job(
+        request, operation="cleanup", kafka_service=kafka_service
+    )
+
+
+@router.post(
+    "/api/v1/connectors/vector-store/reindex",
+    status_code=HttpStatusCode.ACCEPTED.value,
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))],
+)
+@inject
+async def reindex_vector_store(
+    request: Request,
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
+    """Re-embed every connector from blob storage. Admin only. Does not drop the collection."""
+    return await _accept_vector_store_job(
+        request, operation="reindex", kafka_service=kafka_service
+    )
 
 
 @router.post("/api/v1/connectors/{connector_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked)])

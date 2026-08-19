@@ -91,6 +91,19 @@ class IVectorDBService(ABC):
     ) -> None:
         raise NotImplementedError
 
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Advance an existing collection one step toward ``config``'s storage layout.
+
+        Returns the field that was changed, or None when nothing was applied.
+        Intentionally concrete: providers that cannot retune a live collection
+        inherit the no-op rather than being forced to stub it out.
+        """
+        return None
+
     @abstractmethod
     async def get_collections(self) -> object:
         raise NotImplementedError
@@ -185,6 +198,20 @@ class IVectorDBService(ABC):
     ) -> None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def set_payload(
+        self,
+        collection_name: str,
+        payload: dict,
+        filter: FilterExpression,
+    ) -> None:
+        """Merge ``payload`` into matching points without replacing the rest.
+
+        Must not use Qdrant ``overwrite_payload`` (that drops ``page_content``).
+        Rejects an empty filter — the same safety rule as ``delete_points``.
+        """
+        raise NotImplementedError
+
     # ------------------------------------------------------------------
     # Performance utilities (optional — providers that don't support these
     # inherit the no-op default; override in OpenSearch / others as needed)
@@ -210,16 +237,3 @@ class IVectorDBService(ABC):
         mapped files and expose an explicit warmup API (e.g. OpenSearch).
         """
 
-    def schedule_idle_force_merge(
-        self,
-        collection_name: str,
-        idle_seconds: float = 300.0,
-        max_segments: int = 1,
-    ) -> None:
-        """Schedule a debounced force_merge after an idle period.
-
-        No-op for providers that manage segment lifecycle internally (e.g.
-        Qdrant).  Override in OpenSearch where callers want to collapse
-        segments automatically after a burst of ingest without running
-        force_merge mid-burst.
-        """

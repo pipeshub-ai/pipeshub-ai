@@ -357,7 +357,7 @@ async def run_agent_loop_stream(
             # (and the user-facing spinner) open unnecessarily.
             await event_sink.flush()
             await queue.put(_DONE)
-            log.info("agent-loop stream: _DONE enqueued, starting cleanup")
+            log.debug("agent-loop stream: _DONE enqueued, starting cleanup")
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:

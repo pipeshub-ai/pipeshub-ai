@@ -68,6 +68,7 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.qdrant.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: 120
       {{- if .Values.qdrant.affinity }}
       affinity:
         {{- toYaml .Values.qdrant.affinity | nindent 8 }}

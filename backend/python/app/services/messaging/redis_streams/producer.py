@@ -94,7 +94,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 approximate=True,
             )
 
-            self.logger.info("Message successfully published to Redis stream %s", topic)
+            self.logger.debug("Message successfully published to Redis stream %s", topic)
             return True
 
         except Exception as e:

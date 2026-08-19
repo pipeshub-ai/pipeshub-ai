@@ -123,6 +123,7 @@ class TestCreateKnowledgeBase:
 
         kb_data = service.graph_provider.batch_upsert_nodes.call_args[0][0][0]
         assert kb_data["createdBy"] == "external-user-1"
+        assert kb_data["vectorMembershipBackfilled"] is True
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):

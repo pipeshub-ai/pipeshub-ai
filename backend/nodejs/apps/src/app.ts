@@ -3,6 +3,8 @@ import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
+import { IncomingMessage } from 'http';
+import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
@@ -374,9 +376,27 @@ export class Application {
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
 
-    // Logging — only log API requests, skip static assets
+    // Logging — only log API requests, skip static assets.
+    // 'combined' logs the full request URL, and OAuth callbacks arrive as
+    // ?code=<authorization code> — a credential exchangeable for tokens by
+    // whoever reads the log. Same format, with those values redacted.
+    morgan.token('url-redacted', (req: IncomingMessage) =>
+      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
+    );
+    // The Referer is client-supplied and can itself be an OAuth callback or a
+    // presigned URL, so it carries the same credentials the request line does.
+    morgan.token('referrer-redacted', (req: IncomingMessage) => {
+      const referrer = req.headers.referer ?? req.headers.referrer;
+      return typeof referrer === 'string'
+        ? redactSensitiveQueryParams(referrer)
+        : '-';
+    });
+    const combinedRedacted =
+      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
+      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
+      '":user-agent"';
     this.app.use(
-      morgan('combined', {
+      morgan(combinedRedacted, {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },

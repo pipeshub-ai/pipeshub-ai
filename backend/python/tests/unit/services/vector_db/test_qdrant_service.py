@@ -652,9 +652,19 @@ class TestScroll:
 class TestOverwritePayload:
     @pytest.mark.asyncio
     async def test_overwrite_payload_success(self, connected_service):
-        filter_expr = FilterExpression()
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+        )
         await connected_service.overwrite_payload("col", {"key": "val"}, filter_expr)
         connected_service.client.overwrite_payload.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_empty_filter_raises(self, connected_service):
+        """On Qdrant this replaces the payload, so an unfiltered call would strip
+        page_content from every point in the collection."""
+        with pytest.raises(ValueError, match="empty filter"):
+            await connected_service.overwrite_payload("col", {"k": "v"}, FilterExpression())
+        connected_service.client.overwrite_payload.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_overwrite_payload_passes_filter(self, connected_service):
@@ -695,7 +705,55 @@ class TestOverwritePayload:
     @pytest.mark.asyncio
     async def test_overwrite_payload_not_connected(self, service):
         with pytest.raises(RuntimeError, match="not connected"):
-            await service.overwrite_payload("col", {}, FilterExpression())
+            await service.overwrite_payload(
+                "col",
+                {},
+                FilterExpression(
+                    must=[GenericFieldCondition(key="metadata.orgId", value="org1")]
+                ),
+            )
+
+
+class TestSetPayload:
+    @pytest.mark.asyncio
+    async def test_empty_filter_raises(self, connected_service):
+        with pytest.raises(ValueError, match="empty filter"):
+            await connected_service.set_payload(
+                "col", {"connectorIds": ["c1"]}, FilterExpression()
+            )
+        connected_service.client.set_payload.assert_not_awaited()
+        connected_service.client.overwrite_payload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_merges_via_client_set_payload(self, connected_service):
+        from unittest.mock import MagicMock as _MagicMock
+
+        sentinel = _MagicMock(name="FilterSelectorInstance")
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+        )
+        payload = {"connectorIds": ["c1"], "recordGroupIds": ["g1"]}
+
+        with patch(
+            "app.services.vector_db.qdrant.qdrant.FilterSelector",
+            return_value=sentinel,
+        ):
+            await connected_service.set_payload("col", payload, filter_expr)
+
+        connected_service.client.set_payload.assert_awaited_once()
+        connected_service.client.overwrite_payload.assert_not_awaited()
+        call_kw = connected_service.client.set_payload.call_args.kwargs
+        assert call_kw["collection_name"] == "col"
+        assert call_kw["payload"] == payload
+        assert call_kw["points"] is sentinel
+
+    @pytest.mark.asyncio
+    async def test_not_connected(self, service):
+        filter_expr = FilterExpression(
+            must=[GenericFieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+        )
+        with pytest.raises(RuntimeError, match="not connected"):
+            await service.set_payload("col", {"connectorIds": ["c1"]}, filter_expr)
 
 
 # ===========================================================================

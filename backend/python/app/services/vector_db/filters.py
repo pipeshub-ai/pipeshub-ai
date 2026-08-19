@@ -23,12 +23,30 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Union
 
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    RECORD_GROUP_IDS_FIELD,
+)
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
     FilterMode,
     FilterValue,
 )
+
+# Top-level payload fields — must not be auto-prefixed with ``metadata.``.
+TOP_LEVEL_FILTER_FIELDS = frozenset({CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD})
+
+
+def canonical_filter_key(key: str) -> str:
+    """Return the payload path used by vector filters.
+
+    Chunk metadata lives under ``metadata.*``. VRID-level membership arrays
+    (``connectorIds``, ``recordGroupIds``) are top-level siblings.
+    """
+    if key.startswith("metadata.") or key in TOP_LEVEL_FILTER_FIELDS:
+        return key
+    return f"metadata.{key}"
 
 
 def build_filter_expression(

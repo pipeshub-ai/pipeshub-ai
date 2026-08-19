@@ -73,6 +73,12 @@ export interface ConnectorFileEvent {
   isDirectory: boolean;
 }
 
+/** 202 response from the admin vector-store cleanup / reindex routes. */
+export interface VectorStoreJobResponse {
+  accepted: boolean;
+  operation: 'cleanup' | 'reindex';
+}
+
 export const ConnectorsApi = {
   // ── List & Registry ──
 
@@ -408,6 +414,34 @@ export const ConnectorsApi = {
       suppressErrorToast: true,
     });
     return data ?? {};
+  },
+
+  // ── Vector store (admin) ──
+
+  /**
+   * Drop and recreate the shared `records` vector collection.
+   *
+   * Deployment-wide and destructive: it removes embeddings for every
+   * organisation, and search stays empty until a reindex completes. Returns 409
+   * while a cleanup or reindex is already running.
+   */
+  async cleanupVectorStore(): Promise<VectorStoreJobResponse> {
+    const { data } = await apiClient.post<VectorStoreJobResponse>(
+      `${BASE_URL}/vector-store/cleanup`
+    );
+    return data;
+  },
+
+  /**
+   * Re-embed every record from its stored blob, without re-downloading or
+   * re-parsing the source. Long-running; returns 202 once accepted, or 409 if a
+   * cleanup or reindex is already running.
+   */
+  async reindexVectorStore(): Promise<VectorStoreJobResponse> {
+    const { data } = await apiClient.post<VectorStoreJobResponse>(
+      `${BASE_URL}/vector-store/reindex`
+    );
+    return data;
   },
 
   // ── Stats ──

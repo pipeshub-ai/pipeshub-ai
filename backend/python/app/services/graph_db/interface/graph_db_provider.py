@@ -1123,6 +1123,33 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_app_needing_vector_membership_backfill(
+        self,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Return one app whose vector points still need connectorIds/recordGroupIds.
+
+        Selects documents where ``vectorMembershipBackfilled`` is missing or false
+        and ``status`` is not ``DELETING``.
+        """
+        pass
+
+    @abstractmethod
+    async def page_records_for_vector_membership_backfill(
+        self,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Page records for a connector by stable key for membership backfill.
+
+        Returns ``{_key, virtualRecordId}`` only, ordered by key, with keys
+        strictly greater than ``after_key`` when it is set.
+        """
+        pass
+
+    @abstractmethod
     async def get_records(
         self,
         user_id: str,
@@ -1230,6 +1257,20 @@ class IGraphDBProvider(ABC):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+        """
+        pass
+
+    @abstractmethod
+    async def reset_indexing_status_for_connector(
+        self,
+        connector_id: str,
+        status: str,
+        exclude_statuses: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        """Set indexingStatus for every record on a connector in one query.
+
+        ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
         """
         pass
 
@@ -2199,13 +2240,16 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def get_org_apps(
         self,
-        org_id: str
+        org_id: str,
+        *,
+        active_only: bool = True,
     ) -> list[dict]:
         """
         Get all apps for an organization.
 
         Args:
             org_id (str): Organization ID
+            active_only: When True (default), only apps with isActive true.
 
         Returns:
             List[Dict]: List of apps

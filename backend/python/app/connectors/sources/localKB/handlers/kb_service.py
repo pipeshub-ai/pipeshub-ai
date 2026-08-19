@@ -294,6 +294,7 @@ class KnowledgeBaseService:
                 "isAgentActive": True,
                 "isConfigured": True,
                 "isAuthenticated": True,
+                "vectorMembershipBackfilled": True,
                 "hideConnector": True,  # Excluded from main connector management UI
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,

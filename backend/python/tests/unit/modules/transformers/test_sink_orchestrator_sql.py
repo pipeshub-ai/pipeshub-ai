@@ -154,6 +154,40 @@ class TestApplySqlBranch:
         assert record.block_containers is full_container
         assert len(record.block_containers.blocks) == 25
 
+    @pytest.mark.asyncio
+    async def test_sql_container_restored_when_blob_apply_fails(self):
+        """A blob failure must not leave the truncated SQL snapshot on the record."""
+        orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"})
+
+        row_blocks = [_make_row_block(i) for i in range(25)]
+        bg = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            sub_type=GroupSubType.SQL_TABLE,
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=0, end=24)],
+                block_group_ranges=[],
+            ),
+        )
+        full_container = BlocksContainer(blocks=row_blocks, block_groups=[bg])
+
+        record = MagicMock()
+        record.id = "rec-sql"
+        record.block_containers = full_container
+
+        ctx = MagicMock(spec=TransformContext)
+        ctx.record = record
+        ctx.settings = {}
+
+        orch.blob_storage.apply = AsyncMock(side_effect=RuntimeError("blob write failed"))
+
+        with pytest.raises(RuntimeError, match="blob write failed"):
+            await orch.apply(ctx)
+
+        assert record.block_containers is full_container
+        assert len(record.block_containers.blocks) == 25
+        orch.vector_store.apply.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # _save_reconciliation_metadata

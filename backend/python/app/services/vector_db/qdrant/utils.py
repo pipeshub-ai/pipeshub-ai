@@ -14,6 +14,7 @@ from qdrant_client.http.models import (  # type: ignore
     SparseVector as QdrantSparseVector,
 )
 
+from app.services.vector_db.filters import canonical_filter_key
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
@@ -35,13 +36,14 @@ class QdrantUtils:
     def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:
         """Build Qdrant-native FieldCondition list from a key→value dict.
 
-        Keys are automatically prefixed with ``metadata.``.
+        Keys are automatically prefixed with ``metadata.`` except top-level
+        membership arrays (``connectorIds``, ``recordGroupIds``).
         """
         conditions: List[FieldCondition] = []
         for key, value in filters.items():
             if value is None:
                 continue
-            field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+            field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
                 filtered = [v for v in value if v is not None]
                 if filtered:
@@ -67,7 +69,7 @@ class QdrantUtils:
         for key, value in filters.items():
             if value is None:
                 continue
-            field_key = key if key.startswith("metadata.") else f"metadata.{key}"
+            field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
                 filtered = [v for v in value if v is not None]
                 if filtered:

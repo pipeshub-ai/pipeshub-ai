@@ -216,7 +216,7 @@ class KafkaUtils:
                     payload = payload.copy()  # Don't mutate original
                 payload["is_final_failure"] = message.is_final_failure
 
-                logger.info(f"Processing record event: {event_type}")
+                logger.debug(f"Processing record event: {event_type}")
                 async for event in record_event_service.process_event(event_type, payload):
                     yield event
 

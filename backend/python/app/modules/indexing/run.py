@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -9,6 +10,16 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.services.vector_db.membership import (
+    EMPTY_CONFIRM_DELAY_SECONDS,
+    remaining_record_keys,
+)
+from app.services.vector_db.membership import (
+    rewrite_or_delete_virtual_record as _rewrite_or_delete_virtual_record,
+)
+from app.services.vector_db.membership import (
+    sync_vector_membership as _sync_vector_membership,
+)
 
 # Module-level stub to allow tests to patch FastEmbedSparse even though
 # it is only lazily imported inside VectorStore (not used here directly).
@@ -55,6 +66,57 @@ class IndexingPipeline:
                 details={"error": str(e)},
             )
 
+    async def sync_vector_membership(self, virtual_record_id: str) -> None:
+        """Recompute connectorIds/recordGroupIds from graph onto every chunk of a VRID.
+
+        Never deletes. Group membership changes (moves, relinks, duplicate attach)
+        must not be able to drop embeddings for a record that still exists.
+        """
+        await _sync_vector_membership(
+            self.vector_db_service,
+            self.collection_name,
+            self.graph_provider,
+            virtual_record_id,
+            self.logger,
+        )
+
+    async def delete_points_for_virtual_record(self, virtual_record_id: str) -> None:
+        """Drop every point for a VRID, whatever the graph says.
+
+        Distinct from :meth:`bulk_delete_embeddings`, whose contract is "delete
+        only if no graph record still references this VRID" — on a re-embed the
+        record is still present, so that method deliberately keeps the points.
+        Re-embedding mints fresh point ids, so without this the old points
+        survive alongside the new ones and every pass multiplies the collection.
+        """
+        if not virtual_record_id:
+            return
+        filter_dict = await self.vector_db_service.filter_collection(
+            must={"virtualRecordId": virtual_record_id}
+        )
+        await self.vector_db_service.delete_points(
+            collection_name=self.collection_name,
+            filter=filter_dict,
+        )
+        self.logger.info(
+            "Deleted existing vector points for virtual_record_id %s before re-embed",
+            virtual_record_id,
+        )
+
+    async def rewrite_or_delete_vector_membership(self, virtual_record_id: str) -> str:
+        """Drop a VRID's points when no graph record references it, else rewrite.
+
+        Only for paths where a record genuinely went away; use
+        ``sync_vector_membership`` for membership-only updates.
+        """
+        return await _rewrite_or_delete_virtual_record(
+            self.vector_db_service,
+            self.collection_name,
+            self.graph_provider,
+            virtual_record_id,
+            self.logger,
+        )
+
     async def bulk_delete_embeddings(
         self,
         virtual_record_ids: List[str]
@@ -99,6 +161,7 @@ class IndexingPipeline:
             )
 
             safe_virtual_record_ids: List[str] = []
+            rewritten_virtual_record_ids: List[str] = []
             skipped_virtual_record_ids: List[str] = []
 
             for virtual_record_id in normalized_virtual_record_ids:
@@ -106,11 +169,13 @@ class IndexingPipeline:
                     remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
                         virtual_record_id=virtual_record_id
                     )
-                    if remaining_records:
-                        skipped_virtual_record_ids.append(virtual_record_id)
+                    remaining_keys = remaining_record_keys(remaining_records)
+                    if remaining_keys:
+                        await self.sync_vector_membership(virtual_record_id)
+                        rewritten_virtual_record_ids.append(virtual_record_id)
                         self.logger.info(
-                            f"⏭️ Skipping bulk deletion for virtual_record_id {virtual_record_id} "
-                            f"because it is still referenced by records: {remaining_records}"
+                            f"Rewrote vector membership for virtual_record_id {virtual_record_id} "
+                            f"(still referenced by records: {remaining_keys})"
                         )
                         continue
 
@@ -131,28 +196,59 @@ class IndexingPipeline:
                 self.logger.info(
                     "No virtual record IDs are eligible for bulk deletion after safety checks"
                 )
-                return {"virtual_record_ids_processed": 0, "success": True}
+                return {
+                    "virtual_record_ids_deleted": 0,
+                    "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
+                    "virtual_record_ids_processed": len(rewritten_virtual_record_ids),
+                    "success": True,
+                }
+
+            # Confirming pass: "no records remain" can be a stale read on a lagging
+            # follower, and deleting points is irreversible. Re-checking the whole
+            # candidate set once amortises the cost over the batch instead of
+            # paying a delay per VRID.
+            # One pause for the whole batch, not per VRID: a large batch already
+            # takes time between its two reads, but a single-VRID delete would
+            # otherwise re-read milliseconds later and confirm nothing.
+            await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
+
+            confirmed_virtual_record_ids: List[str] = []
+            for virtual_record_id in safe_virtual_record_ids:
+                try:
+                    recheck = await self.graph_provider.get_records_by_virtual_record_id(
+                        virtual_record_id=virtual_record_id
+                    )
+                    if remaining_record_keys(recheck):
+                        self.logger.warning(
+                            f"Virtual record {virtual_record_id} gained records on "
+                            f"re-check — rewriting membership instead of deleting"
+                        )
+                        await self.sync_vector_membership(virtual_record_id)
+                        rewritten_virtual_record_ids.append(virtual_record_id)
+                        continue
+                    confirmed_virtual_record_ids.append(virtual_record_id)
+                except Exception as e:
+                    skipped_virtual_record_ids.append(virtual_record_id)
+                    self.logger.error(
+                        f"❌ Failed to confirm virtual_record_id {virtual_record_id} "
+                        f"before deletion: {e}. Skipping to avoid data loss."
+                    )
+
+            safe_virtual_record_ids = confirmed_virtual_record_ids
+            if not safe_virtual_record_ids:
+                self.logger.info(
+                    "No virtual record IDs survived the deletion confirmation pass"
+                )
+                return {
+                    "virtual_record_ids_deleted": 0,
+                    "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
+                    "virtual_record_ids_processed": len(rewritten_virtual_record_ids),
+                    "success": True,
+                }
 
             self.logger.info(
                 f"🗑️ Proceeding with bulk deletion for {len(safe_virtual_record_ids)} safe virtual record IDs"
             )
-
-            # Delete from virtualRecordToDocIdMapping collection in batch
-            try:
-                await self.graph_provider.delete_nodes(
-                    keys=safe_virtual_record_ids,
-                    collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-                )
-                self.logger.info(
-                    f"✅ Deleted {len(safe_virtual_record_ids)} entries from virtualRecordToDocIdMapping"
-                )
-            except Exception as e:
-                # This is critical for data consistency - log as error
-                self.logger.error(
-                    f"❌ Failed to delete from virtualRecordToDocIdMapping: {e}. "
-                    f"This may lead to orphaned entries in ArangoDB."
-                )
-                # Continue with vector store cleanup as primary goal
 
             # Process in batches to avoid filter size limits
             for i in range(0, len(safe_virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
@@ -175,12 +271,30 @@ class IndexingPipeline:
                     # Continue with next batch even if one fails
                     continue
 
+            # Mapping last: it is how an orphaned point set is found again, so it
+            # must outlive the deletes it describes.
+            try:
+                await self.graph_provider.delete_nodes(
+                    keys=safe_virtual_record_ids,
+                    collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+                )
+                self.logger.info(
+                    f"✅ Deleted {len(safe_virtual_record_ids)} entries from virtualRecordToDocIdMapping"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Failed to delete from virtualRecordToDocIdMapping: {e}. "
+                    f"This may lead to orphaned entries in the graph."
+                )
+
             self.logger.info(
                 f"✅ Bulk deletion complete: embeddings deleted for {len(safe_virtual_record_ids)} virtual record IDs"
             )
 
             return {
-                "virtual_record_ids_processed": len(safe_virtual_record_ids),
+                "virtual_record_ids_deleted": len(safe_virtual_record_ids),
+                "virtual_record_ids_rewritten": len(rewritten_virtual_record_ids),
+                "virtual_record_ids_processed": len(safe_virtual_record_ids) + len(rewritten_virtual_record_ids),
                 "success": True
             }
 

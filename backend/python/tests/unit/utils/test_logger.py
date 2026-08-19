@@ -7,7 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.logger import ColoredFormatter, HealthCheckFilter, create_logger
+from app.utils.logger import (
+    ColoredFormatter,
+    HealthCheckFilter,
+    HttpxSuccessFilter,
+    create_logger,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -394,3 +399,69 @@ class TestModuleLevelWindowsBranch:
 
         # Reload to restore normal state
         importlib.reload(logger_mod)
+
+
+# ---------------------------------------------------------------------------
+# HttpxSuccessFilter
+# ---------------------------------------------------------------------------
+
+
+def _httpx_record(status: int) -> logging.LogRecord:
+    """A record shaped like httpx's per-request log."""
+    return logging.LogRecord(
+        name="httpx",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='HTTP Request: %s %s "%s %d %s"',
+        args=("POST", "https://example.test/v1", "HTTP/1.1", status, "reason"),
+        exc_info=None,
+    )
+
+
+class TestHttpxSuccessFilter:
+    """httpx logs every request at INFO, successes included.
+
+    Raising the logger to WARNING would hide failures too, since those are also
+    logged at INFO — so the filter has to discriminate on status.
+    """
+
+    def setup_method(self):
+        self.filter = HttpxSuccessFilter()
+
+    @pytest.mark.parametrize("status", [200, 201, 204, 299])
+    def test_successful_responses_are_dropped(self, status):
+        assert self.filter.filter(_httpx_record(status)) is False
+
+    @pytest.mark.parametrize("status", [301, 400, 401, 429, 500, 503])
+    def test_failures_and_redirects_are_kept(self, status):
+        assert self.filter.filter(_httpx_record(status)) is True
+
+    def test_record_without_args_passes_through(self):
+        record = logging.LogRecord(
+            name="httpx",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="some other httpx message",
+            args=None,
+            exc_info=None,
+        )
+        assert self.filter.filter(record) is True
+
+    def test_mapping_args_pass_through(self):
+        record = logging.LogRecord(
+            name="httpx", level=logging.INFO, pathname=__file__, lineno=1,
+            msg="msg", args=None, exc_info=None,
+        )
+        record.args = {"status": 200}
+        assert self.filter.filter(record) is True
+
+    def test_booleans_are_not_mistaken_for_a_status(self):
+        """bool is a subclass of int; True must not read as status 1."""
+        record = logging.LogRecord(
+            name="httpx", level=logging.INFO, pathname=__file__, lineno=1,
+            msg="msg", args=None, exc_info=None,
+        )
+        record.args = ("GET", "https://x", "HTTP/1.1", True, 503, "err")
+        assert self.filter.filter(record) is True

@@ -2188,9 +2188,29 @@ class TestUserAndOrganizationLookups:
 
         apps = await neo4j_provider.get_org_apps("org-1")
         assert apps == [{"_key": "app1"}]
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "app.isActive = true" in query
+
+        apps_all = await neo4j_provider.get_org_apps("org-1", active_only=False)
+        query_all = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "app.isActive = true" not in query_all
+        assert apps_all == [{"_key": "app1"}]
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("apps fail"))
         assert await neo4j_provider.get_org_apps("org-1") == []
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_for_connector(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "NOT_STARTED", exclude_statuses=["IN_PROGRESS"]
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.connectorId = $connector_id" in query
+        assert params["connector_id"] == "app-1"
+        assert params["status"] == "NOT_STARTED"
+        assert params["exclude_statuses"] == ["IN_PROGRESS"]
 
     @pytest.mark.asyncio
     async def test_get_departments_with_and_without_org(self, neo4j_provider: Neo4jProvider):
