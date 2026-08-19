@@ -110,8 +110,11 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     Args:
         marker: The WHOLE_DOCUMENT marker from the intent call ("yes"/"no"), or
                 None when the intent call was skipped or produced no marker.
-                A real model judgment, so it wins outright when present.
-        *texts: Request texts, used only when `marker` is None.
+                A real model judgment, so it wins outright when present —
+                except occurrence-count questions (#2996), which always need
+                the full record even if the marker said "no".
+        *texts: Request texts. Used when `marker` is None, and always used to
+                detect occurrence-count questions.
 
     The fallback is class-based (see the module constants above), not a list of
     known request shapes: it fires on aggregative operations, aggregative
@@ -119,17 +122,17 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     True because a false positive only costs a candidate list the model can
     ignore, whereas a false negative hides coverage information it needs.
     """
+    combined = " ".join(t for t in texts if t)
+    # Occurrence tallies are a property of the whole record even if the intent
+    # marker said "no" — snippets under-count (issue #2996).
+    if is_occurrence_count_query(combined):
+        return True
+
     if marker is not None:
         return marker.lower().strip() == "yes"
 
-    combined = " ".join(t for t in texts if t)
     if not combined.strip():
         return False
-
-    # Occurrence tallies ("how many times is X mentioned") are a property of
-    # the whole record. Retrieval snippets under-count; see issue #2996.
-    if is_occurrence_count_query(combined):
-        return True
 
     if _AGGREGATIVE_OPERATION_RE.search(combined):
         return True

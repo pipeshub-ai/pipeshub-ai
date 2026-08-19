@@ -24,6 +24,8 @@ class TestIsOccurrenceCountQuery:
             "how many mentions of ACME",
             "how often does the warranty appear in the contract",
             "number of appearances of foo in the pdf",
+            "how many times does the document mention GDPR",
+            "how often does the record mention harry potter",
         ],
     )
     def test_positive(self, text: str) -> None:
@@ -76,6 +78,16 @@ class TestParseOccurrencePhrase:
 
     def test_not_occurrence_query(self) -> None:
         assert parse_occurrence_phrase("how many documents do we have") is None
+
+    def test_document_mention_wording(self) -> None:
+        assert (
+            parse_occurrence_phrase("how many times does the document mention GDPR")
+            == "GDPR"
+        )
+        assert (
+            parse_occurrence_phrase("how often does the record mention harry potter")
+            == "harry potter"
+        )
 
 
 class TestCountOccurrences:
@@ -138,6 +150,15 @@ class TestNeedsWholeDocumentOccurrence:
     def test_corpus_how_many_documents_is_not_this_path(self) -> None:
         # Corpus enumeration is a different question (#2975 / #2988).
         assert needs_whole_document(None, "how many documents do we have") is False
+
+    def test_occurrence_query_overrides_marker_no(self) -> None:
+        assert (
+            needs_whole_document(
+                "no",
+                "How many times is harry potter mentioned in the book?",
+            )
+            is True
+        )
 
 
 class TestOccurrenceCountNoteOnFetch:

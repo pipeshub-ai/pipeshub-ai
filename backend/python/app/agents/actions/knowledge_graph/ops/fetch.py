@@ -156,7 +156,15 @@ async def execute_fetch_record(
 
 
 def _occurrence_count_note(query: str, records: list[dict[str, Any]]) -> str:
-    """If the user asked how often a phrase appears, count it over full records."""
+    """If the user asked how often a phrase appears, count it over full records.
+
+    Args:
+        query: Original user query from ``tool_state["query"]``.
+        records: Fetched record dicts (full block text, not the truncated prompt).
+
+    Returns:
+        Markdown occurrence-count note, or ``""`` when the query is not a tally.
+    """
     from app.modules.agents.record_escalation.occurrence_count import (
         count_occurrences,
         format_occurrence_count_note,
