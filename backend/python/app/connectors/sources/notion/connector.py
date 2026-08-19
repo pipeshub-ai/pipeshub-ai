@@ -1247,7 +1247,7 @@ class NotionConnector(BaseConnector):
                 e,
                 exc_info=True,
             )
-            return [], {}
+            raise
 
     async def _fetch_attachment_blocks_and_block_ids_recursive(
         self,

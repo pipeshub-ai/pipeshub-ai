@@ -1,5 +1,7 @@
 from typing import Optional
 import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx  # type: ignore
 
@@ -80,7 +82,11 @@ class HTTPClient(IClient):
                         try:
                             delay = float(retry_after)
                         except ValueError:
-                            delay = base_delay * (2 ** attempt)
+                            try:
+                                parsed_date = parsedate_to_datetime(retry_after)
+                                delay = max(0.0, (parsed_date - datetime.now(timezone.utc)).total_seconds())
+                            except (TypeError, ValueError):
+                                delay = base_delay * (2 ** attempt)
                     else:
                         delay = base_delay * (2 ** attempt)
                     
@@ -90,7 +96,7 @@ class HTTPClient(IClient):
                     
                 return HTTPResponse(response)
             except httpx.TimeoutException:
-                if attempt == max_retries:
+                if attempt == max_retries or request.method.upper() not in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}:
                     raise
                 
                 delay = base_delay * (2 ** attempt)
