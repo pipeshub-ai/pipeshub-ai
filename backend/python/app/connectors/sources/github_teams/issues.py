@@ -128,11 +128,6 @@ def _status_from_issue(issue: Any) -> str:
     return Status.DONE.value
 
 
-def _as_utc(dt: datetime) -> datetime:
-    """GitHub returns naive UTC datetimes; filter bounds are timezone-aware."""
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
 class IssuesSync:
     """Handles issue (ticket) synchronisation for ``GitHubTeamsConnector``."""
 
@@ -192,14 +187,6 @@ class IssuesSync:
             if last_sync_time is not None else None
         )
 
-        # GitHub's /issues endpoint supports only `since` server-side (no
-        # `until`, no created bounds), so the remaining three are applied
-        # client-side below.
-        modified_after, modified_before = c.datetime_range_from_sync_filter("modified")
-        created_after, created_before = c.datetime_range_from_sync_filter("created")
-        if modified_after is not None:
-            since_dt = modified_after if since_dt is None else max(since_dt, modified_after)
-
         page = 1
         processed = 0
         watermarks: dict[str, int] = {}
@@ -219,22 +206,18 @@ class IssuesSync:
             if not items:
                 break
 
-            batch = self._apply_datetime_filters(
-                items, modified_before, created_after, created_before,
-            )
-            if batch:
-                # The page IS the batch: one build, one persist call, one
-                # transaction. Re-chunking by a constant only split it into a
-                # full batch plus an under-filled one.
-                record_updates = await self._build_issue_records(repo, batch)
-                if not await self.process_new_records(record_updates, watermarks):
-                    self.logger.warning(
-                        "Issue batch failed for %s (page %s); stopping here so the checkpoint "
-                        "stays behind the failure instead of skipping past it.",
-                        repo.full_name, page,
-                    )
-                    return
-                processed += len(batch)
+            # The page IS the batch: one build, one persist call, one
+            # transaction. Re-chunking by a constant only split it into a
+            # full batch plus an under-filled one.
+            record_updates = await self._build_issue_records(repo, items)
+            if not await self.process_new_records(record_updates, watermarks):
+                self.logger.warning(
+                    "Issue batch failed for %s (page %s); stopping here so the checkpoint "
+                    "stays behind the failure instead of skipping past it.",
+                    repo.full_name, page,
+                )
+                return
+            processed += len(items)
 
             if len(items) < ISSUE_PAGE_SIZE:
                 break
@@ -248,29 +231,6 @@ class IssuesSync:
         )
         for group_id, last_sync_time in watermarks.items():
             await self._update_sync_checkpoint(group_id, last_sync_time)
-
-    @staticmethod
-    def _apply_datetime_filters(
-        items: list[Any],
-        modified_before: datetime | None,
-        created_after: datetime | None,
-        created_before: datetime | None,
-    ) -> list[Any]:
-        if not any((modified_before, created_after, created_before)):
-            return items
-
-        def _in_range(item: Any) -> bool:
-            updated_at = getattr(item, "updated_at", None)
-            created_at = getattr(item, "created_at", None)
-            if modified_before and updated_at and _as_utc(updated_at) > modified_before:
-                return False
-            if created_after and created_at and _as_utc(created_at) < created_after:
-                return False
-            if created_before and created_at and _as_utc(created_at) > created_before:
-                return False
-            return True
-
-        return [item for item in items if _in_range(item)]
 
     # ------------------------------------------------------------------
     # Record building (split issues vs PRs)

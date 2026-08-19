@@ -22,7 +22,6 @@ to extend ``GitHubTeamsConnector``, overriding only the permission hooks on
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from logging import Logger
 
 from fastapi.responses import StreamingResponse
@@ -142,20 +141,6 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
             description="Limit sync to specific repositories (full_name, e.g. my-org/my-repo)",
             filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
             option_source_type=OptionSourceType.DYNAMIC,
-        ))
-        .add_filter_field(FilterField(
-            name=SyncFilterKey.MODIFIED.value,
-            display_name="Modified Date",
-            filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and pull requests by last modification time",
-            no_implicit_operator_default=True,
-        ))
-        .add_filter_field(FilterField(
-            name=SyncFilterKey.CREATED.value,
-            display_name="Created Date",
-            filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and pull requests by creation time",
-            no_implicit_operator_default=True,
         ))
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
@@ -401,32 +386,6 @@ class GitHubTeamsConnector(BaseConnector):
             except Exception as e:
                 self.logger.warning("Failed to close GitHub HTTP client: %s", e)
         self.data_source = None
-
-    # ------------------------------------------------------------------
-    # Datetime filter helper (used by issues.py and pull_requests.py)
-    # ------------------------------------------------------------------
-
-    def datetime_range_from_sync_filter(
-        self, key: str
-    ) -> tuple[datetime | None, datetime | None]:
-        """Return UTC (after, before) bounds from a sync filter for the given key."""
-        if not self.sync_filters:
-            return (None, None)
-        _key_map = {
-            "modified": SyncFilterKey.MODIFIED,
-            "created": SyncFilterKey.CREATED,
-        }
-        sf_key = _key_map.get(key)
-        if sf_key is None:
-            return (None, None)
-        f = self.sync_filters.get(sf_key)
-        if not f:
-            return (None, None)
-        start_ms = f.get_datetime_start()
-        end_ms = f.get_datetime_end()
-        after = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc) if start_ms is not None else None
-        before = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc) if end_ms is not None else None
-        return (after, before)
 
     # ------------------------------------------------------------------
     # Factory method

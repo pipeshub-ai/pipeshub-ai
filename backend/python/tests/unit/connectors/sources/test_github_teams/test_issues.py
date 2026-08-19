@@ -626,43 +626,7 @@ class TestReindexCheck:
         assert await IssuesSync(c).check_and_fetch_updated_ticket_for_reindex(record) is None
 
 
-class TestDatetimeFiltersAndIndexing:
-    def test_datetime_filters_drop_out_of_range_items(self) -> None:
-        items = [
-            _issue(number=1),
-            _issue(number=2),
-        ]
-        items[0].updated_at = datetime(2024, 6, 1, tzinfo=timezone.utc)
-        items[0].created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        items[1].updated_at = datetime(2025, 1, 1, tzinfo=timezone.utc)
-        items[1].created_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
-
-        kept = IssuesSync._apply_datetime_filters(
-            items,
-            modified_before=datetime(2024, 12, 1, tzinfo=timezone.utc),
-            created_after=datetime(2023, 1, 1, tzinfo=timezone.utc),
-            created_before=datetime(2024, 6, 1, tzinfo=timezone.utc),
-        )
-        assert [i.number for i in kept] == [1]
-
-    def test_no_bounds_returns_items_unchanged(self) -> None:
-        items = [_issue(number=1)]
-        assert IssuesSync._apply_datetime_filters(items, None, None, None) is items
-
-    async def test_modified_after_tightens_since(self) -> None:
-        c = make_mock_connector()
-        later = datetime(2024, 6, 1, tzinfo=timezone.utc)
-        c.datetime_range_from_sync_filter = MagicMock(
-            side_effect=lambda key: (later, None) if key == "modified" else (None, None)
-        )
-        c.runtime.ds_call.return_value = ok_response([])
-        sync = IssuesSync(c)
-        sync._get_sync_checkpoint = AsyncMock(return_value=int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000))
-
-        await sync.fetch_issues_batched(make_repo(repo_id=1))
-
-        assert c.runtime.ds_call.call_args.kwargs["since"] == later
-
+class TestIndexingFlags:
     async def test_attachments_follow_indexing_flag(self) -> None:
         c = make_mock_connector()
         c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)

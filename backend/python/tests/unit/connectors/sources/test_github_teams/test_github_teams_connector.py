@@ -8,13 +8,11 @@ actually builds the instance.
 """
 from __future__ import annotations
 
-from datetime import timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.connectors.core.registry.filters import SyncFilterKey
 from app.connectors.sources.github_teams import connector as connector_mod
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -301,44 +299,6 @@ class TestDelegationAndCleanup:
         await GitHubTeamsConnector.run_sync(c)
 
         assert c.record_sync_point.org_id == "real-org"
-
-
-class TestDatetimeRangeFromSyncFilter:
-    def test_no_filters_returns_none_none(self) -> None:
-        fake = MagicMock()
-        fake.sync_filters = None
-        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "modified") == (None, None)
-
-    def test_unknown_key_returns_none_none(self) -> None:
-        fake = MagicMock()
-        fake.sync_filters = {SyncFilterKey.MODIFIED: MagicMock()}
-        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "unknown") == (None, None)
-
-    def test_missing_filter_returns_none_none(self) -> None:
-        fake = MagicMock()
-        fake.sync_filters = {SyncFilterKey.MODIFIED: MagicMock()}
-        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "created") == (None, None)
-
-    def test_modified_filter_converts_ms_to_utc(self) -> None:
-        fake = MagicMock()
-        f = MagicMock()
-        f.get_datetime_start.return_value = 0
-        f.get_datetime_end.return_value = 86_400_000
-        fake.sync_filters = {SyncFilterKey.MODIFIED: f}
-
-        after, before = GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "modified")
-        assert after is not None and before is not None
-        assert after.tzinfo == timezone.utc
-        assert before > after
-
-    def test_empty_start_and_end_stay_none(self) -> None:
-        fake = MagicMock()
-        f = MagicMock()
-        f.get_datetime_start.return_value = None
-        f.get_datetime_end.return_value = None
-        fake.sync_filters = {SyncFilterKey.CREATED: f}
-
-        assert GitHubTeamsConnector.datetime_range_from_sync_filter(fake, "created") == (None, None)
 
 
 class TestCreateConnector:

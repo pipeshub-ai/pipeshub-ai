@@ -211,20 +211,6 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             option_source_type=OptionSourceType.DYNAMIC,
         ))
         .add_filter_field(FilterField(
-            name=SyncFilterKey.MODIFIED.value,
-            display_name="Modified Date",
-            filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and pull requests by last modification time",
-            no_implicit_operator_default=True,
-        ))
-        .add_filter_field(FilterField(
-            name=SyncFilterKey.CREATED.value,
-            display_name="Created Date",
-            filter_type=FilterType.DATETIME, category=FilterCategory.SYNC,
-            description="Filter issues and pull requests by creation time",
-            no_implicit_operator_default=True,
-        ))
-        .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
             display_name="Index Issues",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,

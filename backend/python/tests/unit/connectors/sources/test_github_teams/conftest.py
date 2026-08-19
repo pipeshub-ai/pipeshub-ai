@@ -66,7 +66,6 @@ def make_mock_connector() -> MagicMock:
     rsp.update_sync_point = AsyncMock()
     c.record_sync_point = rsp
 
-    c.datetime_range_from_sync_filter = MagicMock(return_value=(None, None))
     c.creator_user_permission = MagicMock(return_value=None)
 
     # transaction() context manager -> tx_store mock
