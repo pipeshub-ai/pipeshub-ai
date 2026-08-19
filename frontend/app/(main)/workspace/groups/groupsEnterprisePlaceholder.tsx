@@ -60,10 +60,7 @@ export default function GroupsEnterprisePlaceholder() {
           gap="2"
           style={{ maxWidth: '720px', textAlign: 'center' }}
         >
-          <Heading
-            size="4"
-            style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap' }}
-          >
+          <Heading size="4" style={{ color: 'var(--slate-12)' }}>
             {t(
               'workspace.groups.enterpriseTitle',
               'Group permissions are available in the Enterprise Edition'
