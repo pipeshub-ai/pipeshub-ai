@@ -22,6 +22,8 @@ Environment variables used:
 import os
 import pytest
 
+from app.services.vector_db.models import HealthStatus
+
 
 # ---------------------------------------------------------------------------
 # Helper: unique collection names per test run
@@ -31,6 +33,21 @@ def make_collection(prefix: str = "test") -> str:
     """Generate a unique-ish test collection name."""
     import uuid
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+async def _connect_or_skip(svc, label: str, host: str, port: int) -> None:
+    """Connect and verify the server is reachable; skip the module otherwise.
+
+    Provider ``connect()`` may only load config (lazy client). A follow-up
+    health check is what actually proves the Docker service is up.
+    """
+    try:
+        await svc.connect()
+        health = await svc.health_check()
+    except Exception as exc:
+        pytest.skip(f"{label} not available at {host}:{port} — {exc}")
+    if health.status == HealthStatus.UNHEALTHY:
+        pytest.skip(f"{label} not available at {host}:{port} — {health.message}")
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +65,7 @@ async def redis_service():
     port = int(os.environ.get("REDIS_VECTOR_PORT", "6399"))
     config = RedisVectorConfig(host=host, port=port)
     svc = RedisVectorService(config)
-    try:
-        await svc.connect()
-    except Exception as exc:
-        pytest.skip(f"Redis not available at {host}:{port} — {exc}")
+    await _connect_or_skip(svc, "Redis", host, port)
     yield svc
     await svc.disconnect()
 
@@ -78,10 +92,7 @@ async def opensearch_service():
         verify_certs=False,
     )
     svc = OpenSearchService(config)
-    try:
-        await svc.connect()
-    except Exception as exc:
-        pytest.skip(f"OpenSearch not available at {host}:{port} — {exc}")
+    await _connect_or_skip(svc, "OpenSearch", host, port)
     yield svc
     await svc.disconnect()
 
@@ -101,9 +112,6 @@ async def qdrant_service():
     port = int(os.environ.get("QDRANT_PORT", "6334"))
     config = QdrantConfig(host=host, port=port)
     svc = QdrantService(config)
-    try:
-        await svc.connect()
-    except Exception as exc:
-        pytest.skip(f"Qdrant not available at {host}:{port} — {exc}")
+    await _connect_or_skip(svc, "Qdrant", host, port)
     yield svc
     await svc.disconnect()

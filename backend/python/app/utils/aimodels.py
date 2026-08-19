@@ -417,7 +417,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=OPENROUTER_BASE_URL,
-            check_embedding_ctx_length=True,
+            check_embedding_ctx_length=_accepts_token_array_embedding_input(OPENROUTER_BASE_URL),
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
         return OpenAIEmbeddings(**or_emb_kwargs)
