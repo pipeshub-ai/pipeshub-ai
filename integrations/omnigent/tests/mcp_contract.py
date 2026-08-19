@@ -23,7 +23,7 @@ EXPECTED_TOOLS = [
 ]
 
 EXPECTED_OAUTH_SCOPES = [
-    "semantic:write",
+    "semantic:read",
     "kb:read",
     "conversation:write",
     "conversation:chat",

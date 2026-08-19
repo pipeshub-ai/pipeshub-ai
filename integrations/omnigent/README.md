@@ -77,7 +77,7 @@ Notes:
 - OAuth `client_credentials` results use the **OAuth app owner's** permissions,
   not each end user's identity.
 - OAuth scopes requested for the full tool surface:
-  `semantic:write kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read`.
+   `semantic:read kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read`.
 - Omnigent does not currently complete PipesHub's browser MCP OAuth flow.
   Enterprise SSO users must provide a token obtained outside Omnigent until
   Omnigent adds generic MCP OAuth support.

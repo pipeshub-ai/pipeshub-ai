@@ -167,7 +167,7 @@ fi
 
 # --- OAuth scopes cover conversation/agent/directory needs ---
 missing_scopes=()
-for scope in semantic:write kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read; do
+for scope in semantic:read kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read; do
   if [[ " ${OAUTH_SCOPES} " != *" ${scope} "* ]]; then
     missing_scopes+=("$scope")
   fi

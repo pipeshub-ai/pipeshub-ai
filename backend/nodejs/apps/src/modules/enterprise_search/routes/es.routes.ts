@@ -459,7 +459,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
+    requireScopes(OAuthScopeNames.SEMANTIC_READ),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
   );

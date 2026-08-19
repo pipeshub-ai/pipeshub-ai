@@ -14,7 +14,7 @@ REQUIRED_TOOL="${REQUIRED_TOOL:-pipeshub_chat}"
 # Space-separated MCP tools that setup/run preflight must see.
 REQUIRED_TOOLS="${REQUIRED_TOOLS:-pipeshub_chat pipeshub_search pipeshub_sources pipeshub_directory pipeshub_download_record pipeshub_agents}"
 # OAuth client_credentials scopes for the full PipesHub MCP tool surface.
-OAUTH_SCOPES="${OAUTH_SCOPES:-semantic:write kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read}"
+OAUTH_SCOPES="${OAUTH_SCOPES:-semantic:read kb:read conversation:write conversation:chat agent:read agent:execute user:read team:read}"
 MIN_OMNIGENT_VERSION="${MIN_OMNIGENT_VERSION:-0.7.0}"
 
 die() {

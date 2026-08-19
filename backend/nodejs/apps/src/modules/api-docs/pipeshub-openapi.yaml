@@ -27797,7 +27797,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
+        - oauth2: [semantic:read]
       requestBody:
         required: true
         description: "Request payload"
@@ -27827,7 +27827,7 @@ paths:
             Missing or invalid bearer token.
         '403':
           description: |
-            Bearer token lacks the `semantic:write` scope.
+            Bearer token lacks the `semantic:read` scope.
         '404':
           description: |
             A referenced knowledge base or app filter could not be
