@@ -517,6 +517,12 @@ async def execute_fetch_record(
         if record_id_shortener is not None:
             text = record_id_shortener.shorten_record_ids_in_text(text)
         text += _CITATION_RULE
+        occurrence_note = _occurrence_count_note(
+            context.tool_state.get("query") or "",
+            result["records"],
+        )
+        if occurrence_note:
+            text += "\n\n" + occurrence_note
         text += _unavailable_note(
             result.get("not_available_ids", []),
             result.get("unavailable_reasons", {}),
@@ -609,3 +615,27 @@ async def execute_fetch_record(
         return ToolOutput(success=False, error=message), citation_ref_mapper
 
     return _to_tool_output(result), citation_ref_mapper
+
+
+def _occurrence_count_note(query: str, records: list[dict[str, Any]]) -> str:
+    """If the user asked how often a phrase appears, count it over full records."""
+    from app.modules.agents.record_escalation.occurrence_count import (
+        count_occurrences,
+        format_occurrence_count_note,
+        parse_occurrence_phrase,
+        record_plain_text,
+    )
+
+    phrase = parse_occurrence_phrase(query)
+    if not phrase:
+        return ""
+
+    per_record: list[tuple[str, str, int]] = []
+    for record in records:
+        rid = str(record.get("id") or "")
+        if not rid:
+            continue
+        name = str(record.get("record_name") or record.get("recordName") or "")
+        n = count_occurrences(record_plain_text(record), phrase)
+        per_record.append((rid, name, n))
+    return format_occurrence_count_note(phrase=phrase, per_record=per_record)

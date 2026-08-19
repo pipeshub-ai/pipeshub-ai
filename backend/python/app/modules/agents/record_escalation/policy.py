@@ -19,6 +19,9 @@ from app.modules.agents.record_escalation.models import (
     FetchCandidate,
     FetchPlan,
 )
+from app.modules.agents.record_escalation.occurrence_count import (
+    is_occurrence_count_query,
+)
 
 # ---------------------------------------------------------------------------
 # Fallback signal — used only when the intent call produced no marker
@@ -122,6 +125,11 @@ def needs_whole_document(marker: str | None, *texts: str) -> bool:
     combined = " ".join(t for t in texts if t)
     if not combined.strip():
         return False
+
+    # Occurrence tallies ("how many times is X mentioned") are a property of
+    # the whole record. Retrieval snippets under-count; see issue #2996.
+    if is_occurrence_count_query(combined):
+        return True
 
     if _AGGREGATIVE_OPERATION_RE.search(combined):
         return True
@@ -288,8 +296,11 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False, focused_reads: boo
         f"2. If it is relevant, call `{tool_ref}` with those record_ids in "
         f"ONE call, then answer — UNLESS {skip_case} This covers both no content yet from lookup/"
         f"navigate/list_files, and incomplete coverage for a whole-document "
-        f"property (a summary, risks or key points, a comparison, whether it "
-        f"mentions something anywhere){single_fact}. Never infer content from a title.\n\n"
+        f"property (a summary, risks or key points, a comparison, how many "
+        f"times a phrase appears, whether it mentions something anywhere){single_fact}. "
+        f"Never infer content from a title. If a fetch result includes a "
+        f"Computed occurrence count, use that number — do not recount from "
+        f"snippets or visible blocks.\n\n"
         f"A retrieval result may include a candidate list showing how much of "
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
