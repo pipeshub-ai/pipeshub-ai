@@ -659,6 +659,41 @@ class TestUpdateConfigCleanup:
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
     @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
+    async def test_unchanged_auth_does_not_deauthenticate(self, mock_get_inst, mock_ts):
+        """Saving identical credentials must not disable a working connector.
+
+        The teardown clears isAuthenticated and isActive, so keying it on the
+        presence of an "auth" key means any client that round-trips the whole
+        config to edit a sync setting knocks the connector offline every save.
+        """
+        mock_get_inst.return_value = _instance(auth_type="OAUTH")
+        config_service = _build_config_service()
+        registry = _build_connector_registry()
+        mock_connector = AsyncMock()
+        container = _build_container(
+            config_service,
+            has_connectors_map=True,
+            connectors_map={"conn1": mock_connector},
+        )
+
+        request = _mock_request(
+            container=container,
+            connector_registry=registry,
+            body={
+                # Byte-identical to the stored auth.
+                "auth": {"connectorScope": "personal"},
+                "baseUrl": "https://app.example.com",
+            },
+        )
+
+        result = await update_connector_instance_config("conn1", request)
+
+        assert result["success"] is True
+        assert "conn1" in container.connectors_map
+        mock_connector.cleanup.assert_not_awaited()
+
+    @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
+    @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
     async def test_auth_update_cleans_up_existing_connector(self, mock_get_inst, mock_ts):
         """If connector exists in connectors_map, pop + cleanup on auth update."""
         mock_get_inst.return_value = _instance(auth_type="OAUTH")
@@ -680,7 +715,9 @@ class TestUpdateConfigCleanup:
             container=container,
             connector_registry=registry,
             body={
-                "auth": {"connectorScope": "personal"},
+                # Genuinely different from the stored auth: teardown is keyed on
+                # the credentials changing, not on an "auth" key being present.
+                "auth": {"connectorScope": "team"},
                 "baseUrl": "https://app.example.com",
             },
         )

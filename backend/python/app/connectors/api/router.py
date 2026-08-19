@@ -4792,6 +4792,19 @@ async def update_connector_instance_config(
         # Determine which sections are being updated
         auth_updated = "auth" in body
 
+        # Whether the credentials actually changed, which is a different question
+        # from whether the body carried an "auth" section. ``auth_updated`` above
+        # still drives normalisation (OAuth config resolution, redirect URIs),
+        # which must run whenever auth is present. Tearing the connector down and
+        # clearing isActive must not: a client that round-trips the whole config
+        # to edit a sync setting would otherwise de-authenticate a working
+        # connector on every save.
+        _incoming_auth = body.get("auth")
+        auth_credentials_changed = isinstance(_incoming_auth, dict) and any(
+            (existing_config or {}).get("auth", {}).get(k) != v
+            for k, v in _incoming_auth.items()
+        )
+
         for section in ["auth", "sync", "filters"]:
             if section in body and isinstance(body[section], dict):
                 # For filters section, we need special handling to preserve sync/indexing separately
@@ -4944,9 +4957,9 @@ async def update_connector_instance_config(
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated config for instance {connector_id}")
 
-        # Only cleanup and disable connector if auth config is being updated
+        # Only cleanup and disable connector if the credentials actually changed.
         # Filters and sync updates don't require re-authentication, so connector can stay active
-        if auth_updated:
+        if auth_credentials_changed:
             # Cleanup existing connector instance if it exists (auth config changed)
             # User will need to toggle/enable again to re-initialize with new auth config
             if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
