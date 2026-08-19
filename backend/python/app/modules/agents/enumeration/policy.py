@@ -125,19 +125,37 @@ def excluded_reason(text: str) -> str | None:
     return None
 
 
-def is_enumeration_query(*texts: str) -> bool:
+def is_enumeration_query(marker: str | None, *texts: str) -> bool:
     """True only for a census over every record the caller can see.
 
-    Requires an enumeration operation and a record noun or corpus scope, and
-    rejects any query carrying a constraint the census cannot apply. When in
-    doubt this returns False: falling through to the agent gives a possibly
-    uncited answer, whereas firing wrongly gives a fully cited wrong one.
+    Args:
+        marker: the CORPUS_CENSUS marker from the intent call ("yes"/"no"), or
+                None when that call was skipped or omitted it. A model reading
+                the whole request handles phrasings no pattern list will cover,
+                so it is consulted first.
+        *texts: the request texts, matched against the patterns below.
+
+    The exclusions are checked before the marker and are never overridden. A
+    model that answers "yes" to "how many contracts mention indemnity" would
+    produce a fully cited count of the wrong records, and that is the one
+    failure worth spending a false negative to avoid. Recognising a leftover
+    condition is also what a pattern is genuinely good at.
+
+    Everything else biases toward False. Falling through to the agent costs a
+    possibly uncited answer; firing wrongly costs a confident wrong one.
     """
     combined = " ".join(t for t in texts if t)
     if not combined.strip():
         return False
+
+    # A condition the census cannot apply disqualifies the query outright,
+    # whatever the model said.
     if excluded_reason(combined) is not None:
         return False
+
+    if marker is not None:
+        return marker.lower().strip() == "yes"
+
     if not _OPERATION_RE.search(combined):
         return False
     return bool(_RECORD_NOUN_RE.search(combined) or _CORPUS_SCOPE_RE.search(combined))

@@ -141,7 +141,8 @@ async def try_answer_enumeration(
     log: Any = logger,
 ) -> bool:
     """Return True when this query was answered here and the agent should not run."""
-    if not is_enumeration_query(query):
+    marker = getattr(context, "tool_state", {}).get("corpus_census_marker")
+    if not is_enumeration_query(marker, query):
         return False
 
     org_id = getattr(context, "org_id", "") or ""

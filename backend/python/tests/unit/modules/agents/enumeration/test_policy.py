@@ -81,24 +81,55 @@ UNRELATED = [
 class TestIsEnumerationQuery:
     @pytest.mark.parametrize("query", SHOULD_MATCH)
     def test_census_questions_match(self, query: str) -> None:
-        assert is_enumeration_query(query) is True
+        assert is_enumeration_query(None, query) is True
 
     @pytest.mark.parametrize("query,_reason", MUST_NOT_MATCH)
     def test_constrained_questions_do_not_match(self, query: str, _reason: str) -> None:
-        assert is_enumeration_query(query) is False
+        assert is_enumeration_query(None, query) is False
 
     @pytest.mark.parametrize("query", UNRELATED)
     def test_unrelated_questions_do_not_match(self, query: str) -> None:
-        assert is_enumeration_query(query) is False
+        assert is_enumeration_query(None, query) is False
 
     @pytest.mark.parametrize("query", EXISTENCE_QUESTIONS)
     def test_existence_questions_do_not_match(self, query: str) -> None:
         """These name a specific thing. Answering them with a full inventory
         would be a confident non-answer."""
-        assert is_enumeration_query(query) is False
+        assert is_enumeration_query(None, query) is False
 
     def test_blank_input(self) -> None:
-        assert is_enumeration_query("", "   ") is False
+        assert is_enumeration_query(None, "", "   ") is False
+
+
+class TestMarkerFromTheIntentCall:
+    """The model reads the whole request, so it handles phrasings no pattern
+    list will cover. It does not get to override an exclusion, because a model
+    answering "yes" to a narrowed question produces a fully cited count of the
+    wrong records."""
+
+    def test_marker_yes_routes_to_the_census(self) -> None:
+        assert is_enumeration_query("yes", "what have we got in here") is True
+
+    def test_marker_no_is_respected_even_when_patterns_match(self) -> None:
+        assert is_enumeration_query("no", "How many documents do we have?") is False
+
+    def test_marker_is_case_and_space_insensitive(self) -> None:
+        assert is_enumeration_query(" YES ", "anything at all") is True
+
+    @pytest.mark.parametrize("query,_reason", MUST_NOT_MATCH)
+    def test_exclusions_override_a_yes(self, query: str, _reason: str) -> None:
+        assert is_enumeration_query("yes", query) is False
+
+    @pytest.mark.parametrize("query", EXISTENCE_QUESTIONS)
+    def test_existence_questions_still_need_the_model_to_say_yes(self, query: str) -> None:
+        """These carry no exclusion, so a model saying yes is trusted. The
+        regex alone would decline them."""
+        assert is_enumeration_query(None, query) is False
+        assert is_enumeration_query("yes", query) is True
+
+    def test_absent_marker_falls_back_to_the_patterns(self) -> None:
+        assert is_enumeration_query(None, "How many documents do we have?") is True
+        assert is_enumeration_query(None, "what have we got in here") is False
 
 
 class TestExcludedReason:
