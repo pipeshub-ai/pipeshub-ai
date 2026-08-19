@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         AccessibleRecordsCache,
         AccessibleRecordsInvalidator,
     )
+    from app.services.cache.semantic_query_cache import SemanticQueryCache
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -92,6 +93,16 @@ class ContainerUtils:
         )
 
         return AccessibleRecordsInvalidator(logger, accessible_records_cache, graph_provider)
+
+    async def create_semantic_query_cache(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> "SemanticQueryCache":
+        """Async factory for the semantic query-results cache (never raises)."""
+        from app.services.cache.semantic_query_cache import SemanticQueryCache
+
+        return await SemanticQueryCache.create(logger, config_service)
 
     async def create_indexing_pipeline(
         self,
@@ -239,6 +250,7 @@ class ContainerUtils:
         vector_db_service: IVectorDBService,
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
+        semantic_query_cache: "SemanticQueryCache | None" = None,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
         service = RetrievalService(
@@ -248,6 +260,7 @@ class ContainerUtils:
             vector_db_service=vector_db_service,
             graph_provider=graph_provider,
             blob_store=blob_store,
+            semantic_query_cache=semantic_query_cache,
         )
         return service
 

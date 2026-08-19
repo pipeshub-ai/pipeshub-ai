@@ -22,6 +22,7 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.cache.semantic_query_cache import SemanticQueryCache, compute_acl_signature
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
@@ -77,6 +78,7 @@ class RetrievalService:
         vector_db_service: IVectorDBService,
         graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
+        semantic_query_cache: SemanticQueryCache | None = None,
     ) -> None:
         """
         Initialize the retrieval service with necessary configurations.
@@ -86,6 +88,8 @@ class RetrievalService:
             vector_db_service: Vector DB service
             config_service: Configuration service
             graph_provider: Graph database provider
+            semantic_query_cache: Optional cache of query -> search-results, scoped
+                by (org, accessible-record-set). None disables semantic caching.
         """
 
         self.logger = logger
@@ -95,6 +99,7 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
+        self.semantic_query_cache = semantic_query_cache
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -391,7 +396,16 @@ class RetrievalService:
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
-            search_results = await self._execute_parallel_searches(queries, filter, limit)
+            search_results = await self._search_with_cache(
+                queries=queries,
+                filter=filter,
+                limit=limit,
+                org_id=org_id,
+                accessible_virtual_id_to_record_id=accessible_virtual_id_to_record_id,
+                filter_groups=filter_groups,
+                time_range=time_range,
+                virtual_record_ids_from_tool=virtual_record_ids_from_tool,
+            )
 
             if not search_results:
                 self.logger.debug("No search results found")
@@ -794,6 +808,58 @@ class RetrievalService:
             del _user_cache[oldest_key]
 
         return user_data
+
+    async def _search_with_cache(
+        self,
+        queries: list[str],
+        filter: Any,
+        limit: int,
+        org_id: str,
+        accessible_virtual_id_to_record_id: dict[str, str],
+        filter_groups: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+        virtual_record_ids_from_tool: list[str] | None,
+    ) -> list[dict[str, Any]]:
+        """Wraps `_execute_parallel_searches` with the semantic query cache.
+
+        Bypasses the cache (and goes straight to a live search) whenever the
+        request shape makes a cached answer unsafe to reuse:
+        - `filter_groups`/`time_range` narrow the corpus beyond the plain
+          accessible-record filter, so a cache entry keyed on the ACL
+          signature alone cannot represent them.
+        - `virtual_record_ids_from_tool` replaces the accessible-record
+          filter entirely with a tool-resolved id list.
+        - More than one query variant means the caller already did query
+          rewriting/expansion upstream; there is no single query embedding
+          to key a cache entry on.
+        """
+        cache = self.semantic_query_cache
+        if (
+            cache is None
+            or not cache.enabled
+            or filter_groups
+            or time_range
+            or virtual_record_ids_from_tool
+            or len(queries) != 1
+        ):
+            return await self._execute_parallel_searches(queries, filter, limit)
+
+        query = queries[0]
+        dense_embeddings = await self.get_embedding_model_instance()
+        if not dense_embeddings:
+            return await self._execute_parallel_searches(queries, filter, limit)
+
+        query_embedding = await dense_embeddings.aembed_query(query)
+        acl_signature = compute_acl_signature(accessible_virtual_id_to_record_id)
+
+        return await cache.get_or_compute(
+            org_id=org_id,
+            acl_signature=acl_signature,
+            query=query,
+            query_embedding=query_embedding,
+            limit=limit,
+            loader=lambda: self._execute_parallel_searches(queries, filter, limit),
+        )
 
     async def _execute_parallel_searches(self, queries, filter, limit) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.

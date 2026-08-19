@@ -27,6 +27,14 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
+    # Caches query -> search-results, scoped by (org, accessible-record-set).
+    # Falls back to live search when Redis is unavailable or disabled.
+    semantic_query_cache = providers.Resource(
+        container_utils.create_semantic_query_cache,
+        logger=logger,
+        config_service=config_service,
+    )
+
     # Graph Database Provider via Factory (HTTP mode - fully async)
     graph_provider = providers.Resource(
         container_utils.create_graph_provider,
@@ -54,6 +62,7 @@ class QueryAppContainer(BaseAppContainer):
         vector_db_service=vector_db_service,
         graph_provider=graph_provider,
         blob_store=blob_store,
+        semantic_query_cache=semantic_query_cache,
     )
     reranker_service = providers.Singleton(
         RerankerService,
