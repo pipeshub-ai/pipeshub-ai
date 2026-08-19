@@ -476,7 +476,18 @@ it('should work with GET request', async () => {
       expect(next.called).to.be.false;
     });
 
-    it('should log success with method, userId, and requestId', async () => {
+    it('should log success, echo requestId header, and set header before handleRequest when client sent X-Pipeshub-Request-Id', async () => {
+      let headerSetBeforeHandleRequest = false;
+      const handleRequestStub = sinon.stub().callsFake(() => {
+        return Promise.resolve();
+      });
+      const setHeaderStub = sinon.stub().callsFake(() => {
+        headerSetBeforeHandleRequest = true;
+      });
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        constructor() {}
+        handleRequest = handleRequestStub;
+      }
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: { connect: sinon.stub().resolves() },
       });
@@ -490,6 +501,7 @@ it('should work with GET request', async () => {
         body: { jsonrpc: '2.0', method: 'initialize', id: 1 },
       });
       const res = createMockResponse();
+      res.setHeader = setHeaderStub;
       const next = createMockNext();
 
       await handleMCPRequest(appConfig)(req, res as any, next);
@@ -501,9 +513,11 @@ it('should work with GET request', async () => {
         userId: 'user-123',
         requestId: 'req-abc-123',
       });
+      expect(setHeaderStub.calledWith('X-Pipeshub-Request-Id', 'req-abc-123')).to.be.true;
+      expect(headerSetBeforeHandleRequest).to.be.true;
     });
 
-    it('should log success with requestId undefined when header is missing', async () => {
+    it('should log success with requestId undefined and not set response header when header is missing', async () => {
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: { connect: sinon.stub().resolves() },
       });
@@ -524,73 +538,7 @@ it('should work with GET request', async () => {
         userId: 'user-123',
         requestId: undefined,
       });
-    });
-
-    it('should echo X-Pipeshub-Request-Id response header when client sent one', async () => {
-      mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
-      });
-
-      const req = createMockRequest({
-        headers: {
-          authorization: 'Bearer tok',
-          'x-pipeshub-request-id': 'req-echo-456',
-        },
-        body: {},
-      });
-      const res = createMockResponse();
-      const next = createMockNext();
-
-      await handleMCPRequest(appConfig)(req, res as any, next);
-
-      expect(res.setHeader.calledWith('X-Pipeshub-Request-Id', 'req-echo-456')).to.be.true;
-    });
-
-    it('should not set X-Pipeshub-Request-Id response header when client did not send one', async () => {
-      mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
-      });
-
-      const req = createMockRequest({
-        headers: { authorization: 'Bearer tok' },
-        body: {},
-      });
-      const res = createMockResponse();
-      const next = createMockNext();
-
-      await handleMCPRequest(appConfig)(req, res as any, next);
-
       expect(res.setHeader.calledWith('X-Pipeshub-Request-Id', sinon.match.any)).to.be.false;
-    });
-
-    it('should set response header before transport.handleRequest is called', async () => {
-      let headerSetBeforeHandleRequest = false;
-      const handleRequestStub = sinon.stub().callsFake(() => {
-        headerSetBeforeHandleRequest = true;
-        return Promise.resolve();
-      });
-      sdkTransportExports.StreamableHTTPServerTransport = class {
-        constructor() {}
-        handleRequest = handleRequestStub;
-      }
-      mcpServerExports.createMCPServer = sinon.stub().returns({
-        server: { connect: sinon.stub().resolves() },
-      });
-
-      const req = createMockRequest({
-        headers: {
-          authorization: 'Bearer tok',
-          'x-pipeshub-request-id': 'req-order-789',
-        },
-        body: {},
-      });
-      const res = createMockResponse();
-      const next = createMockNext();
-
-      await handleMCPRequest(appConfig)(req, res as any, next);
-
-      expect(headerSetBeforeHandleRequest).to.be.true;
-      expect(res.setHeader.calledWith('X-Pipeshub-Request-Id', 'req-order-789')).to.be.true;
     });
   })
 
@@ -699,11 +647,11 @@ it('should work with GET request', async () => {
       expect(next.firstCall.args[0]).to.equal(error)
     })
 
-    it('should log error with requestId when client sent X-Pipeshub-Request-Id header', async () => {
+    it('should log error with requestId when header supplied, and requestId undefined when header absent', async () => {
       const error = new Error('test error message')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
-      const req = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
+      const reqWithId = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
         method: 'POST',
         headers: {
           authorization: 'Bearer tok',
@@ -714,7 +662,7 @@ it('should work with GET request', async () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handleMCPRequest(appConfig)(reqWithId, res as any, next)
 
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
@@ -724,25 +672,22 @@ it('should work with GET request', async () => {
         userId: 'user-42',
         requestId: 'req-error-999',
       })
-    })
 
-    it('should log error with requestId undefined when header is missing', async () => {
-      const error = new Error('no-request-id error')
-      mcpServerExports.createMCPServer = sinon.stub().throws(error)
+      errorStub.resetHistory()
 
-      const req = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
+      const reqWithoutId = createAuthenticatedRequest('user-42', 'org-1', 'user@test.com', {
         method: 'POST',
         headers: { authorization: 'Bearer tok' },
         body: {},
       })
-      const res = createMockResponse()
-      const next = createMockNext()
+      const res2 = createMockResponse()
+      const next2 = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handleMCPRequest(appConfig)(reqWithoutId, res2 as any, next2)
 
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[1]).to.deep.include({
-        error: 'no-request-id error',
+        error: 'test error message',
         method: 'POST',
         userId: 'user-42',
         requestId: undefined,

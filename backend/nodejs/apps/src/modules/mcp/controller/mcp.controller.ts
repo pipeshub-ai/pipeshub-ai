@@ -72,16 +72,16 @@ export const handleMCPRequest =
         res.setHeader('X-Pipeshub-Request-Id', requestId);
       }
 
+      await transport.handleRequest(req, res, req.body);
+
       // Log success with request ID
       logger.info('MCP request completed', {
         method: req.method,
         userId: req.user?.userId as string | undefined,
         requestId,
       });
-
-      await transport.handleRequest(req, res, req.body);
     } catch (error: unknown) {
-      const err = error as Error;
+      const err = error instanceof Error ? error : new Error(String(error));
       const requestIdHeader = req.headers['x-pipeshub-request-id'] as
         | string
         | undefined;
