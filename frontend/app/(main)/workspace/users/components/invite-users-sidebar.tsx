@@ -571,8 +571,8 @@ export function InviteUsersSidebar({
           />
         </FormField>
 
-        {/* Groups dropdown */}
-        <FormField
+        {/* Groups dropdown — Enterprise Edition only */}
+        {/* <FormField
           label={t(
             'workspace.users.invite.groupLabel',
             'Add to a User Group'
@@ -608,7 +608,7 @@ export function InviteUsersSidebar({
               </Callout.Root>
             </Box>
           ) : null}
-        </FormField>
+        </FormField> */}
       </Box>
     </WorkspaceRightPanel>
   );
