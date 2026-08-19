@@ -69,6 +69,18 @@ _PHRASE_AFTER_COUNT_OF_RE = re.compile(
     re.IGNORECASE | re.VERBOSE | re.DOTALL,
 )
 
+_PHRASE_DOCUMENT_MENTIONS_RE = re.compile(
+    r"""
+    (?: how \s+ many \s+ times | how \s+ often )
+    \s+ does \s+ (?: the \s+ )?
+    (?: document | record | book | file | pdf | text )
+    \s+ mention \s+
+    (?P<phrase>.+?)
+    [\s?.!]* $
+    """,
+    re.IGNORECASE | re.VERBOSE | re.DOTALL,
+)
+
 _TRAILING_SCOPE_RE = re.compile(
     r"""
     \s+ in \s+ (?: the \s+ )?
@@ -82,7 +94,15 @@ _LEADING_ARTICLES_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
 
 
 def is_occurrence_count_query(*texts: str) -> bool:
-    """True when the request is tallying a phrase inside a document."""
+    """Return True when the request is tallying a phrase inside a document.
+
+    Args:
+        *texts: Query fragments (raw user text and optional rewritten goal).
+
+    Returns:
+        True if this is an in-document occurrence count, not a corpus-level
+        "how many documents" question and not an unrelated "how many times".
+    """
     combined = " ".join(t for t in texts if t)
     if not combined.strip():
         return False
@@ -92,7 +112,14 @@ def is_occurrence_count_query(*texts: str) -> bool:
 
 
 def parse_occurrence_phrase(*texts: str) -> str | None:
-    """Extract the phrase to count, or None if this is not that question."""
+    """Extract the phrase to count, or None if this is not that question.
+
+    Args:
+        *texts: Query fragments to parse.
+
+    Returns:
+        Normalized phrase (for example ``harry potter``), or ``None``.
+    """
     combined = " ".join(t for t in texts if t)
     if not is_occurrence_count_query(combined):
         return None
@@ -102,6 +129,7 @@ def parse_occurrence_phrase(*texts: str) -> str | None:
         return _normalize_phrase(quoted.group("phrase"))
 
     for pattern in (
+        _PHRASE_DOCUMENT_MENTIONS_RE,
         _PHRASE_AFTER_TIMES_RE,
         _PHRASE_AFTER_OFTEN_RE,
         _PHRASE_AFTER_COUNT_OF_RE,
@@ -115,7 +143,15 @@ def parse_occurrence_phrase(*texts: str) -> str | None:
 
 
 def count_occurrences(haystack: str, phrase: str) -> int:
-    """Case-insensitive, non-overlapping phrase count over ``haystack``."""
+    """Return a case-insensitive, non-overlapping phrase count.
+
+    Args:
+        haystack: Full record text (not retrieved snippets).
+        phrase: Phrase extracted from the user query.
+
+    Returns:
+        Number of matches. ``0`` if either argument is empty.
+    """
     if not haystack or not phrase:
         return 0
     pattern = _phrase_regex(phrase)
@@ -123,7 +159,14 @@ def count_occurrences(haystack: str, phrase: str) -> int:
 
 
 def record_plain_text(record: Mapping[str, Any]) -> str:
-    """Concatenate block text for a fetched record, skipping fragment children."""
+    """Concatenate block text for a fetched record, skipping fragment children.
+
+    Args:
+        record: Record dict with ``block_containers.blocks`` or top-level ``blocks``.
+
+    Returns:
+        Newline-joined plain text used for occurrence counting.
+    """
     containers = record.get("block_containers") or {}
     blocks = containers.get("blocks") if isinstance(containers, Mapping) else None
     if not isinstance(blocks, list):
@@ -145,7 +188,15 @@ def format_occurrence_count_note(
     phrase: str,
     per_record: list[tuple[str, str, int]],
 ) -> str:
-    """Instruction block so the model states the computed count instead of recounting."""
+    """Build the instruction block so the model uses the computed count.
+
+    Args:
+        phrase: Phrase that was counted.
+        per_record: ``(record_id, record_name, count)`` rows.
+
+    Returns:
+        Markdown note, or ``""`` if ``per_record`` is empty.
+    """
     if not per_record:
         return ""
     lines = [
@@ -165,12 +216,28 @@ def format_occurrence_count_note(
 
 
 def _normalize_phrase(raw: str) -> str | None:
+    """Strip trailing "in the book/document" and leading articles from a capture.
+
+    Args:
+        raw: Raw regex capture.
+
+    Returns:
+        Cleaned phrase, or ``None`` if nothing usable remains.
+    """
     cleaned = _TRAILING_SCOPE_RE.sub("", raw or "").strip()
     cleaned = _LEADING_ARTICLES_RE.sub("", cleaned).strip(" \t\n\r\"'`.,;:?!")
     return cleaned or None
 
 
 def _phrase_regex(phrase: str) -> re.Pattern[str]:
+    """Compile a case-insensitive matcher with flexible whitespace and word bounds.
+
+    Args:
+        phrase: Normalized phrase to search for.
+
+    Returns:
+        Compiled pattern. A never-matching pattern if ``phrase`` is empty.
+    """
     tokens = [re.escape(t) for t in phrase.split() if t]
     if not tokens:
         return re.compile(r"(?!)")
@@ -183,6 +250,14 @@ def _phrase_regex(phrase: str) -> re.Pattern[str]:
 
 
 def _block_text(block: Mapping[str, Any]) -> str:
+    """Extract searchable text from one block.
+
+    Args:
+        block: A block dict whose ``data`` is a string or a mapping.
+
+    Returns:
+        Text content, or ``""`` if the block has none.
+    """
     data = block.get("data")
     if isinstance(data, str):
         return data
