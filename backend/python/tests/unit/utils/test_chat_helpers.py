@@ -5060,6 +5060,23 @@ class TestEnrichRecordsWithGraphContext:
         gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
         gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
 
+        async def _relations_batch(record_ids, relation_types, transaction=None):
+            return {
+                rid: {
+                    "parents": [
+                        {**e, "relationType": rt}
+                        for rt in relation_types for e in outgoing_by_type.get(rt, [])
+                    ],
+                    "children": [
+                        {**e, "relationType": rt}
+                        for rt in relation_types for e in incoming_by_type.get(rt, [])
+                    ],
+                }
+                for rid in record_ids
+            }
+
+        gp.get_record_relations_batch = AsyncMock(side_effect=_relations_batch)
+
         async def _get_document(record_id, collection=None, *args, **kwargs):
             if record_id in docs_by_id:
                 return docs_by_id[record_id]
@@ -5074,6 +5091,16 @@ class TestEnrichRecordsWithGraphContext:
             }
 
         gp.get_document = AsyncMock(side_effect=_get_document)
+
+        # The enrichment path resolves base and type-specific docs one query per
+        # collection rather than one per record. Delegate through the attribute
+        # so tests that override `get_document` after construction stay
+        # authoritative for both call shapes.
+        async def _get_nodes_by_field_in(collection, field_name, field_values, *args, **kwargs):
+            docs = [await gp.get_document(rid, collection) for rid in field_values]
+            return [d for d in docs if isinstance(d, dict) and (d.get("id") or d.get("_key"))]
+
+        gp.get_nodes_by_field_in = AsyncMock(side_effect=_get_nodes_by_field_in)
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value=vrid_map or {})
         return gp
 
@@ -5304,7 +5331,12 @@ class TestEnrichRecordsWithGraphContext:
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
         assert "This ticket tracks the login bug fix." in rel["context_metadata"]
-        blob_store.get_record_from_storage.assert_awaited_once_with("vr-parent-1", "org-1")
+        # lookup_result is pre-resolved in one batched call by the caller; the
+        # fetch resolves the id itself only when the batch had no entry.
+        blob_store.get_record_from_storage.assert_awaited_once()
+        args, kwargs = blob_store.get_record_from_storage.await_args
+        assert args == ("vr-parent-1", "org-1")
+        assert set(kwargs) <= {"lookup_result"}
 
     @pytest.mark.asyncio
     async def test_falls_back_to_graph_when_not_indexed(self):
@@ -5405,15 +5437,19 @@ class TestEnrichRecordsWithGraphContext:
         assert "record_relations" not in rec
 
     @pytest.mark.asyncio
-    async def test_queries_both_relation_types(self):
+    async def test_queries_both_relation_types_in_one_batch(self):
         rec = self._ticket_record()
         vr_map = {"vr-ticket": rec}
         gp = self._make_graph_provider()
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
         )
-        assert gp.get_parent_record_ids_by_relation_type.await_count == 2
-        assert gp.get_child_record_ids_by_relation_type.await_count == 2
+        gp.get_record_relations_batch.assert_awaited_once()
+        from app.utils.chat_helpers import RECORD_RELATION_ENRICHMENT_TYPES
+        requested = set(gp.get_record_relations_batch.await_args.args[1])
+        assert requested == {rel.value for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+        assert gp.get_parent_record_ids_by_relation_type.await_count == 0
+        assert gp.get_child_record_ids_by_relation_type.await_count == 0
 
     @pytest.mark.asyncio
     async def test_stores_minimal_related_records(self):

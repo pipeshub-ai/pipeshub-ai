@@ -339,6 +339,66 @@ class TestMessageErrorClassifier:
         assert result == MessageErrorType.TRANSIENT
 
 
+class TestParsingClientErrorClassification:
+    """Test classification of ParsingClient structured errors.
+
+    PARSE_BACKPRESSURE means the parsing service is saturated but healthy
+    (its admission gate timed out) — retryable, and must never be confused
+    with a genuine content-parsing failure. Every other ParseErrorCode is a
+    content-level failure that will fail identically on retry.
+    """
+
+    def test_parse_backpressure_is_transient(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.PARSE_BACKPRESSURE,
+            message="ParsingService parse is backpressured",
+            details={"retry_after": 5.0},
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TRANSIENT
+
+    def test_parse_failed_is_terminal(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.PARSE_FAILED,
+            message="Docling crashed",
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TERMINAL
+
+    def test_unsupported_format_is_terminal(self):
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        exc = ParsingClientError(
+            code=ParseErrorCode.UNSUPPORTED_FORMAT,
+            message="No parser for .xyz",
+        )
+        result = MessageErrorClassifier.classify_by_exception(exc)
+        assert result == MessageErrorType.TERMINAL
+
+    def test_wrapped_parse_backpressure_is_transient(self):
+        """The consumer wraps handler exceptions in a generic Exception —
+        classification must still find PARSE_BACKPRESSURE via __cause__."""
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        original = ParsingClientError(
+            code=ParseErrorCode.PARSE_BACKPRESSURE,
+            message="ParsingService parse is backpressured",
+        )
+        wrapped = Exception(str(original))
+        wrapped.__cause__ = original
+
+        result = MessageErrorClassifier.classify_by_exception(wrapped)
+        assert result == MessageErrorType.TRANSIENT
+
+
 class TestOpenAIErrors:
     """Test classification of OpenAI API errors."""
 

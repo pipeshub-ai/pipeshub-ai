@@ -16,6 +16,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
+from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -208,6 +209,15 @@ class SinkOrchestrator(Transformer):
         )
         self.logger.info(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
+        )
+        # The record is only searchable now, so the accessible-record map that
+        # gates search is stale. KB-only: a connector sync flips thousands of
+        # records here in a burst and invalidates once, at sync completion.
+        await notify_record_indexed(
+            connector_name=record.connector_name,
+            connector_id=record.connector_id,
+            external_record_group_id=record.external_record_group_id,
+            org_id=record.org_id,
         )
 
     # ------------------------------------------------------------------

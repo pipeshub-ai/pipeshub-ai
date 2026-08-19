@@ -7,7 +7,10 @@ import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import { userActivitiesType } from '../utils/userActivities.utils';
+import {
+  SESSION_INVALIDATING_ACTIVITIES,
+  userActivitiesType,
+} from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
@@ -18,9 +21,13 @@ import { PAT_TOKEN_PREFIX } from '../../modules/oauth_provider/constants/constan
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
-const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
+const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
 const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
+
+function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
+  return role === 'admin' || role === 'member';
+}
 
 @injectable()
 export class AuthMiddleware {
@@ -79,6 +86,12 @@ export class AuthMiddleware {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
 
+    // User session JWTs must carry role (admin|member). Legacy tokens without
+    // role are rejected so the client re-logins and receives a new token.
+    if (!hasValidJwtRole(decoded?.role)) {
+      throw new UnauthorizedError('Session expired, please login again');
+    }
+
     // search for user activities for this user
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
@@ -98,7 +111,7 @@ export class AuthMiddleware {
           userId: userId,
           orgId: orgId,
           isDeleted: false,
-          activityType: { $in: [LOGOUT, PASSWORD_CHANGED] },
+          activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
         })
           .sort({ createdAt: -1 }) // sort by most recent first
           .lean()
@@ -168,29 +181,35 @@ export class AuthMiddleware {
       }
     }
 
-    let email: string | undefined;
-    if (userId) {
-      const user = await Users.findOne({
-        _id: userId,
-        orgId: orgId,
-        isDeleted: false,
-      })
-        .select('email fullName')
-        .lean()
-        .exec();
-
-      // Unlike session auth, OAuth/PAT tokens can outlive the user by
-      // months or years — a removed employee's token must stop working
-      // the same way an expired session would, not just lose its email.
-      if (!user) {
-        throw new UnauthorizedError('User not found, please login again');
-      }
-
-      email = user.email;
-      if (!fullName) {
-        fullName = user.fullName;
-      }
+    if (!userId) {
+      throw new UnauthorizedError('OAuth token missing user identity');
     }
+
+    let email: string | undefined;
+    let role: 'admin' | 'member' | undefined;
+    const user = await Users.findOne({
+      _id: userId,
+      orgId: orgId,
+      isDeleted: false,
+    })
+      .select('email fullName role')
+      .lean()
+      .exec();
+
+    // Unlike session auth, OAuth/PAT tokens can outlive the user by
+    // months or years — a removed employee's token must stop working
+    // the same way an expired session would, not just lose its email.
+    if (!user) {
+      throw new UnauthorizedError('User not found, please login again');
+    }
+
+    email = user.email;
+    if (!fullName) {
+      fullName = user.fullName;
+    }
+    // Attach role so Node-side isUserAdmin matches session-JWT behavior
+    // (OAuth access tokens do not carry a role claim).
+    role = user.role === 'admin' ? 'admin' : 'member';
 
     if (!accountType && isClientCredentials) {
       try {
@@ -216,6 +235,7 @@ export class AuthMiddleware {
       email,
       fullName,
       accountType,
+      role,
       isOAuth: true,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
@@ -296,8 +316,14 @@ export class AuthMiddleware {
     // token-type peek in authenticate() and every downstream verifier see a
     // bare JWT — every other token type never has this prefix, so this is a
     // no-op for them.
-    return token.startsWith(PAT_TOKEN_PREFIX)
-      ? token.slice(PAT_TOKEN_PREFIX.length)
-      : token;
+    if (!token.startsWith(PAT_TOKEN_PREFIX)) return token;
+
+    const bare = token.slice(PAT_TOKEN_PREFIX.length);
+    // Normalise the header too, not just the return value. Several controllers
+    // forward req.headers.authorization verbatim to the Python services, which
+    // have no notion of the prefix and fail JWT decode on it. Rewriting it here
+    // keeps every downstream consumer on a bare JWT.
+    req.headers.authorization = `Bearer ${bare}`;
+    return bare;
   }
 }

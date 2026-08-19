@@ -371,7 +371,6 @@ def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {client._access_token}",
         "Content-Type": "application/json",
-        "X-Is-Admin": "true",
     }
 
 

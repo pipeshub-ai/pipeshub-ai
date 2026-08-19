@@ -144,16 +144,16 @@ export function InviteUsersSidebar({
   // ^ Only re-run when groups load or edit mode changes. Do NOT add inviteGroupIds
   //   to deps or this will undo manual edits the user makes after opening.
 
-  // Form validation (role hidden — not required for now)
+  // Form validation
   const hasValidEmails = inviteEmails.some((tag) => tag.isValid !== false);
-  const isFormValid = hasValidEmails;
+  const isFormValid = hasValidEmails && Boolean(inviteRole);
 
   const adminGroupId = groups.find((g) => g.type === GroupType.ADMIN)?._id;
-  const isGrantingAdmin = Boolean(
-    adminGroupId && inviteGroupIds.includes(adminGroupId)
-  );
+  const isGrantingAdmin =
+    inviteRole === USER_ROLES.ADMIN ||
+    Boolean(adminGroupId && inviteGroupIds.includes(adminGroupId));
 
-  // Group options for dropdown
+  // Group options for dropdown (everyone already excluded when groups are fetched)
   const groupOptions: CheckboxOption[] = groups.map((g) => ({
     id: g._id,
     label: g.name.charAt(0).toUpperCase() + g.name.slice(1),
@@ -177,16 +177,11 @@ export function InviteUsersSidebar({
         const currentRole = editingInviteUser.role || USER_ROLES.MEMBER;
         const newRole = inviteRole || USER_ROLES.MEMBER;
 
-        // Find admin group from the fetched groups list
-        const adminGroup = groups.find((g) => g.type === GroupType.ADMIN);
-
-        // Update role if changed
-        if (adminGroup && newRole !== currentRole) {
-          if (newRole === USER_ROLES.ADMIN) {
-            await GroupsApi.addUsersToGroups([userId], [adminGroup._id]);
-          } else {
-            await GroupsApi.removeUsersFromGroups([userId], [adminGroup._id]);
-          }
+        // Update role if changed (stored on User.role, not admin group)
+        if (newRole !== currentRole) {
+          await UsersApi.updateUser(userId, {
+            role: newRole === USER_ROLES.ADMIN ? 'admin' : 'member',
+          });
         }
 
         // Update group memberships
@@ -225,7 +220,11 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        await UsersApi.inviteUsers(validEmails, inviteGroupIds.length > 0 ? inviteGroupIds : undefined);
+        await UsersApi.inviteUsers(
+          validEmails,
+          inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
+          inviteRole || USER_ROLES.MEMBER,
+        );
 
         const emailDisplay =
           validEmails.length === 1
@@ -559,8 +558,8 @@ export function InviteUsersSidebar({
           />
         </FormField>
 
-        {/* Role dropdown — hidden for now */}
-        {/* <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
+        {/* Role dropdown */}
+        <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
           <SelectDropdown
             value={inviteRole}
             onChange={setInviteRole}
@@ -570,7 +569,7 @@ export function InviteUsersSidebar({
               'Assign team member role'
             )}
           />
-        </FormField> */}
+        </FormField>
 
         {/* Groups dropdown */}
         <FormField

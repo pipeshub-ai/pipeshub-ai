@@ -491,45 +491,15 @@ class Processor:
                     await asyncio.gather(*page_build_tasks, return_exceptions=True)
                     raise
 
-                all_blocks = []
-                all_block_groups = []
-                block_index_offset = 0
-                block_group_index_offset = 0
-
+                combined_block_containers = BlocksContainer()
                 for page_block_containers in page_block_results:
                     if page_block_containers:
-                        # Adjust block indices to be unique across all pages
-                        for block in page_block_containers.blocks:
-                            block.index = block.index + block_index_offset
-                            if block.parent_index is not None:
-                                block.parent_index = (
-                                    block.parent_index + block_group_index_offset
-                                )
-                            all_blocks.append(block)
+                        combined_block_containers.extend(page_block_containers)
 
-                        for block_group in page_block_containers.block_groups:
-                            block_group.index = (
-                                block_group.index + block_group_index_offset
-                            )
-                            if block_group.parent_index is not None:
-                                block_group.parent_index = (
-                                    block_group.parent_index + block_group_index_offset
-                                )
-                            if block_group.children:
-                                for range_obj in block_group.children.block_ranges:
-                                    range_obj.start += block_index_offset
-                                    range_obj.end += block_index_offset
-                                for range_obj in block_group.children.block_group_ranges:
-                                    range_obj.start += block_group_index_offset
-                                    range_obj.end += block_group_index_offset
-                            all_block_groups.append(block_group)
-
-                        block_index_offset = len(all_blocks)
-                        block_group_index_offset = len(all_block_groups)
-
-                # Create combined BlocksContainer
-                combined_block_containers = BlocksContainer(blocks=all_blocks, block_groups=all_block_groups)
-                self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
+                self.logger.info(
+                    f"📦 Combined {len(combined_block_containers.blocks)} blocks and "
+                    f"{len(combined_block_containers.block_groups)} block groups from all pages"
+                )
 
                 # Get record and run indexing pipeline
                 record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)

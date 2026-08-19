@@ -2,8 +2,16 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { userAdminOrSelfCheck } from '../../../../src/modules/user_management/middlewares/userAdminOrSelfCheck';
-import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import mongoose from 'mongoose';
+
+function stubUserRole(role: 'admin' | 'member' | null) {
+  return sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().resolves(role ? { role } : null),
+    }),
+  } as any);
+}
 
 describe('userAdminOrSelfCheck Middleware', () => {
   let req: any;
@@ -36,12 +44,7 @@ describe('userAdminOrSelfCheck Middleware', () => {
   });
 
   it('should call next() without error when user is admin', async () => {
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([
-        { type: 'admin' },
-        { type: 'everyone' },
-      ]),
-    } as any);
+    stubUserRole('admin');
 
     await userAdminOrSelfCheck(req, res, next);
 
@@ -50,16 +53,10 @@ describe('userAdminOrSelfCheck Middleware', () => {
   });
 
   it('should call next() without error when user is modifying self', async () => {
-    // User is not admin but is modifying their own record
     req.user.userId = targetUserId;
     req.params.id = targetUserId;
 
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([
-        { type: 'standard' },
-        { type: 'everyone' },
-      ]),
-    } as any);
+    stubUserRole('member');
 
     await userAdminOrSelfCheck(req, res, next);
 
@@ -71,12 +68,7 @@ describe('userAdminOrSelfCheck Middleware', () => {
     req.user.userId = standardUserId;
     req.params.id = targetUserId;
 
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([
-        { type: 'standard' },
-        { type: 'everyone' },
-      ]),
-    } as any);
+    stubUserRole('member');
 
     await userAdminOrSelfCheck(req, res, next);
 
@@ -121,27 +113,29 @@ describe('userAdminOrSelfCheck Middleware', () => {
     expect(error.message).to.equal('Account not found');
   });
 
-  it('should query UserGroups with correct parameters', async () => {
-    const selectStub = sinon.stub().resolves([{ type: 'admin' }]);
-    const findStub = sinon.stub(UserGroups, 'find').returns({
+  it('should query Users with correct parameters', async () => {
+    const leanStub = sinon.stub().resolves({ role: 'admin' });
+    const selectStub = sinon.stub().returns({ lean: leanStub });
+    const findOneStub = sinon.stub(Users, 'findOne').returns({
       select: selectStub,
     } as any);
 
     await userAdminOrSelfCheck(req, res, next);
 
-    expect(findStub.calledOnce).to.be.true;
-    const query = findStub.firstCall.args[0];
-    expect(query).to.deep.equal({
+    expect(findOneStub.calledOnce).to.be.true;
+    expect(findOneStub.firstCall.args[0]).to.deep.equal({
+      _id: adminUserId,
       orgId: orgId,
-      users: { $in: [adminUserId] },
-      isDeleted: false,
+      isDeleted: { $ne: true },
     });
   });
 
   it('should handle database errors gracefully', async () => {
     const dbError = new Error('Database connection failed');
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().rejects(dbError),
+    sinon.stub(Users, 'findOne').returns({
+      select: sinon.stub().returns({
+        lean: sinon.stub().rejects(dbError),
+      }),
     } as any);
 
     await userAdminOrSelfCheck(req, res, next);
@@ -153,13 +147,10 @@ describe('userAdminOrSelfCheck Middleware', () => {
   });
 
   it('should allow admin to modify any user regardless of id match', async () => {
-    // Admin user modifying a completely different user
     req.user.userId = adminUserId;
     req.params.id = new mongoose.Types.ObjectId().toString();
 
-    sinon.stub(UserGroups, 'find').returns({
-      select: sinon.stub().resolves([{ type: 'admin' }]),
-    } as any);
+    stubUserRole('admin');
 
     await userAdminOrSelfCheck(req, res, next);
 

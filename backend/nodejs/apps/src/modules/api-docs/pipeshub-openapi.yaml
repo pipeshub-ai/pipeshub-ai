@@ -930,6 +930,10 @@ components:
           type: string
         designation:
           type: string
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         hasLoggedIn:
           type: boolean
         isDeleted:
@@ -2340,6 +2344,10 @@ components:
         designation:
           type: string
           description: Job title/designation
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         address:
           $ref: '#/components/schemas/Address'
         dataCollectionConsent:
@@ -2419,6 +2427,10 @@ components:
         designation:
           type: string
           description: Job title/designation
+        role:
+          type: string
+          enum: [admin, member]
+          description: Organization role stored on the user document (`admin` or `member`)
         address:
           $ref: '#/components/schemas/Address'
         dataCollectionConsent:
@@ -17339,6 +17351,7 @@ paths:
 
         - `fullName`: Required, non-empty string
         - `email`: Required, valid email format
+        - `role`: Optional, `admin` or `member` (defaults to `member` when omitted)
         - `mobile`: Optional, must match `^\+?[0-9]{10,15}$`
         - `designation`: Optional string
 
@@ -17374,6 +17387,11 @@ paths:
                   format: email
                   description: User's email address
                   example: "john.smith@company.com"
+                role:
+                  type: string
+                  enum: [admin, member]
+                  description: Organization role to assign on create
+                  example: "member"
                 mobile:
                   type: string
                   pattern: '^$|^\+?[0-9]{10,15}$'
@@ -17396,6 +17414,7 @@ paths:
 
             - Missing required fields (`fullName`, `email`)
             - Invalid email format
+            - Invalid role (must be `admin` or `member` when provided)
             - Invalid mobile number format
             - Requester does not have admin privileges (`userAdminCheck`)
           content:
@@ -17553,6 +17572,11 @@ paths:
                   type: string
                   description: Job title or role
                   example: "Senior Software Engineer"
+                role:
+                  type: string
+                  enum: [admin, member]
+                  description: Organization role (`admin` or `member`). Only admins can change roles.
+                  example: "member"
                 address:
                   $ref: '#/components/schemas/Address'
                 dataCollectionConsent:

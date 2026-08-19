@@ -192,6 +192,7 @@ class TestGraphDBProviderFactoryCreateProvider:
         mock_create_neo4j.assert_awaited_once_with(
             logger=mock_logger,
             config_service=config,
+            accessible_records_cache=None,
         )
 
     @pytest.mark.asyncio
@@ -284,7 +285,9 @@ class TestGraphDBProviderFactoryCreateNeo4jProvider:
             config_service=config,
         )
         assert result is mock_instance
-        MockProvider.assert_called_once_with(logger=mock_logger, config_service=config)
+        MockProvider.assert_called_once_with(
+            logger=mock_logger, config_service=config, accessible_records_cache=None
+        )
         mock_instance.connect.assert_awaited_once()
 
     @pytest.mark.asyncio

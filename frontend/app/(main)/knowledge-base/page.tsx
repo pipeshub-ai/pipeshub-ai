@@ -2009,30 +2009,53 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        // 2. Fetch record details and stream file in parallel
+        // 2. Fetch details first so non-previewable records skip the stream.
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const record = recordDetails?.record;
+        if (!record) {
+          throw new Error('Record details unavailable');
+        }
+        if (record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: record.mimeType || item.extension || '',
+            size:
+              record.sizeInBytes ??
+              record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
+        // Prefer fresh record metadata for conversion; list-item fields are fallbacks.
+        const previewMime = record.mimeType || item.mimeType;
+        const previewName = record.recordName || item.name;
         const streamAsPdf =
-          isPresentationFile(item.mimeType, item.name) ||
-          isLegacyWordDocFile(item.mimeType, item.name);
+          isPresentationFile(previewMime, previewName) ||
+          isLegacyWordDocFile(previewMime, previewName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, streamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, streamOptions);
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
-        const recordMime = recordDetails.record.mimeType || item.extension || '';
+        const recordMime = record.mimeType || item.extension || '';
         const resolvedType = resolvePreviewMimeAfterStream(
           recordMime,
-          item.name,
+          previewName,
           blob,
           !!streamOptions,
         );
-        const fr = recordDetails.record.fileRecord;
+        const fr = record.fileRecord;
         const isDocx = isDocxFile(
-          recordDetails.record.mimeType,
+          record.mimeType,
           item.name,
-          recordDetails.record.recordName,
+          record.recordName,
           item.extension ?? undefined,
           fr?.extension,
         );
@@ -2046,13 +2069,13 @@ function KnowledgeBasePageContent() {
           blob: isDocx ? blob : undefined,
           type: resolvedType,
           size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
+            record.sizeInBytes ??
+            record.fileRecord?.sizeInBytes ??
             undefined,
           isLoading: false,
           recordDetails,
-          webUrl: recordDetails.record.webUrl || undefined,
-          previewRenderable: recordDetails.record.previewRenderable,
+          webUrl: record.webUrl || undefined,
+          previewRenderable: record.previewRenderable,
         });
 
       } catch (error) {
@@ -2082,28 +2105,50 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
+        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const record = recordDetails?.record;
+        if (!record) {
+          throw new Error('Record details unavailable');
+        }
+        if (record.previewRenderable === false) {
+          setPreviewFile({
+            id: item.id,
+            name: item.name,
+            url: '',
+            type: record.mimeType || item.fileType || '',
+            size:
+              record.sizeInBytes ??
+              record.fileRecord?.sizeInBytes ??
+              undefined,
+            isLoading: false,
+            recordDetails,
+            webUrl: record.webUrl || undefined,
+            previewRenderable: false,
+          });
+          return;
+        }
+
+        const previewMime = record.mimeType || item.fileType;
+        const previewName = record.recordName || item.name;
         const legacyStreamAsPdf =
-          isPresentationFile(item.fileType, item.name) ||
-          isLegacyWordDocFile(item.fileType, item.name);
+          isPresentationFile(previewMime, previewName) ||
+          isLegacyWordDocFile(previewMime, previewName);
         const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const [recordDetails, blob] = await Promise.all([
-          KnowledgeBaseApi.getRecordDetails(item.id),
-          KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions),
-        ]);
+        const blob = await KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions);
 
         // DOCX uses the Blob directly; other types stay on URLs.
-        const legacyRecordMime = recordDetails.record.mimeType || item.fileType || '';
+        const legacyRecordMime = record.mimeType || item.fileType || '';
         const resolvedType = resolvePreviewMimeAfterStream(
           legacyRecordMime,
-          item.name,
+          previewName,
           blob,
           !!legacyStreamOptions,
         );
-        const frLegacy = recordDetails.record.fileRecord;
+        const frLegacy = record.fileRecord;
         const isDocx = isDocxFile(
-          recordDetails.record.mimeType,
+          record.mimeType,
           item.name,
-          recordDetails.record.recordName,
+          record.recordName,
           undefined,
           frLegacy?.extension,
         );
@@ -2116,13 +2161,13 @@ function KnowledgeBasePageContent() {
           blob: isDocx ? blob : undefined,
           type: resolvedType,
           size:
-            recordDetails.record.sizeInBytes ??
-            recordDetails.record.fileRecord?.sizeInBytes ??
+            record.sizeInBytes ??
+            record.fileRecord?.sizeInBytes ??
             undefined,
           isLoading: false,
           recordDetails,
-          webUrl: recordDetails.record.webUrl || undefined,
-          previewRenderable: recordDetails.record.previewRenderable,
+          webUrl: record.webUrl || undefined,
+          previewRenderable: record.previewRenderable,
         });
 
       } catch (error) {

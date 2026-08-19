@@ -193,7 +193,8 @@ export class IamService {
     try {
       const config = {
         method: 'get',
-        url: `${this.authConfig.iamBackend}/api/v1/users/${userId}/adminCheck`,
+        // Internal S2S path: USER_LOOKUP scoped token (no user-session role claim).
+        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${userId}/adminCheck`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',

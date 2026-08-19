@@ -23,14 +23,16 @@ export interface UserData {
   createdAt: string;
   updatedAt: string;
   slug?: string;
+  role?: string;
 }
 
 export interface UpdateUserPayload {
-  fullName: string;
+  fullName?: string;
   firstName?: string;
   lastName?: string;
   designation?: string;
   email?: string;
+  role?: string;
 }
 
 export interface ChangePasswordPayload {

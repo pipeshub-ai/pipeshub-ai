@@ -422,6 +422,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.kb_entities_processor = kb_entities_processor
     logger.info("✅ KB entities processor initialized")
 
+    # Sync completion and KB deletes happen here; both drop the query service's
+    # cached accessible-record maps.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        accessible_records_cache = await AccessibleRecordsCache.create(
+            logger, app_container.config_service()
+        )
+        app.state.accessible_records_cache = accessible_records_cache
+        init_accessible_records_invalidator(logger, accessible_records_cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -519,6 +534,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -817,8 +839,28 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 
-def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
-    """Run the application"""
+def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
+    """Run the application.
+
+    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
+    matching docling/indexing/parsing's own env-var pattern). Raising this
+    above 1 gives the single-threaded event loop more headroom to serve
+    concurrent ``/stream/record`` requests during a large sync instead of
+    queuing behind it — but every uvicorn worker is a separate OS process,
+    and this service's cross-request dedup (``sync_task_manager`` /
+    ``reindex_task_manager`` in
+    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
+    per process, not shared across workers. With >1 worker, a duplicate
+    sync/reindex request landing on a different worker than the in-flight
+    one will not be recognised as a duplicate and can run concurrently.
+    Only raise this if that is an acceptable tradeoff for your deployment,
+    or once that dedup is moved to a shared store (Redis lock/lease).
+    """
+    if workers is None:
+        try:
+            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+        except ValueError:
+            workers = 1
     if reload and workers > 1:
         workers = 1
     uvicorn.run(

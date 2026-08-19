@@ -28,6 +28,21 @@ export interface DocumentInfoResponse {
   document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
 }
 
+/**
+ * Read-only callers can ask for a plain object instead of a hydrated model.
+ *
+ * Mongoose hydration -- schema defaults, casting, getters, change tracking --
+ * measured ~20% of gateway CPU under load, and the download path reads a
+ * handful of fields and never saves. Opt-in rather than default because other
+ * callers of getDocumentInfo do mutate and save the document.
+ */
+// `Document` here is the plain data interface from storage.service.types.
+// NOT DocumentModel: that is declared `extends IDocument, MongooseDocument`, so
+// it carries save()/markModified()/etc and a lean object typed as it would
+// still compile against the hydrated-only API -- exactly the runtime crash the
+// lean path is meant to make impossible.
+export type LeanDocumentInfoResponse = { document: Document };
+
 export function encodeRFC5987(str: string): string {
   return encodeURIComponent(str)
     .replace(/'/g, '%27')
@@ -39,7 +54,18 @@ export function encodeRFC5987(str: string): string {
 async function getDocumentInfoFromDb(
   documentId: string,
   orgId: mongoose.Types.ObjectId,
-): Promise<DocumentInfoResponse | undefined> {
+  lean: true,
+): Promise<LeanDocumentInfoResponse | undefined>;
+async function getDocumentInfoFromDb(
+  documentId: string,
+  orgId: mongoose.Types.ObjectId,
+  lean?: false,
+): Promise<DocumentInfoResponse | undefined>;
+async function getDocumentInfoFromDb(
+  documentId: string,
+  orgId: mongoose.Types.ObjectId,
+  lean = false,
+): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
   try {
     // Validate documentId is a valid ObjectId
     if (!mongoose.isValidObjectId(documentId)) {
@@ -47,11 +73,12 @@ async function getDocumentInfoFromDb(
     }
 
     // Fetch the document from MongoDB
-    const document = await DocumentModel.findOne({
+    const query = DocumentModel.findOne({
       _id: documentId,
       orgId,
       isDeleted: false,
     });
+    const document = lean ? await query.lean<Document>().exec() : await query;
 
     if (!document) {
       throw new NotFoundError('Document not found');
@@ -79,7 +106,18 @@ async function getDocumentInfoFromDb(
 export async function getDocumentInfo(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
-): Promise<DocumentInfoResponse | undefined> {
+  lean: true,
+): Promise<LeanDocumentInfoResponse | undefined>;
+export async function getDocumentInfo(
+  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  next: NextFunction,
+  lean?: false,
+): Promise<DocumentInfoResponse | undefined>;
+export async function getDocumentInfo(
+  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  next: NextFunction,
+  lean = false,
+): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
   try {
     const orgId = extractOrgId(req);
     const documentId = req.params.documentId;
@@ -88,7 +126,11 @@ export async function getDocumentInfo(
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
-    const documentInfo = await getDocumentInfoFromDb(documentId, orgID);
+    // Branch rather than pass the boolean through: the overloads are what stop
+    // a lean object being handed to a caller expecting a hydrated document.
+    const documentInfo = lean
+      ? await getDocumentInfoFromDb(documentId, orgID, true)
+      : await getDocumentInfoFromDb(documentId, orgID, false);
     if (!documentInfo) {
       throw new NotFoundError('Document not found');
     }

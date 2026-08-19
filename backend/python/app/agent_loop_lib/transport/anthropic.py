@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
 
 # Status codes considered transient/retryable regardless of which SDK exception
 # type raised them. Kept in sync with RetryConfig.retryable_status_codes default.
@@ -63,6 +65,11 @@ class AnthropicTransport(LLMTransport):
         api_key: str,
         model: str = DEFAULT_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        thinking: dict[str, Any] | None = None,
+        temperature: float | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        model_key: str | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -76,7 +83,18 @@ class AnthropicTransport(LLMTransport):
         self._api_key = api_key
         self._model = model
         self._max_tokens = max_tokens
-        self._client = _anthropic.AsyncAnthropic(api_key=api_key)
+        # Captured from the configured model, not passed per call: LangChain
+        # bakes thinking into the model object, so threading it per call would
+        # itself be a behavioural difference. See from_langchain_model.
+        self._thinking = thinking
+        self._temperature = temperature
+        self._model_key = model_key
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        if timeout is not None:
+            client_kwargs["timeout"] = timeout
+        if max_retries is not None:
+            client_kwargs["max_retries"] = max_retries
+        self._client = _anthropic.AsyncAnthropic(**client_kwargs)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; `Agent.usage` (a `RunUsage` built from each call's
         # returned `ModelResponse.usage`) is the source of truth callers
@@ -86,6 +104,81 @@ class AnthropicTransport(LLMTransport):
         self.total_llm_calls: int = 0
         self.total_cache_read_tokens: int = 0
         self.total_cache_write_tokens: int = 0
+
+
+    @classmethod
+    def from_langchain_model(
+        cls, llm: Any, model_name: str = "", model_key: str | None = None,
+    ) -> "AnthropicTransport":
+        """Build from an already-configured `ChatAnthropic`.
+
+        Same contract as the OpenAI/Azure transports: capture what the LangChain
+        arm would send rather than re-deriving it.
+
+        Thinking is read out of the request payload LangChain builds, not off an
+        attribute. `aimodels` sets `reasoning_effort`, and langchain-anthropic
+        translates that into `thinking` only at request-build time -- on the live
+        deployment it produces `{"type": "adaptive", "display": "summarized"}`,
+        which is not something to hand-derive from the effort string without
+        drifting the moment that mapping changes. Falls back to an explicit
+        `thinking` attribute, then to nothing.
+        """
+        def _val(name: str) -> str:
+            raw = getattr(llm, name, None)
+            secret = getattr(raw, "get_secret_value", None)
+            return (secret() if callable(secret) else raw) or ""
+
+        api_key = _val("anthropic_api_key") or _val("api_key")
+        if not api_key:
+            raise ValueError(
+                f"{type(llm).__name__} has no anthropic_api_key; the direct "
+                "Anthropic transport only supports ChatAnthropic-configured models"
+            )
+
+        max_tokens = getattr(llm, "max_tokens", None) or cls.DEFAULT_MAX_TOKENS
+        thinking = cls._thinking_from(llm)
+        if thinking is None:
+            configured = getattr(llm, "thinking", None)
+            thinking = configured if isinstance(configured, dict) else None
+
+        timeout = getattr(llm, "default_request_timeout", None)
+        if timeout is None:
+            timeout = getattr(llm, "timeout", None)
+        max_retries = getattr(llm, "max_retries", None)
+
+        return cls(
+            api_key=api_key,
+            model=model_name or getattr(llm, "model", "") or cls.DEFAULT_MODEL,
+            max_tokens=int(max_tokens),
+            thinking=thinking,
+            # Anthropic rejects temperature together with extended thinking, and
+            # aimodels already leaves it unset for thinking models -- carry
+            # whatever it decided rather than second-guessing it here.
+            temperature=getattr(llm, "temperature", None),
+            timeout=timeout if isinstance(timeout, (int, float)) else None,
+            max_retries=max_retries if isinstance(max_retries, int) else None,
+            model_key=model_key,
+        )
+
+    @staticmethod
+    def _thinking_from(llm: Any) -> dict[str, Any] | None:
+        """`thinking` out of the payload langchain-anthropic would POST.
+
+        Private SDK surface, so it is wrapped: a langchain-anthropic upgrade that
+        renames it degrades to no thinking rather than raising mid-request, and
+        the parity test pins the behaviour so the build catches it first.
+        """
+        builder = getattr(llm, "_get_request_payload", None)
+        if not callable(builder):
+            return None
+        try:
+            from langchain_core.messages import HumanMessage
+
+            payload = builder([HumanMessage(content="x")], stop=None)
+        except Exception:
+            return None
+        thinking = payload.get("thinking") if isinstance(payload, dict) else None
+        return thinking if isinstance(thinking, dict) else None
 
     @property
     def provider(self) -> str:
@@ -148,11 +241,17 @@ class AnthropicTransport(LLMTransport):
         text: str | None = None
         for block in response.content:
             if block.type == "tool_use":
+                # Through the shared normaliser for the same 128-char name clamp
+                # the LangChain arm applies (converters._clamp_tool_call_name):
+                # an over-long hallucinated name otherwise reaches history and is
+                # re-sent every turn. Arguments arrive already parsed here -- the
+                # SDK accumulates input_json_delta itself -- so the JSON repair
+                # half is a no-op, unlike the OpenAI paths.
                 tool_calls.append(
-                    ToolCall(
-                        id=block.id,
-                        name=block.name,
-                        arguments=dict(block.input),
+                    normalise_tool_call(
+                        block.id,
+                        block.name,
+                        json.dumps(dict(block.input or {})),
                     )
                 )
             elif block.type == "text":
@@ -327,6 +426,24 @@ class AnthropicTransport(LLMTransport):
             # thinking budget — grow it rather than silently truncating output.
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
             kwargs["max_tokens"] = max(self._max_tokens, thinking_budget + 1024)
+        elif self._thinking:
+            kwargs["thinking"] = dict(self._thinking)
+            # A captured {"type": "enabled", "budget_tokens": N} needs headroom
+            # above N for the same reason the per-call branch above does, or the
+            # request 400s. "adaptive" carries no budget and needs nothing.
+            budget = self._thinking.get("budget_tokens")
+            if isinstance(budget, int) and budget:
+                kwargs["max_tokens"] = max(self._max_tokens, budget + 1024)
+        # Anthropic rejects temperature alongside extended thinking (enabled /
+        # adaptive). {"type": "disabled"} is truthy but allows temperature —
+        # match LangChain, which still sends it for that configuration.
+        thinking_cfg = kwargs.get("thinking")
+        thinking_active = (
+            isinstance(thinking_cfg, dict)
+            and thinking_cfg.get("type") in ("enabled", "adaptive")
+        )
+        if self._temperature is not None and not thinking_active:
+            kwargs["temperature"] = self._temperature
         # effort has no Anthropic equivalent today — accepted for interface
         # parity with other providers and intentionally a no-op here.
         system_list = self._build_system_kwargs(system, system_blocks)
@@ -410,6 +527,21 @@ class AnthropicTransport(LLMTransport):
         if thinking_budget:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
             kwargs["max_tokens"] = max(self._max_tokens, thinking_budget + 1024)
+        elif self._thinking:
+            kwargs["thinking"] = dict(self._thinking)
+            # A captured {"type": "enabled", "budget_tokens": N} needs headroom
+            # above N for the same reason the per-call branch above does, or the
+            # request 400s. "adaptive" carries no budget and needs nothing.
+            budget = self._thinking.get("budget_tokens")
+            if isinstance(budget, int) and budget:
+                kwargs["max_tokens"] = max(self._max_tokens, budget + 1024)
+        thinking_cfg = kwargs.get("thinking")
+        thinking_active = (
+            isinstance(thinking_cfg, dict)
+            and thinking_cfg.get("type") in ("enabled", "adaptive")
+        )
+        if self._temperature is not None and not thinking_active:
+            kwargs["temperature"] = self._temperature
         # effort has no Anthropic equivalent today — same no-op as complete().
         system_list = self._build_system_kwargs(system, system_blocks)
         if system_list:

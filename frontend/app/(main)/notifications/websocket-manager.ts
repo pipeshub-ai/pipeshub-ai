@@ -5,7 +5,7 @@ import {
   connectNotificationSocket,
   disconnectNotificationSocket,
 } from '@/lib/socket/notification-socket';
-import { useAuthStore } from '@/config';
+import { logoutAndRedirect, useAuthStore } from '@/config';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
 
@@ -68,8 +68,14 @@ export function useNotificationSocket(): void {
       }
     };
 
+    const onForceLogout = () => {
+      disconnectNotificationSocket();
+      logoutAndRedirect();
+    };
+
     sock.on('connect', onConnect);
     sock.on('newNotification', onNew);
+    sock.on('force_logout', onForceLogout);
 
     if (sock.connected) {
       void onConnect();
@@ -78,6 +84,7 @@ export function useNotificationSocket(): void {
     return () => {
       sock.off('connect', onConnect);
       sock.off('newNotification', onNew);
+      sock.off('force_logout', onForceLogout);
       disconnectNotificationSocket();
     };
   }, [accessToken, isAuthenticated, isHydrated, addNotification]);

@@ -243,6 +243,8 @@ class MessageErrorClassifier:
 
         Classification rules:
         0. Walk exception chain to find root cause (handles wrapped exceptions)
+        0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
+            failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
         2. JSON decode errors = TERMINAL (bad message format)
         3. Pydantic ValidationError = TERMINAL (invalid schema)
@@ -280,7 +282,24 @@ class MessageErrorClassifier:
             if aiohttp_result is not None:
                 return aiohttp_result
 
-        # 0c. Scan full chain for terminal exception types before HTTP status rules.
+        # 0c. Parsing-service structured errors: PARSE_BACKPRESSURE means the
+        # service is saturated but healthy (admission gate timed out) and
+        # must be retried, never treated as a content failure or bubbled up
+        # to open a circuit breaker. Every other ParseErrorCode is a
+        # content-level failure that will fail identically on retry.
+        try:
+            from app.services.parsing.client import ParsingClientError
+            from app.services.parsing.interface import ParseErrorCode
+
+            for chain_exc in chain:
+                if isinstance(chain_exc, ParsingClientError):
+                    if chain_exc.code == ParseErrorCode.PARSE_BACKPRESSURE:
+                        return MessageErrorType.TRANSIENT
+                    return MessageErrorType.TERMINAL
+        except ImportError:
+            pass
+
+        # 0d. Scan full chain for terminal exception types before HTTP status rules.
         # Processing failures must win over incidental infrastructure errors deeper in the chain.
         # A wrapped DocumentProcessingError must be caught before an ApiCallError 500.
         for chain_exc in chain:

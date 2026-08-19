@@ -35,6 +35,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
+from app.connectors.sources.google.common.impersonation import (
+    MAX_IMPERSONATION_CANDIDATES,
+    get_impersonation_candidates,
+    resolve_explicit_user,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -43,6 +48,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 
@@ -233,6 +239,7 @@ def connector():
         dep.on_updated_record_permissions = AsyncMock()
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -488,6 +495,294 @@ class TestCreateUserGmailClient:
             )
             with pytest.raises(Exception, match="build failed"):
                 await connector._create_user_gmail_client("user@example.com")
+
+
+# ===========================================================================
+# _get_gmail_client_for_user
+# ===========================================================================
+
+class TestGetGmailClientForUser:
+    @pytest.mark.asyncio
+    async def test_with_user_email_success(self, connector):
+        sentinel = AsyncMock()
+        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock,
+                          return_value=sentinel):
+            result = await connector._get_gmail_client_for_user("u@x.com")
+        assert result is sentinel
+
+    @pytest.mark.asyncio
+    async def test_impersonation_failure_raises(self, connector):
+        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock,
+                          side_effect=Exception("impersonate fail")):
+            with pytest.raises(Exception, match="impersonate fail"):
+                await connector._get_gmail_client_for_user("u@x.com")
+
+    @pytest.mark.asyncio
+    async def test_no_user_email_uses_service_account(self, connector):
+        with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create:
+            result = await connector._get_gmail_client_for_user(None)
+        mock_create.assert_not_called()
+        assert result is connector.gmail_data_source
+
+    @pytest.mark.asyncio
+    async def test_no_gmail_data_source_raises(self, connector):
+        connector.gmail_data_source = None
+        with pytest.raises(HTTPException):
+            await connector._get_gmail_client_for_user(None)
+
+
+# ===========================================================================
+# resolve_explicit_user
+# ===========================================================================
+
+class TestResolveExplicitUser:
+    @pytest.mark.asyncio
+    async def test_no_user_id_returns_none(self, connector):
+        result = await resolve_explicit_user(connector.logger, connector.data_entities_processor, None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_string_returns_none(self, connector):
+        result = await resolve_explicit_user(connector.logger, connector.data_entities_processor, "")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_string_none_returns_none(self, connector):
+        result = await resolve_explicit_user(connector.logger, connector.data_entities_processor, "None")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_user_not_found_raises(self, connector):
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(connector.logger, connector.data_entities_processor, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    @pytest.mark.asyncio
+    async def test_user_without_email_raises(self, connector):
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User(email="", is_active=True)
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(connector.logger, connector.data_entities_processor, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    @pytest.mark.asyncio
+    async def test_success_returns_user(self, connector):
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User(email="u@x.com", is_active=True)
+        )
+        result = await resolve_explicit_user(connector.logger, connector.data_entities_processor, "uid-1")
+        assert result is not None
+        assert result.email == "u@x.com"
+        assert result.is_active is True
+
+
+# ===========================================================================
+# get_impersonation_candidates
+# ===========================================================================
+
+class TestGetImpersonationCandidates:
+    @pytest.mark.asyncio
+    async def test_no_permission_holders_returns_empty(self, connector):
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_synced_workspace_users_come_first(self, connector):
+        connector.synced_user_emails = {"in-workspace@x.com"}
+        outside = User(email="outside@x.com")
+        inside = User(email="in-workspace@x.com")
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[outside, inside]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert [u.email for u in result] == ["in-workspace@x.com", "outside@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_active_users_come_before_inactive_within_group(self, connector):
+        connector.synced_user_emails = {"active@x.com", "inactive@x.com"}
+        inactive = User(email="inactive@x.com", is_active=False)
+        active = User(email="active@x.com", is_active=True)
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[inactive, active]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert [u.email for u in result] == ["active@x.com", "inactive@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_empty_synced_emails_tries_everyone(self, connector):
+        connector.synced_user_emails = set()
+        u1 = User(email="a@x.com")
+        u2 = User(email="b@x.com")
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert {u.email for u in result} == {"a@x.com", "b@x.com"}
+
+    @pytest.mark.asyncio
+    async def test_dedupes_case_insensitive_emails(self, connector):
+        u1 = User(email="Dup@x.com")
+        u2 = User(email="dup@x.com")
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_users_without_email(self, connector):
+        u1 = User(email="")
+        u2 = User(email="ok@x.com")
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails
+        )
+        assert [u.email for u in result] == ["ok@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_caps_candidates_at_max(self, connector):
+        users = [User(email=f"user{i}@x.com") for i in range(40)]
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=users
+        )
+        result = await get_impersonation_candidates(
+            connector.data_entities_processor, "rec-1", connector.synced_user_emails, connector.logger
+        )
+        assert len(result) == MAX_IMPERSONATION_CANDIDATES
+
+
+# ===========================================================================
+# _get_gmail_service_with_fallback
+# ===========================================================================
+
+class TestGetGmailServiceWithFallback:
+    @pytest.mark.asyncio
+    async def test_first_candidate_succeeds(self, connector):
+        candidates = [User(email="a@x.com")]
+
+        async def fake_get_client(email):
+            ds = MagicMock()
+            ds.client = f"client-for-{email}"
+            return ds
+
+        async def call(client, email):
+            return f"result-{client}-{email}"
+
+        with patch.object(connector, "_get_gmail_client_for_user", side_effect=fake_get_client):
+            email, result = await connector._get_gmail_service_with_fallback(candidates, call)
+
+        assert email == "a@x.com"
+        assert result == "result-client-for-a@x.com-a@x.com"
+
+    @pytest.mark.asyncio
+    async def test_retries_next_candidate_on_unauthorized_client(self, connector):
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def fake_get_client(email):
+            ds = MagicMock()
+            ds.client = f"client-for-{email}"
+            return ds
+
+        attempted = []
+
+        async def call(client, email):
+            attempted.append(email)
+            if email == "a@x.com":
+                raise Exception("unauthorized_client: not authorized")
+            return "ok"
+
+        with patch.object(connector, "_get_gmail_client_for_user", side_effect=fake_get_client):
+            email, result = await connector._get_gmail_service_with_fallback(candidates, call)
+
+        assert email == "b@x.com"
+        assert result == "ok"
+        assert attempted == ["a@x.com", "b@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_non_delegation_error_raised_immediately(self, connector):
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def fake_get_client(email):
+            ds = MagicMock()
+            ds.client = "client"
+            return ds
+
+        async def call(client, email):
+            raise Exception("message not found")
+
+        with patch.object(connector, "_get_gmail_client_for_user", side_effect=fake_get_client):
+            with pytest.raises(Exception, match="message not found"):
+                await connector._get_gmail_service_with_fallback(candidates, call)
+
+    @pytest.mark.asyncio
+    async def test_all_candidates_fail_falls_back_to_service_account(self, connector):
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def fake_get_client(email):
+            ds = MagicMock()
+            ds.client = "sa-client" if email is None else f"client-for-{email}"
+            return ds
+
+        async def call(client, email):
+            if client == "sa-client":
+                return "sa-result"
+            raise Exception("unauthorized_client")
+
+        with patch.object(connector, "_get_gmail_client_for_user", side_effect=fake_get_client):
+            email, result = await connector._get_gmail_service_with_fallback(candidates, call)
+
+        assert email is None
+        assert result == "sa-result"
+
+    @pytest.mark.asyncio
+    async def test_empty_candidates_falls_back_directly(self, connector):
+        async def call(client, email):
+            return f"result-{client}-{email}"
+
+        with patch.object(connector, "_get_gmail_client_for_user", new_callable=AsyncMock) as mock_get:
+            ds = MagicMock()
+            ds.client = "sa-client"
+            mock_get.return_value = ds
+            email, result = await connector._get_gmail_service_with_fallback([], call)
+
+        mock_get.assert_awaited_once_with(None)
+        assert email is None
+        assert result == "result-sa-client-None"
+
+    @pytest.mark.asyncio
+    async def test_skips_candidate_without_email(self, connector):
+        candidates = [User(email=""), User(email="b@x.com")]
+
+        async def fake_get_client(email):
+            ds = MagicMock()
+            ds.client = f"client-for-{email}"
+            return ds
+
+        async def call(client, email):
+            return f"ok-{client}"
+
+        with patch.object(connector, "_get_gmail_client_for_user", side_effect=fake_get_client):
+            email, result = await connector._get_gmail_service_with_fallback(candidates, call)
+
+        assert email == "b@x.com"
+        assert result == "ok-client-for-b@x.com"
 
 
 # ===========================================================================
@@ -1310,15 +1605,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         message_payload = {
@@ -1352,16 +1641,6 @@ class TestStreamAttachmentRecord:
             parent_external_record_id=None,
         )
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=None)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
-
         with pytest.raises(HTTPException) as exc_info:
             await connector._stream_attachment_record(
                 MagicMock(), "msg123~1", record, "file.txt", "text/plain"
@@ -1377,15 +1656,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1414,15 +1687,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1446,15 +1713,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1485,15 +1746,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1525,15 +1780,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1567,15 +1816,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         mock_resp = MagicMock()
@@ -1599,15 +1842,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1635,15 +1872,9 @@ class TestStreamAttachmentRecord:
         parent_record = MagicMock()
         parent_record.external_record_id = "msg123"
 
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=parent_record)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
 
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {}
@@ -1671,15 +1902,9 @@ class TestStreamRecord:
             mock_gmail_ds.client = MagicMock()
             mock_create.return_value = mock_gmail_ds
 
-            tx = AsyncMock()
-            tx.get_user_by_user_id = AsyncMock(return_value={"email": "u@e.com"})
-
-            @asynccontextmanager
-            async def _transaction():
-                yield tx
-
-            connector.data_store_provider = MagicMock()
-            connector.data_store_provider.transaction = _transaction
+            connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+                return_value=User(email="u@e.com")
+            )
 
             await connector.stream_record(record, user_id="user-1")
             connector._stream_mail_record.assert_called_once()
@@ -1695,15 +1920,9 @@ class TestStreamRecord:
             mock_gmail_ds.client = MagicMock()
             mock_create.return_value = mock_gmail_ds
 
-            tx = AsyncMock()
-            tx.get_user_by_user_id = AsyncMock(return_value={"email": "u@e.com"})
-
-            @asynccontextmanager
-            async def _transaction():
-                yield tx
-
-            connector.data_store_provider = MagicMock()
-            connector.data_store_provider.transaction = _transaction
+            connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+                return_value=User(email="u@e.com")
+            )
 
             await connector.stream_record(record, user_id="user-1")
             connector._stream_attachment_record.assert_called_once()
@@ -1718,14 +1937,13 @@ class TestStreamRecord:
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_user_not_found_falls_back_to_permission(self, connector):
+    async def test_user_not_found_raises(self, connector):
         record = _make_mock_record(record_type=RecordTypes.MAIL.value)
 
         user_with_perm = MagicMock()
         user_with_perm.email = "perm-user@e.com"
 
         tx = AsyncMock()
-        tx.get_user_by_user_id = AsyncMock(return_value=None)
         tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user_with_perm)
 
         @asynccontextmanager
@@ -1734,7 +1952,10 @@ class TestStreamRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
 
+        # An explicit user_id that can't be resolved must raise rather than
+        # silently falling back to permission-holder candidates.
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
              patch.object(connector, "_stream_mail_record", new_callable=AsyncMock,
                           return_value=MagicMock()):
@@ -1742,7 +1963,9 @@ class TestStreamRecord:
             mock_gmail_ds.client = MagicMock()
             mock_create.return_value = mock_gmail_ds
 
-            await connector.stream_record(record, user_id="bad-user")
+            with pytest.raises(HTTPException) as exc_info:
+                await connector.stream_record(record, user_id="bad-user")
+            assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_no_user_id_gets_permission_user(self, connector):
@@ -1789,24 +2012,22 @@ class TestStreamRecord:
             await connector.stream_record(record, user_id="None")
 
     @pytest.mark.asyncio
-    async def test_impersonation_fails_falls_back(self, connector):
+    async def test_impersonation_fails_raises(self, connector):
         record = _make_mock_record(record_type=RecordTypes.MAIL.value)
 
-        tx = AsyncMock()
-        tx.get_user_by_user_id = AsyncMock(return_value={"email": "u@e.com"})
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User(email="u@e.com")
+        )
 
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
-
+        # A non-delegation impersonation failure for the one explicit candidate
+        # must surface as an error rather than silently using the service account.
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock,
                           side_effect=Exception("impersonation failed")), \
              patch.object(connector, "_stream_mail_record", new_callable=AsyncMock,
                           return_value=MagicMock()):
-            await connector.stream_record(record, user_id="user-1")
+            with pytest.raises(HTTPException) as exc_info:
+                await connector.stream_record(record, user_id="user-1")
+        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
     async def test_no_gmail_data_source_raises(self, connector):
@@ -1837,15 +2058,9 @@ class TestStreamRecord:
     async def test_convert_to_pdf_param(self, connector):
         record = _make_mock_record(record_type=RecordTypes.FILE.value)
 
-        tx = AsyncMock()
-        tx.get_user_by_user_id = AsyncMock(return_value={"email": "u@e.com"})
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User(email="u@e.com")
+        )
 
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock) as mock_create, \
              patch.object(connector, "_stream_attachment_record", new_callable=AsyncMock,
@@ -1863,15 +2078,9 @@ class TestStreamRecord:
         record.external_record_id = "msg-1"
 
         # Force exception in user lookup
-        tx = AsyncMock()
-        tx.get_user_by_user_id = AsyncMock(side_effect=Exception("db error"))
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record, user_id="user-1")
@@ -2201,6 +2410,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock), \
              patch.object(connector, "_check_and_fetch_updated_mail_record", new_callable=AsyncMock,
@@ -2223,6 +2433,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock), \
              patch.object(connector, "_check_and_fetch_updated_file_record", new_callable=AsyncMock,
@@ -2245,6 +2456,7 @@ class TestCheckAndFetchUpdatedRecord:
 
         connector.data_store_provider = MagicMock()
         connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[user])
 
         with patch.object(connector, "_create_user_gmail_client", new_callable=AsyncMock):
             result = await connector._check_and_fetch_updated_record("org-1", record)
@@ -2254,13 +2466,9 @@ class TestCheckAndFetchUpdatedRecord:
     async def test_exception_returns_none(self, connector):
         record = _make_mock_record()
 
-        @asynccontextmanager
-        async def _failing_tx():
-            raise Exception("tx error")
-            yield
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _failing_tx
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            side_effect=Exception("tx error")
+        )
 
         result = await connector._check_and_fetch_updated_record("org-1", record)
         assert result is None
@@ -2336,17 +2544,9 @@ class TestCheckAndFetchUpdatedMailRecord:
         existing.id = "existing-id"
         existing.version = 0
         existing.external_record_group_id = "u@e.com:SENT"
-
-        # Set up data store to return existing record for the connector
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         record = _make_mock_record()
         user_gmail = AsyncMock()
@@ -2796,16 +2996,9 @@ class TestProcessGmailAttachmentEdgeCases:
         existing = MagicMock()
         existing.id = "existing-att"
         existing.version = 0
-
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(return_value=existing)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         attachment_info = {
             "attachmentId": "att-1", "driveFileId": None,
@@ -2821,13 +3014,9 @@ class TestProcessGmailAttachmentEdgeCases:
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self, connector):
-        @asynccontextmanager
-        async def _failing_tx():
-            raise Exception("tx fail")
-            yield
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _failing_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("tx fail")
+        )
 
         attachment_info = {
             "attachmentId": "att-1", "driveFileId": None,

@@ -206,7 +206,7 @@ describe('IAMServiceCommand', () => {
       await cmd.execute()
       const reqHeaders = fetchStub.firstCall.args[1].headers
       expect(reqHeaders).to.have.property('authorization')
-      expect(reqHeaders).to.have.property('x-is-admin')
+      expect(reqHeaders).not.to.have.property('x-is-admin')
       expect(reqHeaders).to.have.property('content-type')
       expect(reqHeaders).not.to.have.property('x-forwarded-for')
     })

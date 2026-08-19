@@ -3,6 +3,7 @@ import logging
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -25,12 +26,42 @@ from docling_core.types.doc.document import DoclingDocument
 if TYPE_CHECKING:
     from docling.datamodel.document import ConversionResult
 
+    from app.services.resource_governor import ResourceGovernor
+
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
 
 SUCCESS_STATUS = "success"
+
+# Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
+# docling_main.py) once a ResourceGovernor is constructed for that process —
+# mirrors pdf_rasterizer.py's identical singleton and for the same reason:
+# this module is a leaf shared across services with no DI path to whichever
+# governor its caller's process owns.
+_resource_governor: "ResourceGovernor | None" = None
+
+
+def set_resource_governor(governor: "ResourceGovernor") -> None:
+    """Wire an initialized ResourceGovernor so a worker OOM-kill can trigger
+    its fast incident path instead of waiting for the next periodic sample."""
+    globals()["_resource_governor"] = governor
+
+DEFAULT_PAGE_BATCH_SIZE = 10
+
+
+def _get_page_batch_size() -> int:
+    raw = os.getenv("DOCLING_PAGE_BATCH_SIZE")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return DEFAULT_PAGE_BATCH_SIZE
+
+
+PAGE_BATCH_SIZE = _get_page_batch_size()
 
 
 def _get_local_parse_worker_count() -> int:
@@ -117,13 +148,31 @@ class DoclingProcessor():
 
         if LOCAL_DOCLING_PARSE_WORKERS > 1:
             loop = asyncio.get_running_loop()
-            serialized_doc = await loop.run_in_executor(
-                _get_process_pool(),
-                _parse_document_in_worker,
-                doc_name,
-                raw_content,
-                page_range,
-            )
+            try:
+                serialized_doc = await loop.run_in_executor(
+                    _get_process_pool(),
+                    _parse_document_in_worker,
+                    doc_name,
+                    raw_content,
+                    page_range,
+                )
+            except BrokenProcessPool:
+                self.logger.warning(
+                    "Docling process pool broke while parsing '%s' (worker "
+                    "likely OOM-killed); recreating pool",
+                    doc_name,
+                )
+                _get_process_pool.cache_clear()
+                if _resource_governor is not None:
+                    # Same rationale as pdf_rasterizer.py: a worker OOM-kill
+                    # is proof of memory exhaustion the periodic sampler may
+                    # not see for several seconds — react now instead of
+                    # letting admission keep granting heavy-parse slots at
+                    # the limit that just caused this kill.
+                    _resource_governor.report_memory_incident(
+                        "docling worker OOM-killed (BrokenProcessPool)"
+                    )
+                raise
             return DoclingDocument.model_validate_json(serialized_doc)
 
         source = DocumentStream(name=doc_name, stream=BytesIO(raw_content))

@@ -78,6 +78,11 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.common.impersonation import (
+    MAX_IMPERSONATION_CANDIDATES,
+    get_impersonation_candidates,
+    resolve_explicit_user,
+)
 from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -88,6 +93,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 
@@ -107,6 +113,11 @@ def _make_mock_tx_store(existing_record=None, user_with_permission=None, user_by
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user_with_permission)
+    # get_impersonation_candidates() (used by stream_record/_check_and_fetch_updated_record)
+    # calls the plural get_users_with_permission_to_node instead of the singular lookup above.
+    tx.get_users_with_permission_to_node = AsyncMock(
+        return_value=[user_with_permission] if user_with_permission is not None else []
+    )
     tx.get_user_by_user_id = AsyncMock(return_value=user_by_id)
     tx.create_record_relation = AsyncMock()
     return tx
@@ -158,7 +169,13 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.delete_permission_from_record = AsyncMock()
         dep.on_records_deleted_cascade = AsyncMock(return_value={"deleted_records": []})
         dep.get_placeholder_records = AsyncMock(return_value=[])
-        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_record_by_external_id = AsyncMock(return_value=existing_record)
+        dep.get_user_by_user_id = AsyncMock(
+            return_value=User.from_arango_user(user_by_id) if user_by_id else None
+        )
+        dep.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_permission] if user_with_permission is not None else []
+        )
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()
@@ -2121,8 +2138,8 @@ class TestProcessDriveItem:
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
         conn = _make_connector()
-        # Force an error by making data_store_provider.transaction raise
-        conn.data_store_provider.transaction = MagicMock(side_effect=Exception("tx fail"))
+        # Force an error on the existing-record lookup
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("lookup fail"))
         metadata = _make_file_metadata()
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "d1")
         assert result is None
@@ -3302,7 +3319,7 @@ class TestGetDriveServiceForUser:
             assert result == "user_service"
 
     @pytest.mark.asyncio
-    async def test_impersonation_failure_falls_back(self):
+    async def test_impersonation_failure_raises(self):
         conn = _make_connector()
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
@@ -3310,8 +3327,8 @@ class TestGetDriveServiceForUser:
             MockGC.build_from_services = AsyncMock(side_effect=Exception("impersonate fail"))
             conn.drive_client.get_client = MagicMock(return_value="sa_service")
 
-            result = await conn._get_drive_service_for_user("u@x.com")
-            assert result == "sa_service"
+            with pytest.raises(Exception, match="impersonate fail"):
+                await conn._get_drive_service_for_user("u@x.com")
 
     @pytest.mark.asyncio
     async def test_no_user_email(self):
@@ -3328,6 +3345,268 @@ class TestGetDriveServiceForUser:
         conn.drive_client = None
         with pytest.raises(HTTPException):
             await conn._get_drive_service_for_user(None)
+
+
+# ===========================================================================
+# Tests: resolve_explicit_user
+# ===========================================================================
+
+
+class TestResolveExplicitUser:
+
+    @pytest.mark.asyncio
+    async def test_no_user_id_returns_none(self):
+        conn = _make_connector()
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_empty_string_returns_none(self):
+        conn = _make_connector()
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_string_none_returns_none(self):
+        conn = _make_connector(user_by_id={"_key": "u1", "email": "u@x.com"})
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "None")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_user_not_found_raises(self):
+        from fastapi import HTTPException
+        conn = _make_connector(user_by_id=None)
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    @pytest.mark.asyncio
+    async def test_user_without_email_raises(self):
+        from fastapi import HTTPException
+        conn = _make_connector(user_by_id={"_key": "u1", "isActive": True})
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
+        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+
+    @pytest.mark.asyncio
+    async def test_success_returns_user(self):
+        conn = _make_connector(user_by_id={"_key": "u1", "email": "u@x.com", "isActive": True})
+        result = await resolve_explicit_user(conn.logger, conn.data_entities_processor, "uid-1")
+        assert result is not None
+        assert result.email == "u@x.com"
+        assert result.is_active is True
+
+
+# ===========================================================================
+# Tests: get_impersonation_candidates
+# ===========================================================================
+
+
+class TestGetImpersonationCandidates:
+
+    @pytest.mark.asyncio
+    async def test_no_permission_holders_returns_empty(self):
+        conn = _make_connector()
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_synced_workspace_users_come_first(self):
+        conn = _make_connector()
+        conn.synced_user_emails = {"in-workspace@x.com"}
+        outside = User(email="outside@x.com")
+        inside = User(email="in-workspace@x.com")
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[outside, inside]
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert [u.email for u in result] == ["in-workspace@x.com", "outside@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_active_users_come_before_inactive_within_group(self):
+        conn = _make_connector()
+        conn.synced_user_emails = {"active@x.com", "inactive@x.com"}
+        inactive = User(email="inactive@x.com", is_active=False)
+        active = User(email="active@x.com", is_active=True)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[inactive, active]
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert [u.email for u in result] == ["active@x.com", "inactive@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_empty_synced_emails_tries_everyone(self):
+        conn = _make_connector()
+        conn.synced_user_emails = set()
+        u1 = User(email="a@x.com")
+        u2 = User(email="b@x.com")
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert {u.email for u in result} == {"a@x.com", "b@x.com"}
+
+    @pytest.mark.asyncio
+    async def test_dedupes_case_insensitive_emails(self):
+        conn = _make_connector()
+        u1 = User(email="Dup@x.com")
+        u2 = User(email="dup@x.com")
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_skips_users_without_email(self):
+        conn = _make_connector()
+        u1 = User(email="")
+        u2 = User(email="ok@x.com")
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[u1, u2]
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails
+        )
+        assert [u.email for u in result] == ["ok@x.com"]
+
+    @pytest.mark.asyncio
+    async def test_caps_candidates_at_max(self):
+        conn = _make_connector()
+        users = [User(email=f"user{i}@x.com") for i in range(40)]
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=users
+        )
+        result = await get_impersonation_candidates(
+            conn.data_entities_processor, "rec-1", conn.synced_user_emails, conn.logger
+        )
+        assert len(result) == MAX_IMPERSONATION_CANDIDATES
+
+
+# ===========================================================================
+# Tests: _get_drive_service_with_fallback
+# ===========================================================================
+
+
+class TestGetDriveServiceWithFallback:
+
+    @pytest.mark.asyncio
+    async def test_first_candidate_succeeds(self):
+        conn = _make_connector()
+        candidates = [User(email="a@x.com")]
+
+        async def fake_get_service(email):
+            return f"service-for-{email}"
+
+        async def call(service):
+            return f"result-from-{service}"
+
+        with patch.object(conn, "_get_drive_service_for_user", side_effect=fake_get_service):
+            service, email, result = await conn._get_drive_service_with_fallback(candidates, call)
+
+        assert email == "a@x.com"
+        assert service == "service-for-a@x.com"
+        assert result == "result-from-service-for-a@x.com"
+
+    @pytest.mark.asyncio
+    async def test_retries_next_candidate_on_unauthorized_client(self):
+        conn = _make_connector()
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def fake_get_service(email):
+            return f"service-for-{email}"
+
+        attempted = []
+
+        async def call(service):
+            attempted.append(service)
+            if service == "service-for-a@x.com":
+                raise Exception("unauthorized_client: not authorized")
+            return "ok"
+
+        with patch.object(conn, "_get_drive_service_for_user", side_effect=fake_get_service):
+            service, email, result = await conn._get_drive_service_with_fallback(candidates, call)
+
+        assert email == "b@x.com"
+        assert result == "ok"
+        assert len(attempted) == 2
+
+    @pytest.mark.asyncio
+    async def test_non_delegation_error_raised_immediately(self):
+        conn = _make_connector()
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def call(service):
+            raise Exception("file not found")
+
+        with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock,
+                          return_value="svc"):
+            with pytest.raises(Exception, match="file not found"):
+                await conn._get_drive_service_with_fallback(candidates, call)
+
+    @pytest.mark.asyncio
+    async def test_all_candidates_fail_falls_back_to_service_account(self):
+        conn = _make_connector()
+        candidates = [User(email="a@x.com"), User(email="b@x.com")]
+
+        async def fake_get_service(email):
+            return "sa-service" if email is None else f"service-for-{email}"
+
+        async def call(service):
+            if service == "sa-service":
+                return "sa-result"
+            raise Exception("unauthorized_client")
+
+        with patch.object(conn, "_get_drive_service_for_user", side_effect=fake_get_service):
+            service, email, result = await conn._get_drive_service_with_fallback(candidates, call)
+
+        assert email is None
+        assert service == "sa-service"
+        assert result == "sa-result"
+
+    @pytest.mark.asyncio
+    async def test_empty_candidates_falls_back_directly(self):
+        conn = _make_connector()
+
+        async def call(service):
+            return f"result-{service}"
+
+        with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock,
+                          return_value="sa-service") as mock_get:
+            service, email, result = await conn._get_drive_service_with_fallback([], call)
+
+        mock_get.assert_awaited_once_with(None)
+        assert email is None
+        assert service == "sa-service"
+        assert result == "result-sa-service"
+
+    @pytest.mark.asyncio
+    async def test_skips_candidate_without_email(self):
+        conn = _make_connector()
+        candidates = [User(email=""), User(email="b@x.com")]
+
+        async def fake_get_service(email):
+            return f"service-for-{email}"
+
+        async def call(service):
+            return f"ok-{service}"
+
+        with patch.object(conn, "_get_drive_service_for_user", side_effect=fake_get_service):
+            service, email, result = await conn._get_drive_service_with_fallback(candidates, call)
+
+        assert email == "b@x.com"
+        assert result == "ok-service-for-b@x.com"
 
 
 # ===========================================================================
@@ -3369,6 +3648,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3394,6 +3676,9 @@ class TestStreamRecord:
         conn.data_store_provider = _make_mock_data_store_provider(
             user_by_id={"email": "u@x.com"}
         )
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(
+            return_value=User.from_arango_user({"_key": "u1", "email": "u@x.com"})
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3418,6 +3703,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3442,6 +3730,9 @@ class TestStreamRecord:
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
         conn.data_store_provider = _make_mock_data_store_provider(user_with_permission=user_with_perm)
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_with_perm]
+        )
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
@@ -3451,7 +3742,9 @@ class TestStreamRecord:
                     result = await conn.stream_record(record, user_id="None")
 
     @pytest.mark.asyncio
-    async def test_no_user_found_for_user_id(self):
+    async def test_no_user_found_for_user_id_raises(self):
+        from fastapi import HTTPException
+
         conn = _make_connector()
         record = MagicMock()
         record.id = "rec-1"
@@ -3463,15 +3756,19 @@ class TestStreamRecord:
         mock_files.get_media = MagicMock(return_value=MagicMock())
         mock_service.files = MagicMock(return_value=mock_files)
 
-        # user_by_id returns None, user_with_permission also None
+        # An explicit user_id that can't be resolved must raise rather than
+        # silently falling back to permission-holder candidates.
         conn.data_store_provider = _make_mock_data_store_provider(user_by_id=None, user_with_permission=None)
+        conn.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch.object(conn, "_get_file_metadata_from_drive", new_callable=AsyncMock,
                               return_value={"mimeType": "text/plain"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()):
-                    result = await conn.stream_record(record, user_id="uid-1")
+                    with pytest.raises(HTTPException) as exc_info:
+                        await conn.stream_record(record, user_id="uid-1")
+                    assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
     async def test_error_raises_http_exception(self):
@@ -3699,10 +3996,9 @@ class TestCheckAndFetchUpdatedRecord:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_no_permission_id_fallback_to_source_user_id(self):
+    async def test_missing_permission_id_still_reindexes(self):
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
-        user_with_perm.source_user_id = "fallback-id"
         conn = _make_connector(user_with_permission=user_with_perm)
 
         record = MagicMock()
@@ -3730,10 +4026,9 @@ class TestCheckAndFetchUpdatedRecord:
         assert result is not None
 
     @pytest.mark.asyncio
-    async def test_no_permission_id_no_source_user_id(self):
+    async def test_missing_permission_id_passes_empty_user_id(self):
         user_with_perm = MagicMock()
         user_with_perm.email = "u@x.com"
-        user_with_perm.source_user_id = None
         conn = _make_connector(user_with_permission=user_with_perm)
 
         record = MagicMock()
@@ -3744,13 +4039,23 @@ class TestCheckAndFetchUpdatedRecord:
         mock_service = MagicMock()
         mock_ds = AsyncMock()
         mock_ds.about_get = AsyncMock(return_value={"user": {}})
+        mock_ds.files_get = AsyncMock(return_value=_make_file_metadata())
+
+        mock_update = MagicMock()
+        mock_update.is_deleted = False
+        mock_update.is_updated = True
+        mock_update.record = MagicMock()
+        mock_update.new_permissions = []
 
         with patch.object(conn, "_get_drive_service_for_user", new_callable=AsyncMock, return_value=mock_service):
             with patch("app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource",
                        return_value=mock_ds):
-                result = await conn._check_and_fetch_updated_record("org-1", record)
+                with patch.object(conn, "_process_drive_item", new_callable=AsyncMock,
+                                  return_value=mock_update) as mock_process:
+                    result = await conn._check_and_fetch_updated_record("org-1", record)
 
-        assert result is None
+        assert result is not None
+        assert mock_process.await_args.args[1] == ""
 
     @pytest.mark.asyncio
     async def test_deleted_update_returns_none(self):
@@ -3818,7 +4123,9 @@ class TestCheckAndFetchUpdatedRecord:
         record.external_record_group_id = "d1"
 
         # Force an error
-        conn.data_store_provider.transaction = MagicMock(side_effect=Exception("tx fail"))
+        conn.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            side_effect=Exception("tx fail")
+        )
         result = await conn._check_and_fetch_updated_record("org-1", record)
         assert result is None
 

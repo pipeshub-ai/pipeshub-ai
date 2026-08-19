@@ -820,9 +820,22 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-MAX_CONCURRENT_PARSING=5
-MAX_CONCURRENT_INDEXING=7
-MAX_PENDING_INDEXING_TASKS=40
+# Left empty by default. Slot counts derive from this container's CPU quota —
+# heavy parse 1 slot per CPU, light parse 3 slots per CPU, indexing 2x the
+# wider parse tier — and these two vars cap those numbers. The parse numbers
+# are ceilings, not starting points: parsing ramps up from its floor as samples
+# prove the headroom is real, and heavy parsing is additionally held back
+# whenever free memory can't hold that many at once. The indexing budget is
+# fixed at startup.
+MAX_CONCURRENT_PARSING=
+MAX_CONCURRENT_INDEXING=
+# Retune the per-CPU slot counts / indexing multiplier themselves (defaults
+# 1, 3 and 2), and the memory assumed per in-flight heavy parse in GiB (1.5).
+GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
+GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
+GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
+GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
+MAX_PENDING_INDEXING_TASKS=
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1
 DOCLING_UVICORN_WORKERS=1
@@ -858,6 +871,22 @@ header "Deployment summary"
 
 # Source .env so all variables are available for display (and for launch)
 set -a; . "$ENV_FILE"; set +a
+
+# Docker requires memswap_limit >= memory (or -1 for unlimited swap); if a user
+# raises APP_MEMORY_LIMIT without also raising APP_MEMSWAP_LIMIT, that would
+# otherwise only surface as a cryptic Docker error at container start. Only
+# checked for the G/M-suffixed forms documented in env.template — anything
+# else (e.g. -1, plain byte counts) is left to Docker's own validation.
+_parse_mem_mb() {
+  [[ "$1" =~ ^([0-9]+)[gG]$ ]] && { echo $(( ${BASH_REMATCH[1]} * 1024 )); return; }
+  [[ "$1" =~ ^([0-9]+)[mM]$ ]] && { echo "${BASH_REMATCH[1]}"; return; }
+  return 1
+}
+_app_mem_mb="$(_parse_mem_mb "${APP_MEMORY_LIMIT:-12G}")" || _app_mem_mb=""
+_app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_mb=""
+if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
+  die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-12G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
+fi
 
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
 APP_PORT="${APP_PORT:-3000}"

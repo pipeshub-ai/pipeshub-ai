@@ -60,6 +60,48 @@ def _granted_count(create_body: dict[str, object]) -> int:
     return int(count) if count is not None else 0
 
 
+def _list_permissions(
+    base_url: str, headers: dict[str, str], kb_id: str, *, timeout: int
+) -> list[dict[str, object]]:
+    resp = requests.get(
+        _permissions_url(base_url, kb_id), headers=headers, timeout=timeout
+    )
+    assert resp.status_code == 200, f"listKBPermissions failed: {resp.text}"
+    return list(resp.json().get("permissions") or [])
+
+
+# Sentinel: the KB lists a permission for this user but reports no role.
+_ROLE_PRESENT_BUT_UNSET = "<present-without-role>"
+
+
+def _granted_role(
+    base_url: str,
+    headers: dict[str, str],
+    kb_id: str,
+    graph_user_id: str,
+    *,
+    timeout: int,
+) -> str | None:
+    """The role this KB *actually* records for a user, or None if absent.
+
+    The mutation endpoints answer with the role that was requested, so asserting
+    on their response only proves the request was echoed. A provider write can
+    fail and still be reported as success (a failure dict is truthy), which the
+    response-shape assertions cannot see. Reading the state back is what makes
+    these tests able to fail.
+    """
+    for entry in _list_permissions(base_url, headers, kb_id, timeout=timeout):
+        if entry.get("type") != "USER":
+            continue
+        if str(entry.get("id") or "") == graph_user_id:
+            # A surviving row with a null role is NOT the same as no row: the
+            # delete test asserts the permission is gone, and collapsing both
+            # to None would let a still-present permission pass it.
+            role = entry.get("role")
+            return str(role) if role is not None else _ROLE_PRESENT_BUT_UNSET
+    return None
+
+
 def _remove_permission(
     base_url: str,
     headers: dict[str, str],
@@ -106,6 +148,7 @@ class TestKBPermissionCreate:
         kb_id = str(six_kb_records["kb_id"])
         grantee = four_new_users[0]
         grantee_id = _user_id(grantee)
+        grantee_graph_id = _graph_user_id(grantee)
 
         resp = requests.post(
             _permissions_url(self.base_url, kb_id),
@@ -124,6 +167,14 @@ class TestKBPermissionCreate:
             assert _granted_count(body) >= 1, (
                 "Permission create returned grantedCount=0 — grantee Mongo userId "
                 "not found in graph yet"
+            )
+
+            assert _granted_role(
+                self.base_url, self.headers, kb_id, grantee_graph_id,
+                timeout=self.client.timeout_seconds,
+            ) == "READER", (
+                "createKBPermission reported success but the knowledge base does "
+                "not list the grantee with that role."
             )
         finally:
             _remove_permission(
@@ -411,6 +462,14 @@ class TestKBPermissionUpdate:
             assert grantee_graph_id in body["userIds"]
             assert body.get("teamIds") == []
             assert body["newRole"] == "WRITER"
+
+            assert _granted_role(
+                self.base_url, self.headers, kb_id, grantee_graph_id,
+                timeout=self.client.timeout_seconds,
+            ) == "WRITER", (
+                "updateKBPermissions reported success but the knowledge base still "
+                "records a different role for this user."
+            )
         finally:
             _remove_permission(
                 self.base_url,
@@ -618,6 +677,14 @@ class TestKBPermissionDelete:
             assert body["kbId"] == kb_id
             assert grantee_graph_id in body["userIds"]
             assert body.get("teamIds") == []
+
+            assert _granted_role(
+                self.base_url, self.headers, kb_id, grantee_graph_id,
+                timeout=self.client.timeout_seconds,
+            ) is None, (
+                "deleteKBPermissions reported success but the knowledge base still "
+                "lists a permission for this user."
+            )
         finally:
             _remove_permission(
                 self.base_url,

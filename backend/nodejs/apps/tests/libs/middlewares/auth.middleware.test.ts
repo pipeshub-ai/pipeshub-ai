@@ -130,6 +130,24 @@ describe('AuthMiddleware', () => {
       const result = authMiddleware.extractToken(req)
       expect(result).to.equal('my-jwt')
     })
+
+    // Several controllers forward req.headers.authorization verbatim to the
+    // Python services, which know nothing about the prefix. Returning a bare
+    // token is not enough — the header itself has to be normalised, or those
+    // requests fail downstream with "Could not validate credentials".
+    it('should rewrite the authorization header so forwarded requests carry a bare JWT', () => {
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${PAT_TOKEN_PREFIX}my-jwt` },
+      })
+      authMiddleware.extractToken(req)
+      expect(req.headers.authorization).to.equal('Bearer my-jwt')
+    })
+
+    it('should leave a non-prefixed authorization header untouched', () => {
+      const req = createMockRequest({ headers: { authorization: 'Bearer plain-jwt' } })
+      authMiddleware.extractToken(req)
+      expect(req.headers.authorization).to.equal('Bearer plain-jwt')
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -163,7 +181,12 @@ describe('AuthMiddleware', () => {
     })
 
     it('should authenticate and call next() on valid regular token with no logout/password activity', async () => {
-      const decoded = { userId: 'user1', orgId: 'org1', iat: Math.floor(Date.now() / 1000) }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const mockQuery = createMockQuery(null)
@@ -182,7 +205,12 @@ describe('AuthMiddleware', () => {
 
     it('should reject token if logout activity is newer than token iat', async () => {
       const tokenIat = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
-      const decoded = { userId: 'user1', orgId: 'org1', iat: tokenIat }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: tokenIat,
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const logoutActivity = {
@@ -206,7 +234,12 @@ describe('AuthMiddleware', () => {
 
     it('should allow token if activity timestamp is before token iat + delay', async () => {
       const tokenIat = Math.floor(Date.now() / 1000)
-      const decoded = { userId: 'user1', orgId: 'org1', iat: tokenIat }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'admin',
+        iat: tokenIat,
+      }
       tokenService.verifyToken.resolves(decoded)
 
       // Activity happened before token issuance
@@ -227,6 +260,59 @@ describe('AuthMiddleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('should reject token when JWT role claim is missing', async () => {
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        iat: Math.floor(Date.now() / 1000),
+      }
+      tokenService.verifyToken.resolves(decoded)
+
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${validToken}` },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Session expired, please login again')
+    })
+
+    it('should reject token if role-changed activity is newer than token iat', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: tokenIat,
+      }
+      tokenService.verifyToken.resolves(decoded)
+
+      const roleChangedActivity = {
+        activityType: 'ROLE CHANGED',
+        createdAt: { getTime: () => Date.now() },
+      }
+      const mockQuery = createMockQuery(roleChangedActivity)
+      sinon.stub(UserActivities, 'findOne').returns(mockQuery)
+
+      const req = createMockRequest({
+        headers: { authorization: `Bearer ${validToken}` },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Session expired, please login again')
+    })
+
     it('should call next with error when tokenService.verifyToken throws', async () => {
       tokenService.verifyToken.rejects(new UnauthorizedError('Invalid token'))
 
@@ -242,7 +328,12 @@ describe('AuthMiddleware', () => {
     })
 
     it('should still authenticate if UserActivities.findOne throws (non-fatal)', async () => {
-      const decoded = { userId: 'user1', orgId: 'org1', iat: Math.floor(Date.now() / 1000) }
+      const decoded = {
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      }
       tokenService.verifyToken.resolves(decoded)
 
       const mockQuery = createMockQuery(null)
@@ -261,7 +352,7 @@ describe('AuthMiddleware', () => {
     })
 
     it('should skip activity check when userId or orgId are missing', async () => {
-      const decoded = { iat: Math.floor(Date.now() / 1000) }
+      const decoded = { role: 'member', iat: Math.floor(Date.now() / 1000) }
       tokenService.verifyToken.resolves(decoded)
 
       const findOneStub = sinon.stub(UserActivities, 'findOne')
@@ -328,7 +419,11 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
-      const userQuery = createMockQuery({ email: 'test@example.com', fullName: 'Test User' })
+      const userQuery = createMockQuery({
+        email: 'test@example.com',
+        fullName: 'Test User',
+        role: 'admin',
+      })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
       const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
@@ -344,10 +439,38 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         email: 'test@example.com',
         fullName: 'Test User',
+        role: 'admin',
         isOAuth: true,
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it('should reject OAuth tokens without a userId', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'user:read',
+        fullName: 'Test User',
+        accountType: 'premium',
+      })
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('OAuth token missing user identity')
     })
 
     it('should route a phpat_-prefixed personal access token to OAuth auth, not regular auth', async () => {

@@ -25,6 +25,8 @@ import {
   AgentStrategyModePanel,
   PlusMenuButton,
   PlusMenuSheet,
+  PlusMenuTriggerIcon,
+  hasNonDefaultSearchCapabilities,
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
@@ -298,6 +300,10 @@ export function ChatInput({
     agentHasInternalSearch,
     agentHasWebSearch,
   ]);
+  const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
+    plusMenuCapabilities.internalSearch,
+    plusMenuCapabilities.webSearch,
+  );
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -1802,10 +1808,19 @@ export function ChatInput({
                 size="2"
                 disabled={isRegenerateMode}
                 onClick={() => setIsMobilePlusMenuOpen(true)}
-                aria-label={t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })}
+                aria-label={
+                  showPlusMenuFilterBadge
+                    ? t('chat.plusMenu.ariaLabelFiltersApplied', {
+                        defaultValue: 'Attach files and capabilities. Search filters applied',
+                      })
+                    : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
+                }
                 style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
-                <MaterialIcon name="add" size={ICON_SIZES.PRIMARY} color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor} />
+                <PlusMenuTriggerIcon
+                  color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor}
+                  showFilterBadge={showPlusMenuFilterBadge}
+                />
               </IconButton>
             ) : (
               <PlusMenuButton

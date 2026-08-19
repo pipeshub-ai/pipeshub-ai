@@ -59,7 +59,6 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     const allowedHeaders = new Set([
       'content-type',
       'authorization',
-      'x-is-admin',
       HEADER_REQUEST_ID,
       'client-name'
     ]);

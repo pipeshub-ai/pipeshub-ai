@@ -92,6 +92,13 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
     .with_description("Sync content from your GitLab instance")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.TEAM.value])
+    # No APP_LEVEL here: GitLab syncs real per-project member ACLs
+    # (`projects.py::_transform_restrictions_to_permissions` writes a per-user
+    # permission for every project member), and creator-only is merely the
+    # fallback when member enumeration fails. Declaring APP_LEVEL routes these
+    # users to the connector-wide record scan, which returns every synced
+    # project's records to anyone linked to the app regardless of project
+    # membership. RECORD_LEVEL (the default) is correct.
     .with_auth(
         [
             AuthBuilder.type(AuthType.OAUTH).oauth(

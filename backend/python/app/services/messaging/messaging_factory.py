@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.services.messaging.config import (
     ConsumerType,
@@ -28,6 +28,10 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.messaging.retry_manager import RetryManager
+
+if TYPE_CHECKING:
+    from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.resource_governor import ResourceGovernor
 
 
 class MessagingFactory:
@@ -100,6 +104,8 @@ class MessagingFactory:
         retry_manager: Optional[RetryManager] = None,
         producer: Optional[IMessagingProducer] = None,
         concurrency_manager: Optional[DistributedConcurrencyManager] = None,
+        governor: "ResourceGovernor | None" = None,
+        backpressure_coordinator: "BackpressureCoordinator | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -113,6 +119,13 @@ class MessagingFactory:
                            Otherwise, it may use broker-native retry mechanisms.
             producer: Optional producer for re-queueing failed messages (INDEXING consumers only).
                       Failed messages are published back to the same topic/stream for retry.
+            governor: Optional ResourceGovernor (INDEXING consumers only). When provided,
+                      the consumer routes parsing/indexing admission through its adaptive
+                      gates instead of the static MAX_CONCURRENT_* semaphores.
+            backpressure_coordinator: Optional BackpressureCoordinator (INDEXING consumers
+                      only). When provided, the consumer pauses reading new messages
+                      whenever a downstream service (parsing/docling/embedding) it shares
+                      the coordinator with last signalled 429+Retry-After.
 
         Returns:
             IMessagingConsumer instance
@@ -134,6 +147,8 @@ class MessagingFactory:
                     retry_manager,
                     producer,
                     concurrency_manager,
+                    governor,
+                    backpressure_coordinator,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -150,5 +165,7 @@ class MessagingFactory:
                     retry_manager,
                     producer,
                     concurrency_manager,
+                    governor,
+                    backpressure_coordinator,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

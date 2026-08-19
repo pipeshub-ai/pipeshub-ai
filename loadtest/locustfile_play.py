@@ -9,7 +9,11 @@ Run against a resource-pinned Docker stack (see docker-compose.loadtest.yml).
 Numbers from an unpinned stack are not reproducible.
 
 Usage:
+    # Many identities (required to A/B anything cached per user — see seed_users.py)
+    export PIPESHUB_USERS='a@example.com:Pass1!,b@example.com:Pass2!'
+    # or a single one
     export PIPESHUB_TOKEN='<bearer token from browser devtools>'
+    # PIPESHUB_TOKEN wins; TOKEN is the documented .env fallback (same as perftest.sh)
     locust -f locustfile.py --headless -u 10 -r 2 -t 10m -H http://localhost:3000
 
     # ramp to find the knee
@@ -24,19 +28,31 @@ Scenario classes (name them on the CLI to pin the mix):
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+import sys
 from pathlib import Path
 import time
 
 from locust import HttpUser, LoadTestShape, constant, events, task
 
+sys.path.insert(0, str(Path(__file__).parent))
+from pipeshub_auth import AuthError, credentials_from_env, resolve_tokens  # noqa: E402
+
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
 
-TOKEN = os.environ.get("PIPESHUB_TOKEN", "")
+# Prefer PIPESHUB_TOKEN; fall back to TOKEN so loadtest/.env matches perftest.sh.
+TOKEN = os.environ.get("PIPESHUB_TOKEN") or os.environ.get("TOKEN") or ""
 AGENT_KEY = os.environ.get("PIPESHUB_AGENT_KEY", "")
+
+# Tokens the simulated users draw from, resolved once at test_start. One shared
+# token measures a per-user cache as if every request came from the same person,
+# so multi-user runs are the only honest way to A/B one.
+TOKENS: list[str] = []
+_token_cursor = itertools.count()
 
 # The query service, exposed directly by the loadtest compose overlay. Probing
 # through the Node gateway would fold Node's latency into the measurement.
@@ -74,21 +90,48 @@ AGENT_QUESTIONS = [
 ]
 
 
-def _auth_headers() -> dict[str, str]:
+def _auth_headers(token: str) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
 
 
 @events.test_start.add_listener
-def _check_config(environment, **_kwargs) -> None:
-    if not TOKEN:
-        raise SystemExit(
-            "PIPESHUB_TOKEN is not set. Log in to the UI, open devtools > Network, "
-            "and copy the Bearer token from any API request."
-        )
+def _resolve_identities(environment, **_kwargs) -> None:
+    """Turn credentials into tokens before the clock starts.
+
+    Logging in here rather than per user keeps the auth round trips out of the
+    measurement window, and fails the run up front if a password is wrong —
+    five bad attempts lock the account for 24h.
+    """
+    global TOKENS
+
+    try:
+        credentials = credentials_from_env()
+    except AuthError as e:
+        raise SystemExit(str(e)) from e
+
+    if credentials:
+        host = environment.host or os.environ.get("PIPESHUB_HOST", "http://localhost:3000")
+        try:
+            TOKENS = resolve_tokens(host, credentials)
+        except AuthError as e:
+            raise SystemExit(f"Could not log in load-test users: {e}") from e
+        print(f"[loadtest] resolved {len(TOKENS)} user tokens via password login")
+        return
+
+    if TOKEN:
+        TOKENS = [TOKEN]
+        which = "PIPESHUB_TOKEN" if os.environ.get("PIPESHUB_TOKEN") else "TOKEN"
+        print(f"[loadtest] using the single {which} identity")
+        return
+
+    raise SystemExit(
+        "No credentials. Set PIPESHUB_USERS='email:password,...' (see seed_users.py), "
+        "or PIPESHUB_EMAILS + PIPESHUB_PASSWORD, or PIPESHUB_TOKEN / TOKEN for a single user."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -133,10 +176,15 @@ class StreamingChatUser(HttpUser):
 
     prefix: str = "chat"
     questions: list[str] = QUESTIONS
+    token: str = ""
     # `/conversations/stream` rejects a request without an explicit chatMode
     # (es_validators.ts: UNIVERSAL_STREAM_CHAT_MODES). It used to default, so
     # omitting it silently 400s every request rather than failing loudly.
     chat_mode: str = "internal_search"
+
+    def on_start(self) -> None:
+        # Round-robin so identities are spread evenly however Locust ramps.
+        self.token = TOKENS[next(_token_cursor) % len(TOKENS)] if TOKENS else TOKEN
 
     def endpoint(self) -> str:
         raise NotImplementedError
@@ -164,6 +212,13 @@ class StreamingChatUser(HttpUser):
         _lim = os.environ.get("PIPESHUB_LIMIT")
         if _lim:
             body["limit"] = int(_lim)
+        # Reasoning depth. Unset, aimodels applies DEFAULT_REASONING_EFFORT
+        # ("high"), which dominates turn latency on a reasoning model -- set
+        # this to A/B it. Values: none|low|medium|high|max ("none" is floored
+        # to "low" by _reasoning_effort_kwargs).
+        _eff = os.environ.get("PIPESHUB_REASONING_EFFORT")
+        if _eff:
+            body["reasoningEffort"] = _eff
 
         start = time.monotonic()
         seen_first_packet = False
@@ -174,7 +229,7 @@ class StreamingChatUser(HttpUser):
             with self.client.post(
                 self.endpoint(),
                 json=body,
-                headers=_auth_headers(),
+                headers=_auth_headers(self.token),
                 stream=True,
                 timeout=STREAM_TIMEOUT,
                 catch_response=True,

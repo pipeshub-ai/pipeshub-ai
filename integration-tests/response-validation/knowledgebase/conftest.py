@@ -130,6 +130,7 @@ def _create_one_permission_test_user(client: PipeshubClient) -> dict[str, object
         json={
             "fullName": f"RV KB Permissions {unique}",
             "email": f"rv-kb-perms-{unique}@test-pipeshub.com",
+            "role": "member",
         },
         timeout=client.timeout_seconds,
     )

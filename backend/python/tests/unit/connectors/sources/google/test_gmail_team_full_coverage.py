@@ -56,6 +56,9 @@ def _make_mock_tx_store(existing_record=None, user_with_perm=None, user_by_id=No
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
     tx.create_record_relation = AsyncMock()
     tx.get_first_user_with_permission_to_node = AsyncMock(return_value=user_with_perm)
+    tx.get_users_with_permission_to_node = AsyncMock(
+        return_value=[user_with_perm] if user_with_perm else []
+    )
     tx.get_user_by_user_id = AsyncMock(return_value=user_by_id)
     tx.get_records_by_parent = AsyncMock(return_value=attachment_records or [])
     return tx
@@ -187,6 +190,8 @@ def connector():
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
         dep.delete_permission_from_record = AsyncMock()
+        dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -545,8 +550,9 @@ class TestProcessGmailMessage:
     @pytest.mark.asyncio
     async def test_existing_message_metadata_change(self, connector):
         existing = _make_record(external_record_group_id="u@t.com:INBOX")
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         msg = _make_gmail_message(label_ids=["SENT"])
         result = await connector._process_gmail_message("u@t.com", msg, "t1", None)
         assert result.is_updated is True
@@ -935,8 +941,9 @@ class TestFindPreviousMessageInThread:
     @pytest.mark.asyncio
     async def test_finds_previous(self, connector):
         existing = _make_record(record_id="prev-rec", external_id="msg-prev")
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         gmail_client = AsyncMock()
         gmail_client.users_threads_get = AsyncMock(return_value={
@@ -1089,6 +1096,9 @@ class TestCheckAndFetchUpdatedRecord:
         user_perm.email = None
         provider = _make_mock_data_store_provider(user_with_perm=user_perm)
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_perm]
+        )
         record = _make_record()
         result = await connector._check_and_fetch_updated_record("org-1", record)
         assert result is None
@@ -1099,9 +1109,12 @@ class TestCheckAndFetchUpdatedRecord:
         user_perm.email = "u@t.com"
         provider = _make_mock_data_store_provider(user_with_perm=user_perm)
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_perm]
+        )
 
         record = _make_record(record_type=RecordType.MAIL)
-        connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
+        connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_mail_record = AsyncMock(return_value=None)
         await connector._check_and_fetch_updated_record("org-1", record)
         connector._check_and_fetch_updated_mail_record.assert_awaited_once()
@@ -1112,9 +1125,12 @@ class TestCheckAndFetchUpdatedRecord:
         user_perm.email = "u@t.com"
         provider = _make_mock_data_store_provider(user_with_perm=user_perm)
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_perm]
+        )
 
         record = _make_record(record_type=RecordType.FILE)
-        connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
+        connector._get_gmail_client_for_user = AsyncMock(return_value=AsyncMock())
         connector._check_and_fetch_updated_file_record = AsyncMock(return_value=None)
         await connector._check_and_fetch_updated_record("org-1", record)
         connector._check_and_fetch_updated_file_record.assert_awaited_once()
@@ -1152,8 +1168,9 @@ class TestCheckAndFetchUpdatedMailRecord:
         })
 
         existing = _make_record(external_record_group_id="u@t.com:INBOX")
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
 
         result = await connector._check_and_fetch_updated_mail_record(
             "org-1", record, "u@t.com", client
@@ -1263,6 +1280,9 @@ class TestStreamRecord:
         user_perm.email = "u@t.com"
         provider = _make_mock_data_store_provider(user_with_perm=user_perm)
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_perm]
+        )
 
         connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
         connector._stream_mail_record = AsyncMock(return_value=MagicMock())
@@ -1282,6 +1302,9 @@ class TestStreamRecord:
         user_perm.email = "u@t.com"
         provider = _make_mock_data_store_provider(user_with_perm=user_perm)
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_users_with_permission_to_node = AsyncMock(
+            return_value=[user_perm]
+        )
 
         connector._create_user_gmail_client = AsyncMock(return_value=AsyncMock())
         connector._stream_attachment_record = AsyncMock(return_value=MagicMock())
@@ -1574,29 +1597,24 @@ class TestGetExistingRecord:
     @pytest.mark.asyncio
     async def test_found(self, connector):
         existing = _make_record()
-        provider = _make_mock_data_store_provider(existing_record=existing)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         result = await connector._get_existing_record("msg-1")
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_not_found(self, connector):
-        provider = _make_mock_data_store_provider(existing_record=None)
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=None
+        )
         result = await connector._get_existing_record("msg-999")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_error_returns_none(self, connector):
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db err"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db err")
+        )
         result = await connector._get_existing_record("msg-1")
         assert result is None

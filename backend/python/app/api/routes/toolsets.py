@@ -1977,7 +1977,8 @@ async def get_authenticated_toolsets(
 
         authenticated_toolsets.append({
             "instanceId": inst.get("_id"),
-            "name": inst.get("instanceName"),
+            "name": toolset_type,
+            "instanceName": inst.get("instanceName"),
             "toolsetType": toolset_type,
             "authType": inst.get("authType", "NONE"),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,

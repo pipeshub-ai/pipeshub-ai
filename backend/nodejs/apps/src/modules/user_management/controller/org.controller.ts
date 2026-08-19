@@ -193,6 +193,7 @@ export class OrgController {
         fullName: adminFullName,
         email: contactEmail,
         orgId: org._id,
+        role: 'admin',
       });
 
       const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
@@ -203,13 +204,6 @@ export class OrgController {
         isDeleted: false,
         hashedPassword,
         ipAddress: req.ip,
-      });
-
-      const adminUserGroup = new UserGroups({
-        type: 'admin',
-        name: 'admin',
-        orgId: org._id,
-        users: [adminUser._id],
       });
 
       const allUsersGroup = new UserGroups({
@@ -249,7 +243,6 @@ export class OrgController {
 
         session.startTransaction();
         await orgAuthConfig.save({ session });
-        await adminUserGroup.save({ session });
         await allUsersGroup.save({ session });
         await standardUsersGroup.save({ session });
         await adminUser.save({ session });
@@ -258,7 +251,6 @@ export class OrgController {
         await session.commitTransaction();
       } else {
         await orgAuthConfig.save();
-        await adminUserGroup.save();
         await allUsersGroup.save();
         await standardUsersGroup.save();
         await adminUser.save();

@@ -34,6 +34,9 @@ fields:
   name:
     required: true
     type: string
+  permission_model:
+    required: false
+    type: string
   scope:
     required: true
     type: string

@@ -160,13 +160,12 @@ export function AgentBuilderSidebar(props: {
   }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
-    models: true,
+    models: false,
     knowledge: true,
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
     mcpServers: true,
-    skills: true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -181,7 +180,10 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
-  const skillTemplates = filtered.filter((t) => t.category === 'skills');
+
+  const SHOW_MORE_LIMIT = 5;
+  const [showAllKbCollections, setShowAllKbCollections] = useState(false);
+  const [showAllConnectors, setShowAllConnectors] = useState(false);
 
   const toggle = useCallback(
     (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
@@ -348,7 +350,8 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noConnectors')}
                     </Text>
                   ) : (
-                    connectorTypeEntries.map(([connectorTypeLabel, { instances, icon }]) => {
+                    <>
+                    {(showAllConnectors ? connectorTypeEntries : connectorTypeEntries.slice(0, SHOW_MORE_LIMIT)).map(([connectorTypeLabel, { instances, icon }]) => {
                       const expandKey = `knowledge-connector-${connectorTypeLabel}`;
                       const groupConnectorType = instances[0]?.type;
 
@@ -406,7 +409,39 @@ export function AgentBuilderSidebar(props: {
                           {instances.map((inst, instIdx) => renderInstance(inst, instIdx))}
                         </SidebarCategoryRow>
                       );
-                    })
+                    })}
+                    {connectorTypeEntries.length > SHOW_MORE_LIMIT && (
+                      <button
+                        type="button"
+                        aria-expanded={showAllConnectors}
+                        onClick={() => setShowAllConnectors((v) => !v)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          width: '100%',
+                          gap: 4,
+                          padding: '6px 8px',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          borderRadius: 'var(--radius-1)',
+                          border: 'none',
+                          background: 'none',
+                          fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
+                      >
+                        <MaterialIcon
+                          name={showAllConnectors ? 'expand_less' : 'expand_more'}
+                          size={16}
+                          color="var(--accent-9)"
+                        />
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
+                          {showAllConnectors ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${connectorTypeEntries.length - SHOW_MORE_LIMIT})`}
+                        </Text>
+                      </button>
+                    )}
+                    </>
                   )}
                 </SidebarCategoryRow>
               ) : null}
@@ -426,7 +461,8 @@ export function AgentBuilderSidebar(props: {
                       {t('agentBuilder.noCollections')}
                     </Text>
                   ) : (
-                    kbIndividuals.map((t) => (
+                    <>
+                    {(showAllKbCollections ? kbIndividuals : kbIndividuals.slice(0, SHOW_MORE_LIMIT)).map((t) => (
                       <DraggableRow
                         key={t.type}
                         comfortable
@@ -442,7 +478,39 @@ export function AgentBuilderSidebar(props: {
                         />
                         <span style={paletteRowLabelStyle}>{t.label}</span>
                       </DraggableRow>
-                    ))
+                    ))}
+                    {kbIndividuals.length > SHOW_MORE_LIMIT && (
+                      <button
+                        type="button"
+                        aria-expanded={showAllKbCollections}
+                        onClick={() => setShowAllKbCollections((v) => !v)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          width: '100%',
+                          gap: 4,
+                          padding: '6px 8px',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          borderRadius: 'var(--radius-1)',
+                          border: 'none',
+                          background: 'none',
+                          fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
+                      >
+                        <MaterialIcon
+                          name={showAllKbCollections ? 'expand_less' : 'expand_more'}
+                          size={16}
+                          color="var(--accent-9)"
+                        />
+                        <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
+                          {showAllKbCollections ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${kbIndividuals.length - SHOW_MORE_LIMIT})`}
+                        </Text>
+                      </button>
+                    )}
+                    </>
                   )}
                 </SidebarCategoryRow>
               ) : null}
@@ -500,46 +568,6 @@ export function AgentBuilderSidebar(props: {
                 </Box>
               ) : null}
             </>
-          ) : null}
-
-          <SectionHeader
-            title={t('agentBuilder.skillsSection')}
-            icon="psychology"
-            open={expanded.skills}
-            onToggle={() => toggle('skills')}
-          />
-          {expanded.skills ? (
-            loading ? (
-              <Box className="agent-builder-palette-nest">
-                <AgentBuilderPaletteSkeletonList count={3} />
-              </Box>
-            ) : (
-              <Box className="agent-builder-palette-nest">
-                {skillTemplates.length === 0 ? (
-                  <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
-                    {t('agentBuilder.noSkills')}
-                  </Text>
-                ) : (
-                  skillTemplates.map((tmpl) => (
-                    <DraggableRow
-                      key={tmpl.type}
-                      comfortable
-                      data={prepareDragData(tmpl)}
-                      disabled={paletteStructureLocked}
-                      onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
-                    >
-                      <MaterialIcon
-                        name="psychology"
-                        size={PALETTE_ICON_SIZE}
-                        color="var(--olive-11)"
-                        style={{ flexShrink: 0 }}
-                      />
-                      <span style={paletteRowLabelStyle}>{tmpl.label}</span>
-                    </DraggableRow>
-                  ))
-                )}
-              </Box>
-            )
           ) : null}
         </Box>
       </ScrollArea>

@@ -45,14 +45,16 @@ def _mock_request(
     """Minimal FastAPI Request mock for the two endpoints under test."""
     req = MagicMock()
 
-    user_data: dict[str, str] = (
+    user_data: dict[str, str] = dict(
         user if user is not None else {"userId": "user-1", "orgId": "org-1"}
     )
+    if "role" not in user_data:
+        user_data["role"] = "admin" if is_admin else "member"
     req.state = MagicMock()
     req.state.user = MagicMock()
     req.state.user.get = lambda key, default=None: user_data.get(key, default)
 
-    headers = {"X-Is-Admin": "true" if is_admin else "false"}
+    headers = {}
     req.headers = MagicMock()
     req.headers.get = lambda key, default=None: headers.get(key, default)
 

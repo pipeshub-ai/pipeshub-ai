@@ -95,8 +95,11 @@ class TestSaveRecordPayloadFields:
     """Assert payload and metadata fields for save_record_to_storage."""
 
     @pytest.mark.asyncio
-    async def test_local_upload_uses_virtual_record_id_fields_and_payload(self):
+    async def test_local_upload_uses_virtual_record_id_fields_and_payload(self, monkeypatch):
         """Local branch should use virtual_record_id in form metadata and payload."""
+        monkeypatch.setenv(
+            "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES", str(10 * 1024 * 1024)
+        )
         bs = _make_blob_storage()
         bs.config_service.get_config = AsyncMock(
             side_effect=[
@@ -138,9 +141,10 @@ class TestSaveRecordPayloadFields:
         assert file_call.args[0] == "file"
         payload_bytes = file_call.args[1]
         payload = json.loads(payload_bytes.decode("utf-8"))
-        assert payload["isCompressed"] is True
+        # Below the compression threshold, so the record is stored as plain JSON.
+        assert payload["isCompressed"] is False
+        assert payload["record"] == {"key": "value"}
         assert payload["virtualRecordId"] == "vr-1"
-        assert "record" in payload
 
         fields = {
             call.args[0]: call

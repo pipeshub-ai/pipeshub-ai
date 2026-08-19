@@ -137,6 +137,10 @@ from helper.clients.search_client import SearchClient  # noqa: E402
 from helper.clients.teams_client import TeamsClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
 from helper.clients.users_client import UsersClient  # noqa: E402
+from helper.http.request_id import (  # noqa: E402
+    install_requests_hook,
+    set_current_test,
+)
 from sample_data import ensure_sample_data_files_root  # noqa: E402
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
@@ -294,6 +298,16 @@ def _initial_entry_from_phase(
         stdout_captured=stdout_captured,
         stderr_captured=stderr_captured,
     )
+
+
+@pytest.fixture(autouse=True)
+def _tag_requests_with_test_id(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Name the running test in the ``x-request-id`` of every request it makes."""
+    set_current_test(request.node.nodeid)
+    try:
+        yield
+    finally:
+        set_current_test(None)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -634,6 +648,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """Initialize report collection for the HTML integration report."""
     global _integration_test_reports_by_nodeid, _integration_test_report_order
     global _IS_XDIST_WORKER
+    # Before any session fixture or pytest_sessionstart makes its first call.
+    install_requests_hook()
     _IS_XDIST_WORKER = hasattr(config, "workerinput")
     _integration_test_reports_by_nodeid = {}
     _integration_test_report_order = []

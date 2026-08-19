@@ -131,6 +131,7 @@ def connector():
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
         provider = _make_mock_data_store_provider()
 
         config_svc = AsyncMock()
@@ -508,7 +509,9 @@ class TestGetExistingRecord:
     @pytest.mark.asyncio
     async def test_returns_record_if_exists(self, connector):
         mock_record = MagicMock()
-        connector.data_store_provider = _make_mock_data_store_provider(mock_record)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=mock_record
+        )
         result = await connector._get_existing_record("ext-1")
         assert result == mock_record
 
@@ -519,17 +522,9 @@ class TestGetExistingRecord:
 
     @pytest.mark.asyncio
     async def test_returns_none_on_error(self, connector):
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(side_effect=Exception("db error"))
-        provider = MagicMock()
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        provider.transaction = _transaction
-        connector.data_store_provider = provider
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("db error")
+        )
         result = await connector._get_existing_record("ext-1")
         assert result is None
 

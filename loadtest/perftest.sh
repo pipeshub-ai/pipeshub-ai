@@ -29,8 +29,32 @@ HOST=${PIPESHUB_HOST}
 QUERY_FILE=${PIPESHUB_QUERY_FILE:-$HERE/queries.txt}
 # users=0 is the collect-only mode (someone else drives the load): no requests
 # are sent from here, so no credential is needed.
+#
+# TOKENS[] is what the load loop indexes by user. It comes either from
+# PIPESHUB_USERS (email:password pairs, logged in here) or from a single TOKEN.
+# Anything cached per user has to be measured with real distinct identities —
+# one shared token makes a per-user cache look like it always hits.
+TOKENS=()
 if [ "$USERS" -gt 0 ]; then
-  : "${TOKEN:?set TOKEN in loadtest/.env, or export it — see .env.example}"
+  if [ -n "${PIPESHUB_USERS:-}${PIPESHUB_EMAILS:-}" ]; then
+    detect_python || exit 1
+    echo "== logging in load-test users"
+    if ! TOKEN_BLOB=$(PIPESHUB_HOST="$HOST" LOADTEST_DIR="$HERE" \
+        "$PYTHON" "$HERE/resolve_tokens.py"); then
+      echo "ABORT: could not log in load-test users (see error above)." >&2
+      exit 1
+    fi
+    # tr -d '\r': on Windows the helper's stdout is CRLF and `mapfile -t` strips
+    # only the newline, leaving a carriage return inside the token. That makes
+    # the Authorization header malformed and every request 400s.
+    mapfile -t TOKENS < <(printf '%s\n' "$TOKEN_BLOB" | tr -d '\r' | grep .)
+    [ "${#TOKENS[@]}" -gt 0 ] && [ -n "${TOKENS[0]}" ] || {
+      echo "ABORT: no tokens resolved." >&2; exit 1; }
+    echo "== resolved ${#TOKENS[@]} user tokens"
+  else
+    : "${TOKEN:?set TOKEN or PIPESHUB_USERS in loadtest/.env — see .env.example}"
+    TOKENS=("$TOKEN")
+  fi
 fi
 # Checked before the run, not after: every reporting section below reads the
 # query service, so a 300s run against an unreachable one produces only zeroes.
@@ -45,14 +69,14 @@ say() { echo "$@" | tee -a "$REPORT"; }
 # --- exactly like a throughput collapse. Fail fast instead.
 if [ "$USERS" -gt 0 ]; then
   probe=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/api/v1/conversations/stream" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${TOKENS[0]}" -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" -d "{\"query\":\"ping\",\"chatMode\":\"internal_search\"}" \
     --max-time 60 2>/dev/null) || true
   # curl already prints 000 when it never got a response; appending a fallback
   # to the same capture produced "HTTP 000000".
   [ -n "$probe" ] || probe=000
   if [ "$probe" != "200" ]; then
-    say "ABORT: auth probe returned HTTP $probe (expected 200). Refresh TOKEN."
+    say "ABORT: auth probe returned HTTP $probe (expected 200). Refresh TOKEN/PIPESHUB_USERS."
     exit 1
   fi
 fi
@@ -76,9 +100,15 @@ else
 fi
 [ ${#QUERIES[@]} -gt 0 ] || { say "ABORT: $QUERY_FILE contains no queries."; exit 1; }
 mapfile -t BODIES < <(printf '%s\n' "${QUERIES[@]}" | "$PYTHON" -c '
-import json, sys
+import json, os, sys
+# The reasoning effort changes how much work a turn is, so an A/B across arms
+# has to pin it — leaving it unset lets the service default drift between runs.
+effort = os.environ.get("PIPESHUB_REASONING_EFFORT") or None
 for line in sys.stdin.read().splitlines():
-    print(json.dumps({"query": line, "chatMode": "internal_search"}))
+    body = {"query": line, "chatMode": "internal_search"}
+    if effort:
+        body["reasoningEffort"] = effort
+    print(json.dumps(body))
 ')
 
 say "== $LABEL: $USERS users, ${SECS}s, ${#QUERIES[@]} quer$([ ${#QUERIES[@]} -eq 1 ] && echo y || echo ies), host $HOST, mode $PIPESHUB_MODE"
@@ -104,6 +134,15 @@ else
   say "   (py-spy not installed — skipping CPU profile; see README.md)"
 fi
 
+# --- resource sampler (CPU + RAM for every service, continuously)
+# One-off readings of `docker stats` disagreed by 20x within a single run,
+# so this samples kernel counters for the whole window and the report shows
+# the distribution rather than a spot value.
+if [ -x "$HERE/resource_sampler.sh" ]; then
+    "$HERE/resource_sampler.sh" "$OUTDIR" "$(( SECS + 10 ))" 2 >/dev/null 2>&1 &
+    RES_PID=$!
+fi
+
 # --- memory sampler
 ( END_M=$(( $(date +%s) + SECS + 15 ))
   while [ "$(date +%s)" -lt "$END_M" ]; do
@@ -111,6 +150,16 @@ fi
     sleep 2
   done ) &
 MEM_PID=$!
+
+# How long a single turn may take before curl gives up. The default matches the
+# old hard-coded value. Raise it when a config is slow enough that turns outlast
+# it — a truncated SSE stream still reports HTTP 200 (the status line is sent
+# before the body), so the only symptom is curl_exit=28 and a turn that never
+# reaches the server's completion marker.
+# PIPESHUB_MAX_TIME is the older spelling; existing run scripts still pass it,
+# and ignoring it would silently cap turns at 300s and record saturation as
+# errors.
+TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
 
 # Query order per user, drawn from a PRNG seeded on (label, user index): random
 # across users but reproducible, so two arms of an A/B see the SAME sequence
@@ -129,6 +178,9 @@ END=$(( $(date +%s) + SECS ))
 echo "user,turn,query_index,http_code,time_total,curl_exit" > "$OUTDIR/requests.csv"
 LOAD_PIDS=()
 for u in $(seq 1 "$USERS"); do
+  # Simulated users cycle through the real identities; with one token this is
+  # the old behaviour, with N it spreads them evenly.
+  user_token=${TOKENS[$(( (u - 1) % ${#TOKENS[@]} ))]}
   ( turn=0
     read -r -a seq <<< "${USER_SEQ[$((u - 1))]}"
     while [ "$(date +%s)" -lt "$END" ]; do
@@ -138,10 +190,10 @@ for u in $(seq 1 "$USERS"); do
       # one that was merely slow.
       res=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
         -X POST "$HOST/api/v1/conversations/stream" \
-        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $user_token" -H "Content-Type: application/json" \
         -H "Accept: text/event-stream" \
         -d "${BODIES[$qi]}" \
-        --max-time 300 2>/dev/null)
+        --max-time "$TURN_MAX_SECONDS" 2>/dev/null)
       # Immediately, and with no `|| true` in between: that would make this the
       # exit status of `true` and record every request as curl_exit=0, losing
       # exactly the timeouts (28) this column exists to surface. Safe without a
@@ -201,6 +253,20 @@ else
   say "   (no profile captured)"
 fi
 
+say ""
+# The sampler runs SECS+10 so it covers the drain; without waiting, the report
+# could aggregate a CSV still being appended to and the numbers would change
+# after they were printed.
+if [ -n "${RES_PID:-}" ]; then
+    wait "$RES_PID" 2>/dev/null || true
+fi
+
+say "==================== RESOURCES (CPU %, RAM MB) ===================="
+if [ -s "$OUTDIR/resources.csv" ]; then
+    "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" 2>/dev/null | tee -a "$REPORT"
+else
+    say "  (resource sampler produced no data)"
+fi
 say ""
 say "==================== MEMORY (query service RSS, MB) ===================="
 if [ -s "$OUTDIR/memory.csv" ]; then

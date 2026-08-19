@@ -1,4 +1,5 @@
 from logging import Logger
+from typing import TYPE_CHECKING
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
@@ -34,6 +35,12 @@ from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
 from app.utils.logger import create_logger
 
+if TYPE_CHECKING:
+    from app.services.cache.accessible_records_cache import (
+        AccessibleRecordsCache,
+        AccessibleRecordsInvalidator,
+    )
+
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
 class ContainerUtils:
@@ -54,12 +61,37 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
+        accessible_records_cache: "AccessibleRecordsCache | None" = None,
     ) -> IGraphDBProvider:
         """Async factory to create and connect graph database provider"""
         return await GraphDBProviderFactory.create_provider(
             logger=logger,
             config_service=config_service,
+            accessible_records_cache=accessible_records_cache,
         )
+
+    async def create_accessible_records_cache(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> "AccessibleRecordsCache":
+        """Async factory for the accessible-record map cache (never raises)."""
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+
+        return await AccessibleRecordsCache.create(logger, config_service)
+
+    async def create_accessible_records_invalidator(
+        self,
+        logger: Logger,
+        accessible_records_cache: "AccessibleRecordsCache",
+        graph_provider: IGraphDBProvider,
+    ) -> "AccessibleRecordsInvalidator":
+        """Async factory for the invalidation façade used by writer services."""
+        from app.services.cache.accessible_records_cache import (
+            AccessibleRecordsInvalidator,
+        )
+
+        return AccessibleRecordsInvalidator(logger, accessible_records_cache, graph_provider)
 
     async def create_indexing_pipeline(
         self,

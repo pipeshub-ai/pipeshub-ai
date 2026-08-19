@@ -1,8 +1,11 @@
 import asyncio
 import base64
+import hashlib
 import logging
 import re
+import time
 from collections import defaultdict
+from collections.abc import Iterable
 from itertools import groupby
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -405,6 +408,10 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "sourceLastModifiedTimestamp": "source_updated_at",
 }
 
+# Matches BlobStorage.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE: the graph accepts an IN
+# list, but an unbounded one turns one slow query into a timeout.
+GRAPH_BATCH_CHUNK_SIZE = 500
+
 collection_map = {
                     RecordType.TICKET.value: "tickets",
                     RecordType.PROJECT.value: "projects",
@@ -689,6 +696,57 @@ async def _fetch_type_specific_doc(
     except Exception:
         return None
 
+
+async def _fetch_type_specific_docs_batched(
+    graph_provider: IGraphDBProvider,
+    record_ids: Iterable[str],
+    doc_index: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve type-specific docs for many records, one query per collection.
+
+    Each record otherwise costs its own `get_document`, and a turn enriches every
+    linked record it found. Records whose type has no entry in `collection_map`
+    are skipped rather than queried, matching `_fetch_type_specific_doc`.
+
+    A collection whose query fails is simply absent from the result; the caller
+    falls back to the per-record path for those ids.
+    """
+    by_collection: dict[str, list[str]] = {}
+    for rid in record_ids:
+        collection = collection_map.get((doc_index.get(rid) or {}).get("recordType"))
+        if collection:
+            by_collection.setdefault(collection, []).append(rid)
+    if not by_collection:
+        return {}
+
+    async def _one(collection: str, ids: list[str]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for start in range(0, len(ids), GRAPH_BATCH_CHUNK_SIZE):
+            out.extend(
+                await graph_provider.get_nodes_by_field_in(
+                    collection, "id", ids[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                )
+                or []
+            )
+        return out
+
+    collections = list(by_collection)
+    results = await asyncio.gather(
+        *[_one(c, by_collection[c]) for c in collections], return_exceptions=True
+    )
+    resolved: dict[str, dict[str, Any]] = {}
+    for collection, result in zip(collections, results):
+        if isinstance(result, Exception):
+            logger.debug(
+                "Linked record context: type-doc batch failed for %s: %s", collection, result
+            )
+            continue
+        for node in result:
+            key = (node or {}).get("id") or (node or {}).get("_key")
+            if key:
+                resolved[key] = node
+    return resolved
+
 def _base_record_context_metadata_from_graph(
     base_graph_doc: dict[str, Any],
     frontend_url: str | None = None,
@@ -728,11 +786,17 @@ async def _build_linked_record_context_metadata(
     vrid: str | None = None,
     blob_store: Any = None,
     org_id: str = "",
+    lookup_result: dict[str, Any] | None = None,
+    type_doc: dict[str, Any] | None = None,
 ) -> str | None:
     """Build linked-record context (metadata + type fields + summary, no blocks).
 
     The base doc is guaranteed present in doc_index by the caller. When the record
     is indexed (has a vrid), the blob supplies the summary; otherwise metadata only.
+
+    `lookup_result` and `type_doc` are pre-resolved by the caller in one batched
+    query each. Both fall back to the per-record path when absent, so a batch
+    miss costs a query rather than losing the field.
     """
     base_doc = doc_index.get(record_id)
     if not base_doc or not isinstance(base_doc, dict):
@@ -741,7 +805,9 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
-                blob_record = await blob_store.get_record_from_storage(vrid, org_id)
+                blob_record = await blob_store.get_record_from_storage(
+                    vrid, org_id, lookup_result=lookup_result
+                )
             except Exception as e:
                 logger.debug(
                     "Linked record context: blob fetch failed for %s (vrid=%s): %s",
@@ -753,9 +819,11 @@ async def _build_linked_record_context_metadata(
         else:
             record_dict = _build_record_dict_from_graph_base(base_doc)
 
-        type_graph_doc = await _fetch_type_specific_doc(
-            graph_provider, record_id, record_dict.get("record_type")
-        )
+        type_graph_doc = type_doc
+        if type_graph_doc is None:
+            type_graph_doc = await _fetch_type_specific_doc(
+                graph_provider, record_id, record_dict.get("record_type")
+            )
         record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
         if record_instance:
             return record_instance.to_llm_linked_context(frontend_url)
@@ -777,43 +845,93 @@ def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
     return relation.value
 
 
-async def _fetch_edges_for_record(
+async def _relations_per_record(
     graph_provider: IGraphDBProvider,
-    record_id: str,
-) -> list[tuple[str, str]]:
-    """Return (related_record_id, display_label) pairs from graph edges.
+    record_ids: list[str],
+    relation_types: list[str],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    """Per-record equivalent of `get_record_relations_batch`, used when the
+    batch fails. Concurrent, and a failing pair costs only itself."""
+    async def one(record_id: str, relation_type: str, *, outgoing: bool) -> list[dict[str, Any]]:
+        fetch = (
+            graph_provider.get_parent_record_ids_by_relation_type
+            if outgoing
+            else graph_provider.get_child_record_ids_by_relation_type
+        )
+        return await fetch(record_id, relation_type)
 
-    Graph API naming is edge-direction based, not familial role:
-      get_parent_record_ids → records this hit points to (_from == hit)
-      get_child_record_ids  → records pointing to this hit (_to == hit)
-    """
-    query_specs = [
-        (outgoing, relation)
-        for relation in RECORD_RELATION_ENRICHMENT_TYPES
+    jobs = [
+        (record_id, relation_type, outgoing)
+        for record_id in record_ids
+        for relation_type in relation_types
         for outgoing in (True, False)
     ]
-    tasks = [
-        graph_provider.get_parent_record_ids_by_relation_type(record_id, rel.value)
-        if outgoing
-        else graph_provider.get_child_record_ids_by_relation_type(record_id, rel.value)
-        for outgoing, rel in query_specs
-    ]
+    results = await asyncio.gather(
+        *[one(rid, rel, outgoing=out) for rid, rel, out in jobs],
+        return_exceptions=True,
+    )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    edges: list[tuple[str, str]] = []
-    for (outgoing, relation), result in zip(query_specs, results):
-        if isinstance(result, Exception):
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {
+        record_id: {"parents": [], "children": []} for record_id in record_ids
+    }
+    for (record_id, relation_type, outgoing), result in zip(jobs, results):
+        if isinstance(result, BaseException):
             logger.warning(
-                "Graph context enrichment: edge query failed for %s (%s): %s",
-                record_id, relation.value, result,
+                "Graph context enrichment: %s edges failed for %s: %s",
+                relation_type, record_id, result,
             )
             continue
-        label = _relation_display_label(relation, outgoing)
+        bucket = "parents" if outgoing else "children"
         for edge in result or []:
-            related_id = edge.get("record_id") if isinstance(edge, dict) else None
-            if related_id:
-                edges.append((related_id, label))
-    return edges
+            out[record_id][bucket].append({**edge, "relationType": relation_type})
+    return out
+
+
+async def _fetch_edges_for_records(
+    graph_provider: IGraphDBProvider,
+    record_ids: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Return {record_id: [(related_record_id, display_label), ...]} from graph edges.
+
+    Graph API naming is edge-direction based, not familial role:
+      parents  → records this hit points to (_from == hit)
+      children → records pointing to this hit (_to == hit)
+
+    Batched across records and relation types: the per-record form cost one
+    query per relation type per direction, so a turn enriching every hit spent
+    4x its hit count on round trips.
+    """
+    if not record_ids:
+        return {}
+    by_value = {rel.value: rel for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+    try:
+        relations = await graph_provider.get_record_relations_batch(
+            record_ids, list(by_value),
+        )
+    except Exception as e:
+        # Returning {} here drops linked-record context for every hit in the
+        # turn. The per-record form this replaced used return_exceptions=True
+        # and lost only the failing pair, so fall back to it rather than
+        # degrading the whole turn on one bad batch.
+        logger.warning(
+            "Graph context enrichment: batch edge query failed, per-record fallback: %s", e
+        )
+        relations = await _relations_per_record(graph_provider, record_ids, list(by_value))
+
+    out: dict[str, list[tuple[str, str]]] = {}
+    for record_id in record_ids:
+        buckets = relations.get(record_id) or {}
+        edges: list[tuple[str, str]] = []
+        for bucket, outgoing in (("parents", True), ("children", False)):
+            for edge in buckets.get(bucket) or []:
+                if not isinstance(edge, dict):
+                    continue
+                related_id = edge.get("record_id")
+                relation = by_value.get(edge.get("relationType"))
+                if related_id and relation:
+                    edges.append((related_id, _relation_display_label(relation, outgoing)))
+        out[record_id] = edges
+    return out
 
 
 async def resolve_frontend_url(
@@ -908,13 +1026,52 @@ async def _resolve_target_metadata(
     """
     ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
 
-    async def _fetch_docs() -> list:
+    async def _fetch_docs() -> dict[str, dict[str, Any]]:
+        """One query per chunk instead of one per record.
+
+        Ids the batch does not return are absent from the result, which is what
+        the caller already did with a `get_document` that returned None. If the
+        batch itself fails, fall back to the per-id path rather than dropping
+        every linked record's metadata.
+        """
         if not ids_needing_docs:
-            return []
-        return await asyncio.gather(
-            *[graph_provider.get_document(rid, CollectionNames.RECORDS.value) for rid in ids_needing_docs],
-            return_exceptions=True,
-        )
+            return {}
+        collection = CollectionNames.RECORDS.value
+        try:
+            nodes: list[dict[str, Any]] = []
+            for start in range(0, len(ids_needing_docs), GRAPH_BATCH_CHUNK_SIZE):
+                nodes.extend(
+                    await graph_provider.get_nodes_by_field_in(
+                        collection, "id", ids_needing_docs[start:start + GRAPH_BATCH_CHUNK_SIZE]
+                    )
+                    or []
+                )
+        except Exception as e:
+            logger.warning("Linked record context: batch doc fetch failed, per-id fallback: %s", e)
+            nodes = []
+
+        resolved: dict[str, dict[str, Any]] = {}
+        for node in nodes:
+            key = (node or {}).get("id") or (node or {}).get("_key")
+            if key:
+                resolved[key] = node
+
+        # Recover on id coverage, not on an exception: get_nodes_by_field_in
+        # catches its own errors and returns [], so a dead database is
+        # indistinguishable from "no rows" and the except above never fires.
+        # Anything the batch did not account for is retried individually.
+        missing = [rid for rid in ids_needing_docs if rid not in resolved]
+        if missing:
+            per_id = await asyncio.gather(
+                *[graph_provider.get_document(rid, collection) for rid in missing],
+                return_exceptions=True,
+            )
+            resolved.update({
+                rid: doc
+                for rid, doc in zip(missing, per_id)
+                if isinstance(doc, dict) and doc
+            })
+        return resolved
 
     doc_results, vrid_result = await asyncio.gather(
         _fetch_docs(),
@@ -924,8 +1081,8 @@ async def _resolve_target_metadata(
 
     # Populate doc_index from fetched docs
     if ids_needing_docs and not isinstance(doc_results, Exception):
-        for rid, doc in zip(ids_needing_docs, doc_results):
-            if not isinstance(doc, Exception) and doc and isinstance(doc, dict):
+        for rid, doc in doc_results.items():
+            if doc and isinstance(doc, dict):
                 doc_index[rid] = doc
 
     # Build id -> vrid mapping
@@ -942,6 +1099,32 @@ async def _resolve_target_metadata(
 
     context_map: dict[str, str] = {}
     if out_of_context_ids:
+        # Resolve both per-record lookups once for the whole batch. Each linked
+        # record otherwise pays its own virtual-record mapping query inside
+        # get_record_from_storage, plus its own type-specific get_document.
+        blob_lookups: dict[str, dict[str, Any]] = {}
+        vrids_to_resolve = [
+            id_to_vrid[rid] for rid in out_of_context_ids if rid in id_to_vrid
+        ]
+        if blob_store and org_id and vrids_to_resolve:
+            try:
+                resolved_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                    vrids_to_resolve
+                )
+                # Anything but a mapping means the pre-resolve did not happen;
+                # passing it through would hand the fetch a bogus lookup instead
+                # of letting it resolve the id itself.
+                if isinstance(resolved_lookups, dict):
+                    blob_lookups = resolved_lookups
+            except Exception as e:
+                logger.warning(
+                    "Linked record context: batch virtual-record lookup failed, "
+                    "resolving per record: %s", e,
+                )
+        type_docs = await _fetch_type_specific_docs_batched(
+            graph_provider, out_of_context_ids, doc_index
+        )
+
         ctx_results = await asyncio.gather(
             *[
                 _build_linked_record_context_metadata(
@@ -949,6 +1132,8 @@ async def _resolve_target_metadata(
                     vrid=id_to_vrid.get(rid),
                     blob_store=blob_store if rid in id_to_vrid else None,
                     org_id=org_id,
+                    lookup_result=blob_lookups.get(id_to_vrid.get(rid) or ""),
+                    type_doc=type_docs.get(rid),
                 )
                 for rid in out_of_context_ids
             ],
@@ -1071,10 +1256,9 @@ async def enrich_records_with_graph_context(
     # Step 2: Fetch edges for relation-eligible hits
     edge_results: list = []
     if relation_eligible:
-        edge_results = await asyncio.gather(
-            *[_fetch_edges_for_record(graph_provider, rid) for _, rid, _ in relation_eligible],
-            return_exceptions=True,
-        )
+        eligible_ids = [rid for _, rid, _ in relation_eligible]
+        edges_by_record = await _fetch_edges_for_records(graph_provider, eligible_ids)
+        edge_results = [edges_by_record.get(rid, []) for rid in eligible_ids]
 
     # Step 3: Build relation buckets from edges
     relation_buckets, all_related_ids = _build_relation_buckets(
@@ -1478,7 +1662,37 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     except Exception as e:
         logger.warning(f"Failed to fetch frontend URL from config service: {str(e)}")
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url) for virtual_record_id in records_to_fetch])
+    # One mapping query for the whole batch instead of one (plus a fallback) per
+    # record; each get_record then goes straight to the download.
+    batched_lookups: dict[str, Any] = {}
+    if records_to_fetch:
+        try:
+            batched_lookups = await blob_store.get_document_ids_by_virtual_record_ids(
+                list(records_to_fetch)
+            )
+        except Exception as e:
+            logger.warning("Batch virtual-record lookup failed, resolving per record: %s", str(e))
+
+    # Type-specific metadata (ticket status, mail sender, ...) is one graph query
+    # per record inside get_record. The record type is already known here, so
+    # resolve the whole batch with one query per collection instead.
+    type_docs: dict[str, dict[str, Any]] = {}
+    if records_to_fetch and graph_provider:
+        # Records reach here carrying `_key` rather than `id` (the graph write
+        # path moves `id` into `_key`), so keying on `id` alone matched nothing
+        # and the batch silently no-opped back to one query per record.
+        by_record_id = {
+            key: gdb
+            for vrid in records_to_fetch
+            if isinstance(gdb := (virtual_to_record_map or {}).get(vrid), dict)
+            and (key := gdb.get("id") or gdb.get("_key"))
+        }
+        if by_record_id:
+            type_docs = await _fetch_type_specific_docs_batched(
+                graph_provider, list(by_record_id), by_record_id
+            )
+
+    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs) for virtual_record_id in records_to_fetch])
     # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
@@ -2144,9 +2358,9 @@ def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None,lookup_result: dict[str, Any] | None = None,type_docs: dict[str, dict[str, Any]] | None = None) -> None:
     try:
-        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
+        record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id, lookup_result=lookup_result)
         if record:
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:
@@ -2174,8 +2388,8 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                     record["external_record_id"] = graph_external_id
 
                 # Fetch type-specific metadata and generate formatted string
-                graph_doc = None
-                if graph_provider and record_key:
+                graph_doc = (type_docs or {}).get(record_key)
+                if graph_doc is None and graph_provider and record_key:
                     try:
                         # Determine collection name based on record type
 
@@ -3537,11 +3751,13 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
 
 FRAGMENT_WORD_COUNT = 4
 
+_FRAGMENT_WORD_PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
+
 def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
     if not snippet:
         return "", ""
-        
-    PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
+
+    PATTERN = _FRAGMENT_WORD_PATTERN
 
     # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
     all_matches = list(PATTERN.finditer(snippet))
@@ -3588,7 +3804,45 @@ def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
 
     return start_text, end_text.strip()
 
+# Values are fragment URLs that embed a few URL-encoded snippet words in
+# #:~:text=… — not whole record blocks. Keys are digests of the snippet.
+# TTL + maxsize keep retention bounded across orgs in a long-lived process.
+_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], tuple[str, float]] = {}
+_FRAGMENT_URL_CACHE_MAXSIZE = 8192
+_FRAGMENT_URL_CACHE_TTL_SECONDS = 300.0
+
+
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
+    """Memoized wrapper over `_build_text_fragment_url`.
+
+    The live citation overlay re-derives every citation's URL on each refresh,
+    so the same (base_url, snippet) pair is re-scanned many times per turn.
+    Snippets are keyed by digest so the cache does not retain full record text
+    as keys; cached values still hold the short start/end words used in the
+    text-fragment directive. Entries expire after
+    `_FRAGMENT_URL_CACHE_TTL_SECONDS` and the map is cleared wholesale when
+    full — eviction bookkeeping would cost more than the recompute it saves.
+    """
+    if not isinstance(base_url, str) or not isinstance(text_snippet, str):
+        return _build_text_fragment_url(base_url, text_snippet)
+
+    key = (base_url, hashlib.sha1(text_snippet.encode("utf-8", "surrogatepass")).digest())
+    now = time.monotonic()
+    cached = _FRAGMENT_URL_CACHE.get(key)
+    if cached is not None:
+        result, expires_at = cached
+        if expires_at > now:
+            return result
+        _FRAGMENT_URL_CACHE.pop(key, None)
+
+    result = _build_text_fragment_url(base_url, text_snippet)
+    if len(_FRAGMENT_URL_CACHE) >= _FRAGMENT_URL_CACHE_MAXSIZE:
+        _FRAGMENT_URL_CACHE.clear()
+    _FRAGMENT_URL_CACHE[key] = (result, now + _FRAGMENT_URL_CACHE_TTL_SECONDS)
+    return result
+
+
+def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
 

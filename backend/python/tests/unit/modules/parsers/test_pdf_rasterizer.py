@@ -120,3 +120,38 @@ def test_broken_process_pool_clears_cache_and_reraises():
             rasterizer._run_in_pool(lambda: None)
 
         mock_get_pool.cache_clear.assert_called_once()
+
+
+def test_broken_process_pool_reports_memory_incident_when_governor_wired():
+    """A worker OOM-kill must feed the governor's fast incident path rather
+    than only being logged — see resource_governor.controller.
+    ResourceGovernor.report_memory_incident."""
+    mock_pool = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.side_effect = BrokenProcessPool("worker killed")
+    mock_pool.submit.return_value = mock_future
+    mock_governor = MagicMock()
+
+    rasterizer.set_resource_governor(mock_governor)
+    try:
+        with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
+            with pytest.raises(BrokenProcessPool):
+                rasterizer._run_in_pool(lambda: None)
+
+        mock_governor.report_memory_incident.assert_called_once()
+    finally:
+        rasterizer.set_resource_governor(None)
+
+
+def test_broken_process_pool_without_governor_does_not_raise():
+    """No governor wired (e.g. standalone/test runs) must stay a no-op, not
+    an AttributeError."""
+    mock_pool = MagicMock()
+    mock_future = MagicMock()
+    mock_future.result.side_effect = BrokenProcessPool("worker killed")
+    mock_pool.submit.return_value = mock_future
+
+    assert rasterizer._resource_governor is None
+    with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
+        with pytest.raises(BrokenProcessPool):
+            rasterizer._run_in_pool(lambda: None)

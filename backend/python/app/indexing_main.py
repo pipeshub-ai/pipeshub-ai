@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Protocol, TypeVar
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config.constants.arangodb import (
@@ -26,13 +26,24 @@ from app.services.messaging.config import (
     get_message_broker_type,
     messaging_env,
 )
+from app.services.messaging.backpressure import (
+    get_default_backpressure_coordinator,
+)
 from app.services.messaging.distributed_concurrency import (
     DistributedConcurrencyManager,
+)
+from app.modules.parsers.pdf.docling_processor import (
+    set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    set_resource_governor as set_pdf_rasterizer_governor,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
@@ -533,7 +544,10 @@ async def run_stale_recovery_loop(
         )
 
 
-async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any]:
+async def start_kafka_consumers(
+    app_container: IndexingAppContainer,
+    governor: ResourceGovernor | None = None,
+) -> list[Any]:
     """Start all message consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -582,6 +596,11 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
         await retry_producer.initialize()
         logger.info("✅ Retry producer initialized for %s", broker_type.value)
 
+        # Same process-wide singleton the ParsingClient/DoclingClient/
+        # EmbeddingServerEmbeddings instances used by this consumer's
+        # pipeline default to (see app.services.messaging.backpressure) —
+        # passing it explicitly here is what lets the consumer's read loop
+        # actually see their 429 signals and pause new reads.
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
@@ -590,6 +609,8 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
             retry_manager=retry_manager,
             producer=retry_producer,
             concurrency_manager=concurrency_manager,
+            governor=governor,
+            backpressure_coordinator=get_default_backpressure_coordinator(),
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -751,9 +772,46 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # One governor per process: derives parse/index ceilings from cgroup/CPU
+    # limits (falling back to the operator's MAX_CONCURRENT_* when set) and
+    # adapts the effective limits within them as load changes. Shared by
+    # both indexing consumers below (only one is actually active per broker
+    # configuration, but construction is cheap either way).
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        env_index=messaging_env.env_max_concurrent_indexing,
+        worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
+    )
+    app.state.governor = governor
+    app_container.resource_governor = governor
+    governor_task = asyncio.create_task(governor.run())
+    # Both leaf modules run a worker-process OOM-kill (BrokenProcessPool)
+    # straight into the governor's fast incident path instead of only the
+    # periodic sampler noticing the pressure it already caused.
+    set_docling_processor_governor(governor)
+    set_pdf_rasterizer_governor(governor)
+
+    # This service flips records to COMPLETED, which is when a KB record first
+    # becomes searchable — the query service's cached map must be dropped then.
+    try:
+        from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+        from app.services.cache.invalidation_hooks import (
+            init_accessible_records_invalidator,
+        )
+        cache = await AccessibleRecordsCache.create(logger, app_container.config_service())
+        app.state.accessible_records_cache = cache
+        init_accessible_records_invalidator(logger, cache, graph_provider)
+    except Exception as e:
+        logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
+
+
     # Start all message consumers centrally
     try:
-        consumers = await start_kafka_consumers(app_container)
+        consumers = await start_kafka_consumers(app_container, governor)
         app_container.kafka_consumers = consumers
         logger.info("✅ All message consumers started successfully")
     except Exception as e:
@@ -825,6 +883,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
+    # Stop the resource governor's sample loop after consumers (which hold
+    # its gates) have drained, so nothing races a limit change mid-shutdown.
+    governor.stop()
+    governor_task.cancel()
+    try:
+        await governor_task
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"❌ Error during resource governor shutdown: {str(e)}")
+    governor.close()
+
+    try:
+        accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
+        if accessible_records_cache is not None:
+            await accessible_records_cache.close()
+            logger.info("✅ Accessible-records cache closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing accessible-records cache: {e}")
+
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:
         config_service = app_container.config_service()
@@ -869,15 +947,26 @@ telemetry = setup_telemetry(app, service_name="indexing_service")
 
 
 @app.get("/health")
-async def health_check() -> JSONResponse:
+async def health_check(request: Request) -> JSONResponse:
     """Health check endpoint for the indexing service itself"""
     try:
+        governor: ResourceGovernor | None = getattr(
+            request.app.state, "governor", None
+        )
+        content: dict[str, Any] = {
+            "status": "healthy",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        }
+        if governor is not None:
+            try:
+                content["resource_governor"] = governor.stats()
+            except Exception as stats_error:
+                # Observability failure must not fail the liveness probe —
+                # the service itself is still healthy.
+                content["resource_governor"] = {"error": str(stats_error)}
         return JSONResponse(
             status_code=200,
-            content={
-                "status": "healthy",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
+            content=content,
         )
     except Exception as e:
         return JSONResponse(

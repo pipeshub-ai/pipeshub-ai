@@ -8,7 +8,7 @@ import tempfile
 import uuid
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -18,7 +18,6 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -68,6 +67,11 @@ from app.connectors.sources.google.common.apps import GmailTeamApp
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
+from app.connectors.sources.google.common.impersonation import (
+    get_impersonation_candidates,
+    is_delegation_error,
+    resolve_explicit_user,
+)
 from app.connectors.sources.google.gmail.talon_utils import quotations
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -79,6 +83,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
@@ -237,6 +242,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
+        self.synced_user_emails: set[str] = set()  # confirmed workspace members, used to prioritize impersonation candidates
 
     async def init(self) -> bool:
         """Initialize the Google Gmail workspace connector with service account credentials and services."""
@@ -334,12 +340,10 @@ class GoogleGmailTeamConnector(BaseConnector):
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=external_record_id
-                )
-                return existing_record
+            return await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=external_record_id
+            )
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -1724,6 +1728,61 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.error(f"Error creating Gmail client for user {user_email}: {e}")
             raise
 
+    async def _get_gmail_client_for_user(self, user_email: Optional[str] = None) -> GoogleGmailDataSource:
+        """
+        Get the appropriate Gmail data source. Impersonates user_email when given
+        (raising if impersonation fails); otherwise uses the service account
+        client. Mirrors the Drive connector's _get_drive_service_for_user.
+        """
+        if user_email:
+            return await self._create_user_gmail_client(user_email)
+
+        if not self.gmail_data_source:
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Gmail client not initialized"
+            )
+        return self.gmail_data_source
+
+    async def _get_gmail_service_with_fallback(
+        self,
+        candidates: List[User],
+        call: Callable[[object, Optional[str]], Awaitable[object]],
+    ) -> Tuple[Optional[str], object]:
+        """
+        Try `call(gmail_service, email)` for each candidate (in order), impersonating
+        that user's email. Moves on to the next candidate only when the failure is a
+        domain-wide-delegation authorization error ('unauthorized_client') — any other
+        failure is raised immediately since trying another user wouldn't help.
+
+        Falls back to the service account once every candidate has failed with a
+        delegation error. Returns (resolved_email, call_result) — resolved_email is
+        None when it fell back to the service account.
+        """
+        for user in candidates:
+            email = user.email
+            if not email:
+                continue
+            gmail_data_source = await self._get_gmail_client_for_user(email)
+            try:
+                result = await call(gmail_data_source.client, email)
+                return email, result
+            except Exception as e:
+                if not is_delegation_error(e):
+                    raise
+                self.logger.warning(
+                    f"Domain-wide delegation not authorized for {email}; trying next impersonation candidate"
+                )
+                continue
+
+        if candidates:
+            self.logger.warning(
+                f"All {len(candidates)} impersonation candidate(s) failed delegation for record; falling back to service account"
+            )
+        gmail_data_source = await self._get_gmail_client_for_user(None)
+        result = await call(gmail_data_source.client, None)
+        return None, result
+
     def _parse_gmail_headers(self, headers: List[Dict]) -> Dict[str, str]:
         """
         Parse Gmail message headers into a dictionary.
@@ -1934,6 +1993,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")
                 self.synced_users = []
+                self.synced_user_emails = set()
                 return
 
             # Process all users through the data entities processor
@@ -1942,6 +2002,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Store users for use in batch processing
             self.synced_users = all_users
+            self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 
@@ -2633,14 +2694,13 @@ class GoogleGmailTeamConnector(BaseConnector):
         # Get parent message record using parent_external_record_id
         message_id = None
         if record.parent_external_record_id:
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_record = await tx_store.get_record_by_external_id(
-                    connector_id=record.connector_id,
-                    external_id=record.parent_external_record_id
-                )
-                if parent_record:
-                    message_id = parent_record.external_record_id
-                    self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
+            parent_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_record_id=record.parent_external_record_id
+            )
+            if parent_record:
+                message_id = parent_record.external_record_id
+                self.logger.info(f"Found parent message ID: {message_id} from parent_external_record_id")
 
         if not message_id:
             self.logger.error(f"Parent message ID not found for attachment record {record.id}")
@@ -2785,68 +2845,38 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             self.logger.info(f"Streaming Gmail record: {file_id}, type: {record_type}, convertTo: {convertTo}")
 
-            # Get user email from user_id if provided, otherwise get user with permission to node
-            user_email = None
-            if user_id and user_id != "None":
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_user_id(user_id)
-                    if user:
-                        user_email = user.get("email")
-                        self.logger.info(f"Retrieved user email {user_email} for user_id {user_id}")
-                    else:
-                        self.logger.warning(f"User not found for user_id {user_id}, trying to get user with permission to node")
-                        # Fall through to get user with permission
+            # If the caller already told us exactly who to impersonate, use that
+            # directly — no need to search permission holders. Only fall back to the
+            # broader candidate search when no user_id was given at all (e.g. the
+            # internal indexing stream route, whose JWT carries no user identity).
+            preferred_user = await resolve_explicit_user(self.logger, self.data_entities_processor, user_id)
+            if preferred_user:
+                candidates = [preferred_user]
             else:
-                self.logger.info("user_id not provided or is None, getting user with permission to node")
-
-            # If we don't have user_email yet, get user with permission to the node
-            if not user_email:
-                user_with_permission = None
-                async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                        record.id, CollectionNames.RECORDS.value
-                    )
-                if user_with_permission:
-                    user_email = user_with_permission.email
-                    self.logger.info(f"Retrieved user email {user_email} from user with permission to node")
-                else:
+                candidates = await get_impersonation_candidates(
+                    self.data_entities_processor, record.id, self.synced_user_emails, self.logger
+                )
+                if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
-
-            # Create Gmail data source with user impersonation or use service account
-            gmail_data_source = None
-            if user_email:
-                try:
-                    gmail_data_source = await self._create_user_gmail_client(user_email)
-                    self.logger.info(f"Using user-impersonated Gmail client for {user_email}")
-                except Exception as e:
-                    self.logger.error(f"Failed to create user-specific client for {user_email}: {e}")
-                    self.logger.warning("Falling back to service account client")
-                    gmail_data_source = None
-
-            # Fallback to service account if no user_email or impersonation failed
-            if not gmail_data_source:
-                if not self.gmail_data_source:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Gmail client not initialized"
-                    )
-                gmail_data_source = self.gmail_data_source
-                self.logger.info("Using service account Gmail client")
-
-            # Get raw Gmail service client
-            gmail_service = gmail_data_source.client
 
             # Route to appropriate handler based on record type
             if record_type == RecordTypes.MAIL.value:
-                return await self._stream_mail_record(gmail_service, file_id, record)
+                _, response = await self._get_gmail_service_with_fallback(
+                    candidates,
+                    lambda service, _email: self._stream_mail_record(service, file_id, record),
+                )
             else:
                 # For attachments, get file metadata from record
                 file_name = record.record_name or "attachment"
                 mime_type = record.mime_type if hasattr(record, 'mime_type') and record.mime_type else "application/octet-stream"
 
-                return await self._stream_attachment_record(
-                    gmail_service, file_id, record, file_name, mime_type, convertTo, user_email
+                _, response = await self._get_gmail_service_with_fallback(
+                    candidates,
+                    lambda service, email: self._stream_attachment_record(
+                        service, file_id, record, file_name, mime_type, convertTo, email
+                    ),
                 )
+            return response
 
         except HTTPException:
             raise
@@ -2920,38 +2950,38 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.warning(f"Missing external_record_id for record {record.id}")
                 return None
 
-            # Get user with permission to the node
-            user_with_permission = None
-            async with self.data_store_provider.transaction() as tx_store:
-                user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                    record.id, CollectionNames.RECORDS.value
-                )
-
-            if not user_with_permission:
+            candidates = await get_impersonation_candidates(
+                self.data_entities_processor, record.id, self.synced_user_emails, self.logger
+            )
+            if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
 
-            user_email = user_with_permission.email
-            if not user_email:
-                self.logger.warning(f"User found but email is missing for record {record.id}")
-                return None
-
-            # Create Gmail client with user impersonation
-            user_gmail_client = await self._create_user_gmail_client(user_email)
-
-            # Route to appropriate handler based on record type
             record_type = record.record_type
-            if record_type == RecordType.MAIL:
-                return await self._check_and_fetch_updated_mail_record(
-                    org_id, record, user_email, user_gmail_client
-                )
-            elif record_type == RecordType.FILE:
-                return await self._check_and_fetch_updated_file_record(
-                    org_id, record, user_email, user_gmail_client
-                )
-            else:
-                self.logger.warning(f"Unknown record type {record_type} for record {record.id}")
-                return None
+
+            async def _check_as_user(
+                gmail_service: object, email: Optional[str]
+            ) -> Optional[Tuple[Record, List[Permission]]]:
+                if not email:
+                    # Reindexing always operates as a specific mailbox owner — the
+                    # service account has no mailbox of its own to check against.
+                    self.logger.warning(f"No delegated user available to check record {record.id} at source")
+                    return None
+                user_gmail_client = GoogleGmailDataSource(gmail_service)
+                if record_type == RecordType.MAIL:
+                    return await self._check_and_fetch_updated_mail_record(
+                        org_id, record, email, user_gmail_client
+                    )
+                elif record_type == RecordType.FILE:
+                    return await self._check_and_fetch_updated_file_record(
+                        org_id, record, email, user_gmail_client
+                    )
+                else:
+                    self.logger.warning(f"Unknown record type {record_type} for record {record.id}")
+                    return None
+
+            _, result = await self._get_gmail_service_with_fallback(candidates, _check_as_user)
+            return result
 
         except Exception as e:
             self.logger.error(f"Error checking Google Gmail workspace record {record.id} at source: {e}")
@@ -3025,6 +3055,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             return None
 
         except Exception as e:
+            if is_delegation_error(e):
+                # Delegation failure, not a real "no change" — let the caller retry with
+                # a different impersonation candidate instead of silently treating this
+                # record as unchanged.
+                raise
             self.logger.error(f"Error checking Google Gmail workspace mail record {record.id} at source: {e}")
             return None
 
@@ -3236,6 +3271,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             return None
 
         except Exception as e:
+            if is_delegation_error(e):
+                # Delegation failure, not a real "no change" — let the caller retry with
+                # a different impersonation candidate instead of silently treating this
+                # record as unchanged.
+                raise
             self.logger.error(f"Error checking Google Gmail workspace file record {record.id} at source: {e}")
             return None
 

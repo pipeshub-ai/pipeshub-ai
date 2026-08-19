@@ -92,6 +92,7 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
+    normalize_conversation_index,
 )
 from app.models.entities import (
     AppUser,
@@ -1268,7 +1269,7 @@ class OutlookIndividualConnector(BaseConnector):
                 thread_id=message.conversation_id or '',
                 is_parent=False,
                 internet_message_id=message.internet_message_id or '',
-                conversation_index=message.conversation_index or '',
+                conversation_index=normalize_conversation_index(message.conversation_index),
             )
 
             # Apply indexing filter for mail records

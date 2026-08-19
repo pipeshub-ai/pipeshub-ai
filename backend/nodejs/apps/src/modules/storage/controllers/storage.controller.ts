@@ -32,6 +32,7 @@ import { StorageService } from '../storage.service';
 import {
   getCurrentFilePath,
   DocumentInfoResponse,
+  LeanDocumentInfoResponse,
   getDocumentRootPath,
   extractOrgId,
   extractUserId,
@@ -337,9 +338,13 @@ export class StorageController {
       const version = req.query.version;
       const expirationTimeInSeconds = req.query.expirationTimeInSeconds;
 
-      const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
+      // lean: this path only reads fields off the document and signs a URL, so
+      // it does not need a hydrated model. Hydration is ~20% of gateway CPU and
+      // this is the hottest route on it.
+      const docResult: LeanDocumentInfoResponse | undefined = await getDocumentInfo(
         req,
         next,
+        true,
       ); // Use the middleware to get docInfo
       if (!docResult) {
         throw new NotFoundError('Document does not exist');

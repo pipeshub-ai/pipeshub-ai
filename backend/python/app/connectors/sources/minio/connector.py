@@ -10,7 +10,7 @@ from logging import Logger
 from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -57,6 +57,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
     .with_description("Sync files and folders from MinIO S3-compatible storage")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.ACCESS_KEY).fields([
             AuthField(
