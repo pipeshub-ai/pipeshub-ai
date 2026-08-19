@@ -1,4 +1,5 @@
 from typing import Optional
+import asyncio
 
 import httpx  # type: ignore
 
@@ -67,8 +68,33 @@ class HTTPClient(IClient):
         elif isinstance(request.body, bytes):
             request_kwargs["content"] = request.body
 
-        response = await client.request(request.method, url, **request_kwargs)
-        return HTTPResponse(response)
+        max_retries = 3
+        base_delay = 1.0
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.request(request.method, url, **request_kwargs)
+                if response.status_code == 429 and attempt < max_retries:
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            delay = base_delay * (2 ** attempt)
+                    else:
+                        delay = base_delay * (2 ** attempt)
+                    
+                    delay = min(delay, 60.0)
+                    await asyncio.sleep(delay)
+                    continue
+                    
+                return HTTPResponse(response)
+            except httpx.TimeoutException:
+                if attempt == max_retries:
+                    raise
+                
+                delay = base_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
 
     async def close(self) -> None:
         """Close the client"""

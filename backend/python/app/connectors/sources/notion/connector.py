@@ -1021,10 +1021,13 @@ class NotionConnector(BaseConnector):
                                     total_files += 1
 
                         except Exception as error:
-                            self.logger.warning(
+                            self.logger.error(
                                 f"Failed to fetch attachments for page {obj_id}: {error}. "
-                                f"Continuing with page sync."
+                                f"Marking page as FAILED."
                             )
+                            if record:
+                                record.indexing_status = ProgressStatus.FAILED.value
+                                record.reason = f"Sync-phase content fetch failed: {error}"
 
                 # Save batch
                 if records_with_permissions:
