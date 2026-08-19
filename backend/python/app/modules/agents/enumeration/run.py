@@ -18,6 +18,17 @@ from app.modules.agents.enumeration.policy import is_enumeration_query
 logger = logging.getLogger(__name__)
 
 
+class EnumerationFinalizationError(RuntimeError):
+    """Raised when the census fails *after* finalisation has begun.
+
+    Everything before that point can safely fall back to the agent: nothing has
+    been sent to the client and no state has been kept. Once the finaliser
+    starts it may already have emitted an answer, so running the agent as well
+    would show the reader two answers to one question. This exception tells the
+    caller to surface a failure instead of retrying.
+    """
+
+
 async def _fetch_summaries(
     retrieval_service: Any,
     org_id: str,
@@ -195,12 +206,16 @@ async def try_answer_enumeration(
             agent_success=True, agent_error=None, agent_output=result.text,
             event_sink=event_sink, streamed_answer="", reasoning_turns=[],
         )
-    except Exception:
+    except Exception as exc:
+        # Roll back so nothing downstream inherits citations for records it
+        # never mentioned, then mark this as past the point of no return.
         for key, value in previous.items():
             if value is None:
                 state.pop(key, None)
             else:
                 state[key] = value
-        raise
+        raise EnumerationFinalizationError(
+            "census finalisation failed after emitting"
+        ) from exc
 
     return True

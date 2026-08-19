@@ -403,7 +403,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             # onboarding", "in this folder", "updated last week" -- are rejected
             # by the classifier and stay on the agent path, where retrieval can
             # actually honour them. No-op for everything else.
-            from app.modules.agents.enumeration.run import try_answer_enumeration
+            from app.modules.agents.enumeration.run import (
+                EnumerationFinalizationError,
+                try_answer_enumeration,
+            )
             try:
                 if policy.has_knowledge and await try_answer_enumeration(
                     query=query_info.get("query", ""), context=context,
@@ -412,8 +415,14 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     event_sink=context.event_sink, log=log,
                 ):
                     return
+            except EnumerationFinalizationError:
+                # Past the point where an answer may already have reached the
+                # client. Running the agent now would send a second answer to
+                # the same question, so let this surface as a request failure.
+                raise
             except Exception as exc:  # noqa: BLE001
-                # Never let this path break chat: fall through to the agent.
+                # Anything before finalisation is safe to retry: nothing was
+                # emitted and no state was kept. Never let this path break chat.
                 log.warning("enumeration path failed, falling back to agent: %s", exc, exc_info=True)
 
             factory = PipesHubAgentFactory()
