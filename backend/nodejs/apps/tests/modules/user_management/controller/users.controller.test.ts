@@ -2619,6 +2619,10 @@ describe('UserController', () => {
         role: 'admin',
       };
 
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org', shortName: 'TO' } as any);
 
       const deletedUser = {
@@ -2711,6 +2715,24 @@ describe('UserController', () => {
         (call) => call.args[1]?.$set?.role === 'admin',
       );
       expect(promoteCall).to.equal(undefined);
+    });
+
+    it('should reject a member inviting users as admin', async () => {
+      req.body = {
+        emails: ['new@test.com'],
+        role: 'admin',
+      };
+
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Members can only invite users as member');
     });
   });
 

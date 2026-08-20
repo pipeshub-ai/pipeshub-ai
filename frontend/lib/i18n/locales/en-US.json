@@ -812,6 +812,8 @@
         "viewProfile": "View Profile",
         "changeRole": "Change Role",
         "removeFromWorkspace": "Remove from Workplace",
+        "demoteAdminBeforeRemoveTitle": "Cannot remove admin",
+        "demoteAdminBeforeRemove": "Demote the admin to member, then remove them.",
         "removeUserTitle": "Remove user?",
         "removeUserMessage": "Are you sure you want to remove {{email}} from {{workspace}} workspace?",
         "removeButton": "Remove",

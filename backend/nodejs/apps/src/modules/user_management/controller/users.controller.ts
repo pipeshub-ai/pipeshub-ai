@@ -1549,6 +1549,15 @@ export class UserController {
 
       // role is validated by bulkInviteValidationSchema when present
       const inviteRole = role === 'admin' ? 'admin' : 'member';
+      if (inviteRole === 'admin') {
+        const actorIsAdmin = await isUserOrgAdmin(
+          req.user.userId,
+          req.user.orgId,
+        );
+        if (!actorIsAdmin) {
+          throw new ForbiddenError('Members can only invite users as member');
+        }
+      }
 
       const orgId = req.user.orgId;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });
