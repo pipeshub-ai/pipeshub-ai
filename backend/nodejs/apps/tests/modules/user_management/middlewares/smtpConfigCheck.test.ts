@@ -55,6 +55,17 @@ describe('smtpConfigCheck Middleware', () => {
     expect(next.firstCall.args).to.have.lengthOf(0);
   });
 
+  it('should call next with InternalServerError when execute returns a malformed response', async () => {
+    executeStub = sinon.stub(ConfigurationManagerServiceCommand.prototype, 'execute').resolves(undefined as any);
+
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
+    await middleware(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    const error = next.firstCall.args[0];
+    expect(error.message).to.equal('Error getting smtp config');
+  });
+
   it('should call next with InternalServerError when response statusCode is not 200', async () => {
     executeStub = sinon.stub(ConfigurationManagerServiceCommand.prototype, 'execute').resolves({
       statusCode: 500,

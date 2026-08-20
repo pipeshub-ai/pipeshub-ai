@@ -1133,7 +1133,7 @@ function UsersPageContent() {
             selectedCount={selectedUsers.size}
             itemLabel={t('workspace.users.bulkLabel', 'Users')}
             actions={bulkActions}
-            visible={selectedUsers.size > 0}
+            visible={selectedUsers.size > 0 && bulkActions.length > 0}
           />
         </Flex>
       </Flex>

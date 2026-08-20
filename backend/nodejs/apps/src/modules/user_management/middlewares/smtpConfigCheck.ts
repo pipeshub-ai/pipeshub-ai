@@ -46,6 +46,13 @@ export const smtpConfigCheck =
         configurationManagerCommandOptions,
       );
       const response = await getCredentialsCommand.execute();
+      if (
+        !response ||
+        typeof response !== 'object' ||
+        typeof response.statusCode !== 'number'
+      ) {
+        throw new InternalServerError('Error getting smtp config');
+      }
       if (response.statusCode !== 200) {
         throw new InternalServerError(
           'Error getting smtp config',

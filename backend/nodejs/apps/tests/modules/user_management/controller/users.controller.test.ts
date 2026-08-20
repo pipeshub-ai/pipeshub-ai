@@ -1425,6 +1425,22 @@ describe('UserController', () => {
       expect(error.message).to.equal('User not found');
     });
 
+    it('should look up the invite target within the requester org', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+
+      sinon.stub(Org, 'findOne').resolves({ _id: req.user.orgId, registeredName: 'Test Org' } as any);
+      const findOneStub = sinon.stub(Users, 'findOne').resolves(null);
+
+      await controller.resendInvite(req, res, next);
+
+      expect(findOneStub.calledOnce).to.be.true;
+      expect(findOneStub.firstCall.args[0]).to.deep.equal({
+        _id: '507f1f77bcf86cd799439011',
+        orgId: req.user.orgId,
+        isDeleted: false,
+      });
+    });
+
     it('should call next with BadRequestError when user has already logged in', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2733,6 +2749,25 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('Members can only invite users as member');
+    });
+
+    it('should reject a member inviting with groupIds', async () => {
+      req.body = {
+        emails: ['new@test.com'],
+        role: 'member',
+        groupIds: ['507f1f77bcf86cd799439013'],
+      };
+
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.message).to.equal('Members cannot assign groups when inviting');
     });
   });
 
@@ -5219,6 +5254,22 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
         'groupIds must contain valid MongoDB ObjectIds',
+      );
+    });
+
+    it('rejects a member attaching groupIds to a file invite', async () => {
+      req.body = {
+        fileBuffer: { buffer: Buffer.from('a@test.com\n') },
+        groupIds: JSON.stringify(['507f1f77bcf86cd799439013']),
+      };
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Members cannot assign groups when inviting',
       );
     });
   });
