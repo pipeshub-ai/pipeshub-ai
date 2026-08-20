@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
@@ -807,7 +807,7 @@ const streamKbUpload = async (opts: {
           : filePath;
         const extension = getFileExtension(fileName);
         const correctMimeType = (extension && getMimeType(extension)) || mimetype;
-        const key: string = uuidv4();
+        const key: string = randomUUID();
         const webUrl = `/record/${key}`;
         const validLastModified =
           lastModified && !isNaN(lastModified) && lastModified > 0

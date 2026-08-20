@@ -107,7 +107,6 @@
     "slug": "^4.1.0",
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
-    "uuid": "^14.0.0",
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "xss": "^1.0.15",

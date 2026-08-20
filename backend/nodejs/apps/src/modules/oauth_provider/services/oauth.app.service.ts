@@ -1,5 +1,5 @@
 import { injectable, inject } from 'inversify'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'crypto'
 import crypto from 'crypto'
 import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
@@ -84,7 +84,7 @@ export class OAuthAppService {
     this.validateRedirectUris(redirectUris)
 
     // Generate credentials
-    const clientId = uuidv4()
+    const clientId = randomUUID()
     const clientSecret = this.generateClientSecret()
     const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
 
