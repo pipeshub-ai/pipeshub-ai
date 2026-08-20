@@ -583,11 +583,15 @@ class EventProcessor:
             # A CODE_FILE's mime is not trustworthy: connectors that walk a git
             # tree default it to text/plain for anything they do not recognise,
             # and they do not always populate `extension`. Derive a separate
-            # extension for the code-dispatch check only — the original value
-            # must stay intact for reconciliation, tier, and generic dispatch.
+            # extension for code dispatch and language detection — the original
+            # value must stay intact for reconciliation, tier, and generic dispatch.
             code_ext = extension
-            if (not code_ext or code_ext == "unknown") and "." in record_name:
-                code_ext = record_name.rsplit(".", 1)[-1].lower()
+            if not code_ext or code_ext == "unknown":
+                file_path_raw = event_data.get("filePath") or ""
+                if "." in file_path_raw:
+                    code_ext = file_path_raw.rsplit(".", 1)[-1].lower()
+                elif "." in record_name:
+                    code_ext = record_name.rsplit(".", 1)[-1].lower()
 
             file_content = event_data.get("buffer")
 
@@ -830,7 +834,7 @@ class EventProcessor:
                     recordId=record_id,
                     code_binary=file_content,
                     virtual_record_id=virtual_record_id,
-                    extension=extension,
+                    extension=code_ext,
                     file_path=event_data.get("filePath"),
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
