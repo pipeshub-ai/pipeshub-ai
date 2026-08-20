@@ -32,7 +32,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
-from app.modules.parsers.code_parser.lang_config import detect_language
+from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -1754,6 +1754,10 @@ class Processor:
                 file_path = await self._lookup_code_file_path(recordId)
             file_path = file_path or recordName
             language = detect_language(recordName) or detect_language(file_path)
+            if not language and extension:
+                cfg = config_for_extension(extension)
+                if cfg:
+                    language = cfg.name
             if not language:
                 self.logger.info(
                     f"No code grammar for {recordName}; falling back to text parsing"
@@ -1773,6 +1777,15 @@ class Processor:
             block_containers = parser.parse_to_blocks(
                 code_binary, recordName, file_path, language
             )
+
+            if block_containers is None:
+                self.logger.info(
+                    f"Code parser skipped {recordName} (oversized); marking as not supported"
+                )
+                await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
 
             if not block_containers.blocks and not block_containers.block_groups:
                 await self._mark_record(recordId, ProgressStatus.EMPTY)

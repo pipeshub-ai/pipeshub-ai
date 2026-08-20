@@ -582,12 +582,12 @@ class EventProcessor:
 
             # A CODE_FILE's mime is not trustworthy: connectors that walk a git
             # tree default it to text/plain for anything they do not recognise,
-            # and they do not always populate `extension`. Derive it from the
-            # filename so the code dispatch below sees the real type — otherwise
-            # a .jsx arrives as text/plain and is consumed by the plain-text
-            # branch before ever reaching it.
-            if (not extension or extension == "unknown") and "." in record_name:
-                extension = record_name.rsplit(".", 1)[-1].lower()
+            # and they do not always populate `extension`. Derive a separate
+            # extension for the code-dispatch check only — the original value
+            # must stay intact for reconciliation, tier, and generic dispatch.
+            code_ext = extension
+            if (not code_ext or code_ext == "unknown") and "." in record_name:
+                code_ext = record_name.rsplit(".", 1)[-1].lower()
 
             file_content = event_data.get("buffer")
 
@@ -823,7 +823,7 @@ class EventProcessor:
             # text/plain, and that branch returns early.
             if (
                 mime_type in CODE_FILE_MIME_TYPE_VALUES
-                or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES
+                or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
             ):
                 async for event in self.processor.process_code_document(
                     recordName=record_name,

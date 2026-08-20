@@ -60,3 +60,4 @@ class ParsedFile:
     language: str
     symbols: list[ParsedSymbol] = field(default_factory=list)
     parse_error_line: int | None = None
+    skipped_reason: str | None = None

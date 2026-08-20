@@ -104,3 +104,11 @@ async def test_iparser_contract():
     assert result.block_container.blocks
     assert result.metadata["language"] == "python"
     assert "py" in parser.supported_formats()
+
+
+def test_docstring_extraction_with_annotated_signature():
+    """Annotations with colons must not prevent docstring extraction."""
+    src = b'def process(data: dict[str, Any], count: int = 0) -> list[str]:\n    """Transform data into strings."""\n    return []\n'
+    container = CodeFileParser().parse_to_blocks(src, "m.py", "src/m.py", "python")
+    func = next(b for b in container.blocks if b.name == "process")
+    assert func.code_metadata.docstring == "Transform data into strings."

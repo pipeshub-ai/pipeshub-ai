@@ -37,6 +37,9 @@ _MAX_SIGNATURE_CHARS = 300
 _MAX_DOCSTRING_CHARS = 500
 
 _PY_DOCSTRING_RE = re.compile(r'^\s*(?:[rubRUB]{0,2})("""|\'\'\')(.*?)\1', re.DOTALL)
+# The body-opening colon in a def/class: terminal on its line (only
+# optional whitespace or a comment may follow before the newline).
+_PY_SIG_COLON_RE = re.compile(r":[^\S\n]*(?:#[^\n]*)?\n")
 # Anchored: a doc comment introduces what follows it. An unanchored search
 # picks up a `/** ... */` buried in a body, and grammars that nest a trailing
 # comment inside the previous declaration (Groovy) would hand every member the
@@ -103,7 +106,8 @@ def _extract_docstring(text: str, language: str) -> str | None:
     style = cfg.docstring_style if cfg else "none"
 
     if style == "python":
-        body = text.split(":", 1)[-1]
+        sig_end = _PY_SIG_COLON_RE.search(text)
+        body = text[sig_end.end():] if sig_end else text
         match = _PY_DOCSTRING_RE.search(body)
         if match:
             return match.group(2).strip()[:_MAX_DOCSTRING_CHARS] or None
@@ -142,9 +146,9 @@ class CodeFileParser:
         language = cfg.get("language") or detect_language(record_name) or detect_language(file_path)
         container = self.parse_to_blocks(content, record_name, file_path, language)
         return ParseResult(
-            block_container=container,
+            block_container=container or BlocksContainer(),
             provider_used=ParserProvider.DEFAULT,
-            metadata={"language": language, "file_path": file_path},
+            metadata={"language": language, "file_path": file_path, "skipped": container is None},
         )
 
     def parse_to_blocks(
@@ -153,13 +157,20 @@ class CodeFileParser:
         record_name: str,
         file_path: str | None = None,
         language: str | None = None,
-    ) -> BlocksContainer:
+    ) -> BlocksContainer | None:
+        """Return blocks, or ``None`` when the file was skipped (e.g. oversized).
+
+        Callers receiving ``None`` should fall back to an alternative parser
+        rather than treating the file as empty.
+        """
         path = file_path or record_name
         lang = language or detect_language(record_name) or detect_language(path)
         if not lang:
             return BlocksContainer()
 
         parsed = parse_code(content, lang)
+        if parsed.skipped_reason:
+            return None
         if not parsed.symbols:
             return BlocksContainer()
         return self._to_container(parsed, path, record_name)

@@ -242,10 +242,20 @@ class _Walker:
 
         def flush_unattached() -> None:
             nonlocal attached
-            spans.extend(
-                _Span(node.start_byte, node.end_byte, "comment", nodes=[node])
-                for node in attached
-            )
+            for node in attached:
+                # A trailing inline comment belongs to the preceding code, not
+                # to what follows. Absorb it when on the same line.
+                if (
+                    spans
+                    and self._line_at(node.start_byte)
+                    == self._line_at(max(0, spans[-1].end - 1))
+                ):
+                    spans[-1].end = node.end_byte
+                    spans[-1].nodes.append(node)
+                else:
+                    spans.append(
+                        _Span(node.start_byte, node.end_byte, "comment", nodes=[node])
+                    )
             attached = []
 
         seen_member = False
@@ -339,8 +349,15 @@ class _Walker:
             return _Span(child.start_byte, child.end_byte, "imports", nodes=[child])
 
         if self._kind_for(ntype, in_type=in_type):
+            end = child.end_byte
+            # C/C++: a struct/enum at file scope is a bare specifier whose
+            # declaration-terminating `;` is an unnamed sibling.
+            if cfg.unwrap_declarator:
+                nxt = child.next_sibling
+                if nxt is not None and not nxt.is_named and nxt.type == ";":
+                    end = nxt.end_byte
             return _Span(
-                child.start_byte, child.end_byte, "definition", nodes=[child],
+                child.start_byte, end, "definition", nodes=[child],
                 def_node=child, name=_name_of(child, self.src, cfg),
             )
 
@@ -438,13 +455,18 @@ class _Walker:
         tiled: list[_Span] = []
         cursor = scope_start
         for span in spans:
-            if span.start > cursor and self.src[cursor:span.start].strip():
-                # A container's leading gap is its decorators, signature and
-                # docstring -- the one part of a class that no member covers.
-                kind = "header" if (is_container and not tiled) else _classify_gap(
-                    self.src[cursor:span.start].decode("utf-8", errors="replace")
-                )
-                tiled.append(_Span(cursor, span.start, kind))
+            if span.start > cursor:
+                gap = self.src[cursor:span.start]
+                # UTF-8 BOM is invisible and tree-sitter skips it; treat as ws.
+                if cursor == 0:
+                    gap = gap.lstrip(b"\xef\xbb\xbf")
+                if gap.strip():
+                    # A container's leading gap is its decorators, signature and
+                    # docstring -- the one part of a class that no member covers.
+                    kind = "header" if (is_container and not tiled) else _classify_gap(
+                        self.src[cursor:span.start].decode("utf-8", errors="replace")
+                    )
+                    tiled.append(_Span(cursor, span.start, kind))
             if span.start < cursor:
                 span.start = cursor
                 if span.end <= span.start:
@@ -527,7 +549,7 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
     if cfg is None:
         return ParsedFile(language=language or "unknown")
     if len(source) > MAX_FILE_SIZE_BYTES:
-        return ParsedFile(language=cfg.name)
+        return ParsedFile(language=cfg.name, skipped_reason="oversized")
 
     src = decode_source(source)
     parser = _get_parser(cfg)

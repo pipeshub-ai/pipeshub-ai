@@ -788,7 +788,8 @@ class ReposSync:
                 files_skipped += 1
                 self.logger.warning("Skipping blob %s: missing webPath/name", file_path)
                 continue
-            if file_name.startswith("."):
+            should_index, _role = should_index_code_file(file_path, file_name)
+            if not should_index:
                 files_skipped += 1
                 continue
             if "/" in file_path:
@@ -814,7 +815,7 @@ class ReposSync:
         if list_records_new:
             await self._process_records(list_records_new)
             if files_skipped:
-                self.logger.info("Processed %s code file records; %s skipped (dotfiles/missing metadata)", len(list_records_new), files_skipped)
+                self.logger.info("Processed %s code file records; %s skipped (non-indexable/missing metadata)", len(list_records_new), files_skipped)
 
     # ------------------------------------------------------------------
     # Content streaming

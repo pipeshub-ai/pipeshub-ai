@@ -251,8 +251,11 @@ def test_tiles_real_repository_files(suffix):
         if not src.strip():
             continue
         container = parse(src, path.name, str(path))
-        if not container.blocks and not container.block_groups:
-            continue
+        if container is None:
+            continue  # oversized — known limitation
+        assert container.blocks or container.block_groups, (
+            f"non-empty {path} produced no blocks"
+        )
         assert reconstruct(container).encode() == src, f"tiling broke on {path}"
         checked += 1
     assert checked > 0
