@@ -1056,8 +1056,9 @@ async def test_stream_record_attachment_fetch_fails_raises():
     ds = _mock_ds_attachment_download_fail(500, "fail")
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with pytest.raises(Exception, match="Failed to fetch attachment"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn.stream_record(_file_record())
+        assert exc_info.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -3794,8 +3795,10 @@ async def test_stream_record_rejects_placeholder():
     conn = _make_connector()
     conn.data_source = MagicMock()
     stub = _placeholder_ticket()
-    with pytest.raises(ValueError, match="Cannot stream placeholder"):
+    with pytest.raises(HTTPException) as exc_info:
         await conn.stream_record(stub)
+    assert exc_info.value.status_code == 422
+    assert "Cannot stream placeholder" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -4218,8 +4221,9 @@ async def test_process_issue_blockgroups_fetch_issue_fails():
     ds.get_issue_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "init", new_callable=AsyncMock):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            with pytest.raises(Exception, match="Failed to fetch issue content"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_issue_blockgroups_for_streaming(_ticket_record())
+        assert exc_info.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -4801,7 +4805,7 @@ class TestStreamRecordFile404DC:
             with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
                 with pytest.raises(HTTPException) as exc_info:
                     await conn.stream_record(_file_record())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_http_exception_not_swallowed_by_outer_handler(self):

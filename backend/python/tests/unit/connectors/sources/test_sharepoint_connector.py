@@ -681,7 +681,12 @@ class TestStreamRecord:
             mock_create.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_create.assert_called_once()
-            mock_stream.assert_called_once_with("https://signed.url/file.docx")
+            mock_stream.assert_called_once_with(
+                "https://signed.url/file.docx",
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=connector.display_name,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_file_record_no_signed_url(self):

@@ -15,6 +15,7 @@ from typing import (
 from uuid import uuid4
 
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
@@ -31,6 +32,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -2291,9 +2296,11 @@ class ZammadConnector(BaseConnector):
                 }
             )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}", exc_info=True)
-            raise
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _build_ticket_attachment_child_records(
         self,
@@ -2384,7 +2391,14 @@ class ZammadConnector(BaseConnector):
         # Fetch ticket data
         ticket_response = await datasource.get_ticket(id=int(ticket_id), expand=True)
         if not ticket_response.success or not ticket_response.data:
-            raise Exception(f"Failed to fetch ticket {ticket_id}")
+            self.logger.warning("Failed to fetch ticket %s for streaming", ticket_id)
+            raise_for_stream_fetch(
+                success=ticket_response.success,
+                has_payload=bool(ticket_response.data),
+                connector=self.display_name,
+                status=ticket_response.status_code,
+                message=ticket_response.message or ticket_response.error,
+            )
 
         ticket_data = ticket_response.data
 
@@ -2933,8 +2947,19 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
-                raise Exception(f"Failed to download KB answer attachment: {response.message}")
+            if not response.success or response.data is None:
+                self.logger.warning(
+                    "Failed to download KB answer attachment %s: %s",
+                    attachment_id,
+                    response.message,
+                )
+                raise_for_stream_fetch(
+                    success=response.success,
+                    has_payload=response.data is not None,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.message or response.error,
+                )
 
             # Return raw content bytes
             content = response.data
@@ -2959,8 +2984,19 @@ class ZammadConnector(BaseConnector):
                 id=int(attachment_id)
             )
 
-            if not response.success:
-                raise Exception(f"Failed to download attachment: {response.message}")
+            if not response.success or response.data is None:
+                self.logger.warning(
+                    "Failed to download ticket attachment %s: %s",
+                    attachment_id,
+                    response.message,
+                )
+                raise_for_stream_fetch(
+                    success=response.success,
+                    has_payload=response.data is not None,
+                    connector=self.display_name,
+                    status=response.status_code,
+                    message=response.message or response.error,
+                )
 
             # Return raw content bytes
             content = response.data

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -963,7 +964,9 @@ class TestGetSignedUrl95:
     @pytest.mark.asyncio
     async def test_not_initialized(self, connector):
         connector.data_source = None
-        assert await connector.get_signed_url(MagicMock()) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_bucket(self, connector):
@@ -996,7 +999,9 @@ class TestGetSignedUrl95:
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_not_found(self, connector):
@@ -1006,7 +1011,9 @@ class TestGetSignedUrl95:
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_other_failure(self, connector):
@@ -1016,7 +1023,9 @@ class TestGetSignedUrl95:
         )
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
@@ -1024,7 +1033,9 @@ class TestGetSignedUrl95:
         connector.data_source.generate_signed_url = AsyncMock(side_effect=Exception("err"))
         record = MagicMock(id="r1", external_record_group_id="bucket",
                            external_record_id="bucket/file.txt", record_name="file.txt")
-        assert await connector.get_signed_url(record) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, connector):

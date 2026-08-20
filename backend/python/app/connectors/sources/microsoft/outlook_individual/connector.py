@@ -27,6 +27,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -1550,7 +1554,7 @@ class OutlookIndividualConnector(BaseConnector):
                 # User email using /me API
                 message = await self._get_message_by_id_external(record.external_record_id)
                 if not message:
-                    raise Exception(f"Message {record.external_record_id} not found")
+                    raise not_found_at_source(self.display_name)
                 body_obj = message.body
                 email_body = body_obj.content if body_obj and body_obj.content else ''
                 # Augment with recipient metadata for indexing
@@ -1591,11 +1595,10 @@ class OutlookIndividualConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, message_id: str) -> Message | None:
         """Get a specific message by ID for authenticated user using /me API."""

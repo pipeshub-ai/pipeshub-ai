@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -3955,8 +3956,11 @@ class TestGetSignedUrl:
         record = MagicMock()
         record.id = "r1"
 
-        with pytest.raises(Exception, match="fail"):
+        # Bare re-raise became a mapped error so the router returns a real
+        # status instead of a blanket 500.
+        with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===========================================================================

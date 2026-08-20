@@ -221,8 +221,10 @@ class TestGetSignedUrl:
         conn = _make_connector()
         conn.data_source = None
         record = _make_file_record(external_record_id="block-1")
-        result = await conn.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_comment_attachment_prefix_ca(self):
@@ -257,8 +259,10 @@ class TestGetSignedUrl:
         conn.data_source = MagicMock()
         conn._get_block_file_url = AsyncMock(side_effect=Exception("fail"))
         record = _make_file_record(external_record_id="block-abc")
-        with pytest.raises(Exception, match="fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===================================================================
@@ -450,13 +454,13 @@ class TestGetBlockFileUrl:
 
 class TestStreamRecord:
     @pytest.mark.asyncio
-    async def test_no_datasource_raises_500(self):
+    async def test_no_datasource_raises_409(self):
         conn = _make_connector()
         conn.data_source = None
         record = _make_webpage_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_file_record_no_signed_url_raises_404(self):
