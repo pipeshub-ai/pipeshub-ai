@@ -299,6 +299,7 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
+    EPUB = "epub"
     SQL_TABLE = "sql_table"  
     SQL_VIEW = "sql_view"
     PY = "py"
@@ -371,6 +372,7 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    EPUB = "application/epub+zip"
     PYTHON = "text/x-python"
     PYTHON_SCRIPT = "text/x-python-script"
     PYTHON_SCRIPT_X = "text/x-script.python"
@@ -475,6 +477,7 @@ FILE_MIME_TYPES = {
     '.htm': MimeTypes.HTML,
     '.md': MimeTypes.MARKDOWN,
     '.mdx': MimeTypes.MDX,
+    '.epub': MimeTypes.EPUB,
 }
 
 

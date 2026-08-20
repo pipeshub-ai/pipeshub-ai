@@ -136,7 +136,8 @@ def shape_tool_result_clearing(
             if i not in clearable:
                 shaped.append(msg)
                 continue
-            if not isinstance(msg.content, str) or _is_already_compact(msg.content):
+            text_content = msg.text
+            if isinstance(msg.content, str) and _is_already_compact(text_content):
                 shaped.append(msg)
                 continue
             if getattr(msg, "artifact_meta", None) is not None:
@@ -145,11 +146,16 @@ def shape_tool_result_clearing(
                 tc_id = getattr(msg, "tool_call_id", None)
                 tool_name = call_id_to_name.get(tc_id, "") if tc_id else ""
                 tool_args = call_id_to_args.get(tc_id, {}) if tc_id else {}
+                # Any images the tool returned belong to the current turn's
+                # context; once a result ages past `keep_last_n_turns` its
+                # images are as expendable as its text (same rule L4/L5/L7
+                # already apply) — the reference is plain text so the model
+                # can re-call the tool if it needs the image again.
                 ref = _build_tool_ref(
                     tool_name=tool_name,
                     tool_args=tool_args,
                     tool_call_id=tc_id or "",
-                    content=msg.content,
+                    content=text_content,
                     is_error=getattr(msg, "is_error", False),
                 )
                 shaped.append(msg.model_copy(update={"content": ref}))

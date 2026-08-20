@@ -796,6 +796,25 @@ class TestGetPdfConversionInfo:
         assert name == "Quarterly review"
         assert ext == "pptx"
 
+    def test_epub_needs_conversion(self):
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "book.epub"
+        record.mime_type = "application/epub+zip"
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert ext == "epub"
+
+    def test_epub_mime_infers_missing_extension(self):
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "My Book"
+        record.mime_type = "application/epub+zip"
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert name == "My Book"
+        assert ext == "epub"
+
 
 # ============================================================================
 # get_all_oauth_configs — lines 6825-6826

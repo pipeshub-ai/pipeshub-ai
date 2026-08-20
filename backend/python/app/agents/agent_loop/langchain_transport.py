@@ -167,6 +167,24 @@ def _is_network_error(exc: Exception) -> bool:
     return any(hint in type_name for hint in _NETWORK_ERROR_NAME_HINTS)
 
 
+def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
+    """Whether this LangChain chat model's underlying provider accepts
+    image content inside a tool-result message.
+
+    Walks the model's full MRO (not just `type(chat_model).__name__`, which
+    a `ChatOllama` subclass/wrapper would defeat — `type(x).__name__ !=
+    "ChatOllama"` is `True`, i.e. "supports multipart", for any subclass)
+    looking for a class named `ChatOllama`, so this module still has no
+    hard `isinstance`/import dependency on `langchain_ollama` being
+    installed. Ollama's `/api/chat` only accepts `content: str` for
+    `role: "tool"` messages (see the Image Context Engineering plan's API
+    landscape survey) — every other LangChain-wrapped provider PipesHub
+    configures (OpenAI, Anthropic, Gemini, Bedrock, ...) accepts multipart
+    tool results.
+    """
+    return not any(cls.__name__ == "ChatOllama" for cls in type(chat_model).__mro__)
+
+
 class LangChainTransport(LLMTransport):
     """Bridges a LangChain `BaseChatModel` to agent-loop's `LLMTransport`."""
 
@@ -179,6 +197,10 @@ class LangChainTransport(LLMTransport):
     ) -> None:
         self._llm = chat_model
         self._model = model_name
+        # Computed once from the model TYPE (not swapped on the api-mode
+        # fallback path below — that only rebinds the same underlying
+        # provider with different call kwargs, never changes provider).
+        self._supports_multipart_tool_result = _supports_multipart_tool_result(chat_model)
         # etcd `aiModels` config-entry key (see `app/utils/aimodels.py`'s
         # `get_generator_model`) — the identity a learned API-mode fact is
         # recorded/looked-up against (`app/utils/llm_api_mode_store.py`).
@@ -440,7 +462,9 @@ class LangChainTransport(LLMTransport):
         # system_blocks: LangChain has no cache-breakpoint API; join if needed.
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = convert_messages_to_langchain(
+            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
+        )
         lc_llm = self._bind_tools(tools)
 
         try:
@@ -500,7 +524,9 @@ class LangChainTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredResponse:
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = convert_messages_to_langchain(
+            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
+        )
         resolved_model = self._resolve_model_name(model)
 
         parsed, raw = await self._invoke_structured(lc_messages, output_schema)
@@ -602,7 +628,9 @@ class LangChainTransport(LLMTransport):
     ) -> AsyncIterator[StreamEvent]:
         if system_blocks and not system:
             system = "\n\n".join(b for b in system_blocks if b)
-        lc_messages = convert_messages_to_langchain(messages, system)
+        lc_messages = convert_messages_to_langchain(
+            messages, system, strip_tool_images=not self._supports_multipart_tool_result,
+        )
         lc_llm = self._bind_tools(tools)
 
         chunks: list[AIMessage] = []

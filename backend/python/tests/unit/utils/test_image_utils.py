@@ -15,8 +15,17 @@ from app.utils.image_utils import (
     get_image_info_from_url,
     get_mime_type_from_base64,
     mime_to_extension,
+    normalize_image_to_base64,
     supported_mime_types,
 )
+
+
+class TestNormalizeImageToBase64:
+    def test_strips_data_uri_prefix(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64,iVBORw0KGgo=") == "iVBORw0KGgo="
+
+    def test_data_uri_without_comma_returns_none(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64") is None
 
 
 # ---------------------------------------------------------------------------

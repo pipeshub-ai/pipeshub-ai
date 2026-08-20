@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import re
 import os
 from urllib.parse import unquote, urlparse
 
@@ -9,6 +10,38 @@ from app.utils.url_fetcher import FetchError, fetch_url
 logger = create_logger(__name__)
 
 HTTP_STATUS_OK = 200
+_BASE64_CHARSET_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
+
+
+def normalize_image_to_base64(image_uri: str | None) -> str | None:
+    """Strip a ``data:...;base64,`` prefix (if present) and pad to a valid
+    base64 length. Returns ``None`` for empty/non-base64 input.
+
+    Shared by every multimodal image-embedding provider so each one doesn't
+    reimplement the same data-URI parsing / padding logic.
+    """
+    try:
+        if not image_uri or not isinstance(image_uri, str):
+            return None
+        uri = image_uri.strip()
+        if uri.startswith("data:"):
+            comma_index = uri.find(",")
+            if comma_index == -1:
+                return None
+            b64_part = uri[comma_index + 1:].strip()
+            missing = (-len(b64_part)) % 4
+            if missing:
+                b64_part += "=" * missing
+            return b64_part
+        candidate = uri.replace("\n", "").replace("\r", "").replace(" ", "")
+        if not _BASE64_CHARSET_RE.fullmatch(candidate):
+            return None
+        missing = (-len(candidate)) % 4
+        if missing:
+            candidate += "=" * missing
+        return candidate
+    except Exception:
+        return None
 
 
 def get_mime_type_from_base64(b64: str) -> str | None:

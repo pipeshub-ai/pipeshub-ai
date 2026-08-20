@@ -140,6 +140,33 @@ class TestFormatMessage:
         formatted = transport._format_message(msg)
         assert "is_error" not in formatted["content"][0]
 
+    def test_multipart_tool_message_formats_text_and_image_blocks(self) -> None:
+        transport = _transport()
+        msg = ToolMessage(
+            content=[
+                TextPart(text="[ref1] (image)"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc123")),
+            ],
+            tool_call_id="tc1",
+        )
+        formatted = transport._format_message(msg)
+        tool_result = formatted["content"][0]
+        assert tool_result["content"] == [
+            {"type": "text", "text": "[ref1] (image)"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc123"}},
+        ]
+
+    def test_multipart_tool_message_appends_step_footer_as_text_block(self) -> None:
+        transport = _transport()
+        msg = ToolMessage(
+            content=[TextPart(text="hello")],
+            tool_call_id="tc1",
+            step_footer=" [loop: step 1/5]",
+        )
+        formatted = transport._format_message(msg)
+        blocks = formatted["content"][0]["content"]
+        assert blocks[-1] == {"type": "text", "text": " [loop: step 1/5]"}
+
     def test_assistant_message_with_text_and_tool_use(self) -> None:
         transport = _transport()
         msg = AssistantMessage(

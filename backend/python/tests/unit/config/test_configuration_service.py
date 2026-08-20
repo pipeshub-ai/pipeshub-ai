@@ -634,6 +634,66 @@ class TestClose:
         # Should not raise
         await svc.close()
 
+    @pytest.mark.asyncio
+    async def test_close_cancels_already_established_pubsub_task(self):
+        """Once the watch thread has registered _pubsub_task, close() must
+        still cancel it via call_soon_threadsafe under the new pubsub-state
+        lock (regression for the lock-based rewrite guarding the shutdown
+        race in test_close_during_pubsub_setup_prevents_late_subscribe)."""
+        store = AsyncMock()
+        svc = _build_service(store, kv_store_type="redis")
+
+        fake_task = MagicMock()
+        fake_loop = MagicMock()
+        svc._pubsub_task = fake_task
+        svc._pubsub_loop = fake_loop
+
+        await svc.close()
+
+        fake_loop.call_soon_threadsafe.assert_called_once_with(fake_task.cancel)
+
+    @pytest.mark.asyncio
+    async def test_close_during_pubsub_setup_prevents_late_subscribe(self):
+        """Regression: if close() runs while the watch thread is still
+        inside pubsub setup (e.g. the migration-flag check) — before
+        _pubsub_task has been assigned — the watch thread must observe
+        _stopping once it reaches the subscribe step and bail out, rather
+        than subscribing on a store that close() is about to (or already
+        did) close."""
+        paused = threading.Event()
+        resume = threading.Event()
+
+        async def slow_get(key):
+            paused.set()
+            resume.wait(timeout=5.0)
+            return None
+
+        redis_client = MagicMock()
+        redis_client.get = slow_get
+
+        underlying_store = MagicMock()
+        underlying_store.client = redis_client
+        underlying_store.key_prefix = "pipeshub:kv:"
+
+        store = MagicMock()
+        store.client = MagicMock()
+        store.store = underlying_store
+        store.subscribe_cache_invalidation = AsyncMock()
+        store.close = AsyncMock()
+
+        svc = _build_service(store, kv_store_type="redis")
+        svc._start_redis_pubsub()
+
+        assert paused.wait(timeout=2.0), "watch thread never reached the migration check"
+
+        with patch.object(threading.Thread, "join"):
+            await svc.close()
+
+        resume.set()
+        svc.watch_thread.join(timeout=2.0)
+
+        store.subscribe_cache_invalidation.assert_not_called()
+
 
 # =========================================================================
 # _publish_cache_invalidation
