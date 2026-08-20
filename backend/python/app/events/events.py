@@ -580,6 +580,15 @@ class EventProcessor:
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
+            # A CODE_FILE's mime is not trustworthy: connectors that walk a git
+            # tree default it to text/plain for anything they do not recognise,
+            # and they do not always populate `extension`. Derive it from the
+            # filename so the code dispatch below sees the real type — otherwise
+            # a .jsx arrives as text/plain and is consumed by the plain-text
+            # branch before ever reaching it.
+            if (not extension or extension == "unknown") and "." in record_name:
+                extension = record_name.rsplit(".", 1)[-1].lower()
+
             file_content = event_data.get("buffer")
 
             # Connector streaming or JSON API responses may deliver already-parsed
@@ -804,6 +813,25 @@ class EventProcessor:
                     orgId=org_id,
                     html_binary=file_content,
                     virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            # Must precede the PLAIN_TEXT branch: code files routinely arrive as
+            # text/plain, and that branch returns early.
+            if (
+                mime_type in CODE_FILE_MIME_TYPE_VALUES
+                or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES
+            ):
+                async for event in self.processor.process_code_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    code_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=extension,
+                    file_path=event_data.get("filePath"),
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):
@@ -1106,16 +1134,6 @@ class EventProcessor:
                 ):
                     yield event
 
-            elif mime_type in CODE_FILE_MIME_TYPE_VALUES or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES:
-                async for event in self.processor.process_md_document(
-                    recordName=record_name,
-                    recordId=record_id,
-                    md_binary=file_content,
-                    virtual_record_id=virtual_record_id,
-                    event_type=event_type,
-                    prev_virtual_record_id=prev_virtual_record_id,
-                ):
-                    yield event
 
             elif mime_type == MimeTypes.SQL_TABLE.value or extension == ExtensionTypes.SQL_TABLE.value:
                 self.logger.info(f"🚀 Processing SQL Table: {record_name}")

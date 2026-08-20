@@ -821,9 +821,10 @@ class TestOnEventExtensionDispatch:
         processor.process_html_document.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_code_mime_routes_to_md_processor(self):
+    async def test_code_mime_routes_to_code_processor(self):
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
@@ -836,13 +837,56 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 3
-        processor.process_md_document.assert_called_once()
+        processor.process_code_document.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_code_extension_routes_to_md_processor_when_mime_unknown(self):
+    async def test_code_file_arriving_as_text_plain_still_reaches_code_processor(self):
+        """Connectors walking a git tree default an unrecognised blob's mime to
+        text/plain. The PLAIN_TEXT branch returns early, so the code dispatch
+        has to precede it or every .jsx is silently parsed as prose."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension="",
+                mime_type="text/plain",
+                record_name="App.jsx",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 3
+        processor.process_code_document.assert_called_once()
+        processor.process_txt_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_text_that_is_not_code_still_uses_txt_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension="",
+                mime_type="text/plain",
+                record_name="notes.txt",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 3
+        processor.process_txt_document.assert_called_once()
+        processor.process_code_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_code_extension_routes_to_code_processor_when_mime_unknown(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_code_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
         processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
 
@@ -855,7 +899,8 @@ class TestOnEventExtensionDispatch:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 3
-        processor.process_md_document.assert_called_once()
+        processor.process_code_document.assert_called_once()
+        processor.process_md_document.assert_not_called()
         processor.process_txt_document.assert_not_called()
 
 

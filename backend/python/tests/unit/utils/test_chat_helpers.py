@@ -3944,21 +3944,55 @@ class TestRecordToMessageContentDeeper:
         result = record_to_message_content(record)
         assert isinstance(result, list)
 
-    def test_other_block_type(self):
-        """Standalone non-handled block types are skipped (not emitted as text)."""
+    def test_top_level_code_block_is_rendered_with_its_symbol(self):
+        """A code block belongs to no group, so before it had its own branch it
+        fell to `else: continue` and a file with no classes reached the model
+        empty."""
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "file_path": "src/app.py",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "code", "data": {"text": "print('hello')"},
+                     "parent_index": None,
+                     "code_metadata": {"qualified_name": "statements:L1"}},
+                ],
+                "block_groups": [],
+            },
+        }
+        text = _all_text(record_to_message_content(record))
+        assert "print('hello')" in text
+        assert "src/app.py#statements:L1" in text
+
+    def test_rendered_code_block_omits_the_bm25_subtokens(self):
         record = {
             "virtual_record_id": "vr-1",
             "context_metadata": "Test",
             "block_containers": {
                 "blocks": [
-                    {"index": 0, "type": "code", "data": "print('hello')", "parent_index": None},
+                    {"index": 0, "type": "code", "parent_index": None,
+                     "data": {"text": "def go(): pass", "subtokens": "go pass padding"}},
                 ],
                 "block_groups": [],
             },
         }
-        result = record_to_message_content(record)
-        text = _all_text(result)
-        assert "print('hello')" not in text
+        text = _all_text(record_to_message_content(record))
+        assert "def go(): pass" in text
+        assert "padding" not in text
+
+    def test_unhandled_block_type_is_still_skipped(self):
+        record = {
+            "virtual_record_id": "vr-1",
+            "context_metadata": "Test",
+            "block_containers": {
+                "blocks": [
+                    {"index": 0, "type": "divider", "data": "---", "parent_index": None},
+                ],
+                "block_groups": [],
+            },
+        }
+        assert "---" not in _all_text(record_to_message_content(record))
 
 
 # ===================================================================
