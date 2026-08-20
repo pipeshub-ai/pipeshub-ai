@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes
+from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.models.blocks import (
     Block,
@@ -130,6 +130,22 @@ def _timestamp_of(obj: Any, *attrs: str) -> datetime.datetime:
         if isinstance(value, datetime.datetime):
             return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
     return _EPOCH
+
+
+def _attributed(label: str, author_login: str | None, created_at: Any, body: str) -> str:
+    """Prefix a comment body with its author (and date when known).
+
+    The group *name* already says "Comment by X", but only the group ``data``
+    is parsed into blocks and indexed — without this prefix a query like
+    "who suggested …" has no author text to ground on.
+    """
+    who = author_login or "unknown"
+    when = (
+        f" on {created_at.strftime('%Y-%m-%d')}"
+        if isinstance(created_at, datetime.datetime)
+        else ""
+    )
+    return f"**{label} by {who}{when}:**\n\n{body}"
 
 
 def _by_created_at(items: Sequence[Any], *attrs: str) -> list[Any]:
@@ -327,6 +343,22 @@ class CommentsHelper:
     # File record creation
     # ------------------------------------------------------------------
 
+    def _attachments_indexing_enabled(self, parent: Record) -> bool:
+        """Attachments follow their parent's indexing filter — there is no
+        separate attachments filter. Stamped here, at the single construction
+        point, because comment attachments are only discovered at stream time
+        (listings carry no comment bodies) and that path used to skip the
+        filter entirely: with manual indexing on, indexing an issue silently
+        auto-queued every PDF in its comments.
+        """
+        parent_type = getattr(parent, "record_type", None)
+        parent_type = getattr(parent_type, "value", parent_type)
+        if parent_type == RecordType.TICKET.value:
+            return self.c.issues._issues_indexing_enabled()
+        if parent_type == RecordType.PULL_REQUEST.value:
+            return self.c.pull_requests._prs_indexing_enabled()
+        return True
+
     def _attachment_file_update(
         self, attach: dict[str, Any], record: Record, existing_record: Record | None,
         parent_node_id: str | None,
@@ -384,6 +416,8 @@ class CommentsHelper:
             ),
             source_updated_at=get_epoch_timestamp_in_ms(),
         )
+        if not self._attachments_indexing_enabled(record):
+            filerecord.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return RecordUpdate(
             record=filerecord, is_new=existing_record is None, is_updated=existing_record is not None,
             is_deleted=False, metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -512,7 +546,9 @@ class CommentsHelper:
                 format=DataFormat.MARKDOWN.value,
                 sub_type=GroupSubType.COMMENT.value,
                 source_group_id=str(getattr(comment, "id", "")),
-                data=body_with_images,
+                data=_attributed(
+                    "Comment", author_login, getattr(comment, "created_at", None), body_with_images,
+                ),
                 weburl=getattr(comment, "html_url", None),
                 source_modified_date=getattr(comment, "updated_at", None),
                 requires_processing=True,
@@ -590,7 +626,12 @@ class CommentsHelper:
                 index=block_group_number, parent_index=parent_index, name=name,
                 type=GroupType.TEXT_SECTION.value, format=DataFormat.MARKDOWN.value,
                 sub_type=GroupSubType.COMMENT.value, source_group_id=str(getattr(item, "id", "")),
-                data=body_with_images, weburl=getattr(item, "html_url", None),
+                data=_attributed(
+                    label, author_login,
+                    getattr(item, "created_at", None) or getattr(item, "submitted_at", None),
+                    body_with_images,
+                ),
+                weburl=getattr(item, "html_url", None),
                 source_modified_date=getattr(item, "updated_at", None),
                 requires_processing=True, children_records=child_records,
             )
@@ -602,6 +643,10 @@ class CommentsHelper:
 
         # path -> thread root id -> that thread's comments, in arrival order.
         review_comments_map: dict[str, dict[Any, list[BlockComment]]] = {}
+        # path -> markdown section per comment, same order. `comments` above is
+        # UI metadata — only group `data` is parsed into blocks and indexed, so
+        # without these sections inline review text is unsearchable.
+        review_comment_sections: dict[str, list[str]] = {}
         rc_res = await c.runtime.ds_call(c.data_source.get_pull_review_comments, owner, repo, pr_number)
         if rc_res.success:
             # Sorting the flat listing up front puts each thread's replies in
@@ -631,6 +676,24 @@ class CommentsHelper:
                     thread_id=str(thread_root) if thread_root is not None else None,
                 )
                 review_comments_map.setdefault(path, {}).setdefault(thread_root, []).append(block_comment)
+
+                # Blank-line separation keeps any embedded image block-level
+                # (an inline data URI in a TEXT block fails validation).
+                line_no = getattr(rc, "line", None) or getattr(rc, "original_line", None)
+                is_reply = bool(getattr(rc, "in_reply_to_id", None))
+                section_label = (
+                    "Reply" if is_reply
+                    else f"Review comment (line {line_no})" if line_no
+                    else "Review comment"
+                )
+                review_comment_sections.setdefault(path, []).append(
+                    _attributed(
+                        section_label,
+                        getattr(author, "login", None) if author else None,
+                        getattr(rc, "created_at", None),
+                        body_with_images,
+                    )
+                )
         else:
             self.logger.warning("Failed to fetch review comments for PR #%s: %s", pr_number, rc_res.error)
 
@@ -671,6 +734,10 @@ class CommentsHelper:
             elif file_content:
                 data_parts.append(f"Full File Content:\n{file_content}")
             data_parts.append(f"Diff:\n{patch}")
+            sections = review_comment_sections.get(filename)
+            if sections:
+                data_parts.append("Review comments on this file:")
+                data_parts.extend(sections)
 
             threads = review_comments_map.get(filename, {})
             bg = BlockGroup(

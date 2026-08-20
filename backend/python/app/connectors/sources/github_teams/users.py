@@ -65,6 +65,11 @@ class UsersSync:
         # members. Internal repos are readable by exactly this set and explicitly
         # NOT by outside collaborators, so the repo pass needs the two kept apart.
         self._org_member_emails: set[str] = set()
+        # Principals user sync enumerated this run, plus repo collaborators the
+        # individual-repo resolution path already attempted — both guard against
+        # paying a profile fetch per repo for the same unresolvable identity.
+        self._principal_ids: set[int] = set()
+        self._collab_resolution_attempted: set[int] = set()
 
     def org_member_emails(self) -> set[str]:
         """Resolved emails of org members (never outside collaborators).
@@ -182,6 +187,7 @@ class UsersSync:
         c = self.c
         principals: dict[int, Any] = {}
         self._member_ids: set[int] = set()
+        self._collab_resolution_attempted = set()
         any_success = False
 
         def collect(rows: Any, *, is_member: bool) -> int:
@@ -232,7 +238,61 @@ class UsersSync:
                 org, member_count, collect(outside_res.data, is_member=False),
             )
 
+        self._principal_ids = set(principals)
         return principals, any_success
+
+    async def resolve_collaborator_principals(self, collaborators: dict[int, Any]) -> set[int]:
+        """Bind an individual-owned repo's collaborators to ``AppUser`` rows.
+
+        A repo owned by a *user account* has no org to enumerate —
+        ``/orgs/{login}/members`` 404s — so its collaborators appear in no
+        principal listing, and the grant step would find no identity to attach
+        (private individual repos ended up visible to nobody). The repo's own
+        collaborator rows are the only identity source; they are resolved here
+        with the public-profile phase (verified domains are org-scoped, and
+        Phase A's role is played by the grant step's own AppUser lookup).
+
+        Additive to the org flow, which never calls this: org-repo
+        collaborators are always enumerated up front. Ids user sync already
+        saw, and ids already attempted this run, are skipped so an org member
+        collaborating on an individual repo can't cost one profile fetch per
+        repo per sync. Returns the ids that resolved.
+        """
+        fresh = {
+            uid: row for uid, row in collaborators.items()
+            if uid not in self._principal_ids
+            and uid not in self._collab_resolution_attempted
+            and getattr(row, "type", "User") == "User"
+        }
+        if not fresh:
+            return set()
+        self._collab_resolution_attempted.update(fresh)
+
+        resolved: dict[int, str] = {}
+        unresolved = set(fresh)
+        for uid in list(unresolved):
+            email = self._plain_email_attr(fresh[uid])
+            if email:
+                resolved[uid] = email
+                unresolved.discard(uid)
+        if unresolved:
+            enriched = await self._enrich_members_with_full_profile(fresh, unresolved)
+            for uid, full in enriched.items():
+                fresh[uid] = full
+                email = self._plain_email_attr(full)
+                if email:
+                    resolved[uid] = email
+                    unresolved.discard(uid)
+
+        if resolved:
+            await self._persist_app_users(fresh, resolved)
+        if unresolved:
+            self.logger.info(
+                "%s collaborator(s) on an individual-owned repo expose no public "
+                "email; they receive no access until their identity resolves.",
+                len(unresolved),
+            )
+        return set(resolved)
 
     # ------------------------------------------------------------------
     # Org scope resolution

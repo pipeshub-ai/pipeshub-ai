@@ -84,8 +84,15 @@ class GitHubPersonalProjectsSync(ProjectsSync):
     internal ``ConnectorGroup`` and nothing else.
     """
 
-    async def _sync_repo_members(self, owner: str, repo: str) -> list[Permission]:
-        """Route all repo access through the ConnectorGroup — no collaborator/team fetch."""
+    async def _sync_repo_members(
+        self, owner: str, repo: str, repo_obj: GhObject | None = None,
+    ) -> list[Permission]:
+        """Route all repo access through the ConnectorGroup — no collaborator/team fetch.
+
+        ``repo_obj`` (used by the team connector to bind individual-repo
+        collaborators) is deliberately ignored: personal access is the
+        ConnectorGroup, never GitHub's ACL.
+        """
         permission = self.c.creator_user_permission()
         return [permission] if permission is not None else []
 

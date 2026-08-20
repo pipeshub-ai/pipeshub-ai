@@ -260,12 +260,11 @@ class IssuesSync:
             markdown_raw: str = getattr(issue, "body", "") or ""
             _, attachments = await c.comments.clean_github_content(markdown_raw)
             if attachments:
+                # Attachment records inherit the issues indexing filter inside
+                # _attachment_file_update — the single construction point that
+                # also covers the stream-time comment-attachment path.
                 file_updates = await c.comments.make_file_records_from_list(attachments, record_update.record)
-                if file_updates:
-                    if not issues_enabled:
-                        for ru in file_updates:
-                            ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                    record_updates.extend(file_updates)
+                record_updates.extend(file_updates)
 
         return record_updates
 

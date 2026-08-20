@@ -5008,8 +5008,8 @@ class TestOnRecordsMovedOrgId:
 
 
 class TestProcessRecordCompletedReindex:
-    @pytest.mark.asyncio
-    async def test_non_upload_completed_record_requeued(self):
+    @staticmethod
+    def _completed_existing_and_incoming(incoming_revision: str) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         existing = MagicMock(
@@ -5025,20 +5025,41 @@ class TestProcessRecordCompletedReindex:
         record.connector_id = "conn-1"
         record.external_record_id = "ext-1"
         record.origin = "CONNECTOR"
-        record.external_revision_id = "rev-1"
+        record.external_revision_id = incoming_revision
+        record.indexing_status = ProgressStatus.NOT_STARTED.value
         record.weburl = ""
         record.id = None
         record.is_shared_with_me = False
         record.record_name = "doc"
         record.is_placeholder = False
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        return proc, tx_store, record
+
+    @pytest.mark.asyncio
+    async def test_completed_record_with_changed_revision_requeued(self):
+        proc, tx_store, record = self._completed_existing_and_incoming("rev-2")
+
+        with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
+            proc, "_link_record_to_group", new_callable=AsyncMock
+        ), patch.object(proc, "_handle_parent_record", new_callable=AsyncMock), patch.object(
+            proc, "_handle_updated_record", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_completed_record_with_same_revision_stays_completed(self):
+        """Unchanged content must NOT be reset for re-indexing — the old
+        unconditional reset re-embedded the whole repo on every full re-sync."""
+        proc, tx_store, record = self._completed_existing_and_incoming("rev-1")
 
         with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
             proc, "_link_record_to_group", new_callable=AsyncMock
         ), patch.object(proc, "_handle_parent_record", new_callable=AsyncMock):
             await proc._process_record(record, [], tx_store)
 
-        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
 
 
 # ===========================================================================

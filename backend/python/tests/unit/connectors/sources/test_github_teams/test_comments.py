@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -387,7 +387,10 @@ class TestBlockGroupParenting:
             "acme", "widgets", 1, pull_request, parent_index=0, record=record, start_index=1,
         )
 
-        assert [bg.data for bg in block_groups] == ["before", "review", "after"]
+        assert [bg.data.split("\n\n", 1)[1] for bg in block_groups] == ["before", "review", "after"]
+        # Attribution is part of the indexed data, not only the group name.
+        assert block_groups[0].data.startswith("**Comment by alice on 2026-01-01:**")
+        assert block_groups[1].data.startswith("**Review by bob on 2026-01-02:**")
         assert {bg.parent_index for bg in block_groups} == {0}
 
     async def test_issue_comments_are_ordered_oldest_first(self) -> None:
@@ -407,7 +410,9 @@ class TestBlockGroupParenting:
         )
 
         # An undated comment must sort first, not raise on None vs datetime.
-        assert [bg.data for bg in block_groups] == ["undated", "first", "second"]
+        assert [bg.data.split("\n\n", 1)[1] for bg in block_groups] == ["undated", "first", "second"]
+        # No created date -> attribution without the "on <date>" clause.
+        assert block_groups[0].data.startswith("**Comment by alice:**")
 
 
 class TestReviewCommentThreading:
@@ -464,6 +469,42 @@ class TestReviewCommentThreading:
         group = next(bg for bg in block_groups if bg.name == "File change: src/main.py")
         assert len(group.comments) == 2
         assert all(len(thread) == 1 for thread in group.comments)
+
+    async def test_review_comment_text_is_part_of_the_file_group_data(self) -> None:
+        """`comments` is UI metadata that docling never parses — the inline
+        review text must also land in the group's `data` (after the diff, with
+        author attribution) or it is unsearchable."""
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([
+                _review_comment(rc_id=1, path="src/main.py", body="root text"),
+                _review_comment(rc_id=2, path="src/main.py", body="reply text", in_reply_to=1),
+            ]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="src/main.py", status="modified", patch="@@ diff @@"),
+                SimpleNamespace(filename="untouched.py", status="modified", patch="@@ other @@"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _remaining = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        data = next(bg for bg in block_groups if bg.name == "File change: src/main.py").data
+        assert "Review comments on this file:" in data
+        assert "**Review comment by alice:**\n\nroot text" in data
+        assert "**Reply by alice:**\n\nreply text" in data
+        assert data.index("Diff:") < data.index("Review comments on this file:")
+        assert data.index("root text") < data.index("reply text")
+
+        # A file with no inline comments gets no empty section.
+        other = next(bg for bg in block_groups if bg.name == "File change: untouched.py").data
+        assert "Review comments" not in other
 
     async def test_review_comments_carry_author_identity(self) -> None:
         c = make_mock_connector()
@@ -703,7 +744,9 @@ class TestCommentBlockFailures:
             "acme", "widgets", 1, pull_request, parent_index=0, record=record,
         )
 
-        assert [bg.data for bg in block_groups] == ["hello"]
+        assert len(block_groups) == 1
+        assert "hello" in block_groups[0].data
+        assert block_groups[0].data.startswith("**Comment by alice")
 
     async def test_file_changes_failure_raises(self) -> None:
         c = make_mock_connector()
@@ -880,3 +923,51 @@ def _dispatch(c: object, mapping: dict[str, object]) -> object:
         raise AssertionError(f"unmocked ds_call for {method!r}")
 
     return _fn
+
+
+class TestAttachmentIndexingFilter:
+    """Attachments follow their parent's indexing filter at the single
+    construction point (_attachment_file_update) — the stream-time comment
+    path used to skip the filter, so with manual indexing on, indexing an
+    issue silently auto-queued every PDF in its comments."""
+
+    _ATTACH = {
+        "type": "pdf",
+        "href": "https://github.com/user-attachments/files/1/doc.pdf",
+        "filename": "doc.pdf",
+    }
+
+    @staticmethod
+    def _parent(record_type: str) -> FileRecord:
+        return FileRecord(
+            id="rec-1", org_id="org-1", record_name="parent", record_type=record_type,
+            version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
+            external_record_id="ext-1", external_record_group_id="1-work-items", is_file=False,
+        )
+
+    def test_ticket_attachment_respects_issues_filter(self) -> None:
+        c = make_mock_connector()
+        c.issues._issues_indexing_enabled = MagicMock(return_value=False)
+        helper = CommentsHelper(c)
+
+        ru = helper._attachment_file_update(self._ATTACH, self._parent("TICKET"), None, None)
+
+        assert ru.record.indexing_status == "AUTO_INDEX_OFF"
+
+    def test_pr_attachment_respects_prs_filter(self) -> None:
+        c = make_mock_connector()
+        c.pull_requests._prs_indexing_enabled = MagicMock(return_value=False)
+        helper = CommentsHelper(c)
+
+        ru = helper._attachment_file_update(self._ATTACH, self._parent("PULL_REQUEST"), None, None)
+
+        assert ru.record.indexing_status == "AUTO_INDEX_OFF"
+
+    def test_attachment_indexes_normally_when_filter_enabled(self) -> None:
+        c = make_mock_connector()
+        c.issues._issues_indexing_enabled = MagicMock(return_value=True)
+        helper = CommentsHelper(c)
+
+        ru = helper._attachment_file_update(self._ATTACH, self._parent("TICKET"), None, None)
+
+        assert ru.record.indexing_status != "AUTO_INDEX_OFF"

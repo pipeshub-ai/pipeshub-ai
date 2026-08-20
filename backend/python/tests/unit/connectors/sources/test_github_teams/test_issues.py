@@ -628,20 +628,25 @@ class TestReindexCheck:
 
 class TestIndexingFlags:
     async def test_attachments_follow_indexing_flag(self) -> None:
+        """The ticket is stamped here; the attachment is stamped inside the
+        real comments helper (single construction point, so the stream-time
+        comment-attachment path is covered too)."""
+        from app.connectors.sources.github_teams.comments import CommentsHelper
+
         c = make_mock_connector()
         c.indexing_filters = SimpleNamespace(is_enabled=lambda _key: False)
+        c.issues._issues_indexing_enabled = lambda: False
+        c.comments = CommentsHelper(c)
         c.comments.clean_github_content = AsyncMock(return_value=("", [
             {"type": "pdf", "href": "https://github.com/user-attachments/files/1/x.pdf", "filename": "x.pdf"},
         ]))
-        file_record = SimpleNamespace(indexing_status=None)
-        c.comments.make_file_records_from_list = AsyncMock(
-            return_value=[SimpleNamespace(record=file_record)]
-        )
 
         updates = await IssuesSync(c)._build_issue_records(make_repo(repo_id=1), [_issue(number=1)])
 
         assert updates[0].record.indexing_status == "AUTO_INDEX_OFF"
-        assert file_record.indexing_status == "AUTO_INDEX_OFF"
+        attachment_updates = updates[1:]
+        assert attachment_updates
+        assert all(u.record.indexing_status == "AUTO_INDEX_OFF" for u in attachment_updates)
 
     async def test_processing_error_skips_the_issue(self) -> None:
         c = make_mock_connector()

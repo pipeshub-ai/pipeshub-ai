@@ -999,8 +999,18 @@ class DataSourceEntitiesProcessor:
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
                 if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                    # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    if record.external_revision_id != existing_record.external_revision_id:
+                        # Real content change on an indexed record: reset so it
+                        # re-queues — unless indexing is manual-only for this
+                        # record, which a content change must not override.
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    else:
+                        # Unchanged content stays COMPLETED (blocks re-publish
+                        # below). Resetting unconditionally made every full
+                        # re-sync re-embed the entire already-indexed set, and
+                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
+                        record.indexing_status = ProgressStatus.COMPLETED.value
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
@@ -1126,6 +1136,15 @@ class DataSourceEntitiesProcessor:
 
                 if record.is_internal:
                     self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
+
+                # Already indexed and unchanged — the COMPLETED status was carried
+                # forward from the stored record precisely so this publish can be
+                # skipped; there is nothing for the indexing consumer to redo.
+                if record.indexing_status == ProgressStatus.COMPLETED.value:
+                    self.logger.debug(
+                        f"Skipping indexing event for already-completed record {record.id}"
+                    )
                     continue
 
                 # KB folders carry no indexable content; they are created COMPLETED

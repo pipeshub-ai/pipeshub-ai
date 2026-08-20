@@ -117,19 +117,20 @@ def make_repo(
     repo_id: int = 1001,
     owner_login: str = "acme",
     owner_id: int = 9001,
+    owner_type: str = "Organization",
     name: str = "widgets",
     default_branch: str = "main",
     full_name: str | None = None,
 ) -> SimpleNamespace:
     """Return a Repository-shaped SimpleNamespace with the attributes the
     connector reads (``id``, ``name``, ``full_name``, ``owner.login``,
-    ``owner.id``, ``default_branch``, ``html_url``)."""
+    ``owner.id``, ``owner.type``, ``default_branch``, ``html_url``)."""
     fn = full_name or f"{owner_login}/{name}"
     return SimpleNamespace(
         id=repo_id,
         name=name,
         full_name=fn,
-        owner=SimpleNamespace(login=owner_login, id=owner_id),
+        owner=SimpleNamespace(login=owner_login, id=owner_id, type=owner_type),
         default_branch=default_branch,
         html_url=f"https://github.com/{fn}",
     )

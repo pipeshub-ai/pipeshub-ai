@@ -113,7 +113,7 @@ class ProjectsSync:
         repo_name = repo.name
 
         try:
-            permissions = await self._sync_repo_members(owner_login, repo_name)
+            permissions = await self._sync_repo_members(owner_login, repo_name, repo)
         except Exception as e:
             permissions = self._permissions_without_collaborators(repo, e)
             if permissions is None:
@@ -218,7 +218,9 @@ class ProjectsSync:
     # Repo member / permission sync
     # ------------------------------------------------------------------
 
-    async def _sync_repo_members(self, owner: str, repo: str) -> list[Permission]:
+    async def _sync_repo_members(
+        self, owner: str, repo: str, repo_obj: GhObject | None = None,
+    ) -> list[Permission]:
         """Collaborators -> USER permissions. Overridden in the personal connector.
 
         ``affiliation=all`` already includes people who reach the repo through a
@@ -237,6 +239,21 @@ class ProjectsSync:
                 status_code=getattr(collab_res, "status_code", None),
             )
         collaborators = collab_res.data or []
+
+        # Individual-owned repo (owner is a user account, not an org): there is
+        # no org to enumerate members from, so these collaborators exist in no
+        # principal listing and would all be unbound below — a private repo
+        # visible to nobody. Bind them to AppUsers up front; the unchanged
+        # grant loop then resolves them exactly like org principals. Org-owned
+        # repos never enter this branch.
+        owner_type = getattr(getattr(repo_obj, "owner", None), "type", None)
+        if owner_type == "User" and collaborators:
+            await c.users.resolve_collaborator_principals({
+                int(u.id): u
+                for u in collaborators
+                if getattr(u, "id", None) is not None
+            })
+
         for user in collaborators:
             perm = await self._transform_collaborator_to_permission(user)
             if perm:

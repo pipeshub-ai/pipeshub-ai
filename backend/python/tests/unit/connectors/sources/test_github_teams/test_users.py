@@ -633,3 +633,77 @@ def _ds_call_by_method(c: MagicMock, mapping: dict[str, object]) -> object:
         return failed_response(f"unmocked method {method!r}")
 
     return _dispatch
+
+
+class TestResolveCollaboratorPrincipals:
+    """Identity source for individual-owned repos: their collaborators exist in
+    no org listing, so they are bound to AppUsers from the repo's own
+    collaborator rows (public-profile phase only). Additive — the org flow
+    never calls this."""
+
+    @staticmethod
+    def _collab(uid: int = 7, login: str = "bob", email: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(id=uid, login=login, email=email, type="User")
+
+    async def test_resolves_via_profile_and_persists_app_user(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        c.runtime.ds_call.return_value = ok_response(
+            SimpleNamespace(id=7, login="bob", name="Bob", email="bob@example.com", type="User")
+        )
+
+        resolved = await sync.resolve_collaborator_principals({7: self._collab()})
+
+        assert resolved == {7}
+        c.data_entities_processor.on_new_app_users.assert_awaited_once()
+        (app_users,) = c.data_entities_processor.on_new_app_users.await_args.args
+        assert app_users[0].source_user_id == "7"
+        assert app_users[0].email == "bob@example.com"
+
+    async def test_payload_email_needs_no_profile_fetch(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+
+        resolved = await sync.resolve_collaborator_principals(
+            {7: self._collab(email="bob@example.com")}
+        )
+
+        assert resolved == {7}
+        c.runtime.ds_call.assert_not_awaited()
+
+    async def test_principals_already_enumerated_are_skipped(self) -> None:
+        """An org member collaborating on an individual repo was already
+        resolved (or found unresolvable) by user sync — no per-repo refetch."""
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        sync._principal_ids = {7}
+
+        resolved = await sync.resolve_collaborator_principals({7: self._collab()})
+
+        assert resolved == set()
+        c.runtime.ds_call.assert_not_awaited()
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    async def test_unresolvable_id_is_attempted_once_per_sync(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+        c.runtime.ds_call.return_value = ok_response(
+            SimpleNamespace(id=7, login="bob", name=None, email=None, type="User")
+        )
+
+        first = await sync.resolve_collaborator_principals({7: self._collab()})
+        second = await sync.resolve_collaborator_principals({7: self._collab()})
+
+        assert first == set() and second == set()
+        c.runtime.ds_call.assert_awaited_once()  # not refetched for repo #2
+
+    async def test_bot_rows_are_ignored(self) -> None:
+        c = make_mock_connector()
+        sync = UsersSync(c)
+
+        resolved = await sync.resolve_collaborator_principals(
+            {9: SimpleNamespace(id=9, login="dependabot[bot]", email=None, type="Bot")}
+        )
+
+        assert resolved == set()
+        c.runtime.ds_call.assert_not_awaited()

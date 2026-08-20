@@ -78,6 +78,59 @@ class TestSyncRepoMembers:
         assert perms[0].type == PermissionType.WRITE  # push implies WRITE
         c.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
+    async def test_individual_owned_repo_binds_collaborators_before_granting(self) -> None:
+        """A user-account owner has no org to enumerate, so the collaborator
+        list is the only identity source — it must be bound to AppUsers before
+        the (unchanged) grant loop runs, or a private individual repo is
+        visible to nobody."""
+        c = make_mock_connector()
+        collaborator = make_named_user(
+            user_id=42, login="alice",
+            permissions=SimpleNamespace(admin=True, maintain=False, push=True, triage=False, pull=True),
+        )
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_collaborators": ok_response([collaborator]),
+        })
+        c.users.resolve_collaborator_principals = AsyncMock(return_value={42})
+        c.tx_store.get_user_by_source_id = AsyncMock(
+            return_value=SimpleNamespace(email="alice@example.com")
+        )
+
+        repo = make_repo(owner_login="darshan", owner_type="User", name="private-repo")
+        perms = await ProjectsSync(c)._sync_repo_members("darshan", "private-repo", repo)
+
+        c.users.resolve_collaborator_principals.assert_awaited_once()
+        assert set(c.users.resolve_collaborator_principals.await_args.args[0]) == {42}
+        assert [p.email for p in perms] == ["alice@example.com"]
+
+    async def test_org_owned_repo_never_enters_the_individual_path(self) -> None:
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_collaborators": ok_response([make_named_user(
+                user_id=42, login="alice",
+                permissions=SimpleNamespace(admin=False, maintain=False, push=True, triage=False, pull=True),
+            )]),
+        })
+        c.users.resolve_collaborator_principals = AsyncMock()
+
+        repo = make_repo(owner_type="Organization")
+        await ProjectsSync(c)._sync_repo_members("acme", "widgets", repo)
+
+        c.users.resolve_collaborator_principals.assert_not_awaited()
+
+    async def test_missing_repo_object_keeps_the_original_flow(self) -> None:
+        """Callers that pass no repo object (existing signature) get the exact
+        pre-change behaviour: no resolution attempt."""
+        c = make_mock_connector()
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_collaborators": ok_response([]),
+        })
+        c.users.resolve_collaborator_principals = AsyncMock()
+
+        await ProjectsSync(c)._sync_repo_members("acme", "widgets")
+
+        c.users.resolve_collaborator_principals.assert_not_awaited()
+
     async def test_member_listing_failure_skips_the_repo_without_touching_it(self) -> None:
         """on_new_record_groups DELETES a record group's permission edges before
         recreating them from the list passed in, so writing an empty list would

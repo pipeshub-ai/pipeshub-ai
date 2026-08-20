@@ -164,7 +164,6 @@ class PullRequestsSync:
 
     async def _build_pr_records(self, repo: GhObject, prs: list[Any]) -> list[RecordUpdate]:
         c = self.c
-        prs_enabled = self._prs_indexing_enabled()
         record_updates: list[RecordUpdate] = []
         for pr in prs:
             record_update = await self.process_pull_request(repo, pr)
@@ -175,12 +174,12 @@ class PullRequestsSync:
             markdown_raw: str = getattr(pr, "body", "") or ""
             _, attachments = await c.comments.clean_github_content(markdown_raw)
             if attachments:
+                # Attachment records inherit the PRs indexing filter inside
+                # _attachment_file_update — the single construction point that
+                # also covers the stream-time comment-attachment path.
                 file_updates = await c.comments.make_file_records_from_list(
                     attachments, record_update.record
                 )
-                if not prs_enabled:
-                    for ru in file_updates:
-                        ru.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                 record_updates.extend(file_updates)
         return record_updates
 
