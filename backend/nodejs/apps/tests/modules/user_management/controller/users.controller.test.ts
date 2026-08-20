@@ -31,6 +31,14 @@ function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
   sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
 }
 
+/** isUserOrgAdmin uses Users.findOne().select('role').lean() when invite has groupIds or role=admin. */
+function stubActorAsOrgAdmin() {
+  sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().resolves({ role: 'admin' }),
+  } as any);
+}
+
 describe('UserController', () => {
   let controller: UserController;
   let mockConfig: any;
@@ -2440,6 +2448,7 @@ describe('UserController', () => {
         emails: ['existing@test.com', 'deleted@test.com', 'new@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
 
@@ -2486,6 +2495,7 @@ describe('UserController', () => {
         emails: ['existing@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2552,6 +2562,7 @@ describe('UserController', () => {
         emails: ['pending@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2593,6 +2604,7 @@ describe('UserController', () => {
         emails: ['blocked-pending@test.com'],
         groupIds: ['group1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([
@@ -2938,6 +2950,7 @@ describe('UserController', () => {
         emails: ['new1@test.com', 'new2@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({
         _id: '507f1f77bcf86cd799439012',
@@ -4621,6 +4634,7 @@ describe('UserController', () => {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find').resolves([]); // No existing users
@@ -4652,6 +4666,7 @@ describe('UserController', () => {
         emails: ['newuser@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find').resolves([]); // No existing users
@@ -4688,6 +4703,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: '' } as any);
       sinon.stub(Users, 'find')
@@ -4727,6 +4743,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
       sinon.stub(Users, 'find')
@@ -4766,6 +4783,7 @@ describe('UserController', () => {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       const validId = new mongoose.Types.ObjectId();
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
@@ -4924,6 +4942,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
       sinon.stub(Users, 'find')
@@ -4965,6 +4984,7 @@ describe('UserController', () => {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
       };
+      stubActorAsOrgAdmin();
 
       const userId = new mongoose.Types.ObjectId();
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
