@@ -989,6 +989,15 @@ class KnowledgeBaseService:
             # edges + files docs) and publishes a deleteRecord event per contained file,
             # so the router does not need to publish eventData for this path.
             cascade_result = await self.processor.on_records_deleted_cascade([folder_id], kb_id)
+            if not (cascade_result and cascade_result.get("success")):
+                # The recursive delete itself failed (not just the cleanup-event
+                # publish) — do not report a success the graph doesn't back up.
+                self.logger.error(f"❌ Failed to delete folder {folder_id}: {cascade_result}")
+                return cascade_result or {
+                    "success": False,
+                    "code": 500,
+                    "reason": "Failed to delete folder",
+                }
             self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully by {user_id}")
             response = {
                 "success": True,

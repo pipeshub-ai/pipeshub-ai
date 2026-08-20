@@ -1266,7 +1266,31 @@ class TestDeleteRecord:
             result = await delete_record("rec-1", request, gp, kafka)
         assert result["success"] is True
         assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
         assert kafka.publish_event.await_count == 3  # retried before giving up (#3008)
+
+    async def test_malformed_event_data_skips_publish_and_flags_pending(self):
+        """eventData missing a required field (eventType/topic/payload) must not
+        crash a completed deletion via KeyError — skip publishing and flag
+        cleanup as pending instead."""
+        from app.connectors.api.router import delete_record
+
+        gp = AsyncMock()
+        gp.delete_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"payload": {"recordId": "rec-1"}},  # missing eventType/topic
+        })
+
+        kafka = AsyncMock()
+        container = MagicMock()
+        container.logger = MagicMock(return_value=MagicMock())
+        request = _mock_request(container=container)
+
+        result = await delete_record("rec-1", request, gp, kafka)
+        assert result["success"] is True
+        assert result["vectorCleanupPending"] is True
+        assert result["vectorCleanupFailedRecordIds"] == ["rec-1"]
+        kafka.publish_event.assert_not_called()
 
     async def test_transient_event_publish_failure_recovers(self):
         """A broker hiccup that clears on retry must not be reported as a

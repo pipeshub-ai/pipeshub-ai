@@ -1417,7 +1417,14 @@ class DataSourceEntitiesProcessor:
 
         unpublished_record_ids: list[str] = []
         for payload in event_data.get("payloads", []):
-            record_id = payload.get("recordId")
+            record_id = payload.get("recordId") if isinstance(payload, dict) else None
+            if not record_id:
+                # A malformed payload must not turn an already-committed
+                # deletion into an unhandled exception; count it as an
+                # unpublished cleanup instead of crashing the whole batch.
+                self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
+                unpublished_record_ids.append(str(payload))
+                continue
             try:
                 await retry_async(
                     lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(

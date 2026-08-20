@@ -1857,7 +1857,18 @@ async def delete_record(
             # swallow) a failure so the caller knows vector cleanup is pending.
             vector_cleanup_pending = False
             event_data = result.get("eventData")
-            if event_data and event_data.get("payload"):
+            has_valid_event_data = (
+                isinstance(event_data, dict)
+                and event_data.get("payload")
+                and event_data.get("eventType")
+                and event_data.get("topic")
+            )
+            if event_data and not has_valid_event_data:
+                logger.error(
+                    f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
+                )
+                vector_cleanup_pending = True
+            elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
                 event = {
                     "eventType": event_data["eventType"],
@@ -1893,6 +1904,7 @@ async def delete_record(
             }
             if vector_cleanup_pending:
                 response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedRecordIds"] = [record_id]
             return response
         else:
             logger.error(f"❌ Failed to delete record {record_id}: {result.get('reason')}")

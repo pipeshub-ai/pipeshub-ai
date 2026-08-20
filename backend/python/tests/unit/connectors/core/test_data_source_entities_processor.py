@@ -4992,6 +4992,19 @@ class TestPublishDeleteEvents:
         await proc._publish_delete_events({"payloads": [{"recordId": "r1"}, {"recordId": "r2"}]})
         assert proc.messaging_producer.send_message.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_malformed_payload_does_not_raise(self):
+        """A malformed payload (not a dict, or missing recordId) must not turn
+        an already-committed deletion into an unhandled exception — it should
+        be counted as unpublished and the rest of the batch still processed."""
+        proc = _make_processor()
+        unpublished = await proc._publish_delete_events({
+            "payloads": ["not-a-dict", {"virtualRecordId": "v1"}, {"recordId": "r3"}],
+        })
+        assert len(unpublished) == 2
+        assert "r3" not in unpublished
+        proc.messaging_producer.send_message.assert_awaited_once()
+
 
 class TestProcessRecordOrgId:
     @pytest.mark.asyncio
