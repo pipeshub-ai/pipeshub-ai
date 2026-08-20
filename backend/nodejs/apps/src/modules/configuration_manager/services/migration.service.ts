@@ -7,7 +7,7 @@ import {
 } from '../config/config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { configPaths } from '../paths/paths';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
@@ -163,7 +163,7 @@ export class MigrationService {
     let isDefault = true;
     for (const llmConfig of llmConfigs) {
       if (!llmConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         llmConfig.modelKey = modelKey;
         llmConfig.isDefault = isDefault;
         llmConfig.isMultiModel = false;
@@ -175,7 +175,7 @@ export class MigrationService {
     isDefault = true;
     for (const embeddingConfig of embeddingConfigs) {
       if (!embeddingConfig.modelKey) {
-        const modelKey = uuidv4();
+        const modelKey = randomUUID();
         embeddingConfig.modelKey = modelKey;
         embeddingConfig.isDefault = isDefault;
         embeddingConfig.isMultiModel = false;
