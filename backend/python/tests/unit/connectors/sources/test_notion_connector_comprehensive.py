@@ -526,21 +526,22 @@ class TestGetDatabaseParentPageId:
         result = await connector._get_database_parent_page_id("db-2")
         assert result is None
 
-    async def test_api_failure_returns_none(self, connector):
+    async def test_api_failure_raises(self, connector):
         mock_ds = MagicMock()
         mock_response = MagicMock()
         mock_response.success = False
         mock_response.error = "Not found"
+        mock_response.data = None
         mock_ds.retrieve_database = AsyncMock(return_value=mock_response)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._get_database_parent_page_id("db-3")
-        assert result is None
+        with pytest.raises(RuntimeError, match="Failed to retrieve database"):
+            await connector._get_database_parent_page_id("db-3")
 
-    async def test_exception_returns_none(self, connector):
+    async def test_exception_propagates(self, connector):
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("Error"))
-        result = await connector._get_database_parent_page_id("db-4")
-        assert result is None
+        with pytest.raises(Exception, match="Error"):
+            await connector._get_database_parent_page_id("db-4")
 
     async def test_database_parent(self, connector):
         mock_ds = MagicMock()

@@ -48,7 +48,8 @@ def Connector(
     app_categories: list[str] | None = None,
     config: dict[str, Any] | None = None,
     connector_scopes: list[ConnectorScope] | None = None,
-    connector_info: str | None = None
+    connector_info: str | None = None,
+    resilience_config: dict[str, Any] | None = None
 ) -> Callable[[type], type]:
     """
     Decorator to register a connector with metadata and configuration schema.
@@ -63,6 +64,7 @@ def Connector(
         config: Complete configuration schema for the connector
         connector_scopes: List of scopes the connector supports ("personal", "team")
         connector_info: Optional info text to display on the frontend connector page
+        resilience_config: Rate limit and retry budget, from ConnectorBuilder.with_resilience_config
     Returns:
         Decorator function that marks a class as a connector
 
@@ -99,7 +101,8 @@ def Connector(
             "appCategories": app_categories or [],
             "config": config or {},
             "connectorScopes": connector_scopes or [ConnectorScope.PERSONAL],  # Default to personal only
-            "connectorInfo": connector_info
+            "connectorInfo": connector_info,
+            "resilienceConfig": resilience_config or {}
         }
 
         # Mark class as a connector

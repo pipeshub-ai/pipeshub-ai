@@ -415,8 +415,14 @@ class TestReindexRecords:
     @pytest.mark.asyncio
     async def test_with_records(self):
         c = _make_connector()
-        await c.reindex_records([MagicMock()])
-        # Current impl is a TODO - just logs
+        record = MagicMock()
+        record.id = "rec-1"
+        record.external_record_id = "file-1"
+        record.record_type = RecordType.FILE
+        await c.reindex_records([record])
+        c.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            [record]
+        )
 
 
 # ===========================================================================
@@ -1385,6 +1391,6 @@ class TestGetDatabaseParentPageId:
         c = _make_connector()
         ds = _make_datasource_mock()
         c._get_fresh_datasource = AsyncMock(return_value=ds)
-        ds.retrieve_database = AsyncMock(return_value=_make_api_response(False))
-        result = await c._get_database_parent_page_id("db-fail")
-        assert result is None
+        ds.retrieve_database = AsyncMock(return_value=_make_api_response(False, error="boom"))
+        with pytest.raises(RuntimeError, match="Failed to retrieve database"):
+            await c._get_database_parent_page_id("db-fail")

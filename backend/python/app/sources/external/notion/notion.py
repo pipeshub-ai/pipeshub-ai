@@ -1,6 +1,9 @@
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.notion.notion import NotionClient, NotionResponse
 
 
@@ -57,7 +60,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -86,7 +89,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -115,7 +118,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -142,7 +145,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -181,7 +184,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -210,7 +213,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -240,7 +243,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -270,7 +273,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -299,7 +302,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -340,7 +343,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -370,7 +373,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -399,7 +402,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -426,7 +429,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -455,7 +458,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -486,7 +489,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -499,10 +502,10 @@ class NotionDataSource:
     ) -> NotionResponse:
         """Update an existing data source
 
-        HTTP PATCH /databases/{database_id}/data_sources/{data_source_id}
+        HTTP PATCH /data_sources/{data_source_id}
 
         Args:
-            database_id (str, required): Database ID containing the data source
+            database_id (str, required): Unused; Notion addresses data sources globally
             data_source_id (str, required): Data source ID to update
             request_body (Dict[str, Any], optional): Updated data source configuration
 
@@ -512,7 +515,8 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}".format(database_id=database_id, data_source_id=data_source_id)
+        # Notion addresses data sources globally, so ``database_id`` is not part of the path.
+        url = self.base_url + "/data_sources/{data_source_id}".format(data_source_id=data_source_id)
         request = HTTPRequest(
             method="PATCH",
             url=url,
@@ -522,17 +526,17 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
     async def retrieve_data_source(self, database_id: str, data_source_id: str, **kwargs) -> NotionResponse:
         """Retrieve a specific data source by ID
 
-        HTTP GET /databases/{database_id}/data_sources/{data_source_id}
+        HTTP GET /data_sources/{data_source_id}
 
         Args:
-            database_id (str, required): Database ID containing the data source
+            database_id (str, required): Unused; Notion addresses data sources globally
             data_source_id (str, required): Data source ID to retrieve
 
         Returns:
@@ -541,7 +545,8 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}".format(database_id=database_id, data_source_id=data_source_id)
+        # Notion addresses data sources globally, so ``database_id`` is not part of the path.
+        url = self.base_url + "/data_sources/{data_source_id}".format(data_source_id=data_source_id)
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -550,7 +555,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -563,10 +568,10 @@ class NotionDataSource:
     ) -> NotionResponse:
         """Query a data source connected to a database
 
-        HTTP POST /databases/{database_id}/data_sources/{data_source_id}/query
+        HTTP POST /data_sources/{data_source_id}/query
 
         Args:
-            database_id (str, required): Database ID containing the data source
+            database_id (str, required): Unused; Notion addresses data sources globally
             data_source_id (str, required): Data source ID to query
             request_body (Dict[str, Any], optional): Query parameters for the data source
 
@@ -576,7 +581,8 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/databases/{database_id}/data_sources/{data_source_id}/query".format(database_id=database_id, data_source_id=data_source_id)
+        # Notion addresses data sources globally, so ``database_id`` is not part of the path.
+        url = self.base_url + "/data_sources/{data_source_id}/query".format(data_source_id=data_source_id)
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -586,7 +592,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -613,7 +619,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -647,7 +653,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -677,7 +683,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -718,7 +724,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -745,7 +751,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -754,10 +760,12 @@ class NotionDataSource:
     async def create_file_upload(self, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
         """Create a new file upload request
 
-        HTTP POST /files
+        HTTP POST /file_uploads
 
         Args:
-            request_body (Dict[str, Any], optional): File upload request with name, file details, and parent information
+            request_body (Dict[str, Any], optional): Upload request: ``mode`` (single_part /
+                multi_part / external_url), ``filename``, ``content_type``, and for multi_part
+                ``number_of_parts``. Defaults to single_part, which accepts files up to 20MB.
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
@@ -765,7 +773,7 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files"
+        url = self.base_url + "/file_uploads"
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -775,18 +783,34 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
-    async def send_file_upload(self, file_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
-        """Send file data to complete the upload
+    async def send_file_upload(
+        self,
+        file_id: str,
+        file_content: bytes,
+        filename: str,
+        content_type: Optional[str] = None,
+        part_number: Optional[int] = None,
+        **kwargs
+    ) -> NotionResponse:
+        """Send file bytes for a previously created file upload
 
-        HTTP POST /files/{file_id}/upload
+        HTTP POST /file_uploads/{file_id}/send
+
+        This endpoint requires ``multipart/form-data`` rather than JSON, which the shared
+        ``HTTPClient`` cannot express, so the request is issued with httpx directly. The
+        Authorization / Notion-Version headers are reused from the configured client;
+        Content-Type is dropped so httpx can set the multipart boundary.
 
         Args:
-            file_id (str, required): File ID from upload session
-            request_body (Dict[str, Any], optional): File binary data and metadata
+            file_id (str, required): ``id`` from ``create_file_upload``
+            file_content (bytes, required): Raw file bytes
+            filename (str, required): File name, used as the multipart part filename
+            content_type (str, optional): MIME type of the file
+            part_number (int, optional): Part index, required for multi_part uploads
 
         Returns:
             NotionResponse: Standardized response wrapper with success/data/error
@@ -794,24 +818,35 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}/upload".format(file_id=file_id)
-        request = HTTPRequest(
-            method="POST",
-            url=url,
-            headers=self.http_client.headers,
-            query={k: str(v) for k, v in params.items() if v is not None},
-            body=request_body,
-        )
+        url = self.base_url + "/file_uploads/{file_id}/send".format(file_id=file_id)
+
+        headers = {
+            key: value
+            for key, value in self.http_client.headers.items()
+            if key.lower() != "content-type"
+        }
+        files = {"file": (filename, file_content, content_type or "application/octet-stream")}
+        data = {"part_number": str(part_number)} if part_number is not None else None
+
         try:
-            response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    data=data,
+                    params={k: str(v) for k, v in params.items() if v is not None} or None,
+                )
+            return NotionResponse.from_http(HTTPResponse(response))
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
     async def complete_file_upload(self, file_id: str, request_body: Optional[Dict[str, Any]] = None, **kwargs) -> NotionResponse:
         """Complete a file upload process
 
-        HTTP POST /files/{file_id}/complete
+        HTTP POST /file_uploads/{file_id}/complete
+
+        Only required for multi_part uploads; single_part uploads are complete after send.
 
         Args:
             file_id (str, required): File ID to complete
@@ -823,7 +858,7 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}/complete".format(file_id=file_id)
+        url = self.base_url + "/file_uploads/{file_id}/complete".format(file_id=file_id)
         request = HTTPRequest(
             method="POST",
             url=url,
@@ -833,14 +868,14 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
     async def retrieve_file_upload(self, file_id: str, **kwargs) -> NotionResponse:
         """Retrieve information about a file upload
 
-        HTTP GET /files/{file_id}
+        HTTP GET /file_uploads/{file_id}
 
         Args:
             file_id (str, required): File ID to retrieve
@@ -851,7 +886,7 @@ class NotionDataSource:
         params: Dict[str, Any] = {}
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files/{file_id}".format(file_id=file_id)
+        url = self.base_url + "/file_uploads/{file_id}".format(file_id=file_id)
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -860,14 +895,14 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
     async def list_file_uploads(self, start_cursor: Optional[str] = None, page_size: Optional[int] = None, **kwargs) -> NotionResponse:
         """List all file uploads for the workspace
 
-        HTTP GET /files
+        HTTP GET /file_uploads
 
         Args:
             start_cursor (str, optional): Pagination cursor
@@ -883,7 +918,7 @@ class NotionDataSource:
             params['page_size'] = page_size
         if kwargs:
             params.update(kwargs)
-        url = self.base_url + "/files"
+        url = self.base_url + "/file_uploads"
         request = HTTPRequest(
             method="GET",
             url=url,
@@ -892,7 +927,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -922,7 +957,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -956,7 +991,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -983,7 +1018,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1009,7 +1044,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1033,7 +1068,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1074,7 +1109,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1101,7 +1136,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1129,7 +1164,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1158,7 +1193,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1187,7 +1222,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1214,7 +1249,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1255,7 +1290,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1282,7 +1317,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1310,7 +1345,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1339,7 +1374,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1368,7 +1403,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1395,7 +1430,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1424,7 +1459,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1453,7 +1488,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1480,7 +1515,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1509,7 +1544,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1538,7 +1573,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1567,7 +1602,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1606,7 +1641,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1642,7 +1677,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1670,7 +1705,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1706,7 +1741,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1733,7 +1768,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1762,7 +1797,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1790,7 +1825,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1826,7 +1861,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1854,7 +1889,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1881,7 +1916,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1910,7 +1945,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1939,7 +1974,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1968,7 +2003,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -1995,7 +2030,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2024,7 +2059,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2053,7 +2088,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2080,7 +2115,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2111,7 +2146,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2139,7 +2174,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2175,7 +2210,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2202,7 +2237,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2231,7 +2266,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2260,7 +2295,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2287,7 +2322,7 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))
 
@@ -2316,6 +2351,6 @@ class NotionDataSource:
         )
         try:
             response = await self.http_client.execute(request)
-            return NotionResponse(success=True, data=response)
+            return NotionResponse.from_http(response)
         except Exception as e:
             return NotionResponse(success=False, error=str(e))

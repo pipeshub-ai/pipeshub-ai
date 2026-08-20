@@ -19,17 +19,20 @@ from app.sources.client.http.http_response import HTTPResponse
 T = TypeVar("T")
 
 # Status codes that should never be retried (client errors indicating permanent failure)
-_NON_RETRYABLE_STATUSES = {400, 401, 403, 404}
+NON_RETRYABLE_STATUSES = {400, 401, 403, 404}
 
-# Status codes that are worth retrying (transient server errors and rate limits)
-_RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504}
+# Status codes that are worth retrying (transient server errors and rate limits).
+# 529 is non-standard but is what Notion (service_overload) and several other
+# vendors return when they are temporarily overloaded; their docs ask for the
+# same backoff treatment as 429.
+RETRYABLE_STATUSES = {408, 429, 500, 502, 503, 504, 529}
 
 
-def _is_retryable_status(status_code: int) -> bool:
+def is_retryable_status(status_code: int) -> bool:
     """Check if an HTTP status code is retryable."""
-    if status_code in _NON_RETRYABLE_STATUSES:
+    if status_code in NON_RETRYABLE_STATUSES:
         return False
-    return status_code in _RETRYABLE_STATUSES
+    return status_code in RETRYABLE_STATUSES
 
 
 def _get_retry_after(response: HTTPResponse) -> float | None:
@@ -80,7 +83,7 @@ async def call_with_retry(
 
             # Check if the result is an HTTPResponse with a retryable status
             if isinstance(result, HTTPResponse):
-                if _is_retryable_status(result.status):
+                if is_retryable_status(result.status):
                     # Treat retryable status as a failure and retry
                     if attempt == max_attempts - 1:
                         # Last attempt - raise httpx.HTTPStatusError preserving original error details
@@ -138,7 +141,7 @@ async def call_with_retry(
 
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
-            if not _is_retryable_status(status):
+            if not is_retryable_status(status):
                 raise
             last_exc = e
             if attempt == max_attempts - 1:

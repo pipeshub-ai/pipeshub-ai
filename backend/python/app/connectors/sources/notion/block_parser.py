@@ -1661,6 +1661,7 @@ class NotionBlockParser:
             table_metadata=TableMetadata(
                 num_of_cols=len(column_names),
                 num_of_rows=len(data_source_rows) + 1,  # +1 for header
+                num_of_cells=(len(data_source_rows) + 1) * len(column_names) if column_names else 0,
                 has_header=True,
                 column_names=column_names,  # Raw column names, will be LLM-enhanced in indexing
             ),
@@ -2519,7 +2520,7 @@ class NotionBlockParser:
                 if group.table_metadata.has_header:
                     table_header_flags[group.index] = True
 
-        # Second pass: Update row numbers and header flags
+        # Second pass: Update row numbers, header flags, and table cell counts
         for block in blocks:
             if block.type == BlockType.TABLE_ROW and block.parent_index is not None:
                 table_index = block.parent_index
@@ -2528,14 +2529,29 @@ class NotionBlockParser:
                 if table_index not in table_row_counts:
                     table_row_counts[table_index] = 0
 
-                # Update row number
+                # Update row number (1-based) on metadata and data payload
                 if block.table_row_metadata:
                     table_row_counts[table_index] += 1
-                    block.table_row_metadata.row_number = table_row_counts[table_index]
+                    row_number = table_row_counts[table_index]
+                    block.table_row_metadata.row_number = row_number
+                    if isinstance(block.data, dict):
+                        block.data["row_number"] = row_number
 
                     # Set header flag if this is the first row and table has headers
-                    if table_row_counts[table_index] == 1 and table_header_flags.get(table_index, False):
+                    if row_number == 1 and table_header_flags.get(table_index, False):
                         block.table_row_metadata.is_header = True
+
+        # Fill num_of_rows / num_of_cells now that row counts are known
+        for group in block_groups:
+            if group.type != GroupType.TABLE or not group.table_metadata:
+                continue
+            row_count = table_row_counts.get(group.index, 0)
+            group.table_metadata.num_of_rows = row_count
+            cols = group.table_metadata.num_of_cols
+            if cols is not None and row_count:
+                group.table_metadata.num_of_cells = row_count * cols
+            elif cols is not None and not row_count:
+                group.table_metadata.num_of_cells = 0
 
     def _calculate_list_indent_levels(self, blocks: List[Block], block_groups: List[BlockGroup]) -> None:
         """
