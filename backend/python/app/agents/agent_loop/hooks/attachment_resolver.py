@@ -546,6 +546,20 @@ def shape_image_injection(context: "AgentContext") -> "Middleware[Any]":
     return _middleware
 
 
+def _image_identity(part: Any) -> str | None:
+    """A producer-independent identity for an `ImagePart`, so a base64 source
+    and a url source carrying the same image compare equal."""
+    from app.agent_loop_lib.core.messages import image_data_url
+
+    source = getattr(part, "source", None)
+    if source is None:
+        return None
+    try:
+        return image_data_url(source)
+    except Exception:
+        return getattr(source, "data", None)
+
+
 def _inject_into_first_user_message(
     messages: list[Any], parts: list[Any], text_part_cls: Any, user_message_cls: Any,
 ) -> None:
@@ -562,22 +576,23 @@ def _inject_into_first_user_message(
         if isinstance(content, str):
             msg.content = [text_part_cls(text=content), *parts]
         elif isinstance(content, list):
-            # Dedup by `source.data`, not by "any image present" — the
-            # latter would drop a whole batch of newly-popped
+            # Dedup per image, not by "any image present" — the latter
+            # would drop a whole batch of newly-popped
             # `pending_tool_images` (each batch is popped exactly once,
             # see `shape_retrieved_image_injection`, so a dropped batch is
             # gone for good) whenever the message already carried an
             # unrelated image, e.g. an attachment injected by
             # `shape_image_injection` or an earlier retrieved-image batch.
+            #
+            # Key on the normalised data URL rather than `source.data`: the
+            # same image can arrive as a base64 source or a url source
+            # depending on which producer built the part, and those two
+            # carry different `data` strings for identical bytes.
             existing_sources = {
-                getattr(getattr(p, "source", None), "data", None)
-                for p in content
+                _image_identity(p) for p in content
                 if getattr(p, "type", None) == "image"
             }
-            new_parts = [
-                p for p in parts
-                if getattr(getattr(p, "source", None), "data", None) not in existing_sources
-            ]
+            new_parts = [p for p in parts if _image_identity(p) not in existing_sources]
             if new_parts:
                 msg.content = [*content, *new_parts]
         break

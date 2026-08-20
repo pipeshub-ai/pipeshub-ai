@@ -9,9 +9,13 @@ in one shared place (see ``VectorStore._build_image_points``), instead of
 each provider duplicating point-construction logic.
 """
 
+import inspect
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any
+
+from app.utils.image_utils import normalize_image_to_base64
 
 
 @dataclass
@@ -21,8 +25,8 @@ class ImageEmbeddingResult:
     when some images fail or are skipped (e.g. oversized, invalid base64).
     """
     index: int
-    embedding: Optional[List[float]] = None
-    error: Optional[str] = None
+    embedding: list[float] | None = None
+    error: str | None = None
 
 
 class IMultimodalEmbeddingProvider(ABC):
@@ -34,10 +38,28 @@ class IMultimodalEmbeddingProvider(ABC):
     embedding or an error — so ``embed_images`` never silently drops entries.
     """
 
+    # Set from ``MultimodalProviderConfig.normalize_fn`` by subclasses that
+    # accept one; ``None`` falls back to the shared utility.
+    _normalize_fn: Callable[[str], Any] | None = None
+
     @abstractmethod
-    async def embed_images(self, image_base64s: List[str]) -> List[ImageEmbeddingResult]:
+    async def embed_images(self, image_base64s: list[str]) -> list[ImageEmbeddingResult]:
         """Embed a batch of base64-encoded (optionally data-URI-prefixed) images."""
         ...
+
+    async def normalize(self, image_ref: str) -> str | None:
+        """Strip any data-URI prefix and validate the payload as base64.
+
+        Lives here so every provider that needs it resolves the injected
+        ``normalize_fn`` the same way. The injected callable may be sync or
+        async — ``VectorStore`` passes an async instance method so its tests
+        can patch normalisation in one place.
+        """
+        fn = self._normalize_fn or normalize_image_to_base64
+        result = fn(image_ref)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     def supports_multimodal(self) -> bool:
         """Whether this provider instance can natively embed images.

@@ -7,11 +7,13 @@ only owns batching/concurrency around that call.
 """
 
 import asyncio
-from typing import Any, List, Optional
+import logging
+
+from langchain_core.embeddings import Embeddings
 
 from app.services.embeddings.multimodal.interface import (
-    IMultimodalEmbeddingProvider,
     ImageEmbeddingResult,
+    IMultimodalEmbeddingProvider,
 )
 
 _CONCURRENCY_LIMIT = 5
@@ -19,7 +21,9 @@ _DEFAULT_BATCH_SIZE = 7
 
 
 class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
-    def __init__(self, dense_embeddings: Any, logger=None) -> None:
+    def __init__(
+        self, dense_embeddings: Embeddings, logger: logging.Logger | None = None,
+    ) -> None:
         self.dense_embeddings = dense_embeddings
         self.logger = logger
 
@@ -27,18 +31,28 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
     def provider_name(self) -> str:
         return "voyage"
 
-    async def embed_images(self, image_base64s: List[str]) -> List[ImageEmbeddingResult]:
+    async def embed_images(self, image_base64s: list[str]) -> list[ImageEmbeddingResult]:
         batch_size = getattr(self.dense_embeddings, "batch_size", _DEFAULT_BATCH_SIZE)
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
-        async def process_batch(batch_start: int, batch_imgs: List[str]) -> List[ImageEmbeddingResult]:
+        async def process_batch(batch_start: int, batch_imgs: list[str]) -> list[ImageEmbeddingResult]:
             async with semaphore:
                 try:
                     embeddings = await self.dense_embeddings.aembed_documents(batch_imgs)
-                    return [
+                    # A short response must not silently drop its tail --
+                    # every input index owes the caller a result.
+                    results = [
                         ImageEmbeddingResult(index=batch_start + i, embedding=list(e))
                         for i, e in enumerate(embeddings)
                     ]
+                    results.extend(
+                        ImageEmbeddingResult(
+                            index=batch_start + i,
+                            error="no embedding returned for this image",
+                        )
+                        for i in range(len(embeddings), len(batch_imgs))
+                    )
+                    return results
                 except Exception as e:
                     if self.logger:
                         self.logger.warning(f"Voyage batch {batch_start} failed: {e}")
@@ -52,7 +66,7 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
             for start in range(0, len(image_base64s), batch_size)
         ]
         results = await asyncio.gather(*[process_batch(s, imgs) for s, imgs in batches])
-        flattened: List[ImageEmbeddingResult] = []
+        flattened: list[ImageEmbeddingResult] = []
         for r in results:
             flattened.extend(r)
         return flattened

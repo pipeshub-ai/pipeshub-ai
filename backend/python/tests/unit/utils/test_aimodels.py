@@ -658,12 +658,26 @@ class TestGetEmbeddingModel:
         assert call_kwargs["check_embedding_ctx_length"] is False
 
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
-    def test_openai_compatible_generic_model_on_router_keeps_ctx_length_check(self, mock_cls):
-        """A router proxying to a genuinely OpenAI-tiktoken-compatible model
-        keeps the existing behavior (tokenized input is safe to send)."""
+    def test_openai_compatible_generic_model_on_router_still_disables_ctx_length_check(
+        self, mock_cls
+    ):
+        """The model name does not rescue a router host. tiktoken-encoded
+        `input` is accepted only by api.openai.com (see
+        `_TOKEN_ARRAY_EMBEDDING_HOSTS`); Requesty rejects it with a 400 no
+        matter which upstream model it forwards to."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("openai/text-embedding-3-large")
         config["configuration"]["endpoint"] = "https://router.eu.requesty.ai/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        call_kwargs = mock_cls.call_args.kwargs
+        assert call_kwargs["check_embedding_ctx_length"] is False
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_compatible_direct_openai_endpoint_keeps_ctx_length_check(self, mock_cls):
+        """api.openai.com is the one host that does accept token arrays."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://api.openai.com/v1"
         get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["check_embedding_ctx_length"] is True

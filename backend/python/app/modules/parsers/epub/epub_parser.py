@@ -1,6 +1,12 @@
 from pathlib import Path
+from typing import Any
 
-from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+from app.services.parsing.interface import (
+    IParser,
+    ParseError,
+    ParseErrorCode,
+    ParseResult,
+)
 from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
@@ -13,10 +19,12 @@ class EPUBParser:
     directly and must not depend on PyMuPDF/fitz.
     """
 
-    def __init__(self, pdf_parser=None) -> None:
+    def __init__(self, pdf_parser: IParser | None = None) -> None:
         self.pdf_parser = pdf_parser
 
-    async def parse(self, content: bytes, record_name: str, config: dict[str, any] | None = None) -> ParseResult:
+    async def parse(
+        self, content: bytes, record_name: str, config: dict[str, Any] | None = None,
+    ) -> ParseResult:
         if self.pdf_parser is None:
             raise ParseError(
                 ParseErrorCode.PROVIDER_UNAVAILABLE,

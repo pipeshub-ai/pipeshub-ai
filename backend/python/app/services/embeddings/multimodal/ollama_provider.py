@@ -18,13 +18,13 @@ provider's native path.
 """
 
 import asyncio
-from typing import List, Optional
+import logging
 
 import httpx
 
 from app.services.embeddings.multimodal.interface import (
-    IMultimodalEmbeddingProvider,
     ImageEmbeddingResult,
+    IMultimodalEmbeddingProvider,
 )
 
 _CONCURRENCY_LIMIT = 5
@@ -34,9 +34,9 @@ _DEFAULT_BASE_URL = "http://localhost:11434"
 class OllamaMultimodalProvider(IMultimodalEmbeddingProvider):
     def __init__(
         self,
-        base_url: Optional[str],
-        model_name: Optional[str],
-        logger=None,
+        base_url: str | None,
+        model_name: str | None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self.base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/")
         self.model_name = model_name
@@ -49,7 +49,7 @@ class OllamaMultimodalProvider(IMultimodalEmbeddingProvider):
     def provider_name(self) -> str:
         return "ollama"
 
-    async def embed_images(self, image_base64s: List[str]) -> List[ImageEmbeddingResult]:
+    async def embed_images(self, image_base64s: list[str]) -> list[ImageEmbeddingResult]:
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(

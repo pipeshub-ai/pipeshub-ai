@@ -6,9 +6,11 @@ this file plus its own ``<provider>_provider.py`` — ``VectorStore`` itself
 never needs to change (Open/Closed Principle).
 """
 
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
-from app.services.embeddings.multimodal.bedrock_provider import BedrockMultimodalProvider
+from app.services.embeddings.multimodal.bedrock_provider import (
+    BedrockMultimodalProvider,
+)
 from app.services.embeddings.multimodal.cohere_provider import CohereMultimodalProvider
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.gemini_provider import GeminiMultimodalProvider
@@ -38,6 +40,7 @@ def _build_openai_compat(provider_label: str) -> Callable[
         api_key=config.api_key,
         model_name=config.model_name,
         provider_label=provider_label,
+        normalize_fn=config.normalize_fn,
         logger=config.logger,
     )
 
@@ -45,7 +48,7 @@ def _build_openai_compat(provider_label: str) -> Callable[
 # Registry of provider builders, keyed by EmbeddingProvider value. Adding a new
 # multimodal-capable provider means adding one entry here plus its own
 # ``<provider>_provider.py`` — no other branch of this factory needs to change.
-_PROVIDER_BUILDERS: Dict[str, Callable[[MultimodalProviderConfig], IMultimodalEmbeddingProvider]] = {
+_PROVIDER_BUILDERS: dict[str, Callable[[MultimodalProviderConfig], IMultimodalEmbeddingProvider]] = {
     EmbeddingProvider.COHERE.value: lambda config: CohereMultimodalProvider(
         api_key=config.api_key,
         model_name=config.model_name,
@@ -60,6 +63,7 @@ _PROVIDER_BUILDERS: Dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
         region_name=config.region_name,
         aws_access_key_id=config.aws_access_key_id,
         aws_secret_access_key=config.aws_secret_access_key,
+        embedding_size=config.embedding_size,
         normalize_fn=config.normalize_fn,
         logger=config.logger,
     ),
@@ -72,6 +76,7 @@ _PROVIDER_BUILDERS: Dict[str, Callable[[MultimodalProviderConfig], IMultimodalEm
     EmbeddingProvider.GEMINI.value: lambda config: GeminiMultimodalProvider(
         api_key=config.api_key,
         model_name=config.model_name,
+        normalize_fn=config.normalize_fn,
         logger=config.logger,
     ),
     EmbeddingProvider.OLLAMA.value: lambda config: OllamaMultimodalProvider(
@@ -90,6 +95,6 @@ class MultimodalEmbeddingFactory:
     """Instantiates the ``IMultimodalEmbeddingProvider`` for a config's provider."""
 
     @staticmethod
-    def create(config: MultimodalProviderConfig) -> Optional[IMultimodalEmbeddingProvider]:
+    def create(config: MultimodalProviderConfig) -> IMultimodalEmbeddingProvider | None:
         builder = _PROVIDER_BUILDERS.get(config.provider)
         return builder(config) if builder else None

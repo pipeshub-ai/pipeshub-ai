@@ -5,19 +5,25 @@ instance) so provider classes depend only on the handful of fields they
 actually need and can be unit-tested without constructing a VectorStore.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any
 
 
 @dataclass
 class MultimodalProviderConfig:
-    provider: Optional[str]
-    api_key: Optional[str] = None
-    model_name: Optional[str] = None
-    region_name: Optional[str] = None
-    aws_access_key_id: Optional[str] = None
-    aws_secret_access_key: Optional[str] = None
-    base_url: Optional[str] = None
+    provider: str | None
+    api_key: str | None = None
+    model_name: str | None = None
+    region_name: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    base_url: str | None = None
+    # Dimension the target collection was created with. Providers that let
+    # the caller choose an output length (Bedrock Titan) must request this
+    # one, or every point they return is rejected by
+    # ``VectorStore._build_image_points``'s dimension check.
+    embedding_size: int | None = None
     # LangChain Embeddings instance for providers that already have a working
     # LangChain integration capable of embedding raw base64 image strings
     # (currently Voyage's ``embed_documents``/``aembed_documents``).
@@ -27,5 +33,5 @@ class MultimodalProviderConfig:
     # provider when omitted; ``VectorStore`` injects its own instance method
     # here so existing test patches on ``VectorStore._normalize_image_to_base64``
     # keep working after this dispatch moved into provider classes.
-    normalize_fn: Optional[Callable[[str], Any]] = None
+    normalize_fn: Callable[[str], Any] | None = None
     logger: Any = None

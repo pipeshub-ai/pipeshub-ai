@@ -138,3 +138,86 @@ class TestBedrockMultimodalProvider:
 
     def test_provider_name(self) -> None:
         assert _provider().provider_name == "bedrock"
+
+
+class TestBedrockOutputEmbeddingLength:
+    """Regression: outputEmbeddingLength was hardcoded to 1024, so on a
+    collection of any other dimension every point Bedrock returned was
+    discarded by VectorStore._build_image_points as a dimension mismatch."""
+
+    def test_defaults_to_1024_when_size_unknown(self) -> None:
+        provider = BedrockMultimodalProvider(model_name="titan", embedding_size=None)
+        assert provider.output_embedding_length == 1024
+
+    @pytest.mark.parametrize("size", [256, 384, 1024])
+    def test_uses_the_collection_dimension(self, size: int) -> None:
+        provider = BedrockMultimodalProvider(model_name="titan", embedding_size=size)
+        assert provider.output_embedding_length == size
+
+    def test_unsupported_dimension_warns_and_falls_back(self) -> None:
+        logger = MagicMock()
+        provider = BedrockMultimodalProvider(
+            model_name="titan", embedding_size=1536, logger=logger,
+        )
+        assert provider.output_embedding_length == 1024
+        logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_requested_length_reaches_the_invoke_body(self) -> None:
+        import json
+
+        provider = BedrockMultimodalProvider(
+            model_name="titan", embedding_size=384,
+            normalize_fn=lambda _uri: "aW1hZ2U=",
+        )
+        response_body = MagicMock()
+        response_body.read.return_value = json.dumps({"embedding": [0.1] * 384})
+        bedrock = MagicMock()
+        bedrock.invoke_model.return_value = {"body": response_body}
+
+        with patch("boto3.client", return_value=bedrock):
+            results = await provider.embed_images(["aW1hZ2U="])
+
+        assert results[0].embedding is not None
+        body = json.loads(bedrock.invoke_model.call_args.kwargs["body"])
+        assert body["embeddingConfig"]["outputEmbeddingLength"] == 384
+
+
+class TestBedrockErrorReportedInBody:
+    """Titan reports per-image generation failures in a `message` field while
+    still returning HTTP 200, so boto3 raises nothing and a naive read of
+    `body["embedding"]` would KeyError (or worse, index a partial result)."""
+
+    @pytest.mark.asyncio
+    async def test_message_in_body_becomes_an_error_result(self) -> None:
+        logger = MagicMock()
+        provider = BedrockMultimodalProvider(
+            model_name="titan", logger=logger, normalize_fn=lambda _uri: "aW1hZ2U=",
+        )
+        body = MagicMock()
+        body.read.return_value = json.dumps({"message": "image too large"})
+        bedrock = MagicMock()
+        bedrock.invoke_model.return_value = {"body": body}
+
+        with patch("boto3.client", return_value=bedrock):
+            results = await provider.embed_images(["aW1hZ2U="])
+
+        assert results[0].embedding is None
+        assert "image too large" in results[0].error
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_embedding_becomes_an_error_result(self) -> None:
+        provider = BedrockMultimodalProvider(
+            model_name="titan", normalize_fn=lambda _uri: "aW1hZ2U=",
+        )
+        body = MagicMock()
+        body.read.return_value = json.dumps({"inputTextTokenCount": 0})
+        bedrock = MagicMock()
+        bedrock.invoke_model.return_value = {"body": body}
+
+        with patch("boto3.client", return_value=bedrock):
+            results = await provider.embed_images(["aW1hZ2U="])
+
+        assert results[0].embedding is None
+        assert results[0].error

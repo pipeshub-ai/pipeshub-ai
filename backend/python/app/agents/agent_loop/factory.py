@@ -125,8 +125,6 @@ from app.agents.agent_loop.hooks import (
     shape_retrieved_image_injection,
     stash_tool_call_metadata,
 )
-from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
-from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,

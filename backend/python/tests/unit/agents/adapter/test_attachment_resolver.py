@@ -465,7 +465,9 @@ class TestShapeImageInjection:
         assert isinstance(parts[0], TextPart)
         assert parts[0].text == "describe this image"
         assert isinstance(parts[1], ImagePart)
-        assert parts[1].source.data == "data:image/png;base64,abc123"
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert image_data_url(parts[1].source) == "data:image/png;base64,abc123"
 
     async def test_does_not_double_inject(self):
         from app.agent_loop_lib.core.messages import ImagePart, TextPart
@@ -565,7 +567,9 @@ class TestShapeRetrievedImageInjection:
         assert isinstance(parts, list)
         image_parts = [p for p in parts if isinstance(p, ImagePart)]
         assert len(image_parts) == 1
-        assert image_parts[0].source.data == "data:image/png;base64,abc123"
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert image_data_url(image_parts[0].source) == "data:image/png;base64,abc123"
 
     async def test_pops_pending_tool_images_so_they_are_not_redelivered(self):
         """Each batch of tool-sourced images must be delivered exactly
@@ -622,7 +626,37 @@ class TestShapeRetrievedImageInjection:
 
         image_parts = [p for p in ctx.messages[0].content if isinstance(p, ImagePart)]
         assert len(image_parts) == 2
-        assert {p.source.data for p in image_parts} == {"FIRST", "data:image/png;base64,SECOND"}
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert {image_data_url(p.source) for p in image_parts} == {
+            "data:image/png;base64,FIRST", "data:image/png;base64,SECOND",
+        }
+
+    async def test_same_image_dedups_across_source_shapes(self):
+        """The identical image can arrive as a url source (from a producer
+        that kept the data URI whole) or a base64 source (from
+        `image_dict_to_part`). Those carry different `source.data` strings,
+        so dedup must key on the normalised URL or the model sees it twice."""
+        from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
+
+        context = _make_context(
+            tool_state={"pending_tool_images": [
+                {"image_url": {"url": "data:image/png;base64,abc123"}},
+            ]},
+        )
+        mw = shape_retrieved_image_injection(context)
+
+        msg = UserMessage(content=[
+            TextPart(text="turn 1"),
+            ImagePart(source=ImageSource(
+                type="url", data="data:image/png;base64,abc123",
+            )),
+        ])
+        ctx = SimpleNamespace(messages=[msg])
+        await mw(ctx, _noop_next)
+
+        image_parts = [p for p in ctx.messages[0].content if isinstance(p, ImagePart)]
+        assert len(image_parts) == 1
 
     async def test_duplicate_image_source_not_appended_twice(self):
         """The SAME image (identical `source.data`) already present in the
@@ -638,8 +672,10 @@ class TestShapeRetrievedImageInjection:
 
         msg = UserMessage(content=[
             TextPart(text="turn 1"),
+            # Same image, already present — built the way image_dict_to_part
+            # builds it, so dedup must recognise it.
             ImagePart(source=ImageSource(
-                type="base64", media_type="image/png", data="data:image/png;base64,abc123",
+                type="base64", media_type="image/png", data="abc123",
             )),
         ])
         ctx = SimpleNamespace(messages=[msg])

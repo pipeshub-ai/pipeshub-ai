@@ -105,6 +105,19 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:
     url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
     if not url:
         return None
+    # A `data:` URI must become a real base64 source, not a `type="url"` one
+    # carrying the whole URI: Anthropic's image block takes `source.url` only
+    # for a fetchable http(s) URL and rejects a data URI there, so collapsing
+    # both cases into "url" made every collected image a 400 on that provider.
+    # The OpenAI-family formatters rebuild the same data URI via
+    # `image_data_url()`, so they are unaffected by the split.
+    if url.startswith("data:"):
+        header, _, payload = url[len("data:"):].partition(",")
+        if payload and ";base64" in header.lower():
+            media_type = header.split(";", 1)[0] or None
+            return ImagePart(
+                source=ImageSource(type="base64", media_type=media_type, data=payload)
+            )
     return ImagePart(source=ImageSource(type="url", data=url))
 
 
@@ -2822,6 +2835,7 @@ def _render_blocks_with_images(
     is_multimodal_llm: bool,
     image_budget: "ImageBudget | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
+    allow_inline_images: bool = True,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
@@ -2836,6 +2850,11 @@ def _render_blocks_with_images(
     multipart `content`, never buried inside a text-typed tool result
     string. Direct-embedding callers (attachments) leave `collected_images`
     `None` and keep the original inline behavior.
+
+    `allow_inline_images` is False for callers that can deliver neither way
+    (a tool result with no `collected_images` sink joins text only), so an
+    image that would be dropped downstream does not silently consume a slot
+    of the shared `image_budget`.
     """
     if image_budget is None:
         image_budget = ImageBudget(MAX_IMAGES_IN_CONVERSATION)
@@ -2866,7 +2885,8 @@ def _render_blocks_with_images(
                         img_uri = item.get("content", "")
                         item_ref = item.get("citation_ref", "")
                         if img_uri and is_base64_image(img_uri):
-                            if image_budget.can_add():
+                            deliverable = collected_images is not None or allow_inline_images
+                            if deliverable and image_budget.can_add():
                                 image_budget.try_consume(1)
                                 if collected_images is not None:
                                     collected_images.append({
@@ -2889,6 +2909,15 @@ def _render_blocks_with_images(
                                         "type": "image_url",
                                         "image_url": {"url": img_uri}
                                     })
+                            elif not deliverable:
+                                # No sink and no way to inline (a tool result
+                                # joins text only). Emit the anchor without
+                                # spending budget an undeliverable image would
+                                # otherwise take from a later one.
+                                content.append({
+                                    "type": "text",
+                                    "text": f"    [{item_ref}] (image)\n",
+                                })
                             else:
                                 content.append({
                                     "type": "text",
@@ -3752,6 +3781,7 @@ def build_message_content_array(
                     })
                     content.extend(_render_blocks_with_images(
                         child_results, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool,
                     ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
@@ -3794,6 +3824,7 @@ def build_message_content_array(
                     })
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
+                        allow_inline_images=not from_tool,
                     ))
             else:
                 continue

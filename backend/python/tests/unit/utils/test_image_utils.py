@@ -283,3 +283,21 @@ class TestConstants:
     def test_mime_to_extension_has_png(self) -> None:
         assert "image/png" in mime_to_extension
         assert mime_to_extension["image/png"] == "png"
+
+
+class TestNormalizeImageToBase64DataUri:
+    """Regression: the `data:` branch skipped the charset check the bare-base64
+    branch performs, so a non-base64 data URI came back as if it were image
+    bytes and was shipped to the embedding provider."""
+
+    def test_non_base64_data_uri_is_rejected(self) -> None:
+        assert normalize_image_to_base64("data:image/svg+xml,<svg></svg>") is None
+
+    def test_plain_text_data_uri_is_rejected(self) -> None:
+        assert normalize_image_to_base64("data:text/plain,hello") is None
+
+    def test_base64_data_uri_is_accepted_and_padded(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64,aW1hZ2U") == "aW1hZ2U="
+
+    def test_charset_is_enforced_inside_a_base64_data_uri(self) -> None:
+        assert normalize_image_to_base64("data:image/png;base64,<not base64>") is None

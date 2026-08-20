@@ -298,14 +298,13 @@ class OpenAITransport(LLMTransport):
     def _format_tool_result_part(part: Any) -> dict[str, Any]:
         # GPT-5+ tool-result content accepts the same `image_url` block
         # shape as user-message vision input.
-        if part.__class__.__name__ == "ImagePart":
-            source = part.source
-            if source.type == "url":
-                url = source.data
-            else:
-                url = f"data:{source.media_type or 'image/png'};base64,{source.data}"
-            return {"type": "image_url", "image_url": {"url": url}}
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        if getattr(part, "type", None) == "image" and getattr(part, "source", None):
+            return {"type": "image_url", "image_url": {"url": image_data_url(part.source)}}
         return {"type": "text", "text": getattr(part, "text", "") or getattr(part, "thinking", "")}
+
+    @staticmethod
     def _format_content_blocks(parts: list[Any]) -> list[dict[str, Any]]:
         """`list[Part]` into Chat Completions content blocks.
 

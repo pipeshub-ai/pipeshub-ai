@@ -1,5 +1,3 @@
-"""Tests for OpenAICompatMultimodalProvider (OpenAI-compatible / LM Studio)."""
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,112 +7,179 @@ from app.services.embeddings.multimodal.openai_compat_provider import (
 )
 
 
-class TestOpenAICompatMultimodalProviderInit:
-    def test_missing_base_url_raises(self) -> None:
-        with pytest.raises(ValueError, match="base_url"):
-            OpenAICompatMultimodalProvider(base_url=None, api_key="k", model_name="m")
+def _client(*responses):
+    """An httpx.AsyncClient stub whose post() yields `responses` in order."""
+    client = AsyncMock()
+    if len(responses) == 1:
+        client.post.return_value = responses[0]
+    else:
+        client.post.side_effect = list(responses)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    return client
 
-    def test_trailing_slash_stripped(self) -> None:
-        provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234/", api_key=None, model_name="m"
-        )
-        assert provider.base_url == "http://localhost:1234"
 
-    def test_default_provider_label(self) -> None:
-        provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234", api_key=None, model_name="m"
-        )
-        assert provider.provider_name == "openAICompatible"
+def _response(payload, *, raises=None):
+    resp = MagicMock()
+    resp.json.return_value = payload
+    if raises is not None:
+        resp.raise_for_status.side_effect = raises
+    return resp
 
-    def test_custom_provider_label_for_lm_studio(self) -> None:
+
+class TestOpenAICompatMultimodalProvider:
+    def test_requires_base_url(self) -> None:
+        with pytest.raises(ValueError):
+            OpenAICompatMultimodalProvider(
+                base_url=None, api_key="k", model_name="m",
+            )
+
+    def test_provider_name_is_the_label(self) -> None:
         provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234",
-            api_key=None,
-            model_name="m",
-            provider_label="lmStudio",
+            base_url="http://e/v1", api_key=None, model_name="m", provider_label="lmStudio",
         )
         assert provider.provider_name == "lmStudio"
 
-
-class TestOpenAICompatMultimodalProviderEmbedImages:
     @pytest.mark.asyncio
-    async def test_embed_images_success(self) -> None:
+    async def test_success_uses_standard_input_format(self) -> None:
+        """The standard OpenAI `input` schema is tried first (what routers such
+        as Requesty/LiteLLM expect), not vLLM's `messages` extension."""
         provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234", api_key="k", model_name="clip"
+            base_url="http://embedding.test/v1/",
+            api_key="test-key",
+            model_name="vertex/google/gemini-embedding-2-preview",
         )
+        client = _client(_response({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}))
 
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
-
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
-
+        with patch("httpx.AsyncClient", return_value=client):
             results = await provider.embed_images(["aW1hZ2U="])
 
-        assert len(results) == 1
-        assert results[0].embedding == [0.1, 0.2]
+        assert [r.embedding for r in results] == [[0.1, 0.2]]
+        client.post.assert_awaited_once()
+        call = client.post.await_args
+        assert call.args[0] == "http://embedding.test/v1/embeddings"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer test-key"
+        assert call.kwargs["json"]["input"] == ["data:image/jpeg;base64,aW1hZ2U="]
+        assert "messages" not in call.kwargs["json"]
 
     @pytest.mark.asyncio
-    async def test_invalid_images_are_filtered_and_reported(self) -> None:
+    async def test_existing_data_uri_is_passed_through_unchanged(self) -> None:
         provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234", api_key="k", model_name="clip"
+            base_url="http://embedding.test/v1", api_key=None, model_name="m",
+        )
+        client = _client(_response({"data": [{"index": 0, "embedding": [0.5]}]}))
+
+        with patch("httpx.AsyncClient", return_value=client):
+            await provider.embed_images(["data:image/png;base64,aW1hZ2U="])
+
+        assert client.post.await_args.kwargs["json"]["input"] == [
+            "data:image/png;base64,aW1hZ2U="
+        ]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_messages_when_input_format_rejected(self) -> None:
+        """A self-hosted vLLM multimodal embedding server rejects `input` and
+        only speaks the chat-`messages` extension."""
+        provider = OpenAICompatMultimodalProvider(
+            base_url="http://embedding.test/v1/",
+            api_key="test-key",
+            model_name="Qwen/Qwen3-VL-Embedding-2B",
+        )
+        client = _client(
+            _response({}, raises=RuntimeError("400 Bad Request")),
+            _response({"data": [{"index": 0, "embedding": [0.1, 0.2]}]}),
         )
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(["aW1hZ2U="])
 
-            results = await provider.embed_images(["not!valid@base64#"])
-
-        assert results[0].embedding is None
-        assert results[0].error == "invalid image data"
-        mock_client.post.assert_not_called()
+        assert [r.embedding for r in results] == [[0.1, 0.2]]
+        assert client.post.await_count == 2
+        first, second = client.post.await_args_list
+        assert first.kwargs["json"]["input"] == ["data:image/jpeg;base64,aW1hZ2U="]
+        assert "messages" not in first.kwargs["json"]
+        content = second.kwargs["json"]["messages"][0]["content"]
+        assert content[0]["image_url"]["url"] == "data:image/jpeg;base64,aW1hZ2U="
 
     @pytest.mark.asyncio
-    async def test_server_that_only_accepts_text_fails_gracefully(self) -> None:
-        """A server without multimodal support should degrade to a per-image
-        error, not raise, so the caller can fall back to VLM description."""
+    async def test_both_formats_failing_errors_every_index(self) -> None:
         logger = MagicMock()
         provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234", api_key=None, model_name="text-only", logger=logger
+            base_url="http://embedding.test/v1", api_key=None, model_name="m", logger=logger,
         )
+        client = _client(*[_response({}, raises=RuntimeError("boom"))] * 3)
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.side_effect = RuntimeError("400 Bad Request: image input not supported")
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(["aW1hZ2U=", "b3RoZXI="])
 
-            results = await provider.embed_images(["aW1hZ2U="])
-
-        assert results[0].embedding is None
+        assert [r.index for r in results] == [0, 1]
+        assert all(r.embedding is None and r.error for r in results)
         logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_no_api_key_omits_authorization_header(self) -> None:
+    async def test_out_of_order_response_maps_by_index(self) -> None:
+        """Regression: results were zipped to inputs by list position, so a
+        server answering out of order attached each embedding to the wrong
+        image. The response's own `index` decides."""
         provider = OpenAICompatMultimodalProvider(
-            base_url="http://localhost:1234", api_key=None, model_name="clip"
+            base_url="http://embedding.test/v1", api_key=None, model_name="m",
         )
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {"data": [{"embedding": [0.1]}]}
+        client = _client(_response({"data": [
+            {"index": 1, "embedding": [1.0]},
+            {"index": 0, "embedding": [0.0]},
+        ]}))
 
-        with patch("httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(["aW1hZ2Uw", "aW1hZ2Ux"])
 
-            await provider.embed_images(["aW1hZ2U="])
+        assert [(r.index, r.embedding) for r in results] == [(0, [0.0]), (1, [1.0])]
 
-        headers = mock_client.post.call_args.kwargs["headers"]
-        assert "Authorization" not in headers
+    @pytest.mark.asyncio
+    async def test_short_response_errors_the_missing_index(self) -> None:
+        """Two images in, one embedding back — the unanswered index still owes
+        the caller a result rather than vanishing."""
+        provider = OpenAICompatMultimodalProvider(
+            base_url="http://embedding.test/v1", api_key=None, model_name="m",
+        )
+        client = _client(_response({"data": [{"index": 0, "embedding": [0.1]}]}))
+
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(["aW1hZ2Uw", "aW1hZ2Ux"])
+
+        assert [r.index for r in results] == [0, 1]
+        assert results[0].embedding == [0.1]
+        assert results[1].embedding is None and results[1].error
+
+    @pytest.mark.asyncio
+    async def test_invalid_image_skips_the_request(self) -> None:
+        provider = OpenAICompatMultimodalProvider(
+            base_url="http://embedding.test/v1", api_key=None, model_name="m",
+        )
+        client = _client(_response({"data": []}))
+
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(["not valid base64!!"])
+
+        assert results[0].error == "invalid image data"
+        client.post.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_indices_are_offset_correctly_across_batches(self) -> None:
+        provider = OpenAICompatMultimodalProvider(
+            base_url="http://embedding.test/v1", api_key=None, model_name="m",
+        )
+        images = [f"aW1hZ2U{i}" for i in range(20)]
+
+        def one_per_input(*_args, **kwargs):
+            n = len(kwargs["json"]["input"])
+            return _response({"data": [{"index": i, "embedding": [float(i)]} for i in range(n)]})
+
+        client = AsyncMock()
+        client.post.side_effect = one_per_input
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=client):
+            results = await provider.embed_images(images)
+
+        assert sorted(r.index for r in results) == list(range(20))

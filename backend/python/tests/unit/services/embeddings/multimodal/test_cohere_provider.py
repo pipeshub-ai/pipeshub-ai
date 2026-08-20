@@ -7,22 +7,47 @@ import pytest
 from app.services.embeddings.multimodal.cohere_provider import (
     CohereMultimodalProvider,
     cohere_image_input_type,
+    supports_inputs_image_batch,
 )
 
 
 class TestCohereImageInputTypeHelper:
+    """Cohere documents `inputs` as accepting only search_query /
+    search_document / classification / clustering — `image` is excluded from
+    that set, so it is never the right value on this code path regardless of
+    model generation."""
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["embed-english-v3.0", "embed-multilingual-v3.0", "embed-v4.0", "embed-v4.5", None],
+    )
+    def test_input_type_is_always_search_document(self, model_name) -> None:
+        assert cohere_image_input_type(model_name) == "search_document"
+
     @pytest.mark.parametrize(
         ("model_name", "expected"),
         [
-            ("embed-english-v3.0", "image"),
-            ("embed-multilingual-v3.0", "image"),
-            ("embed-v4.0", "search_document"),
-            ("embed-v4.5", "search_document"),
-            (None, "image"),
+            ("embed-v4.0", True),
+            ("embed-4-preview", True),
+            ("embed-english-v3.0", False),
+            ("embed-multilingual-v3.0", False),
+            (None, False),
         ],
     )
-    def test_input_type_by_model_generation(self, model_name, expected) -> None:
-        assert cohere_image_input_type(model_name) == expected
+    def test_inputs_image_batch_support_by_generation(self, model_name, expected) -> None:
+        assert supports_inputs_image_batch(model_name) is expected
+
+    def test_pre_v4_model_warns_once_at_construction(self) -> None:
+        logger = MagicMock()
+        CohereMultimodalProvider(
+            api_key="k", model_name="embed-english-v3.0", logger=logger,
+        )
+        logger.warning.assert_called_once()
+
+    def test_v4_model_does_not_warn(self) -> None:
+        logger = MagicMock()
+        CohereMultimodalProvider(api_key="k", model_name="embed-v4.0", logger=logger)
+        logger.warning.assert_not_called()
 
 
 class TestCohereMultimodalProvider:
@@ -43,8 +68,9 @@ class TestCohereMultimodalProvider:
         assert results[0].error is None
 
     @pytest.mark.asyncio
-    async def test_embed_v3_uses_image_input_type(self) -> None:
-        """embed-v3.0 must use input_type='image' (texts field must be empty per Cohere docs)."""
+    async def test_pre_v4_model_still_sends_a_documented_input_type(self) -> None:
+        """`image` is not a legal input_type for the `inputs` parameter, so even
+        a v3 model must not be sent it."""
         provider = CohereMultimodalProvider(api_key="test-key", model_name="embed-english-v3.0")
 
         mock_response = MagicMock()
@@ -55,11 +81,11 @@ class TestCohereMultimodalProvider:
         with patch("cohere.ClientV2", return_value=mock_co):
             await provider.embed_images(["b64"])
 
-        assert mock_co.embed.call_args.kwargs["input_type"] == "image"
+        assert mock_co.embed.call_args.kwargs["input_type"] == "search_document"
 
     @pytest.mark.asyncio
     async def test_embed_v4_uses_search_document_input_type(self) -> None:
-        """embed-v4.0 deprecates input_type='image'; Cohere recommends 'search_document'."""
+        """Cohere recommends `search_document` for images on embed-v4.0."""
         provider = CohereMultimodalProvider(api_key="test-key", model_name="embed-v4.0")
 
         mock_response = MagicMock()

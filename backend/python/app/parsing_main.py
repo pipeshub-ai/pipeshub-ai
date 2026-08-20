@@ -15,16 +15,6 @@ from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
-from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
-from app.modules.parsers.markdown.mdx_parser import MDXParser
-from app.modules.parsers.blocks.blocks_parser import BlocksParser
-from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.epub.epub_parser import EPUBParser
-from app.modules.parsers.json.json_parser import JSONParser
-from app.modules.parsers.pptx.ppt_parser import PPTParser
-from app.modules.parsers.yaml.yaml_parser import YAMLParser
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -37,6 +27,7 @@ from app.containers.parsing import ParsingAppContainer, initialize_container
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser

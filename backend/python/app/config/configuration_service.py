@@ -21,6 +21,9 @@ from app.utils.encryption.encryption_service import EncryptionService
 
 _ = dotenv.load_dotenv()
 
+# Upper bound on how long close() waits for the watch thread to hand over the
+# Pub/Sub state lock before giving up and cancelling anyway.
+_PUBSUB_LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class ConfigurationService:
@@ -487,9 +490,18 @@ class ConfigurationService:
             # by the time we hold it, the watch thread has either registered
             # _pubsub_task (so we cancel it below) or has observed _stopping
             # and will exit without ever calling the store again.
-            await asyncio.get_running_loop().run_in_executor(
-                None, self._pubsub_state_lock.acquire
+            # Bounded: a watch thread stuck inside subscribe_cache_invalidation
+            # holds this lock indefinitely, and shutdown must not hang on it.
+            # Cancelling without the lock risks racing a subscribe that is
+            # about to start, which the _stopping recheck already covers.
+            acquired = await asyncio.get_running_loop().run_in_executor(
+                None, self._pubsub_state_lock.acquire, True, _PUBSUB_LOCK_TIMEOUT_SECONDS
             )
+            if not acquired:
+                self.logger.warning(
+                    "Timed out waiting for the Pub/Sub state lock during shutdown; "
+                    "cancelling the subscription task without it"
+                )
             try:
                 if self._pubsub_task is not None and self._pubsub_loop is not None:
                     try:
@@ -497,7 +509,8 @@ class ConfigurationService:
                     except RuntimeError:
                         pass
             finally:
-                self._pubsub_state_lock.release()
+                if acquired:
+                    self._pubsub_state_lock.release()
 
             # Wait for the watch thread to finish
             if hasattr(self, 'watch_thread') and self.watch_thread.is_alive():

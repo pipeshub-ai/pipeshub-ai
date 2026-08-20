@@ -6,51 +6,68 @@ client shape today).
 """
 
 import asyncio
-import inspect
 import json
-from typing import Any, Callable, List, Optional
+import logging
+from collections.abc import Callable
+from typing import Any
 
 from app.exceptions.indexing_exceptions import EmbeddingError
 from app.services.embeddings.multimodal.interface import (
-    IMultimodalEmbeddingProvider,
     ImageEmbeddingResult,
+    IMultimodalEmbeddingProvider,
 )
-from app.utils.image_utils import normalize_image_to_base64
 
 _CONCURRENCY_LIMIT = 10
 _DEFAULT_OUTPUT_EMBEDDING_LENGTH = 1024
+# Titan Multimodal rejects any other value; asking for one the collection
+# needs but Titan cannot produce is a config error worth naming up front
+# rather than discovering as a silent per-point dimension mismatch.
+_SUPPORTED_OUTPUT_EMBEDDING_LENGTHS = (256, 384, 1024)
 
 
 class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
     def __init__(
         self,
-        model_name: Optional[str],
-        region_name: Optional[str] = None,
-        aws_access_key_id: Optional[str] = None,
-        aws_secret_access_key: Optional[str] = None,
-        normalize_fn: Optional[Callable[[str], Any]] = None,
-        logger=None,
+        model_name: str | None,
+        region_name: str | None = None,
+        aws_access_key_id: str | None = None,
+        aws_secret_access_key: str | None = None,
+        embedding_size: int | None = None,
+        normalize_fn: Callable[[str], Any] | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self.model_name = model_name
         self.region_name = region_name
         self.aws_access_key_id = aws_access_key_id
         self.aws_secret_access_key = aws_secret_access_key
-        # Injectable so callers (e.g. VectorStore) can reuse an existing
-        # normalize implementation; defaults to the shared utility.
-        self._normalize_fn = normalize_fn or normalize_image_to_base64
+        # Consumed by IMultimodalEmbeddingProvider.normalize().
+        self._normalize_fn = normalize_fn
         self.logger = logger
+        self.output_embedding_length = self._resolve_output_length(embedding_size, logger)
+
+    @staticmethod
+    def _resolve_output_length(
+        embedding_size: int | None, logger: logging.Logger | None,
+    ) -> int:
+        if embedding_size is None:
+            return _DEFAULT_OUTPUT_EMBEDDING_LENGTH
+        if embedding_size in _SUPPORTED_OUTPUT_EMBEDDING_LENGTHS:
+            return embedding_size
+        if logger:
+            logger.warning(
+                "Collection dimension %s is not a Titan Multimodal output length %s; "
+                "requesting %s instead — image points will be dropped as "
+                "dimension mismatches until the collection or embedding model is changed.",
+                embedding_size, _SUPPORTED_OUTPUT_EMBEDDING_LENGTHS,
+                _DEFAULT_OUTPUT_EMBEDDING_LENGTH,
+            )
+        return _DEFAULT_OUTPUT_EMBEDDING_LENGTH
 
     @property
     def provider_name(self) -> str:
         return "bedrock"
 
-    async def _normalize(self, image_ref: str) -> Optional[str]:
-        result = self._normalize_fn(image_ref)
-        if inspect.isawaitable(result):
-            result = await result
-        return result
-
-    async def embed_images(self, image_base64s: List[str]) -> List[ImageEmbeddingResult]:
+    async def embed_images(self, image_base64s: list[str]) -> list[ImageEmbeddingResult]:
         import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
 
@@ -71,7 +88,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
         semaphore = asyncio.Semaphore(_CONCURRENCY_LIMIT)
 
         async def embed_single(i: int, image_ref: str) -> ImageEmbeddingResult:
-            normalized = await self._normalize(image_ref)
+            normalized = await self.normalize(image_ref)
             if not normalized:
                 return ImageEmbeddingResult(index=i, error="invalid image data")
             async with semaphore:
@@ -84,7 +101,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                             body=json.dumps({
                                 "inputImage": normalized,
                                 "embeddingConfig": {
-                                    "outputEmbeddingLength": _DEFAULT_OUTPUT_EMBEDDING_LENGTH
+                                    "outputEmbeddingLength": self.output_embedding_length
                                 },
                             }),
                             contentType="application/json",
@@ -92,7 +109,22 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
                         ),
                     )
                     body = json.loads(response["body"].read())
-                    return ImageEmbeddingResult(index=i, embedding=list(body["embedding"]))
+                    # Titan reports per-image generation failures in `message`
+                    # while still returning HTTP 200, so a missing/!=None
+                    # message is the only signal that `embedding` is real.
+                    failure = body.get("message")
+                    if failure:
+                        if self.logger:
+                            self.logger.warning(
+                                f"Bedrock embed failed for index {i}: {failure}"
+                            )
+                        return ImageEmbeddingResult(index=i, error=str(failure))
+                    embedding = body.get("embedding")
+                    if not embedding:
+                        return ImageEmbeddingResult(
+                            index=i, error="no embedding returned for this image"
+                        )
+                    return ImageEmbeddingResult(index=i, embedding=list(embedding))
                 except (NoCredentialsError, ClientError) as e:
                     if self.logger:
                         self.logger.warning(f"Bedrock embed failed for index {i}: {e}")
@@ -106,7 +138,7 @@ class BedrockMultimodalProvider(IMultimodalEmbeddingProvider):
             *[embed_single(i, ref) for i, ref in enumerate(image_base64s)],
             return_exceptions=True,
         )
-        results: List[ImageEmbeddingResult] = []
+        results: list[ImageEmbeddingResult] = []
         for i, r in enumerate(raw_results):
             if isinstance(r, ImageEmbeddingResult):
                 results.append(r)

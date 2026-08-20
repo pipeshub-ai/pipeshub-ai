@@ -635,7 +635,10 @@ class TestImageDictToPart:
 
         part = image_dict_to_part({"image_url": {"url": _MIN_PNG_DATA_URI}})
         assert isinstance(part, ImagePart)
-        assert part.source.data == _MIN_PNG_DATA_URI
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert part.source.type == "base64"
+        assert image_data_url(part.source) == _MIN_PNG_DATA_URI
 
     def test_missing_url_returns_none(self):
         assert image_dict_to_part({"image_url": {}}) is None
@@ -644,7 +647,10 @@ class TestImageDictToPart:
     def test_string_image_url_value_is_used_directly(self):
         part = image_dict_to_part({"image_url": _MIN_PNG_DATA_URI})
         assert part is not None
-        assert part.source.data == _MIN_PNG_DATA_URI
+        from app.agent_loop_lib.core.messages import image_data_url
+
+        assert part.source.type == "base64"
+        assert image_data_url(part.source) == _MIN_PNG_DATA_URI
 
 
 class TestBuildMessageContentArrayBranches:

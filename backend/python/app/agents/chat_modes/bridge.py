@@ -446,8 +446,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # ride the SAME `shape_image_injection` PRE_MODEL hook
                     # that already delivers user-attachment images, rather
                     # than a multipart `ToolMessage`. Extend (not overwrite):
-                    # `factory.create()` below may already have populated
-                    # this from the user's own attachments.
+                    # `factory.create()` already ran above and may have
+                    # populated this from the user's own attachments.
                     context.attachment_image_blocks = [
                         *context.attachment_image_blocks,
                         *prefetch_result.collected_images,

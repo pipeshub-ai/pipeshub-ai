@@ -237,9 +237,18 @@ class AnthropicTransport(LLMTransport):
             return {"type": "text", "text": part.text}
         if part.__class__.__name__ == "ImagePart":
             source = part.source
+            # The two source shapes are not interchangeable: a url source
+            # carries `url`, a base64 source carries `media_type` + `data`.
+            # Sending `data` under `type: "url"` is a 400.
+            if source.type == "url":
+                return {"type": "image", "source": {"type": "url", "url": source.data}}
             return {
                 "type": "image",
-                "source": {"type": source.type, "media_type": source.media_type, "data": source.data},
+                "source": {
+                    "type": "base64",
+                    "media_type": source.media_type or "image/png",
+                    "data": source.data,
+                },
             }
         return {"type": "text", "text": getattr(part, "thinking", "")}
 

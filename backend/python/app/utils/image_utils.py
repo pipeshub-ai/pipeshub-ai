@@ -1,7 +1,7 @@
 import asyncio
 import base64
-import re
 import os
+import re
 from urllib.parse import unquote, urlparse
 
 from app.utils.logger import create_logger
@@ -28,12 +28,15 @@ def normalize_image_to_base64(image_uri: str | None) -> str | None:
             comma_index = uri.find(",")
             if comma_index == -1:
                 return None
-            b64_part = uri[comma_index + 1:].strip()
-            missing = (-len(b64_part)) % 4
-            if missing:
-                b64_part += "=" * missing
-            return b64_part
-        candidate = uri.replace("\n", "").replace("\r", "").replace(" ", "")
+            # A data URI without `;base64` carries percent-encoded text, not
+            # base64 — `data:image/svg+xml,<svg…>` would otherwise be handed
+            # to an embedding provider as if it were image bytes.
+            if ";base64" not in uri[:comma_index].lower():
+                return None
+            candidate = uri[comma_index + 1:]
+        else:
+            candidate = uri
+        candidate = candidate.strip().replace("\n", "").replace("\r", "").replace(" ", "")
         if not _BASE64_CHARSET_RE.fullmatch(candidate):
             return None
         missing = (-len(candidate)) % 4
@@ -65,7 +68,7 @@ def get_mime_type_from_base64(b64: str) -> str | None:
 
     return None
 
-def get_extension_from_mimetype(mime_type) -> str | None:
+def get_extension_from_mimetype(mime_type: str | None) -> str | None:
     return mime_to_extension.get(mime_type)
 
 def get_image_info_from_url(url: str) -> tuple[str | None, str | None]:
