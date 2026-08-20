@@ -233,6 +233,11 @@ PipesHub provides developer SDKs for Python, TypeScript, and Go to help you inte
 ## 👥 Contributing
 
 Want to join our community of developers? Please check out our [Contributing Guide](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md) for more details on how to set up the development environment, our coding standards, and the contribution workflow.
+
+### Contributors
+
+- [Shardul Pande](https://github.com/shardul2512)
+
 <h3>Where to go for what</h3>
 
 <table>
