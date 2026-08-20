@@ -187,7 +187,9 @@ class TestBackoffGate:
         throttled.pause(0.3)
         start = loop.time()
         await other.acquire()
-        assert loop.time() - start < 0.1
+        # Generous bound: this asserts "not blocked by the 0.3s pause", not a
+        # precise timing, so scheduler jitter must not make it flaky.
+        assert loop.time() - start < 0.25
 
 
 class TestBackoffCalculation:

@@ -147,7 +147,16 @@ async def wait_for_search_visibility(
             if object_type == "page"
             else await helper.retrieve_data_source(external_id)
         )
-        min_last_edited = str(live.get("last_edited_time") or "")
+        # An empty threshold would make every comparison below trivially true,
+        # silently downgrading "wait for the edit to land" to "wait for
+        # visibility" — the exact staleness this flag exists to catch.
+        live_edited = live.get("last_edited_time")
+        if not live_edited:
+            raise AssertionError(
+                f"Notion returned no last_edited_time for {object_type} {external_id}; "
+                "cannot wait for the edit to be indexed"
+            )
+        min_last_edited = str(live_edited)
 
     async def visible() -> bool:
         for obj in await helper.search_objects(object_type):
@@ -215,9 +224,9 @@ async def wait_until(
     interval: int = 5,
 ) -> None:
     """Poll ``check`` until it returns True, or fail with ``description``."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     last_error: Optional[Exception] = None
-    while asyncio.get_event_loop().time() < deadline:
+    while asyncio.get_running_loop().time() < deadline:
         try:
             if await check():
                 return

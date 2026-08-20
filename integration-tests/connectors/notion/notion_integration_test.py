@@ -1012,11 +1012,30 @@ class TestNotionStreaming:
             pipeshub_client, graph_provider, connector_id, notion_seed.bulk_data_source_id
         )
         rows = blocks_of_type(container, BlockType.TABLE_ROW.value)
-        expected = len(notion_seed.bulk_row_ids)
-        # Header row (if emitted) makes this >=, never <.
-        assert len(rows) >= expected, (
-            f"streamed {len(rows)} TABLE_ROW blocks for {expected} database rows — "
-            "row pagination dropped some"
+        expected_ids = set(notion_seed.bulk_row_ids)
+        expected = len(expected_ids)
+        # Exactly the data rows, plus at most the optional header row. A bare >=
+        # would also pass when pagination re-fetched a page and duplicated rows,
+        # which is the failure this test exists to catch.
+        assert expected <= len(rows) <= expected + 1, (
+            f"streamed {len(rows)} TABLE_ROW blocks for {expected} database rows "
+            f"(expected {expected} or {expected + 1} with a header) — "
+            "row pagination dropped or duplicated some"
+        )
+
+        # The header row carries no source_id; only data rows map back to a seeded
+        # page. Comparing identities catches a page silently swapped for a
+        # duplicate of another, which the count alone cannot.
+        streamed_ids = {
+            row.get("source_id")
+            for row in rows
+            if not (row.get("table_row_metadata") or {}).get("is_header")
+            and row.get("source_id")
+        }
+        assert streamed_ids == expected_ids, (
+            f"streamed row ids do not match the seeded rows — "
+            f"missing {sorted(expected_ids - streamed_ids)}, "
+            f"unexpected {sorted(streamed_ids - expected_ids)}"
         )
         logger.info("TC-STREAM-005b passed: %d rows", len(rows))
 

@@ -30,8 +30,15 @@ class _RecordingTransport(ResilientHTTPTransport):
     def __init__(self, policy: ResiliencePolicy, outcomes: list) -> None:
         super().__init__(policy)
         self._outcomes = list(outcomes)
+        # Attempts beyond the scripted list repeat the last outcome; without
+        # seeding this, an extra attempt raises AttributeError instead.
+        self._outcomes_last = self._outcomes[-1] if self._outcomes else _response(200)
         self.attempts = 0
         self.closed: list[httpx.Response] = []
+        # Holds references, not ids: a script may hand back the same response on
+        # several attempts ([resp] * 3 repeats one object), and re-wrapping it
+        # would nest the trackers so one close recorded several entries.
+        self._wrapped: list[httpx.Response] = []
 
     async def _send(self, request: httpx.Request) -> httpx.Response:
         self.attempts += 1
@@ -39,6 +46,10 @@ class _RecordingTransport(ResilientHTTPTransport):
         self._outcomes_last = outcome
         if isinstance(outcome, Exception):
             raise outcome
+        if any(seen is outcome for seen in self._wrapped):
+            return outcome
+
+        self._wrapped.append(outcome)
         original_aclose = outcome.aclose
 
         async def tracking_aclose() -> None:
@@ -102,10 +113,19 @@ class TestRetryOnStatus:
     @pytest.mark.asyncio
     async def test_returns_last_response_when_retries_exhausted(self, transport_factory):
         policy = _policy(max_retries=2)
-        transport = transport_factory(policy, [_response(429)] * 3)
+        # Distinct objects, so the assertion can pin *which* responses were closed
+        # rather than only how many.
+        first, second, final = _response(429), _response(429), _response(429)
+        transport = transport_factory(policy, [first, second, final])
+
         response = await _run(transport)
+
+        assert response is final
         assert response.status_code == 429
         assert transport.attempts == 3  # max_retries + 1
+        # Every retried response is closed; the one handed back stays open so the
+        # caller can still read its body.
+        assert transport.closed == [first, second]
 
     @pytest.mark.asyncio
     async def test_closes_response_before_retrying(self, transport_factory):

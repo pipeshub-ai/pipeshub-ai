@@ -49,6 +49,39 @@ _NOTION_API_BASE = "https://api.notion.com/v1"
 _RETRY_STATUSES = frozenset({409, 429, 500, 502, 503, 504})
 
 
+# Matches the Notion connector's own ResiliencePolicy max_delay: an upstream
+# asking for far longer would otherwise park the whole IT run on one call.
+_MAX_BACKOFF_SECONDS = 60.0
+
+
+def _retry_after_seconds(data: Any) -> Optional[float]:
+    """Read Retry-After (seconds) off a response, capped, if it carries one."""
+    headers = getattr(data, "headers", None) or {}
+    raw = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return min(seconds, _MAX_BACKOFF_SECONDS) if seconds > 0 else None
+
+
+def _require_json_object(data: Any, context: str) -> dict[str, Any]:
+    """Parse a 2xx body, insisting it is a JSON object.
+
+    Callers all treat the result as a mapping; a valid-but-non-object body would
+    otherwise surface far away as an AttributeError on ``.get``.
+    """
+    try:
+        parsed = data.json()
+    except Exception as exc:
+        raise NotionSourceError(f"{context} returned a non-JSON body: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise NotionSourceError(
+            f"{context} returned JSON {type(parsed).__name__}, expected an object"
+        )
+    return parsed
+
+
 class NotionSourceError(RuntimeError):
     """Raised when a Notion API create/read operation fails."""
 
@@ -168,18 +201,29 @@ class NotionSourceHelper:
                 await self._pace()
                 resp = await method(*args, **kwargs)
 
-            if resp is None or not resp.success:
-                last_error = (resp.error if resp else "no response") or "no response"
+            # A non-2xx response comes back as success=False, so the status only
+            # ever lives on .data. Reading it here (rather than inside the success
+            # branch, where it is always 2xx) is what makes _RETRY_STATUSES and the
+            # Retry-After handling below reachable at all.
+            data = getattr(resp, "data", None)
+            status = getattr(data, "status", None)
+
+            if resp is None:
+                last_error = "no response"
+            elif resp.success and data is not None and status is not None and 200 <= status < 300:
+                return _require_json_object(data, context)
+            elif data is not None and status is not None:
+                last_error = f"HTTP {status}: {data.text()[:400]}"
             else:
-                status = resp.data.status
-                if 200 <= status < 300:
-                    return resp.data.json()
-                last_error = f"HTTP {status}: {resp.data.text()[:400]}"
-                if status not in _RETRY_STATUSES:
-                    break
+                last_error = (getattr(resp, "error", None) or "no response")
+
+            if status is not None and status not in _RETRY_STATUSES:
+                break
 
             if attempt < NOTION_MAX_RETRIES - 1:
-                backoff = min(2 ** attempt, 8)
+                # Notion's Retry-After is tens of seconds; a blind exponential
+                # curve capped at 8s just burns the retry budget before it lifts.
+                backoff = _retry_after_seconds(data) or min(2 ** attempt, 8)
                 logger.warning("%s failed (%s); retrying in %ss", context, last_error, backoff)
                 await asyncio.sleep(backoff)
 

@@ -42,7 +42,9 @@ _VOLATILE_KEYS = frozenset({
     "signed_url",
 })
 
-_BASE64_DATA_URI = re.compile(r"data:[^;\s)]+;base64,[A-Za-z0-9+/=\s]+")
+# No \s in the payload class: these URIs are single-line in the snapshots, and
+# allowing whitespace let the match run past the URI and swallow trailing prose.
+_BASE64_DATA_URI = re.compile(r"data:[^;\s)]+;base64,[A-Za-z0-9+/=]+")
 _NOTION_URL = re.compile(r"https://(?:www\.)?notion\.so/\S+")
 _UUID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE

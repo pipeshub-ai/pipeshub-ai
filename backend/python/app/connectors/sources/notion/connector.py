@@ -737,6 +737,11 @@ class NotionConnector(BaseConnector):
                 await self.notion_client.get_client().close()
             except Exception as e:
                 self.logger.warning(f"Failed to close Notion HTTP client: {e}")
+        # Drop the references even if the close failed: if a rebuild after this
+        # raises, _get_fresh_datasource must report "not initialized" rather than
+        # hand callers a client whose pool is already closed.
+        self.notion_client = None
+        self.data_source = None
 
     async def cleanup(self) -> None:
         """
@@ -2113,9 +2118,6 @@ class NotionConnector(BaseConnector):
         for result in results:
             # Handle case where gather returned an exception directly
             if isinstance(result, Exception):
-                if isinstance(result, UnconvertibleImageError):
-                    self.logger.warning(str(result))
-                    continue
                 raise result
 
             # Unpack the tuple

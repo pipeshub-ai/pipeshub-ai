@@ -54,7 +54,9 @@
         "captions": [],
         "footnotes": [],
         "has_header": true,
-        "num_of_cols": 2
+        "num_of_cells": 4,
+        "num_of_cols": 2,
+        "num_of_rows": 2
       },
       "type": "table"
     },
@@ -257,7 +259,7 @@
         ],
         "row": "{\"cells\": [\"Header A\", \"Header B\"]}",
         "row_natural_language_text": "Header A\u200b|\u200bHeader B",
-        "row_number": 0
+        "row_number": 1
       },
       "format": "json",
       "index": 11,
@@ -277,7 +279,7 @@
         ],
         "row": "{\"cells\": [\"Cell A1\", \"Cell B1\"]}",
         "row_natural_language_text": "Cell A1\u200b|\u200bCell B1",
-        "row_number": 0
+        "row_number": 2
       },
       "format": "json",
       "index": 12,

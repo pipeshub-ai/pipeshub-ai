@@ -140,9 +140,16 @@ class TestStoreConnector:
     @pytest.mark.asyncio
     async def test_store_in_container_attr(self, service):
         mock_provider = MagicMock()
+        # The provider is called to read the previous instance; return an
+        # AsyncMock so the cleanup path runs for real instead of raising a
+        # TypeError that the handler swallows.
+        mock_provider.return_value = AsyncMock()
         service.app_container.conn1_connector = mock_provider
         mock_conn = MagicMock()
-        await service._store_connector("conn1", mock_conn)
+
+        with patch.object(sync_task_manager, "is_running", return_value=False):
+            await service._store_connector("conn1", mock_conn)
+
         mock_provider.override.assert_called_once()
 
     @pytest.mark.asyncio

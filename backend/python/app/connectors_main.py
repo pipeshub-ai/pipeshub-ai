@@ -193,8 +193,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             )
             for connector_name, connector_id, connector in results:
                 if connector:
-                    # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
-                    app_container.connectors_map[connector_id] = connector
+                    # _init_app already published it under the lock; this loop only reports.
                     logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
             logger.info("✅ Sync services resumed for org %s", org_id)

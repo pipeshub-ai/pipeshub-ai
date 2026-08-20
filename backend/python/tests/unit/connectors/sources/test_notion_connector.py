@@ -825,7 +825,7 @@ class TestNotionConnectorCleanup:
         )
 
 
-class TestNotionSyncUsers:
+class TestNotionSyncUsersWorkspace:
     @pytest.mark.asyncio
     async def test_sync_users_person_and_bot(self):
         """Tests full user sync with person users, bot workspace extraction, and email retrieval."""
@@ -6468,8 +6468,13 @@ class TestNotionConnectorResilience:
         first = connector.resilience
         assert connector.resilience is first
 
-        first.pause(30)
-        assert connector.resilience._resume_at == first._resume_at
+        async def arm_and_reread() -> None:
+            first.pause(30)
+            armed = first._resume_at
+            assert armed > 0  # pause() is a no-op without a running loop
+            assert connector.resilience._resume_at == armed
+
+        asyncio.run(arm_and_reread())
 
     def test_connectors_hold_independent_policies(self):
         assert _make_connector().resilience is not _make_connector().resilience
