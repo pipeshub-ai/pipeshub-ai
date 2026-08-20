@@ -588,10 +588,12 @@ class EventProcessor:
             code_ext = extension
             if not code_ext or code_ext == "unknown":
                 file_path_raw = event_data.get("filePath") or ""
-                if "." in file_path_raw:
-                    code_ext = file_path_raw.rsplit(".", 1)[-1].lower()
-                elif "." in record_name:
-                    code_ext = record_name.rsplit(".", 1)[-1].lower()
+                fp_base = file_path_raw.rsplit("/", 1)[-1]
+                rn_base = record_name.rsplit("/", 1)[-1]
+                if "." in fp_base and fp_base.rsplit(".", 1)[-1]:
+                    code_ext = fp_base.rsplit(".", 1)[-1].lower()
+                elif "." in rn_base and rn_base.rsplit(".", 1)[-1]:
+                    code_ext = rn_base.rsplit(".", 1)[-1].lower()
 
             file_content = event_data.get("buffer")
 
