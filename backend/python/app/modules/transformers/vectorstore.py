@@ -233,12 +233,6 @@ def _build_code_documents(
             "orgId": org_id,
             "isBlockGroup": False,
         }
-        if len(text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
-            documents.extend(
-                Document(page_content=chunk, metadata={**metadata, "isBlock": False})
-                for chunk in _chunk_oversized_text(text, "en")
-            )
-            continue
         documents.append(
             Document(page_content=text, metadata={**metadata, "isBlock": True})
         )
