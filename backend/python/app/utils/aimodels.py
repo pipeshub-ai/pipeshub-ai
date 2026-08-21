@@ -2928,7 +2928,7 @@ def get_output_limit_kwargs(config: dict, limit: int = 4096) -> dict[str, int]:
     """
     provider = config.get("provider", "").lower() if config else ""
     
-    if provider in ["openai", "azure_openai", "mistral", "anthropic"]:
+    if provider in ["openai", "azureopenai", "azureai", "mistral", "anthropic", "bedrock"]:
         return {"max_tokens": limit}
     elif provider == "ollama":
         return {"num_predict": limit}

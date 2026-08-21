@@ -50,3 +50,19 @@ def test_calculate_exact_image_union_area_clipping():
     # Should clip to 50x50 to 100x100 -> area 2500
     area = calculate_exact_image_union_area(images, page_width, page_height)
     assert area == 2500.0
+
+def test_calculate_exact_image_union_area_negative_origins():
+    """Test that deriving x1 from a negative x0 does not overstate coverage."""
+    page_width = 100.0
+    page_height = 100.0
+    
+    # Image starts at x0=-50, width=100.
+    # Raw derivation: x1 = -50 + 100 = 50.
+    # Then clipped to page bounds [0, 100]: x0=0, x1=50.
+    # Visible width is 50. Area = 50*100 = 5000.
+    images = [
+        {"x0": -50.0, "top": 0.0, "width": 100.0, "height": 100.0}
+    ]
+    
+    area = calculate_exact_image_union_area(images, page_width, page_height)
+    assert area == 5000.0

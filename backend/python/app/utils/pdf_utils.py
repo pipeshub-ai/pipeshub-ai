@@ -40,15 +40,18 @@ def calculate_exact_image_union_area(images: list[dict], page_width: float, page
     """
     rects = []
     for img in images:
-        x0 = max(0.0, float(img.get("x0", 0) or 0))
-        y0 = max(0.0, float(img.get("top", 0) or 0))
+        raw_x0 = float(img.get("x0", 0) or 0)
+        raw_y0 = float(img.get("top", 0) or 0)
         
         # Fallbacks if x1/bottom are missing
         w = float(img.get("width", 0) or 0)
         h = float(img.get("height", 0) or 0)
-        x1_raw = float(img.get("x1", x0 + w) if img.get("x1") is not None else (x0 + w))
-        y1_raw = float(img.get("bottom", y0 + h) if img.get("bottom") is not None else (y0 + h))
+        x1_raw = float(img.get("x1", raw_x0 + w) if img.get("x1") is not None else (raw_x0 + w))
+        y1_raw = float(img.get("bottom", raw_y0 + h) if img.get("bottom") is not None else (raw_y0 + h))
         
+        # Clip AFTER derivations
+        x0 = max(0.0, raw_x0)
+        y0 = max(0.0, raw_y0)
         x1 = min(float(page_width), x1_raw)
         y1 = min(float(page_height), y1_raw)
         
