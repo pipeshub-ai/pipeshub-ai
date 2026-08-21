@@ -26,9 +26,9 @@ class MockPage:
     ([{"x0": 10.0, "top": 0.0, "x1": 501.0, "bottom": 1000.0}], False),
     # 51% coverage (above 50%). Should need OCR.
     ([{"x0": 0.0, "top": 0.0, "x1": 510.0, "bottom": 1000.0}], True),
-    # Overlapping 500x500 images on 1000x1000 page. Area is 43.75%. Should NOT need OCR.
-    ([{"x0": 0.0, "top": 0.0, "x1": 500.0, "bottom": 500.0},
-      {"x0": 250.0, "top": 250.0, "x1": 750.0, "bottom": 750.0}], False),
+    # Overlapping images whose sum is 60% but exact union is 45%. Should NOT need OCR.
+    ([{"x0": 0.0, "top": 0.0, "x1": 600.0, "bottom": 500.0},
+      {"x0": 300.0, "top": 0.0, "x1": 900.0, "bottom": 500.0}], False),
     # Negative origin: derived x1 is 500, clipped width is 500. Area 50%. Should NOT need OCR.
     ([{"x0": -500.0, "top": 0.0, "width": 1000.0, "height": 1000.0}], False),
     # Clipping outside page: 500x500 outside page bounds mapped to inside. Area 25%.

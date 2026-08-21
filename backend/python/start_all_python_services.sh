@@ -1,8 +1,29 @@
 #!/bin/bash
 echo "Starting all Python backend services..."
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
 # Activate virtual environment
-source venv/bin/activate
+source venv/bin/activate || { echo "Failed to activate venv"; exit 1; }
+
+# Function to cleanly shut down all background processes
+cleanup() {
+    echo "Shutting down all python services..."
+    # Suppress output if PIDs don't exist
+    [ -n "$PID_EMBED" ] && kill -TERM $PID_EMBED 2>/dev/null
+    [ -n "$PID_CONN" ] && kill -TERM $PID_CONN 2>/dev/null
+    [ -n "$PID_INDEX" ] && kill -TERM $PID_INDEX 2>/dev/null
+    [ -n "$PID_QUERY" ] && kill -TERM $PID_QUERY 2>/dev/null
+    [ -n "$PID_DOC" ] && kill -TERM $PID_DOC 2>/dev/null
+    
+    wait $PID_EMBED $PID_CONN $PID_INDEX $PID_QUERY $PID_DOC 2>/dev/null
+    echo "All services stopped."
+    exit 0
+}
+
+# Trap Ctrl+C (SIGINT) and termination (SIGTERM) to call cleanup
+trap cleanup SIGINT SIGTERM
 
 # Start all services in the background
 python -m app.embedding_main &
@@ -25,18 +46,14 @@ python -m app.docling_main &
 PID_DOC=$!
 echo "Started docling service (PID: $PID_DOC)"
 
-# Function to cleanly shut down all background processes when you press Ctrl+C
-cleanup() {
-    echo "Shutting down all python services..."
-    kill -TERM $PID_EMBED $PID_CONN $PID_INDEX $PID_QUERY $PID_DOC
-    wait $PID_EMBED $PID_CONN $PID_INDEX $PID_QUERY $PID_DOC 2>/dev/null
-    echo "All services stopped."
-    exit 0
-}
-
-# Trap Ctrl+C (SIGINT) to call cleanup
-trap cleanup SIGINT SIGTERM
-
 echo "All services are running! Press Ctrl+C to stop them all."
-# Wait forever so the script doesn't exit until interrupted
-wait
+
+# Wait for any child process to exit. If one fails, terminate everything.
+while wait -n; do
+    status=$?
+    if [ $status -ne 0 ]; then
+        echo "A service failed with status $status. Triggering cleanup..."
+        cleanup
+        exit $status
+    fi
+done
