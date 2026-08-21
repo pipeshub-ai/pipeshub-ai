@@ -4588,11 +4588,15 @@ class TestOnRecordsMovedReindex:
 
         assert new_record.indexing_status == ProgressStatus.COMPLETED.value
 
-    async def test_completed_record_content_change_resets_to_queued(self) -> None:
-        """Move of a COMPLETED record whose content changed resets status to QUEUED.
+    async def test_completed_record_content_change_resets_to_not_started_then_marks_queued(
+        self,
+    ) -> None:
+        """Content-changed move stores NOT_STARTED, then promotes via publish.
 
-        The new content has not been indexed yet, so the status is set to QUEUED
-        inside the main transaction so the indexing pipeline picks it up.
+        Writing QUEUED inside the transaction would strand the record (and leave
+        queuedAt unset, so orphan recovery would never rescue it) if the
+        updateRecord publish failed. Match on_new_records / on_record_content_update:
+        persist NOT_STARTED, publish, then _mark_queued_after_publish.
         """
         tx_store = _make_tx_store()
         old_record = _make_old_record(
@@ -4606,9 +4610,35 @@ class TestOnRecordsMovedReindex:
         )
         proc = _setup_proc_for_moved(tx_store, old_record=old_record)
 
-        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+        with patch.object(
+            proc, "_mark_queued_after_publish", new_callable=AsyncMock
+        ) as mock_mark:
+            await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
 
-        assert new_record.indexing_status == ProgressStatus.QUEUED.value
+        assert new_record.indexing_status == ProgressStatus.NOT_STARTED.value
+        mock_mark.assert_awaited_once_with([new_record.id])
+
+    async def test_content_change_marks_queued_only_for_acked_publishes(self) -> None:
+        """Failed updateRecord publishes must not be promoted to QUEUED."""
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(
+            record_id="rec-done",
+            external_revision_id="sha-before",
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[False])
+
+        with patch.object(
+            proc, "_mark_queued_after_publish", new_callable=AsyncMock
+        ) as mock_mark:
+            await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        mock_mark.assert_awaited_once_with([])
 
     async def test_non_completed_record_indexing_status_not_overridden(self) -> None:
         """When the old record is NOT COMPLETED, the indexing_status block is skipped.

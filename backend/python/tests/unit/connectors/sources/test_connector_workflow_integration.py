@@ -546,6 +546,13 @@ class MockDataStoreProvider:
                 swapped.append(rid)
         return swapped
 
+    async def batch_update_nodes(self, nodes, collection):
+        for node in nodes:
+            doc = self._store.get_node(collection, node.get("id") or node.get("_key"))
+            if doc is not None:
+                doc.update({k: v for k, v in node.items() if k not in ("id", "_key")})
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
