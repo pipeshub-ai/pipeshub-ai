@@ -128,6 +128,42 @@ class TestGetMultimodalLLM:
 
 class TestCallLLMForMarkdown:
     @pytest.mark.asyncio
+    async def test_measurement_asterisks_are_preserved_as_multiplication(self):
+        logger = logging.getLogger("test")
+        strategy = VLMOCRStrategy(logger, MagicMock())
+
+        mock_response = MagicMock()
+        mock_response.content = "| Dimensions | 30mm*30mm*33mm (w/o lens) |"
+        strategy.llm = AsyncMock()
+        strategy.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
+
+        assert result == "| Dimensions | 30mm×30mm×33mm (w/o lens) |"
+
+    @pytest.mark.asyncio
+    async def test_openai_compatible_ocr_is_bounded_and_non_thinking(self):
+        logger = logging.getLogger("test")
+        strategy = VLMOCRStrategy(logger, MagicMock())
+        strategy.llm_config = {"provider": "openAICompatible"}
+
+        mock_response = MagicMock()
+        mock_response.content = "# Header"
+        strategy.llm = AsyncMock()
+        strategy.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
+
+        _, kwargs = strategy.llm.ainvoke.await_args
+        assert kwargs == {
+            "max_tokens": 4096,
+            "temperature": 0,
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        }
+
+    @pytest.mark.asyncio
     async def test_generic_code_block_stripped(self):
         logger = logging.getLogger("test")
         config = MagicMock()

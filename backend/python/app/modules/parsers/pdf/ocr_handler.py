@@ -36,6 +36,8 @@ class OCRStrategy(ABC):
             LOW_DENSITY_THRESHOLD = 0.01
             MIN_TEXT_LENGTH = 100
             MIN_SIGNIFICANT_IMAGES = 2
+            DOMINANT_IMAGE_AREA_RATIO = 0.5
+            MAX_TEXT_WITH_DOMINANT_IMAGE = 250
 
             significant_images = sum(
                 1 for img in images
@@ -44,6 +46,15 @@ class OCRStrategy(ABC):
 
             has_minimal_text = len(text) < MIN_TEXT_LENGTH
             has_significant_images = significant_images > MIN_SIGNIFICANT_IMAGES
+            has_dominant_image = (
+                any(
+                    ((img.get("width") or 0) * (img.get("height") or 0)) / page_area
+                    >= DOMINANT_IMAGE_AREA_RATIO
+                    for img in images
+                )
+                if page_area > 0
+                else False
+            )
             text_density = (
                 sum((w["x1"] - w["x0"]) * (w["bottom"] - w["top"]) for w in words) / page_area
                 if words and page_area > 0
@@ -51,7 +62,14 @@ class OCRStrategy(ABC):
             )
             low_density = text_density < LOW_DENSITY_THRESHOLD
 
-            return (has_minimal_text and has_significant_images) or low_density
+            return (
+                (has_minimal_text and has_significant_images)
+                or low_density
+                or (
+                    has_dominant_image
+                    and len(text) < MAX_TEXT_WITH_DOMINANT_IMAGE
+                )
+            )
 
         except Exception as e:
             logger.warning(f"❌ Error in needs_ocr function: {str(e)}")
@@ -123,4 +141,3 @@ class OCRHandler:
         except Exception as e:
             self.logger.error(f"❌ Error processing document: {str(e)}")
             raise
-
