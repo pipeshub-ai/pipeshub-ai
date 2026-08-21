@@ -2654,8 +2654,8 @@ class TestTransformAccessClassSpacePermission:
     async def test_group_name_cache_refreshes_after_invalidation(self):
         """Stale cache from a prior sync must not block group resolution on re-sync."""
         c = _conn()
-        c._group_name_to_external_id = {}
         self._mock_groups(c, [self._group("confluence-users", "grp-licensed-uuid")])
+        c._group_name_to_external_id = {}
 
         stale = await c._transform_space_permission(
             self._access_class_perm("ALL_LICENSED_USERS")
@@ -4101,6 +4101,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_not_found_with_pseudo_group(self):
         c = _c()
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
         c._create_pseudo_group = AsyncMock(return_value=MagicMock(source_user_group_id="u1"))
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ, create_pseudo_group_if_missing=True)
         assert perm is not None

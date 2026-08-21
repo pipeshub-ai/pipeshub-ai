@@ -456,7 +456,7 @@ class TestProcessBoxEntry:
         existing.version = 2
         existing.source_updated_at = 1000
         connector = _make_connector()
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.data_source = MagicMock()
         connector.data_source.collaborations_get_file_collaborations = AsyncMock(
             return_value=_make_box_response(success=True, data={"entries": []})

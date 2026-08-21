@@ -2536,10 +2536,12 @@ class TestRunIncrementalSync:
 # ===========================================================================
 class TestCreateConnector:
     @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
-    async def test_create_connector_with_config(self, mock_app, logger, provider, cfg):
-        processor = MagicMock()
-        processor.org_id = "org-1"
+    async def test_create_connector_with_config(self, mock_app, mock_proc_cls, logger, provider, cfg):
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_proc_cls.return_value = mock_proc
         result = await AzureFilesConnector.create_connector(
             logger=logger,
             data_store_provider=provider,
@@ -2547,16 +2549,18 @@ class TestCreateConnector:
             connector_id="new-1",
             scope="personal",
             created_by="test-user-id",
-            data_entities_processor=processor,
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
 
     @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
-    async def test_create_connector_no_config(self, mock_app, logger, provider, cfg):
+    async def test_create_connector_no_config(self, mock_app, mock_proc_cls, logger, provider, cfg):
         cfg.get_config = AsyncMock(return_value=None)
-        processor = MagicMock()
-        processor.org_id = "org-1"
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_proc_cls.return_value = mock_proc
         result = await AzureFilesConnector.create_connector(
             logger=logger,
             data_store_provider=provider,
@@ -2564,16 +2568,18 @@ class TestCreateConnector:
             connector_id="new-2",
             scope="personal",
             created_by="test-user-id",
-            data_entities_processor=processor,
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
 
     @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.AzureFilesDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.azure_files.connector.AzureFilesApp")
-    async def test_create_connector_no_connection_string(self, mock_app, logger, provider, cfg):
+    async def test_create_connector_no_connection_string(self, mock_app, mock_proc_cls, logger, provider, cfg):
         cfg.get_config = AsyncMock(return_value={"auth": {}})
-        processor = MagicMock()
-        processor.org_id = "org-1"
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_proc_cls.return_value = mock_proc
         result = await AzureFilesConnector.create_connector(
             logger=logger,
             data_store_provider=provider,
@@ -2581,6 +2587,6 @@ class TestCreateConnector:
             connector_id="new-3",
             scope="personal",
             created_by="test-user-id",
-            data_entities_processor=processor,
+            data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)

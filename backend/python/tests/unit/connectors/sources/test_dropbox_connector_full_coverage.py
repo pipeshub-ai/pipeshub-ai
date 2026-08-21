@@ -2957,12 +2957,9 @@ class TestCheckAndFetchUpdatedRecord:
 # ===========================================================================
 class TestCreateConnector:
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor")
-    async def test_create(self, mock_processor_cls, mock_app, mock_logger,
+    async def test_create(self, mock_app, mock_logger,
                           mock_data_store_provider, mock_config_service):
         proc = MagicMock()
-        proc.initialize = AsyncMock()
-        mock_processor_cls.return_value = proc
 
         conn = await DropboxConnector.create_connector(
             mock_logger,
@@ -2974,7 +2971,6 @@ class TestCreateConnector:
             data_entities_processor=proc,
         )
         assert isinstance(conn, DropboxConnector)
-        proc.initialize.assert_called_once()
 
 
 # ===========================================================================

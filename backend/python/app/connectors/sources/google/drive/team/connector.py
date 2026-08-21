@@ -1506,7 +1506,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             and is_folder
             and file_id not in self._folder_seed_ids
             and await has_entered_scope(
-                self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
+                self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
             )
         ):
             self.logger.info(
@@ -1533,7 +1533,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         user's changes feed reports it first performs the delete and the rest no-op.
         """
         exited_scope, existing_record = await has_exited_scope(
-            self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
+            self.data_entities_processor, self.connector_id, file_id, tracked_folder_ids
         )
         if not exited_scope:
             self.logger.debug(

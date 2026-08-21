@@ -23,7 +23,9 @@ from typing import (
 from googleapiclient.errors import HttpError
 
 from app.config.constants.arangodb import MimeTypes
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_FOLDER_EXPANSION_GET_FIELDS,
     DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
@@ -151,17 +153,16 @@ def pass_folder_filter(metadata: dict, tracked_folder_ids: Optional[set]) -> boo
 
 
 async def _record_and_parent_in_scope(
-    data_store_provider: DataStoreProvider,
+    data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
     file_id: str,
     tracked_folder_ids: set,
 ) -> Tuple[Optional[Record], bool]:
     """Load the persisted record for `file_id` and say whether its parent is in scope."""
-    async with data_store_provider.transaction() as tx_store:
-        existing_record = await tx_store.get_record_by_external_id(
-            connector_id=connector_id,
-            external_id=file_id,
-        )
+    existing_record = await data_entities_processor.get_record_by_external_id(
+        connector_id=connector_id,
+        external_record_id=file_id,
+    )
 
     if existing_record is None:
         return None, False
@@ -173,7 +174,7 @@ async def _record_and_parent_in_scope(
 
 
 async def has_entered_scope(
-    data_store_provider: DataStoreProvider,
+    data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
     file_id: str,
     tracked_folder_ids: set,
@@ -189,7 +190,7 @@ async def has_entered_scope(
     invoke this otherwise.
     """
     existing_record, parent_in_scope = await _record_and_parent_in_scope(
-        data_store_provider, connector_id, file_id, tracked_folder_ids
+        data_entities_processor, connector_id, file_id, tracked_folder_ids
     )
 
     if existing_record is None:
@@ -199,7 +200,7 @@ async def has_entered_scope(
 
 
 async def has_exited_scope(
-    data_store_provider: DataStoreProvider,
+    data_entities_processor: DataSourceEntitiesProcessor,
     connector_id: str,
     file_id: str,
     tracked_folder_ids: set,
@@ -214,7 +215,7 @@ async def has_exited_scope(
     invoke this otherwise.
     """
     existing_record, parent_in_scope = await _record_and_parent_in_scope(
-        data_store_provider, connector_id, file_id, tracked_folder_ids
+        data_entities_processor, connector_id, file_id, tracked_folder_ids
     )
 
     if existing_record is None:

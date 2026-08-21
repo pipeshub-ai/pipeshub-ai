@@ -795,7 +795,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             and is_folder
             and file_id not in self._folder_seed_ids
             and await has_entered_scope(
-                self.data_store_provider,
+                self.data_entities_processor,
                 self.connector_id,
                 file_id,
                 self._tracked_folder_ids,
@@ -822,7 +822,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         scope. A folder takes its whole subtree with it.
         """
         exited_scope, existing_record = await has_exited_scope(
-            self.data_store_provider,
+            self.data_entities_processor,
             self.connector_id,
             file_id,
             self._tracked_folder_ids,
