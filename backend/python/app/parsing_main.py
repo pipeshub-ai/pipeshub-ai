@@ -23,6 +23,7 @@ import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
 from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
+import app.config.ai_models.providers  # noqa: F401
 from app.containers.parsing import ParsingAppContainer, initialize_container
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
