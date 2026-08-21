@@ -60,16 +60,18 @@ def mock_deps():
 
 @pytest.fixture()
 def connector(mock_deps):
-    with patch("app.connectors.sources.notion.connector.NotionApp"):
-        c = NotionConnector(
-            logger=mock_deps["logger"],
-            data_entities_processor=mock_deps["data_entities_processor"],
-            data_store_provider=mock_deps["data_store_provider"],
-            config_service=mock_deps["config_service"],
-            connector_id="notion-comp-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
+    # Real NotionApp, not a mock: the connector stamps ``self.connector_name``
+    # (which comes from the app) onto every record it builds, and a MagicMock
+    # there fails enum validation instead of producing a record.
+    c = NotionConnector(
+        logger=mock_deps["logger"],
+        data_entities_processor=mock_deps["data_entities_processor"],
+        data_store_provider=mock_deps["data_store_provider"],
+        config_service=mock_deps["config_service"],
+        connector_id="notion-comp-1",
+        scope="personal",
+        created_by="test-user-id",
+    )
     c.workspace_id = "ws-1"
     return c
 
