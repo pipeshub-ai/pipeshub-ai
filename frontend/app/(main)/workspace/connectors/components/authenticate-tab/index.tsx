@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useContext, useEffect, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import { Flex, Text, Select, Box, Separator, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SchemaFormField } from '../schema-form-field';
@@ -459,7 +460,7 @@ export function AuthenticateTab() {
               {personalConnectorType && (
                 <>
                   {'\n\n'}
-                  <a
+                  <Link
                     href={personalConnectorHref(personalConnectorType)}
                     style={{
                       color: 'var(--accent-11)',
@@ -468,7 +469,7 @@ export function AuthenticateTab() {
                     }}
                   >
                     {t('workspace.connectors.authTab.personalConnectorLink', { name: personalConnectorType })}
-                  </a>
+                  </Link>
                 </>
               )}
             </Text>

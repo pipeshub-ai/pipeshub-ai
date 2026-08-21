@@ -45,6 +45,12 @@ CONNECTOR_NOTION_PERSONAL_INFO = (
     .in_group("Notion")\
     .with_description("Sync pages and databases from your own Notion account")\
     .with_categories(["Knowledge Management", "Collaboration"])\
+    .with_resilience_config(
+        rate_limit=3,        # Notion allows ~3 requests/second average per integration
+        max_retries=3,       # 4 attempts total
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_scopes([ConnectorScope.PERSONAL.value])\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(

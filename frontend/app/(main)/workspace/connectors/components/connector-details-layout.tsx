@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useState } from 'react';
+import Link from 'next/link';
 import { useTranslation } from 'react-i18next';
 import { Flex, Heading, Text, Button, Box } from '@radix-ui/themes';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
@@ -282,7 +283,7 @@ export function ConnectorDetailsLayout({
               {personalConnectorType && (
                 <>
                   {'\n\n'}
-                  <a
+                  <Link
                     href={personalConnectorHref(personalConnectorType)}
                     style={{
                       color: 'var(--accent-11)',
@@ -291,7 +292,7 @@ export function ConnectorDetailsLayout({
                     }}
                   >
                     {t('workspace.connectors.personalConnectorLink', { name: personalConnectorType })}
-                  </a>
+                  </Link>
                 </>
               )}
             </Text>

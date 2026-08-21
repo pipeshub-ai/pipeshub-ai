@@ -298,11 +298,15 @@ class NotionClient(IClient):
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-                as written by ``_get_oauth_config_path`` (e.g. "notionpersonal").
-                that registers its own app must look under its own key.
+            connector_instance_id: Connector instance whose config to read
             resilience: Shared rate limit / retry policy owned by the connector
+            connector_type: Normalized connector type owning the shared OAuth app,
+                as written by ``_get_oauth_config_path`` (e.g. "notionpersonal").
+                Shared OAuth configs are stored per connector type, so a variant
+                that registers its own app must look under its own key.
         Returns:
             NotionClient instance
+        """
         try:
             # Get Notion configuration from the configuration service
             config = await cls._get_connector_config(logger, config_service, connector_instance_id)

@@ -297,7 +297,7 @@ class NotionConnector(BaseConnector):
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
-                resilience=self.resilience
+                resilience=self.resilience,
                 connector_type=self._oauth_config_type(),
             )
 

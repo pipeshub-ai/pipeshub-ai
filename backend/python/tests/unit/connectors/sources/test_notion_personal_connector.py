@@ -72,10 +72,12 @@ class TestNotionPersonalIdentity:
             reason="factory pulls in every connector's optional dependencies",
         )
 
-        registry = factory.ConnectorFactory.CONNECTOR_CLASS_MAP
-        assert registry["notionpersonal"] is NotionPersonalConnector
+        from app.connectors.sources.notion.connector import NotionConnector
+
+        get = factory.ConnectorFactory.get_connector_class
+        assert get("notionpersonal") is NotionPersonalConnector
         # The team connector must still resolve to the team class.
-        assert registry["notion"] is not NotionPersonalConnector
+        assert get("notion") is NotionConnector
 
     def test_resolves_its_own_shared_oauth_app_key(self):
         """Shared OAuth apps are stored per connector type. Looking under the team
@@ -107,6 +109,16 @@ class TestNotionPersonalIdentity:
         ):
             assert await connector.init() is True
         assert build.await_args.kwargs["connector_type"] == "notionpersonal"
+
+    def test_declares_its_own_rate_limit(self):
+        """_connector_metadata is per-class, so the team connector's resilience
+        config is NOT inherited — without its own, this connector would hit
+        Notion's ~3 req/s limit with no limiter and no retry."""
+        from app.connectors.sources.notion.connector import NotionConnector
+
+        personal = NotionPersonalConnector._connector_metadata["resilienceConfig"]
+        assert personal.get("rate_limit") == 3
+        assert personal == NotionConnector._connector_metadata["resilienceConfig"]
 
     def test_declares_personal_scope_and_its_own_info(self):
         metadata = NotionPersonalConnector._connector_metadata
