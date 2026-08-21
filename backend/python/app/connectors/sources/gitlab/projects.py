@@ -608,35 +608,34 @@ class ProjectsSync:
         c = self.c
         try:
             if principal_type == EntityType.USER.value:
-                async with c.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_source_id(
-                        source_user_id=principal_id,
-                        connector_id=c.connector_id,
+                user = await c.data_entities_processor.get_user_by_source_id(
+                    source_user_id=principal_id,
+                    connector_id=c.connector_id,
+                )
+                if user:
+                    return Permission(
+                        email=user.email,
+                        type=permission_type,
+                        entity_type=EntityType.USER,
                     )
-                    if user:
+                if create_pseudo_group_if_missing:
+                    pseudo_group = await c.data_entities_processor.get_user_group_by_external_id(
+                        connector_id=c.connector_id,
+                        external_id=principal_id,
+                    )
+                    if not pseudo_group:
+                        pseudo_group = await self._create_pseudo_group(principal_id)
+                    if pseudo_group:
+                        self.logger.debug(
+                            "Using pseudo-group for user %s (no email available)", principal_id
+                        )
                         return Permission(
-                            email=user.email,
+                            external_id=pseudo_group.source_user_group_id,
                             type=permission_type,
-                            entity_type=EntityType.USER,
+                            entity_type=EntityType.GROUP,
                         )
-                    if create_pseudo_group_if_missing:
-                        pseudo_group = await tx_store.get_user_group_by_external_id(
-                            connector_id=c.connector_id,
-                            external_id=principal_id,
-                        )
-                        if not pseudo_group:
-                            pseudo_group = await self._create_pseudo_group(principal_id)
-                        if pseudo_group:
-                            self.logger.debug(
-                                "Using pseudo-group for user %s (no email available)", principal_id
-                            )
-                            return Permission(
-                                external_id=pseudo_group.source_user_group_id,
-                                type=permission_type,
-                                entity_type=EntityType.GROUP,
-                            )
-                    self.logger.debug("User %s not found in DB, skipping permission", principal_id)
-                    return None
+                self.logger.debug("User %s not found in DB, skipping permission", principal_id)
+                return None
         except Exception as e:
             self.logger.error("Failed to create permission from principal: %s", e)
             return None

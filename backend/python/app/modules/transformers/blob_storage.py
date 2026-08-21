@@ -354,6 +354,7 @@ class BlobStorage(Transformer):
         payload = {
             "orgId": org_id,
             "scopes": [TokenScopes.STORAGE_TOKEN.value],
+            "exp": int(time.time()) + 3600,
         }
         # use_cache: these three reads are otherwise an etcd round trip each, on
         # every record download (~100 per chat turn). The config cache is
@@ -763,7 +764,7 @@ class BlobStorage(Transformer):
             )
 
         if document_id and self.graph_provider:
-            await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
+            await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
 
         ctx.record = record
         return ctx
@@ -874,7 +875,7 @@ class BlobStorage(Transformer):
         """Helper method to upload to signed URL with retry logic"""
         try:
             async with session.put(
-                signed_url,
+                URL(signed_url, encoded=True),
                 json=data,
                 skip_auto_headers={'Content-Type'}
             ) as response:
@@ -907,7 +908,7 @@ class BlobStorage(Transformer):
         """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
         try:
             async with session.put(
-                signed_url,
+                URL(signed_url, encoded=True),
                 data=content,
                 skip_auto_headers={"Content-Type"},
             ) as response:
@@ -1416,10 +1417,11 @@ class BlobStorage(Transformer):
             )
             raise e
 
-    async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
+    async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
         Stores the mapping between virtual_record_id and document_id in graph database.
         Args:
+            org_id: The organization ID
             virtual_record_id: The virtual record ID
             document_id: The document ID
             file_size_bytes: Optional file size in bytes
@@ -1435,6 +1437,7 @@ class BlobStorage(Transformer):
 
             mapping_document = {
                 "id": mapping_key,
+                "orgId": org_id,
                 "documentId": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }

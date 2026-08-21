@@ -107,30 +107,30 @@ class TestApplyPolicyToChatState:
 class TestResolveCustomInstructions:
     """`_resolve_custom_instructions` -- the workspace "Custom Instructions"
     settings page (`customSystemPrompt`/`customSystemPromptWebSearch`/
-    `customSystemPromptAgent` on `AIModelsConfig`), mode-resolved so each
+    `customSystemPromptAgent` on `SystemPromptsConfig`), mode-resolved so each
     of the three `/chat/stream` modes picks its own configured prompt."""
 
     def test_internal_search_reads_custom_system_prompt_key(self) -> None:
-        ai_models_config = {"customSystemPrompt": "Always answer in French."}
-        result = _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY)
+        system_prompts_config = {"customSystemPrompt": "Always answer in French."}
+        result = _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY)
         assert result == "Always answer in French."
 
     def test_web_search_reads_custom_system_prompt_web_search_key(self) -> None:
-        ai_models_config = {"customSystemPromptWebSearch": "Always cite sources."}
-        result = _resolve_custom_instructions(ai_models_config, WEB_SEARCH_POLICY)
+        system_prompts_config = {"customSystemPromptWebSearch": "Always cite sources."}
+        result = _resolve_custom_instructions(system_prompts_config, WEB_SEARCH_POLICY)
         assert result == "Always cite sources."
 
     def test_agent_reads_custom_system_prompt_agent_key(self) -> None:
-        ai_models_config = {"customSystemPromptAgent": "Prefer internal knowledge first."}
-        result = _resolve_custom_instructions(ai_models_config, AGENT_POLICY)
+        system_prompts_config = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+        result = _resolve_custom_instructions(system_prompts_config, AGENT_POLICY)
         assert result == "Prefer internal knowledge first."
 
     def test_modes_do_not_cross_read_each_others_key(self) -> None:
         """Setting only the web-search prompt must not leak into internal_search
         or agent mode -- each mode's admin-configured prompt is independent."""
-        ai_models_config = {"customSystemPromptWebSearch": "Web-only instructions."}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) is None
-        assert _resolve_custom_instructions(ai_models_config, AGENT_POLICY) is None
+        system_prompts_config = {"customSystemPromptWebSearch": "Web-only instructions."}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
+        assert _resolve_custom_instructions(system_prompts_config, AGENT_POLICY) is None
 
     def test_missing_config_returns_none(self) -> None:
         assert _resolve_custom_instructions({}, INTERNAL_SEARCH_POLICY) is None
@@ -139,12 +139,12 @@ class TestResolveCustomInstructions:
         """An org that saved then cleared the field must omit the prompt
         builder section entirely, not render an empty '## Custom
         Instructions' header."""
-        ai_models_config = {"customSystemPrompt": "   "}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) is None
+        system_prompts_config = {"customSystemPrompt": "   "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
 
     def test_result_is_stripped(self) -> None:
-        ai_models_config = {"customSystemPrompt": "  Be concise.  "}
-        assert _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY) == "Be concise."
+        system_prompts_config = {"customSystemPrompt": "  Be concise.  "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) == "Be concise."
 
 
 class TestResolveWebSearchConfig:
@@ -308,7 +308,7 @@ class TestRunChatStream:
             return {"answer": agent_output}
 
         kwargs = self._base_kwargs(policy=AGENT_POLICY)
-        kwargs["ai_models_config"] = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+        kwargs["system_prompts_config"] = {"customSystemPromptAgent": "Prefer internal knowledge first."}
 
         sql_patch, slack_patch = _patch_connectors()
         with (

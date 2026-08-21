@@ -258,7 +258,7 @@ class GitLabConnector(BaseConnector):
         )
 
         # Helper modules — instantiated once, hold a reference back to self
-        self.runtime = RuntimeHelper(self)
+        self.runtime = self._create_runtime()
         self.scope = ScopeHelper(self)
         self.users = UsersSync(self)
         self.projects = ProjectsSync(self)
@@ -269,6 +269,10 @@ class GitLabConnector(BaseConnector):
         self.attachments = AttachmentsHelper(self)
         self.filters = FiltersHelper(self)
         self.streaming = StreamingHelper(self)
+
+    def _create_runtime(self) -> RuntimeHelper:
+        """EE override point: return EE RuntimeHelper for org-scoped token refresh."""
+        return RuntimeHelper(self)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -487,13 +491,11 @@ class GitLabConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """Factory method to create and return an initialized GitLabConnector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-        return GitLabConnector(
+        return cls(
             logger, data_entities_processor, data_store_provider,
             config_service, connector_id, scope, created_by,
         )

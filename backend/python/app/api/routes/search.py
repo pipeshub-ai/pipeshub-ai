@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
+from app.edition_config import resolve_llm_for_search
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -66,14 +67,7 @@ async def search(
     try:
         container = request.app.container
         logger = container.logger()
-        llm = retrieval_service.llm
-        if llm is None:
-            llm = await retrieval_service.get_llm_instance()
-            if llm is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to initialize LLM service. LLM configuration is missing.",
-                )
+        llm = await resolve_llm_for_search(request, retrieval_service)
 
         # Extract KB IDs from filters if present
         updated_filters = body.filters

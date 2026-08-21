@@ -89,7 +89,6 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -262,12 +261,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 self.logger.error("Dropbox oauthConfigId not found in auth configuration.")
                 return False
 
-            # Fetch OAuth config
-            oauth_config = await fetch_oauth_config_by_id(
+            oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
                 connector_type=Connectors.GOOGLE_DRIVE.value,
-                config_service=self.config_service,
-                logger=self.logger
+                auth_config=auth_config,
             )
 
             if not oauth_config:
@@ -407,13 +404,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             org_id = self.data_entities_processor.org_id
 
-            # Get existing record from the database
-            # !!! IMPORTANT: Do not use tx_store directly here. Use the data_entities_processor instead.
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=file_id
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, file_id
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -742,11 +735,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
-                async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record_update.external_record_id
-                    )
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
+                )
                 if existing_record is None:
                     self.logger.debug(
                         f"Received delete for untracked external id {record_update.external_record_id}; nothing to delete"
@@ -1871,17 +1862,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
         **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
-        return GoogleDriveIndividualConnector(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,

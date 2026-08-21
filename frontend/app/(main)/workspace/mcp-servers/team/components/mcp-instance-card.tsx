@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 
@@ -55,6 +56,7 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
               {t('workspace.mcpServers.custom')}
             </Badge>
           )}
+          <McpInheritedBadge instance={instance} />
           <StatusBadge instance={instance} />
         </Flex>
       </Flex>
@@ -88,7 +90,9 @@ export function McpInstanceCard({ instance, onEdit, onDelete }: McpInstanceCardP
 
       <Flex align="center" gap="2" style={{ width: '100%' }}>
         <ActionButton icon="settings" label={t('workspace.mcpServers.cta.manage')} onClick={onEdit} />
-        <ActionButton icon="delete" label={t('workspace.mcpServers.cta.delete')} danger onClick={onDelete} />
+        {!isMcpInstanceReadOnly(instance) && (
+          <ActionButton icon="delete" label={t('workspace.mcpServers.cta.delete')} danger onClick={onDelete} />
+        )}
       </Flex>
     </Flex>
   );

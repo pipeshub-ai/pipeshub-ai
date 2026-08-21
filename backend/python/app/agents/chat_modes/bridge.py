@@ -197,7 +197,7 @@ def _apply_policy_to_chat_state(
 
 
 async def _build_no_tools_messages(
-    *, query: str, ai_models_config: dict[str, Any], context_text: str, user_data: str,
+    *, query: str, system_prompts_config: dict[str, Any], context_text: str, user_data: str,
     is_multimodal_llm: bool, ref_mapper: CitationRefMapper,
 ) -> list[dict[str, Any]]:
     """Minimal message set for the Ollama/no-tool-calls degradation path --
@@ -215,7 +215,7 @@ async def _build_no_tools_messages(
     # `_run_no_tools_degradation`), but resolve through the same shared
     # helper as the tool-calling path so the org-prompt lookup has one
     # source of truth.
-    custom_prompt = _resolve_custom_instructions(ai_models_config, INTERNAL_SEARCH_POLICY)
+    custom_prompt = _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY)
     if custom_prompt:
         system_prompt += f"\n\n{custom_prompt}"
     content, ref_mapper = get_message_content(
@@ -232,7 +232,7 @@ async def _build_no_tools_messages(
 async def _run_no_tools_degradation(
     *, query_info: dict[str, Any], user_info: dict[str, Any], llm: "BaseChatModel",
     policy: ChatModePolicy, log: logging.Logger, retrieval_service: Any, graph_provider: Any,
-    config_service: Any, ai_models_config: dict[str, Any], is_multimodal_llm: bool,
+    config_service: Any, system_prompts_config: dict[str, Any], is_multimodal_llm: bool,
     context_length: int,
 ) -> AsyncGenerator[str, None]:
     """`supports_tool_calls=False` (Ollama) path. `internal_search` degrades
@@ -266,7 +266,7 @@ async def _run_no_tools_degradation(
     context_text = prefetch.formatted_context if prefetch else ""
 
     messages = await _build_no_tools_messages(
-        query=query_info.get("query", ""), ai_models_config=ai_models_config, context_text=context_text,
+        query=query_info.get("query", ""), system_prompts_config=system_prompts_config, context_text=context_text,
         user_data="", is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,
     )
 
@@ -302,7 +302,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     model_key: str | None = None,
     is_multimodal_llm: bool = False,
     context_length: int = 128000,
-    ai_models_config: dict[str, Any] | None = None,
+    system_prompts_config: dict[str, Any] | None = None,
     supports_tool_calls: bool = True,
     protocol: str = "legacy",
     client_name: str | None = None,
@@ -315,13 +315,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     from app.modules.transformers.blob_storage import BlobStorage
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
-    ai_models_config = ai_models_config or {}
+    system_prompts_config = system_prompts_config or {}
 
     if not supports_tool_calls:
         async for event in _run_no_tools_degradation(
             query_info=query_info, user_info=user_info, llm=llm, policy=policy, log=log,
             retrieval_service=retrieval_service, graph_provider=graph_provider,
-            config_service=config_service, ai_models_config=ai_models_config,
+            config_service=config_service, system_prompts_config=system_prompts_config,
             is_multimodal_llm=is_multimodal_llm, context_length=context_length,
         ):
             yield event
@@ -361,7 +361,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         _apply_policy_to_chat_state(chat_state, policy, web_search_config)
         chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
-        chat_state["custom_instructions"] = _resolve_custom_instructions(ai_models_config, policy)
+        chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
 
         # For chat modes with knowledge enabled, pre-fetch user-visible connectors

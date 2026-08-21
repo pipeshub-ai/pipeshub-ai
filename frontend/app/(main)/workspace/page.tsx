@@ -10,7 +10,7 @@ export default function WorkspacePage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/workspace/general');
+    router.replace('/workspace/general/');
   }, [router]);
 
   return null;

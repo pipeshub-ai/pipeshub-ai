@@ -140,7 +140,9 @@ export const createPlaceholderDocument = async (
     if (error.response?.status === HTTP_STATUS.PERMANENT_REDIRECT) {
       const redirectUrl = error.response.headers.location;
       const documentId = error.response.headers['x-document-id'];
-      const documentName = error.response.headers['x-document-name'];
+      const documentName = decodeURIComponent(
+        error.response.headers['x-document-name'],
+      );
 
       if (process.env.NODE_ENV == 'development') {
         logger.info('Placeholder created, upload required', {

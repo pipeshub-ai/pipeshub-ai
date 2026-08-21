@@ -481,6 +481,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         logger.info(
             "Jira DC Personal connector factory: create_connector(connector_id=%s, scope=%s, created_by=%s)",
@@ -488,11 +490,9 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
             scope,
             created_by,
         )
-        dep = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
-        await dep.initialize()
         return cls(
             logger,
-            dep,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

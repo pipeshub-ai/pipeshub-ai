@@ -18,7 +18,8 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.containers.indexing import IndexingAppContainer, initialize_container
+from app.containers.indexing import initialize_container
+from app.edition_containers import IndexingAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     ConsumerType,

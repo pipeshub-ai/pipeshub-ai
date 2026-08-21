@@ -3,7 +3,6 @@ from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
@@ -217,6 +216,7 @@ class SalesforceClient(IClient):
 
             refresh_token = credentials_config.get("refresh_token")
 
+            from app.edition_config import get_oauth_credentials_for_toolset
             oauth_config = await get_oauth_credentials_for_toolset(
                 toolset_config=toolset_config,
                 config_service=config_service,

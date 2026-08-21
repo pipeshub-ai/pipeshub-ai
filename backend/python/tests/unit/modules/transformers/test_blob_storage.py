@@ -313,7 +313,7 @@ class TestBlobStorageApply:
 
         bs.save_record_to_storage.assert_awaited_once()
         bs.store_virtual_record_mapping.assert_awaited_once_with(
-            "vr-1", "doc-id-123", 4096
+            "org-1", "vr-1", "doc-id-123", 4096
         )
         assert result.record == record
 
@@ -385,7 +385,7 @@ class TestBlobStorageApply:
         bs.upload_next_version.assert_awaited_once()
         bs.save_record_to_storage.assert_awaited_once()
         bs.store_virtual_record_mapping.assert_awaited_once_with(
-            "vr-1", "new-doc", 2048
+            "org-1", "vr-1", "new-doc", 2048
         )
 
 
@@ -856,12 +856,13 @@ class TestStoreVirtualRecordMapping:
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        result = await bs.store_virtual_record_mapping("vr-1", "doc-1", 4096)
+        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", 4096)
         assert result is True
         # Verify the mapping document shape
         call_args = graph_provider.batch_upsert_nodes.call_args
         mapping_doc = call_args[0][0][0]
         assert mapping_doc["id"] == "vr-1"
+        assert mapping_doc["orgId"] == "org-1"
         assert mapping_doc["documentId"] == "doc-1"
         assert mapping_doc["fileSizeBytes"] == 4096
 
@@ -871,7 +872,7 @@ class TestStoreVirtualRecordMapping:
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        result = await bs.store_virtual_record_mapping("vr-1", "doc-1")
+        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
         assert result is True
         call_args = graph_provider.batch_upsert_nodes.call_args
         mapping_doc = call_args[0][0][0]
@@ -884,7 +885,7 @@ class TestStoreVirtualRecordMapping:
         bs = _make_blob_storage(graph_provider=graph_provider)
 
         with pytest.raises(Exception, match="Failed to store virtual record mapping"):
-            await bs.store_virtual_record_mapping("vr-1", "doc-1")
+            await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
 
     @pytest.mark.asyncio
     async def test_graph_provider_exception_propagates(self):
@@ -893,7 +894,7 @@ class TestStoreVirtualRecordMapping:
         bs = _make_blob_storage(graph_provider=graph_provider)
 
         with pytest.raises(RuntimeError, match="db error"):
-            await bs.store_virtual_record_mapping("vr-1", "doc-1")
+            await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1")
 
 
 # ===================================================================
@@ -1794,7 +1795,7 @@ class TestStoreVirtualRecordMappingDeep:
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         bs = _make_blob_storage(graph_provider=graph_provider)
 
-        result = await bs.store_virtual_record_mapping("vr-1", "doc-1", None)
+        result = await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", None)
         assert result is True
         call_args = graph_provider.batch_upsert_nodes.call_args
         mapping_doc = call_args[0][0][0]

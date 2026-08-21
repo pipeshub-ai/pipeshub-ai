@@ -223,11 +223,11 @@ class GraphTransactionStore(TransactionStore):
         # Delete the record node from the records collection
         return await self.graph_provider.delete_nodes([key], CollectionNames.RECORDS.value, transaction=self.txn)
 
-    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str) -> None:
-        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id)
+    async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str | None = None) -> None:
+        return await self.graph_provider.delete_record_by_external_id(connector_id, external_id, user_id, transaction=self.txn)
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
-        return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id)
+        return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)

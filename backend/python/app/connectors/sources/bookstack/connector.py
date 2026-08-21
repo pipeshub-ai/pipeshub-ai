@@ -654,12 +654,13 @@ class BookStackConnector(BaseConnector):
                     continue
 
                 # Delete edges to groups for the user
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_email(user_email)
-                    if not user:
-                        self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
-                        continue
-                    await tx_store.delete_edges_between_collections(user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value)
+                user = await self.data_entities_processor.get_user_by_email(user_email)
+                if not user:
+                    self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
+                    continue
+                await self.data_entities_processor.delete_edges_between_collections(
+                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value
+                )
 
                 if not roles:
                     self.logger.info(f"User {name} (ID: {user_id}) has no roles assigned.")
@@ -697,21 +698,17 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Processing deletion for user: {name} (ID: {user_id})")
 
             try:
-                # Fetch user by user_id using tx_store
-                async with self.data_store_provider.transaction() as tx_store:
-                    # Look up the user by their external ID (source_user_id)
-                    user = await tx_store.get_user_by_user_id(
-                        user_id=str(user_id)
+                # Look up the user by their external ID (source_user_id)
+                user = await self.data_entities_processor.get_user_by_user_id(str(user_id))
+
+                if not user:
+                    self.logger.warning(
+                        f"User with BookStack ID {user_id} ({name}) not found in database. "
+                        "May have been already deleted or never synced."
                     )
+                    continue
 
-                    if not user:
-                        self.logger.warning(
-                            f"User with BookStack ID {user_id} ({name}) not found in database. "
-                            "May have been already deleted or never synced."
-                        )
-                        continue
-
-                    user_email = user.get("email")
+                user_email = user.email
 
                 # If user is found, call the data processor to handle removal
                 if user_email:
@@ -1720,12 +1717,9 @@ class BookStackConnector(BaseConnector):
                 return None
 
             # Check for existing record
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=f"page/{page_id}"
-                )
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, f"page/{page_id}"
+            )
 
             # Detect changes
             is_new = existing_record is None
@@ -2429,6 +2423,8 @@ class BookStackConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> "BaseConnector":
         """
         Factory method to create a BookStack connector instance.
@@ -2441,11 +2437,6 @@ class BookStackConnector(BaseConnector):
         Returns:
             Initialized BookStackConnector instance
         """
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger, data_store_provider, config_service
-        )
-        await data_entities_processor.initialize()
-
         return BookStackConnector(
             logger,
             data_entities_processor,

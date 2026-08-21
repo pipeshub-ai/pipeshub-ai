@@ -4,7 +4,7 @@ import { Suspense } from 'react';
 import { Box, Text } from '@radix-ui/themes';
 import { useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { AgentBuilder } from '@/app/(main)/agents/agent-builder/agent-builder';
+import { AgentBuilder } from '@/config';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 
 /**

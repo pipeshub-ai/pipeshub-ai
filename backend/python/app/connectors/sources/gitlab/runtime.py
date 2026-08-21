@@ -139,6 +139,10 @@ class RuntimeHelper:
         except Exception as e:
             self.logger.warning("Could not refresh GitLab token: %s", e)
 
+    def _get_refresh_kwargs(self, c: "GitLabConnector") -> dict:
+        """EE override: add org_id= to the refresh_now call for scoped etcd key paths."""
+        return {}
+
     async def force_refresh_oauth_token(self) -> bool:
         """Trigger an OAuth refresh via the central ``TokenRefreshService`` and sync
         the SDK with the rotated access token.
@@ -177,7 +181,9 @@ class RuntimeHelper:
             connector_type = (
                 c.connector_name.value if hasattr(c.connector_name, "value") else str(c.connector_name)
             )
-            await refresh_service.refresh_now(c.connector_id, connector_type, refresh_token)
+            await refresh_service.refresh_now(
+                c.connector_id, connector_type, refresh_token, **self._get_refresh_kwargs(c)
+            )
             # Sync the SDK with the new token from etcd
             await self.refresh_token_if_needed()
             return True

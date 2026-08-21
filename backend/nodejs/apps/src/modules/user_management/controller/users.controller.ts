@@ -69,7 +69,7 @@ import {
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 
-const MAX_BULK_INVITE = 1000;
+export const MAX_BULK_INVITE = 1000;
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).

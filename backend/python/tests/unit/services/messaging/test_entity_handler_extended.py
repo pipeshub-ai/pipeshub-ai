@@ -177,7 +177,7 @@ class TestGetOrCreateKnowledgeBase:
         # Let's test when KB app creation returns None
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -331,7 +331,7 @@ class TestGetOrCreateKbAppForOrg:
             ]
         )
 
-        result = await svc._EntityEventService__get_or_create_kb_app_for_org(
+        result = await svc._get_or_create_kb_app_for_org(
             "org-1", "u1"
         )
         assert result is not None
@@ -364,7 +364,7 @@ class TestGetOrCreateKbAppForOrg:
                     mock_factory.create_and_start_sync = AsyncMock(
                         return_value=mock_connector
                     )
-                    result = await svc._EntityEventService__get_or_create_kb_app_for_org(
+                    result = await svc._get_or_create_kb_app_for_org(
                         "org-1", "u1"
                     )
                     assert result is not None
@@ -377,7 +377,7 @@ class TestGetOrCreateKbAppForOrg:
             side_effect=Exception("DB error")
         )
 
-        result = await svc._EntityEventService__get_or_create_kb_app_for_org(
+        result = await svc._get_or_create_kb_app_for_org(
             "org-1", "u1"
         )
         assert result is None
@@ -400,14 +400,14 @@ class TestCreateUserKbAppRelation:
         # Mock __get_or_create_kb_app_for_org to return a KB app
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             return_value={"_key": "kb-app-1", "type": "KB"},
         ):
             svc.graph_provider.get_edges_from_node = AsyncMock(return_value=[])
             svc.graph_provider.batch_create_edges = AsyncMock()
 
-            result = await svc._EntityEventService__create_user_kb_app_relation(
+            result = await svc._create_user_kb_app_relation(
                 "user-key-1", "org-1"
             )
             assert result is True
@@ -420,7 +420,7 @@ class TestCreateUserKbAppRelation:
 
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             return_value={"_key": "kb-app-1", "type": "KB"},
         ):
@@ -429,7 +429,7 @@ class TestCreateUserKbAppRelation:
             )
             svc.graph_provider.batch_create_edges = AsyncMock()
 
-            result = await svc._EntityEventService__create_user_kb_app_relation(
+            result = await svc._create_user_kb_app_relation(
                 "user-key-1", "org-1"
             )
             assert result is True
@@ -442,11 +442,11 @@ class TestCreateUserKbAppRelation:
 
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             return_value=None,
         ):
-            result = await svc._EntityEventService__create_user_kb_app_relation(
+            result = await svc._create_user_kb_app_relation(
                 "user-key-1", "org-1"
             )
             assert result is False
@@ -458,11 +458,11 @@ class TestCreateUserKbAppRelation:
 
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             side_effect=Exception("DB error"),
         ):
-            result = await svc._EntityEventService__create_user_kb_app_relation(
+            result = await svc._create_user_kb_app_relation(
                 "user-key-1", "org-1"
             )
             assert result is False
@@ -474,7 +474,7 @@ class TestCreateUserKbAppRelation:
 
         with patch.object(
             svc,
-            "_EntityEventService__get_or_create_kb_app_for_org",
+            "_get_or_create_kb_app_for_org",
             new_callable=AsyncMock,
             return_value={"_key": "kb-app-1", "type": "KB"},
         ):
@@ -483,7 +483,7 @@ class TestCreateUserKbAppRelation:
             )
             svc.graph_provider.batch_create_edges = AsyncMock()
 
-            result = await svc._EntityEventService__create_user_kb_app_relation(
+            result = await svc._create_user_kb_app_relation(
                 "user-key-1", "org-1"
             )
             assert result is True

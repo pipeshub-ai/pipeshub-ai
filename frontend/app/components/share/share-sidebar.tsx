@@ -17,14 +17,15 @@ const USERS_PAGE_LIMIT = 25;
 const SCROLL_THRESHOLD_PX = 40;
 import { ShareSearchInput } from './share-search-input';
 import { ShareableRow } from './shareable-row';
-import type {
-  ShareAdapter,
-  SharedMember,
-  ShareTeam,
-  ShareUser,
-  ShareSelection,
-  ShareRole,
-  ShareSubmission,
+import {
+  SHARE_ROLE_LABELS,
+  type ShareAdapter,
+  type SharedMember,
+  type ShareTeam,
+  type ShareUser,
+  type ShareSelection,
+  type ShareRole,
+  type ShareSubmission,
 } from './types';
 import { LottieLoader } from '../ui/lottie-loader';
 import { toast } from '@/lib/store/toast-store';
@@ -35,6 +36,8 @@ interface ShareSidebarProps {
   adapter: ShareAdapter;
   /** Called after a successful share/unshare so the parent can re-fetch */
   onShareSuccess?: () => void;
+  /** Optional content rendered above the members list (e.g. org-wide toggle). */
+  headerContent?: React.ReactNode;
 }
 
 export function ShareSidebar({
@@ -42,6 +45,7 @@ export function ShareSidebar({
   onOpenChange,
   adapter,
   onShareSuccess,
+  headerContent,
 }: ShareSidebarProps) {
   const currentUser = useAuthStore((s) => s.user);
 
@@ -518,6 +522,8 @@ export function ShareSidebar({
                 backdropFilter: 'blur(8px)',
               }}
             >
+              {headerContent}
+
               {isLoading ? (
                 <Flex align="center" justify="center" style={{ padding: '40px 0' }}>
                   <LottieLoader variant="loader" size={32} showLabel />
@@ -638,11 +644,10 @@ export function ShareSidebar({
                           isCurrentUser={member.isCurrentUser}
                           isOwner={member.isOwner}
                           role={member.role}
-                          // Allow changing permissions for all users except yourself. Backend enforces creator protection.
                           showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
-                              ? { title: 'Full Access', description: 'Chats do not have roles' }
+                              ? { title: SHARE_ROLE_LABELS[member.role]?.label ?? 'Can view', description: SHARE_ROLE_LABELS[member.role]?.description ?? '' }
                               : undefined
                           }
                           onRoleChange={

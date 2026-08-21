@@ -3490,15 +3490,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
+        data_entities_processor,
+        **kwargs,
     ) -> BaseConnector:
         """Create a new instance of the Google Drive enterprise connector."""
-        data_entities_processor = DataSourceEntitiesProcessor(
-            logger,
-            data_store_provider,
-            config_service
-        )
-        await data_entities_processor.initialize()
-
         return GoogleDriveTeamConnector(
             logger,
             data_entities_processor,

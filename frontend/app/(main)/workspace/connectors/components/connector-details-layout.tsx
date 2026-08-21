@@ -44,6 +44,8 @@ interface ConnectorDetailsLayoutProps {
   isRefreshingAll?: boolean;
   /** Refresh one instance row + config */
   onRefreshInstance?: (instance: ConnectorInstance) => void | Promise<unknown>;
+  /** Extra action buttons rendered on each instance card */
+  renderInstanceActions?: (instance: ConnectorInstance) => React.ReactNode;
 }
 
 // ========================================
@@ -66,6 +68,7 @@ export function ConnectorDetailsLayout({
   onRefreshAll,
   isRefreshingAll = false,
   onRefreshInstance,
+  renderInstanceActions,
 }: ConnectorDetailsLayoutProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -313,6 +316,7 @@ export function ConnectorDetailsLayout({
                   ? () => void handleRefreshCardClick(instance)
                   : undefined
               }
+              renderExtraActions={renderInstanceActions}
             />
           ))}
         </Flex>

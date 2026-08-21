@@ -21,7 +21,6 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 
@@ -328,6 +327,7 @@ class RedshiftClient:
         if not instance_id:
             raise ValueError("Instance ID is required for Redshift client")
 
+        from app.edition_config import get_toolset_by_id
         redshift_instance = await get_toolset_by_id(instance_id, config_service)
         def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
             auth_config = config.get("auth", {}) or {}

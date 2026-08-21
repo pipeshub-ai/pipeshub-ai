@@ -453,6 +453,28 @@ summary {
   background-clip: padding-box;
 }
 
+/* Workspace-menu sub-panel — compact popup over a translucent backdrop;
+   transparent track keeps the glass effect intact, narrow 5 px thumb. */
+.workspace-menu-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--slate-6) transparent;
+}
+.workspace-menu-scroll::-webkit-scrollbar {
+  width: 5px;
+  -webkit-appearance: none;
+}
+.workspace-menu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.workspace-menu-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--slate-6);
+  border-radius: var(--radius-full);
+  min-height: 28px;
+}
+.workspace-menu-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--slate-8);
+}
+
 /* Team members list scrollbar (used in team create/edit panels). */
 .team-member-scroll-area {
   scrollbar-width: thin;

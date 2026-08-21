@@ -136,10 +136,15 @@ export function AgentBuilderMcpSection(props: {
               showConfigureIcon && !structureLocked ? () => setCredentialsDialogInstance(entry) : undefined
             }
             configureTooltip={
-              entry.isAuthenticated
-                ? t('agentBuilder.manageAgentCredentialsTooltip')
-                : t('agentBuilder.setAgentCredentialsTooltip')
+              isServiceAccount
+                ? entry.isAuthenticated
+                  ? t('agentBuilder.manageAgentCredentialsTooltip')
+                  : t('agentBuilder.setAgentCredentialsTooltip')
+                : entry.isAuthenticated
+                  ? t('agentBuilder.configureMcpTooltip')
+                  : t('agentBuilder.authenticateMcpTooltip')
             }
+            configureUseKeyIcon={isServiceAccount}
             configureIconColor="var(--slate-11)"
             toolsetStatus={status}
           >

@@ -3,7 +3,6 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
-from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import OAuthConfigKeys
@@ -15,10 +14,7 @@ from app.sources.external.common.atlassian import (
     match_atlassian_cloud_resource,
     resolve_preferred_site_with_fallback,
 )
-from app.utils.oauth_config import (
-    fetch_oauth_config_by_id,
-    fetch_toolset_oauth_config_by_id,
-)
+from app.utils.oauth_config import fetch_toolset_oauth_config_by_id
 
 
 class JiraRESTClientViaUsernamePassword(HTTPClient):
@@ -333,11 +329,13 @@ class JiraClient(IClient):
                 if not preferred_site:
                     oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
                     if oauth_config_id:
+                        from app.edition_config import fetch_oauth_config_by_id
                         shared = await fetch_oauth_config_by_id(
                             oauth_config_id=oauth_config_id,
                             connector_type="Jira",
                             config_service=config_service,
                             logger=logger,
+                            org_id=auth_config.get("inheritedFromOrgId"),
                         )
                         if shared:
                             preferred_site = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
@@ -475,7 +473,8 @@ class JiraClient(IClient):
                     raise ValueError("config_service is required for API_TOKEN auth")
 
                 # Fetch instance config to get CONFIGURE-level fields (baseUrl)
-                jira_instance = await get_toolset_by_id(instance_id, config_service)
+                from app.edition_config import get_toolset_by_id
+                jira_instance = await get_toolset_by_id(instance_id, config_service, org_id=toolset_config.get("orgId"))
                 if not jira_instance:
                     raise ValueError(f"Jira instance '{instance_id}' not found")
 
@@ -509,7 +508,8 @@ class JiraClient(IClient):
                     raise ValueError("instanceId is required for BASIC_AUTH")
                 if not config_service:
                     raise ValueError("config_service is required for BASIC_AUTH")
-                jira_instance = await get_toolset_by_id(instance_id, config_service)
+                from app.edition_config import get_toolset_by_id
+                jira_instance = await get_toolset_by_id(instance_id, config_service, org_id=toolset_config.get("orgId"))
                 if not jira_instance:
                     raise ValueError(f"Jira instance '{instance_id}' not found")
                 instance_auth = jira_instance.get("auth", {})

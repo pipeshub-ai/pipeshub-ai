@@ -835,8 +835,7 @@ class ReposSync:
                 or record.file_path
             )
             if not file_path:
-                async with c.data_store_provider.transaction() as tx_store:
-                    file_path = await tx_store.get_record_path(record.id)
+                file_path = await c.data_entities_processor.get_record_path(record.id)
             if not file_path:
                 raise ValueError(
                     f"Cannot resolve repo path for record {record.id}: "

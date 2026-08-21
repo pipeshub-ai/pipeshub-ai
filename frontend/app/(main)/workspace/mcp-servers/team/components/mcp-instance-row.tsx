@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { apiClient } from '@/lib/api';
+import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 
@@ -48,11 +49,12 @@ export function McpInstanceRow({
 
   const hasDiscoveredTools = Boolean(toolsResult && !toolsResult.loading && !toolsResult.error && toolsResult.tools.length > 0);
 
+  const isReadOnly = isMcpInstanceReadOnly(instance);
   const [createdByName, setCreatedByName] = useState<string | null>(null);
   const [createdByAvatar, setCreatedByAvatar] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!instance.createdBy) return;
+    if (!instance.createdBy || isReadOnly) return;
     let cancelled = false;
 
     async function fetchCreatedByUser() {
@@ -79,7 +81,7 @@ export function McpInstanceRow({
     return () => {
       cancelled = true;
     };
-  }, [instance.createdBy]);
+  }, [instance.createdBy, isReadOnly]);
 
   return (
     <Flex
@@ -119,13 +121,17 @@ export function McpInstanceRow({
             </Badge>
           )}
 
+          <McpInheritedBadge instance={instance} />
+
           <IconButton
             variant="outline"
             color="red"
             size="1"
+            disabled={isReadOnly}
+            title={isReadOnly ? t('workspace.mcpServers.deleteDisabledTooltip', 'This server cannot be deleted') : undefined}
             aria-label={t('workspace.mcpServers.cta.delete')}
             onClick={onDelete}
-            style={{ cursor: 'pointer', borderRadius: 'var(--radius-2)', width: 32, height: 32, flexShrink: 0 }}
+            style={{ cursor: isReadOnly ? 'not-allowed' : 'pointer', borderRadius: 'var(--radius-2)', width: 32, height: 32, flexShrink: 0 }}
           >
             <MaterialIcon name="delete" size={16} color="var(--red-11)" />
           </IconButton>
@@ -176,18 +182,20 @@ export function McpInstanceRow({
           )}
         </InfoRow>
 
-        {/* CREATED BY */}
-        <InfoRow label={t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}>
-          <Avatar
-            size="1"
-            src={createdByAvatar ?? undefined}
-            fallback={createdByName?.[0] ?? '?'}
-            radius="full"
-          />
-          <Text size="2" style={{ color: 'var(--gray-12)' }}>
-            {createdByName ?? instance.createdBy}
-          </Text>
-        </InfoRow>
+        {/* CREATED BY — hidden when the instance is read-only */}
+        {!isReadOnly && (
+          <InfoRow label={t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}>
+            <Avatar
+              size="1"
+              src={createdByAvatar ?? undefined}
+              fallback={createdByName?.[0] ?? '?'}
+              radius="full"
+            />
+            <Text size="2" style={{ color: 'var(--gray-12)' }}>
+              {createdByName ?? instance.createdBy}
+            </Text>
+          </InfoRow>
+        )}
 
         {/* TOOLS */}
         <InfoRow label={t('workspace.mcpServers.details.tools')}>

@@ -26,7 +26,7 @@ from app.connectors.core.registry.auth_utils import (
     auto_add_oauth_fields,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
+from app.edition_services import get_oauth_config_registry
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 
 
@@ -551,7 +551,7 @@ class ToolsetBuilder:
                 ]
 
             # Register with final name (overwrites if already registered - allows sharing between connector/toolset)
-            oauth_registry.register(oauth_config)
+            oauth_registry.register(oauth_config, source="toolset")
 
         # Validate OAuth requirements for all OAuth supported auth types
         for auth_type in self.supported_auth_types:

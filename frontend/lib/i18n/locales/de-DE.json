@@ -390,7 +390,8 @@
     "language": "Sprache",
     "english": "Englisch",
     "german": "Deutsch",
-    "rotateLandscape": "Drehen Sie Ihr Gerät für das beste Erlebnis"
+    "rotateLandscape": "Drehen Sie Ihr Gerät für das beste Erlebnis",
+    "errorOccurred": "Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut."
   },
   "units": {
     "bytes": "Bytes",
@@ -1917,6 +1918,9 @@
       "noResults": "Keine MCP-Server entsprechen Ihrer Suche",
       "addServer": "Server hinzufügen",
       "custom": "Benutzerdefiniert",
+      "inherited": "Geerbt",
+      "inheritedDeleteTooltip": "Von der übergeordneten Organisation verwaltet",
+      "inheritedReadOnly": "Dieser MCP-Server wird von einer übergeordneten Organisation geerbt und kann hier nicht bearbeitet werden.",
       "sharedAuth": "Gemeinsame Admin-Authentifizierung",
       "toolsCount_one": "{{count}} Tool",
       "toolsCount_other": "{{count}} Tools",
@@ -2636,6 +2640,7 @@
     "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
+    "share": "Teilen",
     "shareWithOrg": "Mit allen teilen",
     "shareWithOrgTooltip": "Diesen Agenten mit allen in Ihrer Organisation teilen.",
     "serviceAccountShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
@@ -2742,6 +2747,8 @@
     "svcAcctCreateTitle": "Service-Agent erstellen",
     "svcAcctConvertDesc": "Dieser Agent wird ein gemeinsamer Service-Agent: organisationsweit verfügbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden.",
     "svcAcctCreateDesc": "Sie erstellen einen gemeinsamen Service-Agenten: organisationsweit verfügbar, jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden.",
+    "svcAcctConvertDescNoOrg": "Dieser Agent wird ein Service-Agent: jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern.",
+    "svcAcctCreateDescNoOrg": "Sie erstellen einen Service-Agenten: jedes Toolset authentifiziert sich einmal auf Agentenebene, und Wissen beschränkt sich auf das, was Sie im Ablauf anbinden. Verwenden Sie die Teilen-Schaltfläche, um den Zugriff zu steuern.",
     "svcAcctConvertLabel": "In Service-Agent umwandeln",
     "svcAcctCreateLabel": "Service-Agent erstellen",
     "svcAcctConvertBusy": "Wird umgewandelt…",
@@ -2772,6 +2779,8 @@
     "mcpCredentialsTitle": "MCP-Server-Anmeldedaten",
     "mcpCredentialsDesc": "Authentifizieren Sie diesen MCP-Server, damit der Agent seine Tools nutzen kann.",
     "mcpServerDefaultName": "MCP-Server",
+    "configureMcpTooltip": "Anmeldedaten verwalten",
+    "authenticateMcpTooltip": "Diesen MCP-Server authentifizieren",
     "mcpAuthUpdatedNotify": "MCP-Authentifizierung aktualisiert.",
     "mcpAuthSaveError": "MCP-Anmeldedaten konnten nicht gespeichert werden.",
     "mcpAuthRemoveError": "MCP-Anmeldedaten konnten nicht entfernt werden.",
@@ -3093,9 +3102,7 @@
         "emailNotePre": "Stellen Sie sicher, dass die E-Mail, mit der Sie sich registriert haben —",
         "emailNotePost": "— dieselbe ist, die in den Apps Ihrer Organisation verwendet wird, damit Ihre Berechtigungen korrekt erkannt werden.",
         "cancelButton": "Abbrechen",
-        "signUpButton": "Registrieren",
-        "verificationNoteTitle": "Verifizierung erforderlich",
-        "verificationNoteBody": "Ein Verifizierungslink wird an die oben angegebene E-Mail gesendet. Ihre Organisation ist erst nach der Verifizierung zugänglich."
+        "signUpButton": "Registrieren"
       }
     },
     "login": {

@@ -107,14 +107,14 @@ const logger = Logger.getInstance({ service: 'Enterprise Search Service' });
 const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 
 /** Remove `id` from graph document clones (Neo4j vs Arango shape) before returning search to the client. */
-function omitId<T>(doc: T): T {
+export function omitId<T>(doc: T): T {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return doc;
   const o = { ...(doc as Record<string, unknown>) };
   delete o.id;
   return o as T;
 }
 
-function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
+export function buildSearchResponseForClient(data: AiSearchResponse & Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...data };
   if (Array.isArray(data.records)) out.records = data.records.map(omitId);
   const vmap = data.virtual_to_record_map;
@@ -146,7 +146,7 @@ const AGENT_ARCHIVES_INITIAL_AGENT_LIMIT = 5;
  * these keys in Mongo (e.g. `agentKey: { $nin: keys }`). Returns null when the AI
  * backend cannot be queried so callers can omit filtering instead of hiding all results.
  */
-async function fetchDeletedAgentKeysForUser(
+export async function fetchDeletedAgentKeysForUser(
   appConfig: AppConfig,
   req: AuthenticatedUserRequest,
 ): Promise<string[] | null> {
@@ -218,7 +218,7 @@ async function fetchDeletedAgentKeysForUser(
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
-const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
+export const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode: boolean } => {
   let chatMode: string = requestChatMode || 'quick';
   let agentMode: boolean = false;
 
@@ -233,7 +233,7 @@ const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode:
 // Forwards the user-selected tool list to the AI payload when the client
 // explicitly sent `tools`. Omitting it tells Python to use all configured
 // tools (Python receives None); sending `[]` disables tools entirely.
-const assignToolsToPayload = (
+export const assignToolsToPayload = (
   payload: Record<string, unknown>,
   tools: unknown,
 ): void => {
@@ -246,7 +246,7 @@ const assignToolsToPayload = (
  * Does not change retrieval ACL — the Python agent still keys permissions on the service-account
  * agent creator's userId/orgId.
  */
-const assignCallerContextToAiPayload = (
+export const assignCallerContextToAiPayload = (
   payload: Record<string, unknown>,
   body: Record<string, unknown>,
 ): void => {
@@ -265,7 +265,7 @@ const assignCallerContextToAiPayload = (
  * Only passes through when the value is a non-null object — ignores scalars and arrays.
  * Capability booleans narrow what the Python backend enables; they never expand permissions.
  */
-const assignAgentCapabilitiesToPayload = (
+export const assignAgentCapabilitiesToPayload = (
   payload: Record<string, unknown>,
   body: Record<string, unknown>,
 ): void => {
@@ -277,7 +277,7 @@ const assignAgentCapabilitiesToPayload = (
 
 
 /** 24-char hex suitable for Mongo ObjectId; stable per email for Slack/service-account callers without a User row. */
-const stableObjectIdHexForExternalEmail = (email: string): string =>
+export const stableObjectIdHexForExternalEmail = (email: string): string =>
   crypto
     .createHash('sha256')
     .update(`slack-service-account:${email.toLowerCase().trim()}`)
@@ -286,7 +286,7 @@ const stableObjectIdHexForExternalEmail = (email: string): string =>
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
-const hydrateScopedRequestAsUser = async (
+export const hydrateScopedRequestAsUser = async (
   req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
   appConfig: AppConfig,
   keyValueStoreService?: KeyValueStoreService,
@@ -372,7 +372,7 @@ const hydrateScopedRequestAsUser = async (
   };
 };
 
-  const handleBackendError = (error: any, operation: string): Error => {
+  export const handleBackendError = (error: any, operation: string): Error => {
     const resolveErrorMessage = (err: any): string =>
       err?.message || err?.msg || 'Unknown error';
 
@@ -465,7 +465,7 @@ const hydrateScopedRequestAsUser = async (
   };
   
   // Common helper to start AI streams with consistent error mapping and logging
-  const startAIStream = async (
+  export const startAIStream = async (
     options: AICommandOptions,
     operation: string,
     logContext: Record<string, any> = {},
@@ -498,14 +498,14 @@ const IMAGE_COMPRESS_TARGET_BYTES = 1 * 1024 * 1024;
 const IMAGE_MAX_LONGEST_SIDE_PX = 2048;
 const IMAGE_QUALITY_LADDER = [85, 75, 65, 55, 45];
 
-interface NormalizedAttachmentFile {
+export interface NormalizedAttachmentFile {
   fileName: string;
   mimeType: string;
   size: number;
   buffer: Buffer;
 }
 
-const formatBytes = (bytes: number): string => {
+export const formatBytes = (bytes: number): string => {
   if (bytes >= 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
@@ -515,7 +515,7 @@ const formatBytes = (bytes: number): string => {
   return `${bytes} B`;
 };
 
-const compressImageIfNeeded = async (
+export const compressImageIfNeeded = async (
   file: Express.Multer.File,
 ): Promise<NormalizedAttachmentFile> => {
   const mime = (file.mimetype || '').toLowerCase();

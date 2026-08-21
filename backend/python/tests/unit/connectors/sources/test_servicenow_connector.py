@@ -226,7 +226,7 @@ class TestServiceNowConnectorInit:
         for key in ["company", "department", "location", "cost_center"]:
             assert key in servicenow_connector.org_entity_sync_points
 
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowRESTClientViaOAuthAuthorizationCode")
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource")
     async def test_init_success(self, mock_ds_cls, mock_client_cls, mock_fetch_oauth,
@@ -261,17 +261,17 @@ class TestServiceNowConnectorInit:
         })
         assert await servicenow_connector.init() is False
 
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_oauth_not_found(self, mock_fetch_oauth, servicenow_connector):
         mock_fetch_oauth.return_value = None
         assert await servicenow_connector.init() is False
 
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_incomplete_config(self, mock_fetch_oauth, servicenow_connector):
         mock_fetch_oauth.return_value = {"config": {"clientId": "id"}}
         assert await servicenow_connector.init() is False
 
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_no_access_token(self, mock_fetch_oauth, servicenow_connector):
         mock_fetch_oauth.return_value = {
             "config": {
@@ -286,7 +286,7 @@ class TestServiceNowConnectorInit:
         })
         assert await servicenow_connector.init() is False
 
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowRESTClientViaOAuthAuthorizationCode")
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource")
     async def test_init_fails_connection_test(self, mock_ds_cls, mock_client_cls, mock_fetch_oauth,
@@ -2342,7 +2342,7 @@ class TestFlattenAndRoles:
 
 class TestInitRefreshToken:
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowRESTClientViaOAuthAuthorizationCode")
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource")
     async def test_init_with_refresh_token(self, mock_ds_cls, mock_client_cls, mock_fetch, servicenow_connector):
@@ -2371,7 +2371,7 @@ class TestInitRefreshToken:
         assert mock_client.refresh_token == "refresh-tok"
 
     @pytest.mark.asyncio
-    @patch("app.connectors.sources.servicenow.servicenow.connector.fetch_oauth_config_by_id", new_callable=AsyncMock)
+    @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowRESTClientViaOAuthAuthorizationCode")
     @patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource")
     async def test_init_without_refresh_token(self, mock_ds_cls, mock_client_cls, mock_fetch, servicenow_connector):

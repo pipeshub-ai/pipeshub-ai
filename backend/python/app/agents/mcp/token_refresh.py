@@ -61,12 +61,16 @@ async def resolve_client_credentials(
     instance_id: str,
     owner_id: str,
     config_service: ConfigurationService,
+    fallback_config_services: Optional[list[ConfigurationService]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Resolve `(clientId, clientSecret)` for `instance_id`/`owner_id` — legacy per-owner DCR
     client first (so already-issued tokens keep refreshing against the exact client they were
     minted against), then the shared per-instance DCR client, then the admin-configured
     static OAuth client. `owner_id` is a user id or, for a service-account agent, its
     agentKey — both are opaque owner identifiers in the credential path.
+
+    ``fallback_config_services``, when provided, are tried for the static OAuth client
+    config when the primary service doesn't have one.
     """
     dcr_client = await config_service.get_config(get_mcp_dcr_client_path(instance_id, owner_id), default=None)
     if isinstance(dcr_client, dict) and dcr_client.get("clientId"):
@@ -79,6 +83,12 @@ async def resolve_client_credentials(
     oauth_client_config = await config_service.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
     if isinstance(oauth_client_config, dict):
         return oauth_client_config.get("clientId"), oauth_client_config.get("clientSecret")
+
+    for fb_svc in (fallback_config_services or []):
+        fb_config = await fb_svc.get_config(get_mcp_oauth_client_config_path(instance_id), default=None)
+        if isinstance(fb_config, dict) and fb_config.get("clientId"):
+            return fb_config.get("clientId"), fb_config.get("clientSecret")
+
     return None, None
 
 
@@ -86,9 +96,12 @@ async def refresh_credential_record(
     instance_id: str,
     owner_id: str,
     config_service: ConfigurationService,
+    fallback_config_services: Optional[list[ConfigurationService]] = None,
 ) -> OAuthTokens:
     """Refresh the OAuth tokens stored at `/services/mcp/credentials/{instance_id}/{owner_id}`
     and persist the result back to the same record.
+
+    ``fallback_config_services`` are forwarded to ``resolve_client_credentials``.
 
     Raises:
         MCPTokenRefreshError: no credential record, no refresh token, no persisted tokenUrl,
@@ -98,13 +111,16 @@ async def refresh_credential_record(
         oauth_client_module.MCPOAuthError: the token endpoint request failed otherwise.
     """
     async with _refresh_locks[(instance_id, owner_id)]:
-        return await _refresh_credential_record_locked(instance_id, owner_id, config_service)
+        return await _refresh_credential_record_locked(
+            instance_id, owner_id, config_service, fallback_config_services,
+        )
 
 
 async def _refresh_credential_record_locked(
     instance_id: str,
     owner_id: str,
     config_service: ConfigurationService,
+    fallback_config_services: Optional[list[ConfigurationService]] = None,
 ) -> OAuthTokens:
     cred_path = get_mcp_credentials_path(instance_id, owner_id)
     record = await config_service.get_config(cred_path, default=None, use_cache=False)
@@ -125,7 +141,9 @@ async def _refresh_credential_record_locked(
     if not token_url:
         raise MCPTokenRefreshError(f"No tokenUrl persisted for {cred_path}; cannot refresh without re-authenticating")
 
-    client_id, client_secret = await resolve_client_credentials(instance_id, owner_id, config_service)
+    client_id, client_secret = await resolve_client_credentials(
+        instance_id, owner_id, config_service, fallback_config_services,
+    )
     if not client_id:
         raise MCPTokenRefreshError(f"No OAuth client configuration found for {cred_path}")
 

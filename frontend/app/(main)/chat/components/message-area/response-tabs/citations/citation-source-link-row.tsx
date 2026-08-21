@@ -5,6 +5,7 @@ import { Text } from '@radix-ui/themes';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import type { CitationData } from './types';
 import { getCitationCopyHref } from './utils';
+import { useOrgHref } from '@/lib/navigation';
 
 const titleTextStyle: React.CSSProperties = {
   color: 'var(--accent-11)',
@@ -46,7 +47,7 @@ export function CitationSourceLinkRow({
   connector,
   truncatedName,
 }: CitationSourceLinkRowProps) {
-  const copyHref = getCitationCopyHref(citation);
+  const copyHref = useOrgHref(getCitationCopyHref(citation));
 
   const label = (
     <>
