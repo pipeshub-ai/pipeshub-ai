@@ -56,10 +56,6 @@ while true; do
         cleanup 0
     else
         status=$?
-        if [ $status -eq 127 ]; then
-            # No more background jobs running
-            exit 0
-        fi
         echo "A service failed with status $status. Triggering cleanup..."
         cleanup $status
     fi
