@@ -21,7 +21,7 @@ import uuid
 from logging import Logger
 from pathlib import Path
 from collections.abc import AsyncIterator
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import HTTPException
@@ -89,7 +89,10 @@ FULL_SYNC_RESET_BATCH_SIZE = 500
 # Refuse to prune this many-or-more stale records in one sync once they're also
 # this fraction-or-more of everything stored — a sign of a failed/partial
 # directory walk (e.g. a transiently unmounted volume), not real deletions.
-# Mirrors the same valve in app/connectors/sources/github_teams/repos.py.
+# Analogous to (not identical to) the valve in
+# app/connectors/sources/github_teams/repos.py's _prune_deleted_paths: that one
+# refuses above 5 records (>) at the same fraction; this one refuses at 50
+# records or more (>=).
 LOCAL_FS_PRUNE_VALVE_MIN_ABSOLUTE = 50
 LOCAL_FS_PRUNE_VALVE_MAX_FRACTION = 0.5
 
@@ -543,10 +546,14 @@ class LocalFsConnector(BaseConnector):
         ext = path.suffix.lower().lstrip(".") or ""
         return ext in allowed
 
-    def _iter_file_paths(self, root: Path) -> List[Path]:
+    def _iter_file_paths(
+        self, root: Path, on_error: Optional[Callable[[OSError], None]] = None
+    ) -> List[Path]:
         out: List[Path] = []
         if self.include_subfolders:
-            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            for dirpath, _dirnames, filenames in os.walk(
+                root, followlinks=False, onerror=on_error
+            ):
                 for name in filenames:
                     out.append(Path(dirpath) / name)
         else:
@@ -556,10 +563,14 @@ class LocalFsConnector(BaseConnector):
                     out.append(p)
         return out
 
-    def _iter_folder_paths(self, root: Path) -> List[Path]:
+    def _iter_folder_paths(
+        self, root: Path, on_error: Optional[Callable[[OSError], None]] = None
+    ) -> List[Path]:
         out: List[Path] = []
         if self.include_subfolders:
-            for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+            for dirpath, dirnames, _filenames in os.walk(
+                root, followlinks=False, onerror=on_error
+            ):
                 for name in dirnames:
                     out.append(Path(dirpath) / name)
         else:
@@ -1461,7 +1472,8 @@ class LocalFsConnector(BaseConnector):
         self,
         owner_user_id: str,
         record_group_external_id: str,
-        walked_external_ids: set,
+        walked_external_ids: set[str],
+        walk_had_errors: bool = False,
     ) -> int:
         """Delete only the records for paths a completed walk did not find.
 
@@ -1471,7 +1483,23 @@ class LocalFsConnector(BaseConnector):
         this only needs to clean up genuine deletions — unlike the old
         pre-walk ``_reset_existing_records`` call, it must never touch a
         record for a path still on disk.
+
+        ``walk_had_errors`` means the walk itself was incomplete (a stat /
+        permission error, or an unreadable subtree os.walk silently skipped),
+        so anything "missing" from ``walked_external_ids`` may just be
+        unseen, not deleted. Skip pruning entirely rather than risk deleting
+        a record — and its storage document — for a file still on disk; the
+        large-fraction valve below only catches big failures, not this.
         """
+        if walk_had_errors:
+            self.logger.warning(
+                "Local FS: skipping stale-record pruning for record group %s "
+                "because the walk hit errors; a record for a path still on "
+                "disk could otherwise be deleted.",
+                record_group_external_id,
+            )
+            return 0
+
         async with self.data_store_provider.transaction() as tx_store:
             record_group = await tx_store.get_record_group_by_external_id(
                 self.connector_id, record_group_external_id
@@ -1481,14 +1509,14 @@ class LocalFsConnector(BaseConnector):
 
             status_filters = [status.value for status in ProgressStatus]
             existing: Dict[str, Record] = {}
-            offset = 0
+            after_key: Optional[str] = None
             while True:
                 page = await tx_store.get_records_by_status(
                     self.data_entities_processor.org_id,
                     self.connector_id,
                     status_filters,
                     limit=FULL_SYNC_RESET_BATCH_SIZE,
-                    offset=offset,
+                    after_key=after_key,
                     record_group_id=record_group.id,
                 )
                 if not page:
@@ -1499,7 +1527,7 @@ class LocalFsConnector(BaseConnector):
                         existing[external_id] = record
                 if len(page) < FULL_SYNC_RESET_BATCH_SIZE:
                     break
-                offset += len(page)
+                after_key = page[-1].id
 
             stale = {
                 external_id: record
@@ -2242,8 +2270,17 @@ class LocalFsConnector(BaseConnector):
                 ]
             )
 
-            folder_paths = self._iter_folder_paths(root)
-            paths = self._iter_file_paths(root)
+            # A walk error (permission/stat failure, or an unreadable subtree
+            # os.walk silently skips) means walked_external_ids is incomplete —
+            # anything "missing" from it might just be unseen, not deleted.
+            walk_had_errors = False
+
+            def _record_walk_error(_e: OSError) -> None:
+                nonlocal walk_had_errors
+                walk_had_errors = True
+
+            folder_paths = self._iter_folder_paths(root, on_error=_record_walk_error)
+            paths = self._iter_file_paths(root, on_error=_record_walk_error)
             batch: List[Tuple[FileRecord, List[Permission]]] = []
             emitted_folder_paths: set[str] = set()
             # Every path the walk actually finds, so unchanged files/folders are
@@ -2281,6 +2318,7 @@ class LocalFsConnector(BaseConnector):
                         e,
                         exc_info=True,
                     )
+                    walk_had_errors = True
                     continue
 
             for abs_path in paths:
@@ -2320,13 +2358,14 @@ class LocalFsConnector(BaseConnector):
                         await asyncio.sleep(0)
                 except Exception as e:
                     self.logger.warning("Local FS: skip %s: %s", abs_path, e)
+                    walk_had_errors = True
                     continue
 
             if batch:
                 await self.data_entities_processor.on_new_records(batch)
 
             deleted = await self._prune_stale_records(
-                owner.id, rg_external, walked_external_ids
+                owner.id, rg_external, walked_external_ids, walk_had_errors
             )
 
             self.logger.info(

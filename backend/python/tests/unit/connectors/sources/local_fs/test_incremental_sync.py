@@ -334,3 +334,74 @@ class TestPruneStaleRecordsValve:
         assert deleted == 1
         assert "keep" in store
         assert "gone" not in store
+
+    async def test_walk_had_errors_skips_pruning_even_when_stale_count_is_small(self):
+        """A single transient stat/permission error must not delete a record
+        for a file that is still on disk, even though one stale record is far
+        below the large-fraction valve above.
+        """
+        store: Dict[str, object] = {}
+        provider = _FakeDataStoreProvider(store)
+        logger = MagicMock()
+        connector = LocalFsConnector(
+            logger, AsyncMock(org_id="org-1"), provider, AsyncMock(),
+            "conn-valve3", "personal", "user-1",
+        )
+
+        class _Rec:
+            def __init__(self, external_record_id, path=None):
+                self.external_record_id = external_record_id
+                self.path = path
+
+        store["still-on-disk"] = _Rec("still-on-disk")
+
+        # "still-on-disk" isn't in walked_external_ids only because the walk
+        # hit a transient error on it, not because it was deleted.
+        deleted = await connector._prune_stale_records(
+            "owner-1", "rg-ext", set(), walk_had_errors=True
+        )
+
+        assert deleted == 0
+        assert "still-on-disk" in store
+        connector.logger.warning.assert_called()
+
+
+class TestRunSyncWalkErrorsSkipPruning:
+    async def test_transient_error_on_one_file_mid_walk_does_not_prune_it(
+        self, synced_folder
+    ):
+        """Regression for the walk-error gap: a transient failure on a single
+        file (not caught by the large-fraction valve, which only blocks
+        large-scale failures) must not delete that file's record.
+        """
+        connector, store, root = synced_folder
+
+        (root / "keep.txt").write_text("same", encoding="utf-8")
+        (root / "flaky.txt").write_text("still here", encoding="utf-8")
+
+        await connector.run_sync()
+
+        keep_ext = connector._external_record_id_for_rel_path("keep.txt")
+        flaky_ext = connector._external_record_id_for_rel_path("flaky.txt")
+        assert flaky_ext in store
+        for ext_id in (keep_ext, flaky_ext):
+            store[ext_id].indexing_status = "COMPLETED"
+
+        # Simulate a transient stat/permission failure on flaky.txt only,
+        # mid-walk — the exact position the old code's `continue` swallowed
+        # silently, deleting the record even though the file is still there.
+        real_extension_allowed = connector._extension_allowed
+
+        def _flaky_extension_allowed(path, sync_filters):
+            if path.name == "flaky.txt":
+                raise OSError("transient stat/permission error")
+            return real_extension_allowed(path, sync_filters)
+
+        connector._extension_allowed = _flaky_extension_allowed
+
+        await connector.run_incremental_sync()
+
+        # flaky.txt's record must survive: the walk was not clean, so
+        # pruning must be skipped entirely, not just fraction-valved.
+        assert flaky_ext in store
+        assert keep_ext in store
