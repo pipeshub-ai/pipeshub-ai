@@ -34,7 +34,7 @@ class VLMOCRStrategy(OCRStrategy):
     # At 200 DPI each page is ~11 MB as a numpy array; 20 pages ≈ 220 MB peak.
     PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '20'))
     # Default prompt template
-    DEFAULT_PROMPT = """# Role
+    DEFAULT_PROMPT = r"""# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.
 
 # Core Instructions
@@ -276,8 +276,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             # Pass max_tokens only for providers that support it in ainvoke to avoid validation errors
             invoke_kwargs = {}
             provider = self.llm_config.get("provider", "").lower() if getattr(self, "llm_config", None) else ""
-            if provider in ["openai", "azure_openai", "ollama", "mistral", "anthropic"]:
+            if provider in ["openai", "azure_openai", "mistral", "anthropic"]:
                 invoke_kwargs["max_tokens"] = 4096
+            elif provider == "ollama":
+                invoke_kwargs["num_predict"] = 4096
                 
             response = await self.llm.ainvoke([message], **invoke_kwargs)
 

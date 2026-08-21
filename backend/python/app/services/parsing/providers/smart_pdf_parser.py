@@ -60,8 +60,26 @@ def _page_needs_ocr(page: Any) -> bool:
         
         image_area_ratio = 0.0
         if images and page_area > 0:
-            total_image_area = sum((img.get("width") or 0) * (img.get("height") or 0) for img in images)
-            image_area_ratio = total_image_area / page_area
+            grid_size = 50
+            grid = [[False] * grid_size for _ in range(grid_size)]
+            for img in images:
+                x0 = max(0, img.get("x0", 0) or 0)
+                y0 = max(0, img.get("top", 0) or 0)
+                x1 = min(page.width, img.get("x1", x0 + (img.get("width", 0) or 0)) or page.width)
+                y1 = min(page.height, img.get("bottom", y0 + (img.get("height", 0) or 0)) or page.height)
+                
+                if x1 > x0 and y1 > y0:
+                    gx0 = min(grid_size - 1, max(0, int((x0 / page.width) * grid_size)))
+                    gy0 = min(grid_size - 1, max(0, int((y0 / page.height) * grid_size)))
+                    gx1 = min(grid_size - 1, max(0, int((x1 / page.width) * grid_size)))
+                    gy1 = min(grid_size - 1, max(0, int((y1 / page.height) * grid_size)))
+                    
+                    for i in range(gx0, gx1 + 1):
+                        for j in range(gy0, gy1 + 1):
+                            grid[i][j] = True
+            
+            covered_cells = sum(sum(row) for row in grid)
+            image_area_ratio = covered_cells / (grid_size * grid_size)
         is_image_heavy = image_area_ratio > 0.5
         
         return (has_minimal_text and has_significant_images) or low_density or is_image_heavy
