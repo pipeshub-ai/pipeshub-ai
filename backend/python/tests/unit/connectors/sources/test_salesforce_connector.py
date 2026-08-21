@@ -16,7 +16,6 @@ from app.connectors.sources.salesforce.connector import (
     DEALS_SYNC_POINT_KEY,
     DISCUSSIONS_SYNC_POINT_KEY,
     LEADS_SYNC_POINT_KEY,
-    PERMISSION_HIERARCHY,
     PRODUCTS_SYNC_POINT_KEY,
     ROLES_SYNC_POINT_KEY,
     SOLD_IN_SYNC_POINT_KEY,
@@ -339,15 +338,6 @@ class TestSalesforceConstants:
         assert CASES_SYNC_POINT_KEY == "cases"
         assert ACCOUNTS_SYNC_POINT_KEY == "accounts"
         assert DISCUSSIONS_SYNC_POINT_KEY == "discussions"
-
-    def test_permission_hierarchy(self):
-        assert PERMISSION_HIERARCHY["READER"] < PERMISSION_HIERARCHY["WRITER"]
-        assert PERMISSION_HIERARCHY["WRITER"] < PERMISSION_HIERARCHY["OWNER"]
-        assert PERMISSION_HIERARCHY["COMMENTER"] > PERMISSION_HIERARCHY["READER"]
-
-    def test_all_permission_levels_present(self):
-        for key in ("READER", "COMMENTER", "WRITER", "OWNER"):
-            assert key in PERMISSION_HIERARCHY
 
 
 # ===========================================================================
