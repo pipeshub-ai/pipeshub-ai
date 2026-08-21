@@ -3171,6 +3171,21 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def delete_single_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Delete one record vertex — no containment walk.
+
+        Same post-inventory cleanup as ``delete_records_recursive`` (all edges,
+        isOfType type doc, records vertex, optional deleteRecord payload) but
+        inventory is only the given record. Children stay. Missing/empty id is a
+        no-op success.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_connector_instance(
         self,
         connector_id: str,

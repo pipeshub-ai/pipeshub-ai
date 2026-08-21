@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import datetime
 import difflib
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 
 import httpx
 from github import (
@@ -16,6 +16,7 @@ from github.ContentFile import ContentFile  # type: ignore
 from github.Deployment import Deployment  # type: ignore
 from github.DeploymentStatus import DeploymentStatus  # type: ignore
 from github.File import File  # type: ignore
+from github.Comparison import Comparison  # type: ignore
 from github.GitBlob import GitBlob  # type: ignore
 from github.GitRef import GitRef  # type: ignore
 from github.GitRelease import GitRelease  # type: ignore
@@ -26,6 +27,7 @@ from github.Invitation import Invitation  # type: ignore
 from github.Issue import Issue  # type: ignore
 from github.IssueComment import IssueComment  # type: ignore
 from github.Label import Label  # type: ignore
+from github.Membership import Membership  # type: ignore
 from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
@@ -40,6 +42,12 @@ from github.WorkflowRun import WorkflowRun  # type: ignore
 
 from app.sources.client.github.github import GitHubResponse
 
+# GitHub caps both REST and Search page sizes at 100. Requesting the maximum
+# cuts round trips for the many call sites that materialise a whole PaginatedList.
+_SERVER_PAGE_SIZE = 100
+_MAX_PAGE_SIZE = 100
+_DEFAULT_PAGE_SIZE = 10
+
 
 class GitHubDataSource:
     """Strict, typed wrapper over PyGithub for common GitHub business operations.
@@ -51,21 +59,54 @@ class GitHubDataSource:
         if isinstance(client, Github):
             self._sdk: Github = client
             # NOTE : when can this be a case
+            self._pin_page_size()
         else:
-            get_sdk = getattr(client, "get_sdk", None)
-            if get_sdk is None or not callable(get_sdk):
-                raise TypeError("client must be a github.GithubClient or expose get_sdk() -> Github")
-            sdk = get_sdk()
-            if not isinstance(sdk, Github):
-                raise TypeError("get_sdk() must return a github.Github instance")
-            self._sdk = sdk
-            get_token = getattr(client, "get_token", None)
-            if get_token is None or not callable(get_token):
-                raise TypeError("client must be a github.GitHubClient or expose get_token() -> str")
-            token = get_token()
-            if not isinstance(token, str):
-                raise TypeError("get_token() must return a string")
-            self.token = token
+            self._bind_from_wrapper(client)
+
+    def _pin_page_size(self) -> None:
+        """Make the SDK's page size match what ``_slice_paginated`` assumes.
+
+        Set once, not per call: the executor runs several workers against this
+        same SDK, so mutating ``per_page`` inside a method would race. It must
+        be pinned on every construction path — ``_slice_paginated`` treats a
+        server page shorter than ``_SERVER_PAGE_SIZE`` as the end of the
+        listing, so an SDK left on PyGithub's default of 30 would silently
+        truncate every paged sweep after its first page.
+        """
+        try:
+            self._sdk.per_page = _SERVER_PAGE_SIZE
+        except Exception:  # pragma: no cover - older/patched SDKs
+            pass
+
+    def _bind_from_wrapper(self, client: object) -> None:
+        get_sdk = getattr(client, "get_sdk", None)
+        if get_sdk is None or not callable(get_sdk):
+            raise TypeError("client must be a github.GithubClient or expose get_sdk() -> Github")
+        sdk = get_sdk()
+        if not isinstance(sdk, Github):
+            raise TypeError("get_sdk() must return a github.Github instance")
+        self._sdk = sdk
+        get_token = getattr(client, "get_token", None)
+        if get_token is None or not callable(get_token):
+            raise TypeError("client must be a github.GitHubClient or expose get_token() -> str")
+        token = get_token()
+        if not isinstance(token, str):
+            raise TypeError("get_token() must return a string")
+        self.token = token
+        self._pin_page_size()
+
+    def rebind_client(self, client: object) -> None:
+        """Re-point this data source at a freshly rebuilt SDK/token pair.
+
+        PyGithub binds ``Auth.Token`` at construction time, so rotating the
+        access token (``GitHubClientViaToken.set_token``) builds a brand new
+        ``Github`` instance rather than mutating one in place. Without this
+        call, every request made through this data source after a token
+        refresh -- SDK-backed calls via the stale ``self._sdk``, and the
+        direct-httpx image/attachment paths via the stale ``self.token`` --
+        would keep using the expired credential.
+        """
+        self._bind_from_wrapper(client)
 
     # -----------------------
     # Internal helpers
@@ -74,22 +115,89 @@ class GitHubDataSource:
         return self._sdk.get_repo(f"{owner}/{repo}")
 
     @staticmethod
+    def _err(e: Exception) -> GitHubResponse:
+        """Failure response preserving the HTTP status and exception class.
+
+        ``GithubException.status`` is the only way to tell 401 (re-auth) from
+        403 (rate/abuse limit) from 5xx (retry) once the exception is stringified.
+        """
+        return GitHubResponse(
+            success=False,
+            error=str(e),
+            status_code=getattr(e, "status", None),
+            exception_type=type(e).__name__,
+        )
+
+    @staticmethod
     def _not_none(**params: object) -> dict[str, object]:
         return {k: v for k, v in params.items() if v is not None}
 
     @staticmethod
-    def _issues_only(items: list) -> list:
-        """Filter to items that are issues (pull_request is None), excluding PRs."""
-        return [i for i in items if getattr(i, "pull_request", None) is None]
+    def _clamp_page_args(per_page: int | None, page: int | None) -> tuple[int, int]:
+        return (
+            _DEFAULT_PAGE_SIZE if per_page is None else min(_MAX_PAGE_SIZE, max(1, per_page)),
+            1 if page is None else max(1, page),
+        )
+
+    @staticmethod
+    def _slice_paginated(paginated: object, per_page: int, page: int) -> list:
+        """Return the caller's ``page`` of ``per_page`` items from a ``PaginatedList``.
+
+        ``get_page(n)`` returns *GitHub's* page of ``_SERVER_PAGE_SIZE`` items,
+        which is not the caller's page size. Slicing a single ``get_page`` result
+        therefore skips every item between ``per_page`` and the server page
+        boundary — they are unreachable at any page index. Walk server pages and
+        cut the requested window out of the absolute item sequence instead.
+        """
+        start = (page - 1) * per_page
+        end = start + per_page
+        if not hasattr(paginated, "get_page"):
+            return list(paginated)[start:end]
+
+        collected: list = []
+        server_page = start // _SERVER_PAGE_SIZE
+        offset_in_page = start % _SERVER_PAGE_SIZE
+        while len(collected) < per_page:
+            items = paginated.get_page(server_page)
+            if not items:
+                break
+            collected.extend(items[offset_in_page:])
+            if len(items) < _SERVER_PAGE_SIZE:
+                break
+            offset_in_page = 0
+            server_page += 1
+        return collected[:per_page]
+
+    @staticmethod
+    def _is_pull_request(item: object) -> bool:
+        """True when an ``/issues`` item is really a pull request.
+
+        Uses ``html_url`` rather than ``.pull_request``: on a partial ``Issue``
+        from a listing, ``_pull_request`` is unset, so touching it triggers
+        PyGithub's lazy ``GET /issues/{n}`` — one blocking request per issue.
+        ``html_url`` is always present on the list payload.
+        """
+        return "/pull/" in (getattr(item, "html_url", "") or "")
+
+    @classmethod
+    def _issues_only(cls, items: list) -> list:
+        """Filter to items that are issues, excluding PRs."""
+        return [i for i in items if not cls._is_pull_request(i)]
 
 
     def get_authenticated(self) -> GitHubResponse[AuthenticatedUser]:
         """Return the authenticated user."""
         try:
             user = self._sdk.get_user()
+            # get_user() is lazy — no request until an attribute is read. Force
+            # the GET /user HERE, inside the caller's executor thread; otherwise
+            # the first attribute access fires it on the event loop, and a
+            # rate-limited response blocks the whole service for PyGithub's
+            # backoff (observed: 30 min frozen, health checks dead).
+            user.id
             return GitHubResponse(success=True, data=user)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_user(self, login: str) -> GitHubResponse[NamedUser]:
@@ -98,7 +206,7 @@ class GitHubDataSource:
             user = self._sdk.get_user(login)
             return GitHubResponse(success=True, data=user)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_organization(self, org: str) -> GitHubResponse[Organization]:
@@ -107,7 +215,7 @@ class GitHubDataSource:
             org_obj = self._sdk.get_organization(org)
             return GitHubResponse(success=True, data=org_obj)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_owner(self, login: str, kind: str = "user") -> GitHubResponse[NamedUser | Organization]:
         """Get a user or organization by login (the 'owner' of repos). Use login='me' for the authenticated user."""
@@ -118,7 +226,7 @@ class GitHubDataSource:
                 obj = self._sdk.get_user() if (login or "").strip().lower() == "me" else self._sdk.get_user(login)
             return GitHubResponse(success=True, data=obj)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def list_user_repos(
         self,
@@ -127,24 +235,17 @@ class GitHubDataSource:
         per_page: int | None = None,
         page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
-        """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
+        """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 100). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
         try:
             # passing user name changes base url fetches only public repos although authenticated
             u = self._sdk.get_user(user) if user else self._sdk.get_user()
             paginated = u.get_repos(type=type)
             if per_page is None and page is None:
-                repos = list(paginated)
-                return GitHubResponse(success=True, data=repos)
-            _per_page = 10 if per_page is None else min(50, max(1, per_page))
-            _page = 1 if page is None else max(1, page)
-            if hasattr(paginated, "get_page"):
-                page_items = paginated.get_page(_page - 1)
-            else:
-                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
-            repos = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
-            return GitHubResponse(success=True, data=repos)
+                return GitHubResponse(success=True, data=list(paginated))
+            _per_page, _page = self._clamp_page_args(per_page, page)
+            return GitHubResponse(success=True, data=self._slice_paginated(paginated, _per_page, _page))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_repo(self, owner: str, repo: str) -> GitHubResponse[Repository]:
@@ -153,17 +254,26 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             return GitHubResponse(success=True, data=r)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
-    def list_org_repos(self, org: str, type: str = "all") -> GitHubResponse[list[Repository]]:
-        """List repositories for an organization."""
+    def list_org_repos(
+        self,
+        org: str,
+        type: str = "all",
+        per_page: int | None = None,
+        page: int | None = None,
+    ) -> GitHubResponse[list[Repository]]:
+        """List repositories for an organization. When both per_page and page are omitted, returns all repos."""
         try:
             o = self._sdk.get_organization(org)
-            repos = list(o.get_repos(type=type))
-            return GitHubResponse(success=True, data=repos)
+            paginated = o.get_repos(type=type)
+            if per_page is None and page is None:
+                return GitHubResponse(success=True, data=list(paginated))
+            _per_page, _page = self._clamp_page_args(per_page, page)
+            return GitHubResponse(success=True, data=self._slice_paginated(paginated, _per_page, _page))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_repo(self, name: str, private: bool = True, description: str | None = None, auto_init: bool = True) -> GitHubResponse[Repository]:
@@ -173,8 +283,34 @@ class GitHubDataSource:
             repo = self._sdk.get_user().create_repo(name=name, private=private, auto_init=auto_init, **params)
             return GitHubResponse(success=True, data=repo)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
+
+    # Issue-dependency endpoints shipped in a newer API version than the one
+    # PyGithub pins, so both go through the raw requester with an explicit
+    # version header. Responses are raw issue dicts (no typed wrapper exists).
+    _ISSUE_DEPENDENCIES_API_VERSION = "2026-03-10"
+
+    def _list_issue_dependencies(
+        self, owner: str, repo: str, number: int, direction: str
+    ) -> GitHubResponse[list[dict]]:
+        try:
+            _, data = self._sdk.requester.requestJsonAndCheck(
+                "GET",
+                f"/repos/{owner}/{repo}/issues/{number}/dependencies/{direction}",
+                headers={"X-GitHub-Api-Version": self._ISSUE_DEPENDENCIES_API_VERSION},
+            )
+            return GitHubResponse(success=True, data=data or [])
+        except Exception as e:
+            return self._err(e)
+
+    def list_issue_blocked_by(self, owner: str, repo: str, number: int) -> GitHubResponse[list[dict]]:
+        """Issues that block the given issue (it depends on them)."""
+        return self._list_issue_dependencies(owner, repo, number, "blocked_by")
+
+    def list_issue_blocking(self, owner: str, repo: str, number: int) -> GitHubResponse[list[dict]]:
+        """Issues the given issue blocks."""
+        return self._list_issue_dependencies(owner, repo, number, "blocking")
 
     def list_issues(
         self,
@@ -189,7 +325,7 @@ class GitHubDataSource:
         sort:str|None=None,
         direction:str|None=None,
     ) -> GitHubResponse[list[Issue]]:
-        """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
+        """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 100)."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(labels=labels, assignee=assignee, since=since,direction=direction,sort=sort)
@@ -197,16 +333,10 @@ class GitHubDataSource:
             if per_page is None and page is None:
                 issues = list(paginated)
                 return GitHubResponse(success=True, data=issues)
-            _per_page = 10 if per_page is None else min(50, max(1, per_page))
-            _page = 1 if page is None else max(1, page)
-            if hasattr(paginated, "get_page"):
-                page_items = paginated.get_page(_page - 1)
-            else:
-                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
-            issues = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
-            return GitHubResponse(success=True, data=issues)
+            _per_page, _page = self._clamp_page_args(per_page, page)
+            return GitHubResponse(success=True, data=self._slice_paginated(paginated, _per_page, _page))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def list_issues_only(
         self,
@@ -250,7 +380,7 @@ class GitHubDataSource:
             result = accumulator[skip : skip + _per_page]
             return GitHubResponse(success=True, data=result)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
         """Get a single issue."""
@@ -259,7 +389,7 @@ class GitHubDataSource:
             issue = r.get_issue(number)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_issue(self, owner: str, repo: str, title: str, body: str | None = None, assignees: Sequence[str] | None = None, labels: Sequence[str] | None = None) -> GitHubResponse[Issue]:
@@ -270,7 +400,7 @@ class GitHubDataSource:
             issue = r.create_issue(title=title, **params)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def update_issue(
@@ -294,7 +424,7 @@ class GitHubDataSource:
             issue.edit(**params)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def close_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
@@ -305,7 +435,7 @@ class GitHubDataSource:
             issue.edit(state="closed")
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def add_labels_to_issue(self, owner: str, repo: str, number: int, labels: Sequence[str]) -> GitHubResponse[list[Label]]:
@@ -316,7 +446,7 @@ class GitHubDataSource:
             out = list(issue.add_to_labels(*labels))
             return GitHubResponse(success=True, data=out)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_issue_comments(self, owner: str, repo: str, number: int,since:datetime.datetime|None=None) -> GitHubResponse[list[IssueComment]]:
@@ -330,7 +460,7 @@ class GitHubDataSource:
                 comments = list(issue.get_comments(since=since))
             return GitHubResponse(success=True, data=comments)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_issue_comment(self, owner: str, repo: str, number: int, comment_id: int) -> GitHubResponse[IssueComment]:
         """Get a single issue comment by ID."""
@@ -340,7 +470,7 @@ class GitHubDataSource:
             comment = issue.get_comment(id=comment_id)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> GitHubResponse[IssueComment]:
         """Create a comment on an issue."""
@@ -350,7 +480,7 @@ class GitHubDataSource:
             comment = issue.create_comment(body)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def edit_issue_comment(self, owner: str, repo: str, number: int, comment_id: int, body: str) -> GitHubResponse[IssueComment]:
         """Edit an existing issue comment."""
@@ -361,7 +491,7 @@ class GitHubDataSource:
             comment.edit(body)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def list_pulls(
         self,
@@ -370,27 +500,33 @@ class GitHubDataSource:
         state: str = "open",
         head: str | None = None,
         base: str | None = None,
+        sort: str | None = None,
+        direction: str | None = None,
         per_page: int | None = None,
         page: int | None = None,
     ) -> GitHubResponse[list[PullRequest]]:
-        """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 50)."""
+        """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 100).
+
+        ``sort``/``direction`` matter for incremental sync: this endpoint has no
+        ``since`` parameter, so ``sort='updated', direction='desc'`` is the only
+        way to page newest-first and stop at the checkpoint.
+
+        Objects returned here carry the LIST payload, which omits ``mergeable``,
+        ``mergeable_state`` and ``merged_by``. Reading those properties would
+        make PyGithub silently issue a per-PR GET, so callers must go through
+        ``raw_data`` instead of the typed attributes.
+        """
         try:
             r = self._repo(owner, repo)
-            params = self._not_none(head=head, base=base)
+            params = self._not_none(head=head, base=base, sort=sort, direction=direction)
             paginated = r.get_pulls(state=state, **params)
             if per_page is None and page is None:
                 pulls = list(paginated)
                 return GitHubResponse(success=True, data=pulls)
-            _per_page = 10 if per_page is None else min(50, max(1, per_page))
-            _page = 1 if page is None else max(1, page)
-            if hasattr(paginated, "get_page"):
-                page_items = paginated.get_page(_page - 1)
-            else:
-                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
-            pulls = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
-            return GitHubResponse(success=True, data=pulls)
+            _per_page, _page = self._clamp_page_args(per_page, page)
+            return GitHubResponse(success=True, data=self._slice_paginated(paginated, _per_page, _page))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_pull(self, owner: str, repo: str, number: int) -> GitHubResponse[PullRequest]:
@@ -400,7 +536,7 @@ class GitHubDataSource:
             pr = r.get_pull(number)
             return GitHubResponse(success=True, data=pr)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_pull_commits(self, owner: str, repo: str, number: int) -> GitHubResponse[list[Commit]]:
         """Get commits of a PR."""
@@ -410,7 +546,7 @@ class GitHubDataSource:
             commits = list(pr.get_commits())
             return GitHubResponse(success=True, data=commits)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_pull_file_changes(
         self,
@@ -568,7 +704,7 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=enhanced_files)
 
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def _generate_full_diff_for_file(
@@ -706,7 +842,7 @@ class GitHubDataSource:
             reviews = list(pr.get_reviews())
             return GitHubResponse(success=True, data=reviews)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_pull_request_review(
         self,
@@ -723,7 +859,7 @@ class GitHubDataSource:
             review = pr.create_review(event=event, body=body or "")
             return GitHubResponse(success=True, data=review)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def get_pull_review_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestComment]]:
         """Get review comments of a PR."""
@@ -733,7 +869,7 @@ class GitHubDataSource:
             comments = list(pr.get_review_comments())
             return GitHubResponse(success=True, data=comments)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_pull_request_review_comment(
         self,
@@ -761,7 +897,7 @@ class GitHubDataSource:
             comment = pr.create_review_comment(**params)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_pull_request_review_comment_reply(
         self, owner: str, repo: str, number: int, comment_id: int, body: str
@@ -773,7 +909,7 @@ class GitHubDataSource:
             comment = pr.create_review_comment_reply(comment_id=comment_id, body=body)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def edit_pull_request_review_comment(
         self, owner: str, repo: str, number: int, comment_id: int, body: str
@@ -786,7 +922,7 @@ class GitHubDataSource:
             comment.edit(body)
             return GitHubResponse(success=True, data=comment)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_pull(self, owner: str, repo: str, title: str, head: str, base: str, body: str | None = None, draft: bool = False) -> GitHubResponse[PullRequest]:
         """Create a PR."""
@@ -796,7 +932,7 @@ class GitHubDataSource:
             pr = r.create_pull(title=title, head=head, base=base, draft=draft, **params)
             return GitHubResponse(success=True, data=pr)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def merge_pull(self, owner: str, repo: str, number: int, commit_message: str | None = None, merge_method: str = "merge") -> GitHubResponse[bool]:
@@ -808,7 +944,7 @@ class GitHubDataSource:
             ok = pr.merge(**params)
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_releases(self, owner: str, repo: str) -> GitHubResponse[list[GitRelease]]:
@@ -818,7 +954,7 @@ class GitHubDataSource:
             rel = list(r.get_releases())
             return GitHubResponse(success=True, data=rel)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_release_by_tag(self, owner: str, repo: str, tag: str) -> GitHubResponse[GitRelease]:
@@ -828,7 +964,7 @@ class GitHubDataSource:
             rel = r.get_release(tag)
             return GitHubResponse(success=True, data=rel)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_release(self, owner: str, repo: str, tag: str, name: str | None = None, body: str | None = None, draft: bool = False, prerelease: bool = False) -> GitHubResponse[GitRelease]:
@@ -840,7 +976,7 @@ class GitHubDataSource:
             rel = r.create_git_release(tag=tag, name=_name, message=_msg, draft=draft, prerelease=prerelease)
             return GitHubResponse(success=True, data=rel)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_branches(self, owner: str, repo: str) -> GitHubResponse[list[Branch]]:
@@ -850,7 +986,7 @@ class GitHubDataSource:
             branches = list(r.get_branches())
             return GitHubResponse(success=True, data=branches)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_branch(self, owner: str, repo: str, branch: str) -> GitHubResponse[Branch]:
@@ -860,7 +996,7 @@ class GitHubDataSource:
             b = r.get_branch(branch)
             return GitHubResponse(success=True, data=b)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_tags(self, owner: str, repo: str) -> GitHubResponse[list[Tag]]:
@@ -870,17 +1006,19 @@ class GitHubDataSource:
             tags = list(r.get_tags())
             return GitHubResponse(success=True, data=tags)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
-    def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse[ContentFile]:
-        """Get file contents."""
+    def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str | None = None,
+    ) -> GitHubResponse[ContentFile | list[ContentFile]]:
+        """Get file contents. Returns a list when ``path`` names a directory."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(ref=ref)
             content = r.get_contents(path, **params)
             return GitHubResponse(success=True, data=content)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def create_file(self, owner: str, repo: str, path: str, message: str, content: bytes, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
         """Create a file."""
@@ -890,7 +1028,7 @@ class GitHubDataSource:
             result = r.create_file(path=path, message=message, content=content, **params)
             return GitHubResponse(success=True, data=result)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def update_file(self, owner: str, repo: str, path: str, message: str, content: bytes, sha: str, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
@@ -901,7 +1039,7 @@ class GitHubDataSource:
             result = r.update_file(path=path, message=message, content=content, sha=sha, **params)
             return GitHubResponse(success=True, data=result)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def delete_file(self, owner: str, repo: str, path: str, message: str, sha: str, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
@@ -912,17 +1050,25 @@ class GitHubDataSource:
             result = r.delete_file(path=path, message=message, sha=sha, **params)
             return GitHubResponse(success=True, data=result)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
-    def list_collaborators(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
-        """List collaborators."""
+    def list_collaborators(
+        self, owner: str, repo: str, affiliation: str | None = None
+    ) -> GitHubResponse[list[NamedUser]]:
+        """List collaborators. affiliation: 'outside' | 'direct' | 'all'.
+
+        Each returned ``NamedUser`` carries a ``.permissions`` (admin/maintain/
+        push/triage/pull booleans) reflecting its role on *this* repo — no
+        extra per-user permission call is needed.
+        """
         try:
             r = self._repo(owner, repo)
-            users = list(r.get_collaborators())
+            params = self._not_none(affiliation=affiliation)
+            users = list(r.get_collaborators(**params))
             return GitHubResponse(success=True, data=users)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def add_collaborator(self, owner: str, repo: str, username: str, permission: str = "push") -> GitHubResponse[bool]:
@@ -932,7 +1078,7 @@ class GitHubDataSource:
             ok = r.add_to_collaborators(username, permission=permission)
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def remove_collaborator(self, owner: str, repo: str, username: str) -> GitHubResponse[bool]:
@@ -942,18 +1088,179 @@ class GitHubDataSource:
             r.remove_from_collaborators(username)
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_repo_teams(self, owner: str, repo: str) -> GitHubResponse[list[Team]]:
-        """List teams with access to the repo."""
+        """List teams with access to the repo. Each Team's `.permission` reflects
+        its role (pull/triage/push/maintain/admin) on *this* repo specifically."""
         try:
             r = self._repo(owner, repo)
             teams = list(r.get_teams())
             return GitHubResponse(success=True, data=teams)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
+    # -----------------------
+    # Org members / teams (GitHub Teams connector)
+    # -----------------------
+
+    def list_user_orgs(self) -> GitHubResponse[list[Organization]]:
+        """List organizations the authenticated (token-owning) user belongs to.
+
+        Requires the ``read:org`` OAuth scope. Used for org-picker filter
+        options and to discover the sync scope when no ``ORG_IDS`` filter is
+        configured.
+        """
+        try:
+            me = self._sdk.get_user()
+            orgs = list(me.get_orgs())
+            return GitHubResponse(success=True, data=orgs)
+        except Exception as e:
+            return self._err(e)
+
+    def list_org_members(self, org: str, role: str = "all") -> GitHubResponse[list[NamedUser]]:
+        """List members of an organization. role: 'all' | 'admin' | 'member'."""
+        try:
+            o = self._sdk.get_organization(org)
+            members = list(o.get_members(role=role))
+            return GitHubResponse(success=True, data=members)
+        except Exception as e:
+            return self._err(e)
+
+    def list_org_outside_collaborators(self, org: str) -> GitHubResponse[list[NamedUser]]:
+        """List an org's outside collaborators.
+
+        Disjoint from ``list_org_members`` — GitHub excludes outside
+        collaborators from ``/orgs/{org}/members`` even though they hold real
+        repo permissions, so both listings are needed to enumerate every
+        principal that can appear in a repo's collaborator list.
+        """
+        try:
+            o = self._sdk.get_organization(org)
+            collaborators = list(o.get_outside_collaborators())
+            return GitHubResponse(success=True, data=collaborators)
+        except Exception as e:
+            return self._err(e)
+
+    def get_org_membership(self, org: str, username: str) -> GitHubResponse[Membership]:
+        """Get a single member's org-level role (admin/member) and state."""
+        try:
+            o = self._sdk.get_organization(org)
+            membership = o.get_membership(username)
+            return GitHubResponse(success=True, data=membership)
+        except Exception as e:
+            return self._err(e)
+
+    def list_org_teams(self, org: str) -> GitHubResponse[list[Team]]:
+        """List all teams in an organization."""
+        try:
+            o = self._sdk.get_organization(org)
+            teams = list(o.get_teams())
+            return GitHubResponse(success=True, data=teams)
+        except Exception as e:
+            return self._err(e)
+
+    def list_team_members(self, org: str, team_slug: str) -> GitHubResponse[list[NamedUser]]:
+        """List members of a team by slug."""
+        try:
+            o = self._sdk.get_organization(org)
+            team = o.get_team_by_slug(team_slug)
+            members = list(team.get_members())
+            return GitHubResponse(success=True, data=members)
+        except Exception as e:
+            return self._err(e)
+
+    # -----------------------
+    # Code indexing (Git Tree / Compare Commits)
+    # -----------------------
+
+    def get_git_tree(
+        self, owner: str, repo: str, tree_sha: str, recursive: bool = False
+    ) -> GitHubResponse[GitTree]:
+        """Fetch a git tree. ``recursive=True`` returns the full flat tree in one
+        call (subject to GitHub's 100,000-entry / 7MB truncation limit — check
+        ``.truncated`` on the returned ``GitTree``)."""
+        try:
+            r = self._repo(owner, repo)
+            tree = r.get_git_tree(sha=tree_sha, recursive=recursive)
+            return GitHubResponse(success=True, data=tree)
+        except Exception as e:
+            return self._err(e)
+
+    def compare_commits(self, owner: str, repo: str, base: str, head: str) -> GitHubResponse[Comparison]:
+        """Compare two commits/refs. ``.files`` is capped at 300 entries and
+        ``.status`` may be 'diverged' on a force-push/history rewrite — callers
+        must fall back to a full sync in either overflow case."""
+        try:
+            r = self._repo(owner, repo)
+            comparison = r.compare(base=base, head=head)
+            return GitHubResponse(success=True, data=comparison)
+        except Exception as e:
+            return self._err(e)
+
+    def get_git_blob(self, owner: str, repo: str, sha: str) -> GitHubResponse[GitBlob]:
+        """Fetch a blob by sha via the Git Data API.
+
+        The Contents API returns empty content for blobs over 1 MB; this
+        endpoint serves them (up to 100 MB), so it is the fallback for large
+        code files whose sha is already recorded.
+        """
+        try:
+            r = self._repo(owner, repo)
+            return GitHubResponse(success=True, data=r.get_git_blob(sha))
+        except Exception as e:
+            return self._err(e)
+
+    def list_commits_first_and_last(
+        self, owner: str, repo: str, path: str | None = None,
+    ) -> GitHubResponse[tuple[Commit | None, Commit | None]]:
+        """Return ``(newest, oldest)`` commit for a path without walking history.
+
+        ``PaginatedList`` indexing fetches only the page containing the index,
+        so this costs two requests regardless of how many commits exist —
+        materialising the full list costs one request per page.
+        """
+        try:
+            r = self._repo(owner, repo)
+            params = self._not_none(path=path)
+            paginated = r.get_commits(**params)
+            total = paginated.totalCount
+            if not total:
+                return GitHubResponse(success=True, data=(None, None))
+            newest = paginated[0]
+            oldest = newest if total == 1 else paginated[total - 1]
+            return GitHubResponse(success=True, data=(newest, oldest))
+        except Exception as e:
+            return self._err(e)
+
+    def list_commits(
+        self,
+        owner: str,
+        repo: str,
+        sha: str | None = None,
+        path: str | None = None,
+        since: datetime.datetime | None = None,
+        until: datetime.datetime | None = None,
+        author: str | None = None,
+    ) -> GitHubResponse[list[Commit]]:
+        """List commits, optionally filtered by branch/path/author/date range.
+        Used for commit-email extraction and file timestamp backfill."""
+        try:
+            r = self._repo(owner, repo)
+            params = self._not_none(sha=sha, path=path, since=since, until=until, author=author)
+            commits = list(r.get_commits(**params))
+            return GitHubResponse(success=True, data=commits)
+        except Exception as e:
+            return self._err(e)
+
+    def get_repo_by_id(self, repo_id: int) -> GitHubResponse[Repository]:
+        """Resolve a repository from its stable numeric ID (survives rename/transfer)."""
+        try:
+            r = self._sdk.get_repo(repo_id)
+            return GitHubResponse(success=True, data=r)
+        except Exception as e:
+            return self._err(e)
 
     def list_repo_hooks(self, owner: str, repo: str) -> GitHubResponse[list[Hook]]:
         """List repo webhooks."""
@@ -962,7 +1269,7 @@ class GitHubDataSource:
             hooks = list(r.get_hooks())
             return GitHubResponse(success=True, data=hooks)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_repo_hook(self, owner: str, repo: str, name: str, config: dict[str, str], events: Sequence[str] | None = None, active: bool = True) -> GitHubResponse[Hook]:
@@ -973,7 +1280,7 @@ class GitHubDataSource:
             hook = r.create_hook(name=name, config=config, events=ev, active=active)
             return GitHubResponse(success=True, data=hook)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def edit_repo_hook(self, owner: str, repo: str, hook_id: int, config: dict[str, str] | None = None, events: Sequence[str] | None = None, active: bool | None = None) -> GitHubResponse[Hook]:
@@ -985,7 +1292,7 @@ class GitHubDataSource:
             hook.edit(**params)
             return GitHubResponse(success=True, data=hook)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def ping_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
@@ -996,7 +1303,7 @@ class GitHubDataSource:
             hook.ping()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def test_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
@@ -1007,7 +1314,7 @@ class GitHubDataSource:
             hook.test()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_hook_deliveries(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[list[dict[str, object]]]:
@@ -1017,7 +1324,7 @@ class GitHubDataSource:
             deliveries = list(r.get_hook_deliveries(hook_id))
             return GitHubResponse(success=True, data=deliveries)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_hook_delivery(self, owner: str, repo: str, hook_id: int, delivery_id: int) -> GitHubResponse[dict[str, object]]:
@@ -1027,7 +1334,7 @@ class GitHubDataSource:
             delivery = r.get_hook_delivery(hook_id, delivery_id)
             return GitHubResponse(success=True, data=delivery)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def delete_repo_hook(self, owner: str, repo: str, hook_id: int) -> GitHubResponse[bool]:
@@ -1038,7 +1345,7 @@ class GitHubDataSource:
             hook.delete()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_workflows(self, owner: str, repo: str) -> GitHubResponse[list[Workflow]]:
@@ -1048,7 +1355,7 @@ class GitHubDataSource:
             workflows = list(r.get_workflows())
             return GitHubResponse(success=True, data=workflows)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[Workflow]:
@@ -1058,7 +1365,7 @@ class GitHubDataSource:
             wf = r.get_workflow(workflow_id)
             return GitHubResponse(success=True, data=wf)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def enable_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[bool]:
@@ -1068,7 +1375,7 @@ class GitHubDataSource:
             wf.enable()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def disable_workflow(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[bool]:
@@ -1078,7 +1385,7 @@ class GitHubDataSource:
             wf.disable()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def dispatch_workflow(self, owner: str, repo: str, workflow_id: int, ref: str, inputs: dict[str, str] | None = None) -> GitHubResponse[bool]:
@@ -1089,7 +1396,7 @@ class GitHubDataSource:
             ok = wf.create_dispatch(ref=ref, **params)
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_workflow_runs(self, owner: str, repo: str, workflow_id: int) -> GitHubResponse[list[WorkflowRun]]:
@@ -1099,7 +1406,7 @@ class GitHubDataSource:
             runs = list(wf.get_runs())
             return GitHubResponse(success=True, data=runs)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def rerun_workflow_run(self, owner: str, repo: str, run_id: int) -> GitHubResponse[bool]:
@@ -1109,7 +1416,7 @@ class GitHubDataSource:
             ok = run.rerun()
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> GitHubResponse[bool]:
@@ -1119,7 +1426,7 @@ class GitHubDataSource:
             ok = run.cancel()
             return GitHubResponse(success=True, data=bool(ok))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_deployment(self, owner: str, repo: str, ref: str, task: str = "deploy", auto_merge: bool = False, required_contexts: Sequence[str] | None = None, environment: str | None = None, description: str | None = None) -> GitHubResponse[Deployment]:
@@ -1130,7 +1437,7 @@ class GitHubDataSource:
             dep = r.create_deployment(ref=ref, **params)
             return GitHubResponse(success=True, data=dep)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_deployments(self, owner: str, repo: str) -> GitHubResponse[list[Deployment]]:
@@ -1140,7 +1447,7 @@ class GitHubDataSource:
             deps = list(r.get_deployments())
             return GitHubResponse(success=True, data=deps)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_deployment(self, owner: str, repo: str, deployment_id: int) -> GitHubResponse[Deployment]:
@@ -1150,7 +1457,7 @@ class GitHubDataSource:
             dep = r.get_deployment(deployment_id)
             return GitHubResponse(success=True, data=dep)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_deployment_status(self, owner: str, repo: str, deployment_id: int, state: str, target_url: str | None = None, description: str | None = None, environment: str | None = None, environment_url: str | None = None, auto_inactive: bool | None = None) -> GitHubResponse[DeploymentStatus]:
@@ -1161,7 +1468,7 @@ class GitHubDataSource:
             st = dep.create_status(state=state, **params)
             return GitHubResponse(success=True, data=st)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_commit(self, owner: str, repo: str, sha: str) -> GitHubResponse[Commit]:
@@ -1170,7 +1477,7 @@ class GitHubDataSource:
             c = self._repo(owner, repo).get_commit(sha=sha)
             return GitHubResponse(success=True, data=c)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_commit_status(self, owner: str, repo: str, sha: str, state: str, target_url: str | None = None, description: str | None = None, context: str | None = None) -> GitHubResponse[bool]:
@@ -1181,7 +1488,7 @@ class GitHubDataSource:
             commit.create_status(state=state, **params)
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_topics(self, owner: str, repo: str) -> GitHubResponse[list[str]]:
@@ -1191,7 +1498,7 @@ class GitHubDataSource:
             topics = list(r.get_topics())
             return GitHubResponse(success=True, data=topics)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def replace_topics(self, owner: str, repo: str, topics: Sequence[str]) -> GitHubResponse[list[str]]:
@@ -1201,7 +1508,7 @@ class GitHubDataSource:
             out = r.replace_topics(list(topics))
             return GitHubResponse(success=True, data=out)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_clones_traffic(self, owner: str, repo: str) -> GitHubResponse[dict[str, object]]:
@@ -1211,7 +1518,7 @@ class GitHubDataSource:
             data = r.get_clones_traffic()
             return GitHubResponse(success=True, data=data.__dict__ if hasattr(data, "__dict__") else data)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_views_traffic(self, owner: str, repo: str) -> GitHubResponse[dict[str, object]]:
@@ -1221,7 +1528,7 @@ class GitHubDataSource:
             data = r.get_views_traffic()
             return GitHubResponse(success=True, data=data.__dict__ if hasattr(data, "__dict__") else data)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_forks(self, owner: str, repo: str) -> GitHubResponse[list[Repository]]:
@@ -1231,7 +1538,7 @@ class GitHubDataSource:
             forks = list(r.get_forks())
             return GitHubResponse(success=True, data=forks)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_fork(self, owner: str, repo: str, org: str | None = None) -> GitHubResponse[Repository]:
@@ -1242,7 +1549,7 @@ class GitHubDataSource:
             fork = r.create_fork(**params)
             return GitHubResponse(success=True, data=fork)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_contributors(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
@@ -1252,7 +1559,7 @@ class GitHubDataSource:
             users = list(r.get_contributors())
             return GitHubResponse(success=True, data=users)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def list_assignees(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
@@ -1262,7 +1569,7 @@ class GitHubDataSource:
             users = list(r.get_assignees())
             return GitHubResponse(success=True, data=users)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[list[Invitation]]:
         """List pending repo invitations."""
@@ -1271,7 +1578,7 @@ class GitHubDataSource:
             inv = list(r.get_pending_invitations())
             return GitHubResponse(success=True, data=inv)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def remove_invitation(self, owner: str, repo: str, invitation_id: int) -> GitHubResponse[bool]:
@@ -1281,7 +1588,7 @@ class GitHubDataSource:
             r.remove_invitation(invitation_id)
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     # DependabotAlert not available in older PyGithub versions
@@ -1292,7 +1599,7 @@ class GitHubDataSource:
             alerts = list(r.get_dependabot_alerts())
             return GitHubResponse(success=True, data=alerts)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     # DependabotAlert not available in older PyGithub versions
@@ -1303,7 +1610,7 @@ class GitHubDataSource:
             alert = r.get_dependabot_alert(alert_number)
             return GitHubResponse(success=True, data=alert)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_git_ref(self, owner: str, repo: str, ref: str, sha: str) -> GitHubResponse[GitRef]:
@@ -1313,7 +1620,7 @@ class GitHubDataSource:
             gitref = r.create_git_ref(ref=ref, sha=sha)
             return GitHubResponse(success=True, data=gitref)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_git_ref(self, owner: str, repo: str, ref: str) -> GitHubResponse[GitRef]:
@@ -1323,7 +1630,7 @@ class GitHubDataSource:
             out = r.get_git_ref(ref)
             return GitHubResponse(success=True, data=out)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def delete_git_ref(self, owner: str, repo: str, ref: str) -> GitHubResponse[bool]:
@@ -1333,7 +1640,7 @@ class GitHubDataSource:
             ref_obj.delete()
             return GitHubResponse(success=True, data=True)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_git_blob(self, owner: str, repo: str, content: str, encoding: str = "utf-8") -> GitHubResponse[GitBlob]:
@@ -1343,7 +1650,7 @@ class GitHubDataSource:
             blob = r.create_git_blob(content, encoding)
             return GitHubResponse(success=True, data=blob)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_git_tree(self, owner: str, repo: str, tree: list[tuple[str, str, str]], base_tree: str | None = None) -> GitHubResponse[GitTree]:
@@ -1354,7 +1661,7 @@ class GitHubDataSource:
             out = r.create_git_tree(tree=tree, **params)
             return GitHubResponse(success=True, data=out)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def create_git_tag(self, owner: str, repo: str, tag: str, message: str, object_sha: str, type: str, tagger: dict[str, str] | None = None) -> GitHubResponse[GitTag]:
@@ -1365,7 +1672,7 @@ class GitHubDataSource:
             out = r.create_git_tag(tag=tag, message=message, object=object_sha, type=type, **params)
             return GitHubResponse(success=True, data=out)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def search_repositories(
@@ -1374,19 +1681,13 @@ class GitHubDataSource:
         per_page: int | None = None,
         page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
-        """Search repositories. Default 10 per page, max 50."""
+        """Search repositories. Default 10 per page, max 100."""
         try:
             paginated = self._sdk.search_repositories(query)
-            _per_page = 10 if per_page is None else min(50, max(1, per_page))
-            _page = 1 if page is None else max(1, page)
-            if hasattr(paginated, "get_page"):
-                page_items = paginated.get_page(_page - 1)
-            else:
-                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
-            res = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
-            return GitHubResponse(success=True, data=res)
+            _per_page, _page = self._clamp_page_args(per_page, page)
+            return GitHubResponse(success=True, data=self._slice_paginated(paginated, _per_page, _page))
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
 
     def get_rate_limit(self) -> GitHubResponse[RateLimit]:
@@ -1395,7 +1696,7 @@ class GitHubDataSource:
             limit = self._sdk.get_rate_limit()
             return GitHubResponse(success=True, data=limit)
         except Exception as e:
-            return GitHubResponse(success=False, error=str(e))
+            return self._err(e)
 
     # ----------------Other than SDK calls------------------ #
 
@@ -1413,25 +1714,47 @@ class GitHubDataSource:
                 img_data = resp.content
                 return GitHubResponse(success=True, data=img_data)
         except httpx.HTTPStatusError as e:
-            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
+            return GitHubResponse(
+                success=False,
+                error=f"HTTP {e.response.status_code} fetching image from {image_url}",
+                status_code=e.response.status_code,
+                exception_type=type(e).__name__,
+            )
         except Exception as e:
-            return GitHubResponse(success=False, error=f"Error fetching image from {image_url}: {str(e)}")
+            return GitHubResponse(
+                success=False,
+                error=f"Error fetching image from {image_url}: {str(e)}",
+                exception_type=type(e).__name__,
+            )
 
-    async def get_attachment_files_content(self,weburl:str) -> GitHubResponse[bytes]:
-        """Getting file content from weburl for attachments."""
-        GITHUB_TOKEN = self.token
+    async def get_attachment_files_content(
+        self, weburl: str, max_bytes: int | None = None,
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream raw bytes for an attachment from its web URL.
+
+        Yields 64 KB chunks so a large attachment never buffers whole in memory
+        (GitHub permits uploads up to 25 MB). Raises ``httpx.HTTPStatusError``
+        on non-2xx rather than returning a response envelope, so the caller's
+        eager-first-chunk wrapper can surface it as a clean HTTP error.
+        """
         headers = {
-                "Authorization": f"Bearer {GITHUB_TOKEN}",
-                "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
         }
-        file_data = b""
-        try:
-            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                resp = await client.get(weburl, headers=headers)
-                resp.raise_for_status()
-                file_data = resp.content
-                return GitHubResponse(success=True, data=file_data)
-        except httpx.HTTPStatusError as e:
-            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching file content from {weburl}")
-        except Exception as e:
-            return GitHubResponse(success=False, error=f"Error fetching file from {weburl}: {str(e)}")
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            async with client.stream("GET", weburl, headers=headers) as response:
+                response.raise_for_status()
+                if max_bytes is not None:
+                    declared = response.headers.get("Content-Length")
+                    if declared and int(declared) > max_bytes:
+                        raise ValueError(
+                            f"Attachment at {weburl} is {declared} bytes, over the {max_bytes}-byte limit"
+                        )
+                streamed = 0
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    streamed += len(chunk)
+                    if max_bytes is not None and streamed > max_bytes:
+                        raise ValueError(
+                            f"Attachment at {weburl} exceeded the {max_bytes}-byte limit while streaming"
+                        )
+                    yield chunk

@@ -23,6 +23,7 @@ class BlockType(str, Enum):
     IMAGE = "image"
     TABLE_ROW = "table_row"
     RECORD_SUMMARY = "record_summary"
+    CODE = "code"  # source-code symbol, emitted by CodeFileParser
     # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
@@ -32,7 +33,6 @@ class BlockType(str, Enum):
     VIDEO = "video"
     AUDIO = "audio"
     LINK = "link"
-    CODE = "code"
     BULLET_LIST = "bullet_list"
     NUMBERED_LIST = "numbered_list"
     HEADING = "heading"
@@ -176,6 +176,14 @@ class CodeMetadata(BaseModel):
     execution_context: Optional[str] = None
     is_executable: bool = False
     dependencies: Optional[list[str]] = None
+    # Populated by CodeFileParser for source files.
+    kind: Optional[str] = None  # function | method | class | interface | field | ...
+    signature: Optional[str] = None
+    docstring: Optional[str] = None
+    decorators: Optional[list[str]] = None
+    qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -241,8 +249,8 @@ class GroupType(str, Enum):
     CONVERSATION = "conversation"  # Slack / messaging platform conversation group
 
     VIEW = "view"
+    CODE = "code"  # class / interface / enum group in a source file
     # Do not use these types as currently not supported
-    CODE = "code"
     MEDIA = "media"
     FULL_CODE_PATCH = "full_code_patch"
 
@@ -266,8 +274,9 @@ class GroupSubType(str, Enum):
     THREAD = "thread"            # A threaded conversation under a parent message
     SINGLE_MESSAGE = "single_message"  # A standalone single message
     PR_FILE_CHANGE = "pr_file_change"
-    SQL_TABLE = "sql_table" 
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
+    CODE_CLASS = "code_class"  # class / interface / enum group in a source file
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
@@ -545,3 +554,27 @@ class BlocksContainer(BaseModel):
 
         other.blocks = []
         other.block_groups = []
+
+
+def wire_block_group_parent_children(block_groups: list[BlockGroup]) -> None:
+    """Set parent.children.block_group_ranges from each child's parent_index.
+
+    Keeps existing block_ranges on the parent when present. Without this the
+    container validator reports REVERSE_LINKAGE_MISSING, since parent_index is
+    a one-way pointer.
+    """
+    children_map: dict[int, list[int]] = {}
+    for bg in block_groups:
+        if bg.parent_index is not None:
+            children_map.setdefault(bg.parent_index, []).append(bg.index)
+
+    for bg in block_groups:
+        child_indices = children_map.get(bg.index)
+        if not child_indices:
+            continue
+        wired = BlockGroupChildren.from_indices(block_group_indices=sorted(child_indices))
+        if bg.children is None:
+            bg.children = wired
+        else:
+            bg.children.block_group_ranges = wired.block_group_ranges
+

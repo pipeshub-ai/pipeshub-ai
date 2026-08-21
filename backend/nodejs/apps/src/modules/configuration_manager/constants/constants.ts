@@ -87,13 +87,6 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     hidden: true,
   },
   {
-    key: 'ENABLE_CODE_EXECUTION',
-    label: 'Enable Code Execution',
-    description:
-      'Let agents run Python/TypeScript code in a sandboxed environment. Disable to hide coding_sandbox tools from all agents.',
-    defaultEnabled: true,
-  },
-  {
     key: 'ENABLE_MCP',
     label: 'Enable MCP Servers',
     description:

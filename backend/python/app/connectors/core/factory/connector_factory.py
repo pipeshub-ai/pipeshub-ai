@@ -83,6 +83,8 @@ from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
 
+from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.mariadb.connector import MariaDBConnector
@@ -131,6 +133,7 @@ class ConnectorFactory:
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
+        "githubteams": GitHubTeamsConnector,
         "mariadb": MariaDBConnector,
         "slackworkspace": SlackConnector,
         "slack": SlackIndividualConnector,

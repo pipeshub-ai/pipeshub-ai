@@ -8,6 +8,7 @@ the lazy-tool-disclosure threshold like any other tool."""
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,17 +19,17 @@ from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 
 @pytest.fixture(autouse=True)
-def _skills_disabled_mcp_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def _skills_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """See `test_factory_wiring.py`'s identical fixture for why: skills
     wiring would await real graph calls on `make_context`'s MagicMock
     `graph_provider` otherwise.
 
-    MCP tool loading is gated on `ENABLE_MCP` (defaults disabled) — opt in
-    via env so these wiring tests exercise `MCPToolProvider` without a
-    platform-settings stub.
+    MCP tool loading is gated on the `ENABLE_MCP` platform feature flag
+    (defaults disabled, read via `config_service` — no env override exists
+    anymore) — `_mcp_context()` below stubs `config_service.get_config` to
+    report it enabled for these wiring tests.
     """
     monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "false")
-    monkeypatch.setenv("PIPESHUB_ENABLE_MCP", "true")
 
 
 def _mcp_instance(instance_id: str = "inst-1", *, name: str = "JiraMCP", type_id: str = "jira_mcp") -> dict[str, Any]:
@@ -39,9 +40,18 @@ def _mcp_instance(instance_id: str = "inst-1", *, name: str = "JiraMCP", type_id
     }
 
 
+def _mcp_enabled_config_service() -> Any:
+    """Stubs the `/services/platform/settings` read `is_mcp_enabled()` does
+    via `read_platform_feature_flag()` so ENABLE_MCP resolves to True."""
+    cfg = MagicMock()
+    cfg.get_config = AsyncMock(return_value={"featureFlags": {"ENABLE_MCP": True}})
+    return cfg
+
+
 def _mcp_context(**overrides: Any) -> Any:
     defaults: dict[str, Any] = {
         "llm": FakeChatModel(),
+        "config_service": _mcp_enabled_config_service(),
         "mcp_servers": [{"instanceId": "inst-1", "name": "JiraMCP", "displayName": "Jira MCP", "typeId": "jira_mcp"}],
         "mcp_server_configs": {
             "inst-1": {"instance": _mcp_instance(), "auth": {}, "ownerId": "user-1"},
