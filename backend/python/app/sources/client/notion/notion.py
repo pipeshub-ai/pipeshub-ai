@@ -292,15 +292,17 @@ class NotionClient(IClient):
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
         resilience: Optional[ResiliencePolicy] = None,
+        connector_type: str = "notion",
     ) -> "NotionClient":
         """Build NotionClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+                as written by ``_get_oauth_config_path`` (e.g. "notionpersonal").
+                that registers its own app must look under its own key.
             resilience: Shared rate limit / retry policy owned by the connector
         Returns:
             NotionClient instance
-        """
         try:
             # Get Notion configuration from the configuration service
             config = await cls._get_connector_config(logger, config_service, connector_instance_id)
@@ -326,7 +328,7 @@ class NotionClient(IClient):
 
                 if needs_shared_config:
                     try:
-                        oauth_config_path = "/services/oauth/notion"
+                        oauth_config_path = f"/services/oauth/{connector_type}"
                         oauth_configs = await config_service.get_config(oauth_config_path, default=[])
 
                         # Find the matching shared config by ID

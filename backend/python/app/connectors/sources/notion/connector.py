@@ -45,7 +45,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.constants import CONNECTOR_NOTION_TEAM_ACCESS_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -167,9 +167,12 @@ class UnconvertibleImageError(Exception):
             )
         ])
     ])\
-    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
+    .with_info(CONNECTOR_NOTION_TEAM_ACCESS_INFO)\
     .configure(lambda builder: builder
         .with_icon(IconPaths.connector_icon(Connectors.NOTION.value))
+        # Names the personal alternative the info text points at. required=False:
+        # Notion team setup needs no admin access, so this only supplies the link.
+        .with_admin_access_required(False, personal_connector_type="Notion Personal")
         .with_realtime_support(False)
         .add_documentation_link(DocumentationLink(
             "Notion OAuth Setup",
@@ -268,6 +271,17 @@ class NotionConnector(BaseConnector):
         self.workspace_id: Optional[str] = None
         self.workspace_name: Optional[str] = None
 
+    def _oauth_config_type(self) -> str:
+        """Key this connector's shared OAuth apps are stored under.
+
+        Must match ``_get_oauth_config_path`` in the connectors router, which
+        normalizes the connector type the same way — otherwise a variant such as
+        Notion Personal looks up its ``oauthConfigId`` in the wrong list and
+        silently falls back to empty credentials.
+        """
+        name = self.connector_name
+        return (name.value if isinstance(name, Connectors) else str(name)).lower().replace(" ", "")
+
     async def init(self) -> bool:
         """Initialize the Notion connector with credentials and client."""
         try:
@@ -284,6 +298,7 @@ class NotionConnector(BaseConnector):
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
                 resilience=self.resilience
+                connector_type=self._oauth_config_type(),
             )
 
             # Initialize data source
@@ -985,7 +1000,7 @@ class NotionConnector(BaseConnector):
                     org_id=self.data_entities_processor.org_id,
                     name=self.workspace_name,
                     external_group_id=self.workspace_id,
-                    connector_name=Connectors.NOTION,
+                    connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
                     created_at=get_epoch_timestamp_in_ms(),
@@ -2201,7 +2216,7 @@ class NotionConnector(BaseConnector):
                         external_record_id=ext_id,
                         external_revision_id="minimal",
                         connector_id=self.connector_id,
-                        connector_name=Connectors.NOTION,
+                        connector_name=self.connector_name,
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BIN.value,
@@ -2232,7 +2247,7 @@ class NotionConnector(BaseConnector):
                         external_record_id=ext_id,
                         external_revision_id="minimal",
                         connector_id=self.connector_id,
-                        connector_name=Connectors.NOTION,
+                        connector_name=self.connector_name,
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BLOCKS.value,
@@ -3028,7 +3043,7 @@ class NotionConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 name=self.workspace_name,
                 external_group_id=self.workspace_id,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
                 created_at=get_epoch_timestamp_in_ms(),
@@ -3093,7 +3108,7 @@ class NotionConnector(BaseConnector):
                 return None
 
             return AppUser(
-                app_name=Connectors.NOTION,
+                app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_id,
                 org_id=self.data_entities_processor.org_id,
@@ -3333,7 +3348,7 @@ class NotionConnector(BaseConnector):
                 parent_record_type=parent_record_type,
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.BLOCKS.value,
                 preview_renderable=False,
@@ -3457,7 +3472,7 @@ class NotionConnector(BaseConnector):
                 external_record_group_id=self.workspace_id or "",
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 signed_url=file_url,
@@ -3550,7 +3565,7 @@ class NotionConnector(BaseConnector):
                 external_record_group_id=self.workspace_id or "",
                 version=1,
                 origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.NOTION,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 mime_type=mime_type,
                 signed_url=file_url,
@@ -3769,7 +3784,7 @@ class NotionConnector(BaseConnector):
                     external_record_id=external_id,
                     external_revision_id="temporary",
                     connector_id=self.connector_id,
-                    connector_name=Connectors.NOTION,
+                    connector_name=self.connector_name,
                     record_group_type=RecordGroupType.NOTION_WORKSPACE,
                     external_record_group_id=self.workspace_id or "",
                     mime_type=MimeTypes.BLOCKS.value,

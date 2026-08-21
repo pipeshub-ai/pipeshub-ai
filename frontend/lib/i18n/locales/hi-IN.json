@@ -1674,6 +1674,7 @@
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
+      "personalConnectorLink": "इसके बजाय {{name}} का उपयोग करें →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1782,6 +1783,7 @@
         "redirectUrlHelperNonOauth": "अपने पहचान प्रदाता में रीडायरेक्ट/कॉलबैक URL पंजीकृत करें, फिर नीचे दिए गए फ़ील्ड को पूरा करें।",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "ईमेल दृश्यता सेटअप गाइड →",
+        "personalConnectorLink": "इसके बजाय {{name}} का उपयोग करें →",
         "oauthAppNameLabel": "OAuth app name",
         "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
         "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",

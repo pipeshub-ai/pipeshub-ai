@@ -1676,6 +1676,7 @@
       "configPanelTitle": "{{name}}-Konfiguration",
       "instance": "Instanz",
       "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
+      "personalConnectorLink": "Stattdessen {{name}} verwenden →",
       "toasts": {
         "loadError": "Konnektoren konnten nicht geladen werden",
         "syncStarted": "{{name}} wird jetzt synchronisiert",
@@ -1784,6 +1785,7 @@
         "redirectUrlHelperNonOauth": "Tragen Sie die Redirect-/Callback-URL in Ihrem Identitätsanbieter ein und vervollständigen Sie anschließend die Felder unten.",
         "noAuthRequired": "Für diesen Konnektor ist keine Authentifizierung erforderlich",
         "emailVisibilityDocLink": "Handbuch zur E-Mail-Sichtbarkeit →",
+        "personalConnectorLink": "Stattdessen {{name}} verwenden →",
         "oauthAppNameLabel": "OAuth-App-Name",
         "oauthAppNamePlaceholder": "z. B. {{name}} OAuth",
         "oauthAppNameHelper": "Dieser Name wird mit der OAuth-Registrierung gespeichert und angezeigt, wenn Benutzer eine gespeicherte App für andere Instanzen auswählen.",

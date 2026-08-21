@@ -26,6 +26,10 @@ import {
   readRegistrationValueForAuthField,
 } from '../../utils/oauth-registration-values';
 import { getConnectorInfoText, getConnectorDocumentationUrl } from '../../utils/connector-metadata';
+import {
+  getPersonalConnectorRedirectType,
+  personalConnectorHref,
+} from '../../utils/admin-access-helpers';
 import { useTranslation } from 'react-i18next';
 
 export function AuthenticateTab() {
@@ -65,6 +69,13 @@ export function AuthenticateTab() {
     if (!ty) return null;
     const fromRegistry = registryConnectors.find((c) => c.type === ty);
     return getConnectorInfoText(fromRegistry ?? panelConnector);
+  }, [registryConnectors, panelConnector]);
+
+  const personalConnectorType = useMemo(() => {
+    const ty = panelConnector?.type;
+    if (!ty) return null;
+    const fromRegistry = registryConnectors.find((c) => c.type === ty);
+    return getPersonalConnectorRedirectType(fromRegistry ?? panelConnector);
   }, [registryConnectors, panelConnector]);
 
   const currentSchemaFields = useMemo(
@@ -442,6 +453,21 @@ export function AuthenticateTab() {
                     }}
                   >
                     {t('workspace.connectors.authTab.emailVisibilityDocLink')}
+                  </a>
+                </>
+              )}
+              {personalConnectorType && (
+                <>
+                  {'\n\n'}
+                  <a
+                    href={personalConnectorHref(personalConnectorType)}
+                    style={{
+                      color: 'var(--accent-11)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {t('workspace.connectors.authTab.personalConnectorLink', { name: personalConnectorType })}
                   </a>
                 </>
               )}

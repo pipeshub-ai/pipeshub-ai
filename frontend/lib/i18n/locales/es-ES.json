@@ -1673,6 +1673,7 @@
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+      "personalConnectorLink": "Usar {{name}} en su lugar →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1781,6 +1782,7 @@
         "redirectUrlHelperNonOauth": "Registra la URL de redirección/callback en tu proveedor de identidad y luego completa los campos siguientes.",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "Guía de configuración de visibilidad del correo →",
+        "personalConnectorLink": "Usar {{name}} en su lugar →",
         "oauthAppNameLabel": "Nombre de la app OAuth",
         "oauthAppNamePlaceholder": "p. ej., {{name}} OAuth",
         "oauthAppNameHelper": "Este nombre se guarda con el registro OAuth y aparece cuando los usuarios eligen una app guardada para otras instancias.",
