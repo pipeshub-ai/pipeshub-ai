@@ -27,8 +27,13 @@ def resolve_custom_instructions(
     """Selects the org-level "Custom Instructions" text matching the active
     chat mode. Returns `None` when unset/blank so the prompt builder omits
     the section instead of rendering an empty header."""
+    if not isinstance(system_prompts_config, dict):
+        return None
     key = _CUSTOM_INSTRUCTIONS_CONFIG_KEY.get(policy.system_prompt_key, "")
     if not key:
         return None
-    prompt = (system_prompts_config.get(key) or "").strip()
+    value = system_prompts_config.get(key)
+    if not isinstance(value, str):
+        return None
+    prompt = value.strip()
     return prompt or None

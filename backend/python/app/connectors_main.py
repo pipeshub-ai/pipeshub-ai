@@ -515,7 +515,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # contract: connectors_map must be populated before the sync consumer
     # begins processing events.
     async def _post_startup() -> None:
-        await pre_sync_hook(app_container, logger)
+        try:
+            await pre_sync_hook(app_container, logger)
+        except Exception as e:
+            logger.error(f"❌ pre_sync_hook failed: {str(e)}", exc_info=True)
 
         try:
             await resume_sync_services(app_container, data_store)

@@ -329,6 +329,12 @@ class RedshiftClient:
 
         from app.edition_config import get_toolset_by_id
         redshift_instance = await get_toolset_by_id(instance_id, config_service)
+        if not isinstance(redshift_instance, dict):
+            raise ValueError(
+                f"Redshift toolset instance '{instance_id}' not found or inaccessible. "
+                f"Please verify the instance exists and is properly configured."
+            )
+
         def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
             auth_config = config.get("auth", {}) or {}
             credentials_config = config.get("credentials", {}) or {}

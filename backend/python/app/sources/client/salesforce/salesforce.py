@@ -222,7 +222,7 @@ class SalesforceClient(IClient):
                 config_service=config_service,
                 logger=logger,
             )
-            instance_url = oauth_config.get("instance_url")
+            instance_url = oauth_config.get("instance_url") or oauth_config.get("instanceUrl")
             if isinstance(instance_url, str):
                 instance_url = instance_url.strip()
 

@@ -148,12 +148,15 @@ async def get_toolset_by_id(
     config_service: ConfigurationService,
     org_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Fetch a toolset instance by ID."""
-    del org_id
+    """Fetch a toolset instance by ID, optionally scoped to an org."""
     try:
         instances = await config_service.get_config(DEFAULT_TOOLSET_INSTANCES_PATH, default=[])
         if isinstance(instances, list):
-            return next((inst for inst in instances if inst.get("_id") == instance_id), None)
+            for inst in instances:
+                if inst.get("_id") == instance_id:
+                    if org_id is not None and inst.get("orgId") != org_id:
+                        return None
+                    return inst
         return None
     except Exception as e:
         logger.error(f"Failed to fetch toolset instance '{instance_id}': {e}", exc_info=True)

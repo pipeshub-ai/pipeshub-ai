@@ -3082,7 +3082,7 @@
       "errors": {
         "firstNameRequired": "First name is required.",
         "lastNameRequired": "Last name is required.",
-        "orgNameRequired": "Organization name is required.",
+        "orgNameRequired": "Workspace name is required.",
         "emailRequired": "Email is required.",
         "emailInvalid": "Please enter a valid email address.",
         "passwordRequired": "Password is required.",

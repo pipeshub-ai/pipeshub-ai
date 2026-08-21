@@ -2498,6 +2498,7 @@ async def list_toolset_oauth_configs(
     )
 
     resolver = _get_oauth_config_resolver(request)
+    configs_from_resolver = False
     if resolver is not None:
         try:
             configs = await resolver.resolve_all(
@@ -2505,6 +2506,7 @@ async def list_toolset_oauth_configs(
                 org_id=org_id,
                 inheritance_flag="toolsets",
             )
+            configs_from_resolver = True
         except Exception as e:
             logger.warning(f"OAuth config inheritance resolve_all failed: {e}")
             configs = await _get_oauth_configs_for_type(toolset_type, config_service)
@@ -2514,7 +2516,7 @@ async def list_toolset_oauth_configs(
     org_configs = []
     for cfg in configs:
         cfg_org = cfg.get("orgId")
-        if resolver is None and cfg_org != org_id:
+        if not configs_from_resolver and cfg_org != org_id:
             continue
         is_inherited = bool(cfg_org and cfg_org != org_id)
         entry: dict[str, Any] = {k: v for k, v in cfg.items() if k != "config"}
