@@ -9,6 +9,7 @@ source venv/bin/activate || { echo "Failed to activate venv"; exit 1; }
 
 # Function to cleanly shut down all background processes
 cleanup() {
+    local status=${1:-0}
     echo "Shutting down all python services..."
     # Suppress output if PIDs don't exist
     [ -n "$PID_EMBED" ] && kill -TERM $PID_EMBED 2>/dev/null
@@ -17,9 +18,9 @@ cleanup() {
     [ -n "$PID_QUERY" ] && kill -TERM $PID_QUERY 2>/dev/null
     [ -n "$PID_DOC" ] && kill -TERM $PID_DOC 2>/dev/null
     
-    wait $PID_EMBED $PID_CONN $PID_INDEX $PID_QUERY $PID_DOC 2>/dev/null
+    wait $PID_EMBED $PID_CONN $PID_INDEX $PID_QUERY $PID_DOC 2>/dev/null || true
     echo "All services stopped."
-    exit 0
+    exit $status
 }
 
 # Trap Ctrl+C (SIGINT) and termination (SIGTERM) to call cleanup
@@ -49,11 +50,17 @@ echo "Started docling service (PID: $PID_DOC)"
 echo "All services are running! Press Ctrl+C to stop them all."
 
 # Wait for any child process to exit. If one fails, terminate everything.
-while wait -n; do
-    status=$?
-    if [ $status -ne 0 ]; then
+while true; do
+    if wait -n; then
+        echo "A service exited successfully. Stopping remaining services..."
+        cleanup 0
+    else
+        status=$?
+        if [ $status -eq 127 ]; then
+            # No more background jobs running
+            exit 0
+        fi
         echo "A service failed with status $status. Triggering cleanup..."
-        cleanup
-        exit $status
+        cleanup $status
     fi
 done

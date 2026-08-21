@@ -5,7 +5,7 @@ echo "Starting Redis..."
 docker run -d --name redis --restart always -p 127.0.0.1:6379:6379 redis:bookworm
 
 echo "Starting Qdrant..."
-docker run -d -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 -e QDRANT__SERVICE__API_KEY="${QDRANT_API_KEY:-your_qdrant_secret_api_key}" --name qdrant qdrant/qdrant:v1.15
+docker run -d --restart always -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 -e QDRANT__SERVICE__API_KEY="${QDRANT_API_KEY:-your_qdrant_secret_api_key}" --name qdrant qdrant/qdrant:v1.15
 
 echo "Starting ETCD..."
 docker run -d --name etcd-server --restart always -p 127.0.0.1:2379:2379 -p 127.0.0.1:2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \
@@ -49,6 +49,12 @@ check_port() {
   local name=$2
   local retries=30
   local wait=2
+
+  if ! command -v nc >/dev/null 2>&1; then
+    echo "ERROR: nc (netcat) is required but not installed." >&2
+    exit 1
+  fi
+
   echo -n "Waiting for $name on port $port..."
   while ! nc -z 127.0.0.1 $port >/dev/null 2>&1; do
     retries=$((retries - 1))
