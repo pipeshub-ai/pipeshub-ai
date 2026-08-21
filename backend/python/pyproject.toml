@@ -291,6 +291,7 @@ dependencies = [
     "python-jose==3.4.0",
     "python-multipart==0.0.31",
     "pysbd==0.3.4",
+    "yasbd-lib>=0.15.0",
     "lingua-language-detector==2.2.0",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
