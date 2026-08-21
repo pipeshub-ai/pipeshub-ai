@@ -57,7 +57,14 @@ def _page_needs_ocr(page: Any) -> bool:
             else 0.0
         )
         low_density = text_density < _LOW_DENSITY_THRESHOLD
-        return (has_minimal_text and has_significant_images) or low_density
+        
+        image_area_ratio = 0.0
+        if images and page_area > 0:
+            total_image_area = sum((img.get("width") or 0) * (img.get("height") or 0) for img in images)
+            image_area_ratio = total_image_area / page_area
+        is_image_heavy = image_area_ratio > 0.5
+        
+        return (has_minimal_text and has_significant_images) or low_density or is_image_heavy
     except Exception:  # noqa: BLE001
         return True
 

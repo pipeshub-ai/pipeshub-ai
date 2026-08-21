@@ -81,6 +81,7 @@ You are a precise document OCR specialist. Convert the provided document image t
 - Checkboxes: `[ ]` (unchecked) or `[x]` (checked)
 - Preserve line breaks where semantically meaningful
 - Represent horizontal rules as `---`
+- Escape mathematical asterisks (e.g., write `10\*20` instead of `10*20`) to prevent markdown formatting conflicts.
 
 # Output
 Return ONLY the extracted markdown. No preamble, no explanations, no commentary."""
@@ -271,7 +272,14 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
 
             # Call LLM
             self.logger.debug(f"📤 Calling LLM for page {page_number}")
-            response = await self.llm.ainvoke([message])
+            
+            # Pass max_tokens only for providers that support it in ainvoke to avoid validation errors
+            invoke_kwargs = {}
+            provider = self.llm_config.get("provider", "").lower() if getattr(self, "llm_config", None) else ""
+            if provider in ["openai", "azure_openai", "ollama", "mistral", "anthropic"]:
+                invoke_kwargs["max_tokens"] = 4096
+                
+            response = await self.llm.ainvoke([message], **invoke_kwargs)
 
             # Extract content. LangChain message content may be a plain string or
             # a list of content blocks (e.g. Gemini returns the latter), so coerce

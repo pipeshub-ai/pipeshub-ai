@@ -50,8 +50,14 @@ class OCRStrategy(ABC):
                 else 0
             )
             low_density = text_density < LOW_DENSITY_THRESHOLD
+            
+            image_area_ratio = 0.0
+            if images and page_area > 0:
+                total_image_area = sum((img.get("width") or 0) * (img.get("height") or 0) for img in images)
+                image_area_ratio = total_image_area / page_area
+            is_image_heavy = image_area_ratio > 0.5
 
-            return (has_minimal_text and has_significant_images) or low_density
+            return (has_minimal_text and has_significant_images) or low_density or is_image_heavy
 
         except Exception as e:
             logger.warning(f"❌ Error in needs_ocr function: {str(e)}")
