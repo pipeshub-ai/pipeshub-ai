@@ -1191,11 +1191,9 @@ class TestCheckAndFetchUpdatedRecord:
 class TestDropboxIndividualMisc:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch(f"{MODULE}.DataSourceEntitiesProcessor") as MockProc, \
-             patch(f"{MODULE}.DropboxIndividualApp"):
-            proc = AsyncMock()
-            proc.initialize = AsyncMock()
-            MockProc.return_value = proc
+        with patch(f"{MODULE}.DropboxIndividualApp"):
+            processor = MagicMock()
+            processor.org_id = "org-1"
             conn = await DropboxIndividualConnector.create_connector(
                 logging.getLogger("test"),
                 MagicMock(),
@@ -1203,9 +1201,9 @@ class TestDropboxIndividualMisc:
                 "conn-new",
                 "personal",
                 "creator",
+                data_entities_processor=processor,
             )
             assert isinstance(conn, DropboxIndividualConnector)
-            proc.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_filter_options_not_implemented(self):

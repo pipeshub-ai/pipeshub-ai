@@ -398,21 +398,16 @@ class TestJiraDataCenterCreateConnector:
         dsp = MagicMock()
         cs = MagicMock()
 
-        with patch(
-            "app.connectors.sources.atlassian.jira_data_center.connector.DataSourceEntitiesProcessor"
-        ) as DepCls:
-            dep_instance = MagicMock()
-            dep_instance.initialize = AsyncMock()
-            DepCls.return_value = dep_instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            conn = await JiraDataCenterConnector.create_connector(
-                logger, dsp, cs, "new-dc-id", "team", "u1"
-            )
+        conn = await JiraDataCenterConnector.create_connector(
+            logger, dsp, cs, "new-dc-id", "team", "u1",
+            data_entities_processor=processor,
+        )
 
-        DepCls.assert_called_once()
         assert isinstance(conn, JiraDataCenterConnector)
         assert conn.connector_id == "new-dc-id"
-        dep_instance.initialize.assert_awaited_once()
 
 
 # -----------------------------------------------------------------------------

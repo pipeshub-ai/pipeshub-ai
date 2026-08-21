@@ -1723,25 +1723,22 @@ class TestCheckAndFetchUpdatedAttachment:
 class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_factory(self):
-        with patch("app.connectors.sources.atlassian.confluence_datacenter.connector.DataSourceEntitiesProcessor") as mock_dep:
-            mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
-            mock_instance.org_id = "org-1"
-            mock_dep.return_value = mock_instance
+        logger = logging.getLogger("test")
+        dsp = MagicMock()
+        mock_tx = MagicMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        dsp.transaction.return_value = mock_tx
+        cs = MagicMock()
 
-            logger = logging.getLogger("test")
-            dsp = MagicMock()
-            mock_tx = MagicMock()
-            mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-            mock_tx.__aexit__ = AsyncMock(return_value=None)
-            dsp.transaction.return_value = mock_tx
-            cs = MagicMock()
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await ConfluenceDataCenterConnector.create_connector(
-                logger, dsp, cs, "c1", "team", "test-user-id"
-            )
-            assert isinstance(connector, ConfluenceDataCenterConnector)
-            mock_instance.initialize.assert_awaited_once()
+        connector = await ConfluenceDataCenterConnector.create_connector(
+            logger, dsp, cs, "c1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, ConfluenceDataCenterConnector)
 
 
 # ===========================================================================

@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -289,24 +289,19 @@ class TestPersonalConnectorLifecycle:
         assert GithubConnector.creator_user_permission(fake) is perm
 
     async def test_create_connector_builds_personal_instance(self) -> None:
-        with patch(
-            "app.connectors.sources.github.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            MockProcessor.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await GithubConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=MagicMock(),
-                connector_id="conn-personal-1",
-                scope="personal",
-                created_by="creator-1",
-            )
+        connector = await GithubConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="conn-personal-1",
+            scope="personal",
+            created_by="creator-1",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(connector, GithubConnector)
         assert connector.connector_id == "conn-personal-1"
         assert connector.created_by == "creator-1"
-        mock_dep.initialize.assert_awaited_once()

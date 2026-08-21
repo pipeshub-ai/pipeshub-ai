@@ -1027,24 +1027,19 @@ class TestApiHelpersAndFactory:
 
     @pytest.mark.asyncio
     async def test_create_connector_factory_initializes_data_processor(self):
-        with patch(
-            "app.connectors.sources.microsoft.outlook_individual.connector.DataSourceEntitiesProcessor"
-        ) as mock_processor_cls:
-            processor = MagicMock()
-            processor.initialize = AsyncMock()
-            processor.org_id = "org-1"
-            mock_processor_cls.return_value = processor
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await OutlookIndividualConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=MagicMock(),
-                connector_id="conn-factory-1",
-                scope="PERSONAL",
-                created_by="test-user-id",
-            )
+        connector = await OutlookIndividualConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=MagicMock(),
+            connector_id="conn-factory-1",
+            scope="PERSONAL",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
 
-        processor.initialize.assert_awaited_once()
         assert isinstance(connector, OutlookIndividualConnector)
 
 

@@ -5231,21 +5231,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.outlook.connector.DataSourceEntitiesProcessor") as mock_dep:
-            instance = MagicMock()
-            instance.initialize = AsyncMock()
-            instance.org_id = "org-1"
-            mock_dep.return_value = instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = logging.getLogger("test")
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = logging.getLogger("test")
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            connector = await OutlookConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(connector, OutlookConnector)
-            instance.initialize.assert_awaited_once()
+        connector = await OutlookConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, OutlookConnector)
 
 
 # ===========================================================================

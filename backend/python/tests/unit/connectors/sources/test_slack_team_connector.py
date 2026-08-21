@@ -1489,19 +1489,13 @@ class TestSlackConnectorCreateConnector:
     async def test_create_connector_calls_initialize(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 
-        dep = MagicMock()
-        dep.initialize = AsyncMock()
-        with (
-            patch(
-                "app.connectors.sources.slack.team.connector.DataSourceEntitiesProcessor",
-                return_value=dep,
-            ),
-            patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None),
-        ):
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        with patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None):
             obj = await SlackConnector.create_connector(
-                MagicMock(), MagicMock(), MagicMock(), "cid-1", "team", "user-1"
+                MagicMock(), MagicMock(), MagicMock(), "cid-1", "team", "user-1",
+                data_entities_processor=processor,
             )
-        dep.initialize.assert_awaited_once()
         assert isinstance(obj, SlackConnector)
 
 
@@ -4798,18 +4792,14 @@ class TestCreateConnector:
         logger = MagicMock()
         dsp = MagicMock()
         cfg = MagicMock()
-        with (
-            patch("app.connectors.sources.slack.team.connector.DataSourceEntitiesProcessor") as D,
-            patch.object(SlackConnector, "__init__", lambda self, *a, **k: None),
-        ):
-            dep = MagicMock()
-            dep.initialize = AsyncMock()
-            D.return_value = dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        with patch.object(SlackConnector, "__init__", lambda self, *a, **k: None):
             conn = await SlackConnector.create_connector(
                 logger, dsp, cfg, "cid", "team", "me",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SlackConnector)
-        dep.initialize.assert_awaited_once()
 
 
 class TestSlackTeamConnectorCoverageBoost:

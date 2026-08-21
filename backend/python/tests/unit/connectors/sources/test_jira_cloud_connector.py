@@ -2502,17 +2502,14 @@ class TestCreateConnector:
         cs = MagicMock()
         cs.get_config = AsyncMock()
 
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.DataSourceEntitiesProcessor") as MockDep:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            MockDep.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await JiraConnector.create_connector(
-                logger, dsp, cs, "conn-id", "team", "test-user-id"
-            )
-            assert isinstance(connector, JiraConnector)
-            mock_dep.initialize.assert_awaited_once()
+        connector = await JiraConnector.create_connector(
+            logger, dsp, cs, "conn-id", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, JiraConnector)
 
 
 # ===========================================================================

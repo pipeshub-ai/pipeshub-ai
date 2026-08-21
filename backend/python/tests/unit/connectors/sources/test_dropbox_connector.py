@@ -1806,19 +1806,18 @@ class TestDropboxMisc:
 class TestDropboxCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await DropboxConnector.create_connector(
-                logger=logging.getLogger("test"),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-dbx",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, DropboxConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await DropboxConnector.create_connector(
+            logger=logging.getLogger("test"),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-dbx",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, DropboxConnector)
 
 # =============================================================================
 # Merged from test_dropbox_connector_full_coverage.py
@@ -4943,12 +4942,10 @@ class TestCheckAndFetchUpdatedRecord:
 # ===========================================================================
 class TestCreateConnector:
     @patch("app.connectors.sources.dropbox.connector.DropboxApp")
-    @patch("app.connectors.sources.dropbox.connector.DataSourceEntitiesProcessor")
-    async def test_create(self, mock_processor_cls, mock_app, mock_logger_fullcov,
+    async def test_create(self, mock_app, mock_logger_fullcov,
                           mock_data_store_provider, mock_config_service):
-        proc = MagicMock()
-        proc.initialize = AsyncMock()
-        mock_processor_cls.return_value = proc
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         conn = await DropboxConnector.create_connector(
             mock_logger_fullcov,
@@ -4957,9 +4954,9 @@ class TestCreateConnector:
             "conn-123",
             "team",
             "test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(conn, DropboxConnector)
-        proc.initialize.assert_called_once()
 
 
 # ===========================================================================

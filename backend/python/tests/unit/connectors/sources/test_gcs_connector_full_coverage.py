@@ -1425,11 +1425,9 @@ class TestRunIncrementalSync95:
 class TestCreateConnector95:
     @pytest.mark.asyncio
     async def test_create_connector(self, mock_logger, mock_data_store_provider, mock_config_service):
-        with patch("app.connectors.sources.google_cloud_storage.connector.GCSApp"), \
-             patch("app.connectors.sources.google_cloud_storage.connector.GCSDataSourceEntitiesProcessor") as MockProc:
-            mock_proc = MagicMock()
-            mock_proc.initialize = AsyncMock()
-            MockProc.return_value = mock_proc
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        with patch("app.connectors.sources.google_cloud_storage.connector.GCSApp"):
             result = await GCSConnector.create_connector(
                 logger=mock_logger,
                 data_store_provider=mock_data_store_provider,
@@ -1437,9 +1435,9 @@ class TestCreateConnector95:
                 connector_id="gcs-new-1",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert isinstance(result, GCSConnector)
-            mock_proc.initialize.assert_awaited_once()
 
 
 class TestGetGcsRevisionId95:

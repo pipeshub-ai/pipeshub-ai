@@ -1717,25 +1717,19 @@ class TestCreateConnector:
         logger = logging.getLogger("test")
         dsp = MagicMock()
         cs = MagicMock()
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-        with patch(
-            "app.connectors.sources.mariadb.connector.DataSourceEntitiesProcessor"
-        ) as mock_dep_cls:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            mock_dep_cls.return_value = mock_dep
-
-            connector = await MariaDBConnector.create_connector(
-                logger=logger,
-                data_store_provider=dsp,
-                config_service=cs,
-                connector_id="conn-test",
-            )
+        connector = await MariaDBConnector.create_connector(
+            logger=logger,
+            data_store_provider=dsp,
+            config_service=cs,
+            connector_id="conn-test",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(connector, MariaDBConnector)
         assert connector.connector_id == "conn-test"
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===========================================================================

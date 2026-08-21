@@ -2325,19 +2325,13 @@ class TestCreateConnector:
     async def test_create_connector(self):
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
-        with (
-            patch(
-                "app.connectors.sources.slack.individual.connector.DataSourceEntitiesProcessor",
-            ) as dep_cls,
-            _patch_base_connector_init(),
-        ):
-            dep = MagicMock()
-            dep.org_id = "o"
-            dep.initialize = AsyncMock()
-            dep_cls.return_value = dep
+        with _patch_base_connector_init():
+            processor = MagicMock()
+            processor.org_id = "org-1"
             conn = await SlackIndividualConnector.create_connector(
                 MagicMock(), MagicMock(), MagicMock(), "cid2",
                 "personal", "user-1",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SlackIndividualConnector)
 

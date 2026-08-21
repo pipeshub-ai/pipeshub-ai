@@ -4122,13 +4122,10 @@ class TestGroupFilterEdgeCases:
 
 
 class TestCreateConnector:
-    @patch("app.connectors.sources.zammad.connector.DataSourceEntitiesProcessor")
     @patch("app.connectors.sources.zammad.connector.ZammadApp")
-    async def test_factory_method(self, mock_app, mock_dep, mock_data_store_provider_fullcov, mock_config_service):
-        mock_proc = MagicMock()
-        mock_proc.org_id = "org-1"
-        mock_proc.initialize = AsyncMock()
-        mock_dep.return_value = mock_proc
+    async def test_factory_method(self, mock_app, mock_data_store_provider_fullcov, mock_config_service):
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
         logger = logging.getLogger("test")
         result = await ZammadConnector.create_connector(
@@ -4138,9 +4135,9 @@ class TestCreateConnector:
             connector_id="zm-test",
             scope="team",
             created_by="test-user-id",
+            data_entities_processor=processor,
         )
         assert isinstance(result, ZammadConnector)
-        mock_proc.initialize.assert_awaited_once()
 
 
 class TestFetchTicketsForGroupBatchDateFilters:

@@ -1125,17 +1125,15 @@ class TestProcessDeletions:
 class TestCreateConnectorFactory:
     @pytest.mark.asyncio
     async def test_factory_method(self):
-        with patch("app.connectors.sources.nextcloud.connector.DataSourceEntitiesProcessor") as mock_dep, \
-             patch("app.connectors.sources.nextcloud.connector.NextcloudApp"):
-            mock_dep_instance = MagicMock()
-            mock_dep_instance.initialize = AsyncMock()
-            mock_dep_instance.org_id = "org-1"
-            mock_dep.return_value = mock_dep_instance
+        with patch("app.connectors.sources.nextcloud.connector.NextcloudApp"):
+            processor = MagicMock()
+            processor.org_id = "org-1"
             logger = MagicMock()
             dsp = MagicMock()
             cs = AsyncMock()
             conn = await NextcloudConnector.create_connector(
-                logger, dsp, cs, "nc-factory", "team", "test-user-id"
+                logger, dsp, cs, "nc-factory", "team", "test-user-id",
+                data_entities_processor=processor,
             )
             assert isinstance(conn, NextcloudConnector)
 

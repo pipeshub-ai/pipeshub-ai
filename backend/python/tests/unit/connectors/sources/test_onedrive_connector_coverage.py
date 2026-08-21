@@ -2442,20 +2442,18 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.onedrive.connector.DataSourceEntitiesProcessor") as mock_proc:
-            mock_instance = MagicMock()
-            mock_instance.initialize = AsyncMock()
-            mock_proc.return_value = mock_instance
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = _make_mock_logger()
-            dsp = MagicMock()
-            cs = MagicMock()
+        logger = _make_mock_logger()
+        dsp = MagicMock()
+        cs = MagicMock()
 
-            result = await OneDriveConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(result, OneDriveConnector)
-            mock_instance.initialize.assert_awaited_once()
+        result = await OneDriveConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(result, OneDriveConnector)
 
 
 # ===========================================================================

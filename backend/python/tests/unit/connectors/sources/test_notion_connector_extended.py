@@ -479,19 +479,18 @@ class TestHandleWebhookNotification:
 class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_creates_instance(self):
-        with patch("app.connectors.sources.notion.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await NotionConnector.create_connector(
-                logger=MagicMock(),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-notion",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, NotionConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await NotionConnector.create_connector(
+            logger=MagicMock(),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-notion",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, NotionConnector)
 
 
 # ===========================================================================

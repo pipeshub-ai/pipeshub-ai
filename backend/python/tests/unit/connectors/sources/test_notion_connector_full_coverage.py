@@ -3174,27 +3174,22 @@ class TestSyncObjectsByType:
 class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_factory_method(self):
-        with patch(
-            "app.connectors.sources.notion.connector.DataSourceEntitiesProcessor"
-        ) as mock_dep_cls:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            mock_dep.org_id = "org-1"
-            mock_dep_cls.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger = MagicMock()
-            dsp = MagicMock()
-            mock_tx = MagicMock()
-            mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-            mock_tx.__aexit__ = AsyncMock(return_value=None)
-            dsp.transaction.return_value = mock_tx
-            cs = AsyncMock()
+        logger = MagicMock()
+        dsp = MagicMock()
+        mock_tx = MagicMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=None)
+        dsp.transaction.return_value = mock_tx
+        cs = AsyncMock()
 
-            connector = await NotionConnector.create_connector(
-                logger, dsp, cs, "conn-1", "team", "test-user-id"
-            )
-            assert isinstance(connector, NotionConnector)
-            mock_dep.initialize.assert_awaited_once()
+        connector = await NotionConnector.create_connector(
+            logger, dsp, cs, "conn-1", "team", "test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, NotionConnector)
 
 
 # ===================================================================

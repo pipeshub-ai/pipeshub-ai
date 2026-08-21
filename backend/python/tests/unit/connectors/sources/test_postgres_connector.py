@@ -1998,24 +1998,19 @@ class TestCreateConnector:
         dsp = MagicMock()
         cs = MagicMock()
 
-        with patch(
-            "app.connectors.sources.postgres.connector.DataSourceEntitiesProcessor"
-        ) as mock_dep_cls:
-            mock_dep = MagicMock()
-            mock_dep.org_id = "org-1"
-            mock_dep.initialize = AsyncMock()
-            mock_dep_cls.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            connector = await PostgreSQLConnector.create_connector(
-                logger=logger,
-                data_store_provider=dsp,
-                config_service=cs,
-                connector_id="conn-test",
-            )
+        connector = await PostgreSQLConnector.create_connector(
+            logger=logger,
+            data_store_provider=dsp,
+            config_service=cs,
+            connector_id="conn-test",
+            data_entities_processor=processor,
+        )
 
         assert isinstance(connector, PostgreSQLConnector)
         assert connector.connector_id == "conn-test"
-        mock_dep.initialize.assert_awaited_once()
 
 
 # ===========================================================================

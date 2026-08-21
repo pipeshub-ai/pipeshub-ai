@@ -2755,15 +2755,13 @@ async def test_create_connector_classmethod():
     log = _make_logger()
     dsp = MagicMock()
     cs = MagicMock()
-    dep_inst = MagicMock()
-    dep_inst.initialize = AsyncMock()
-    with patch(
-        "app.connectors.sources.atlassian.jira_data_center.connector.DataSourceEntitiesProcessor",
-        return_value=dep_inst,
-    ):
-        c = await JiraDataCenterConnector.create_connector(log, dsp, cs, "cid", "team", "user-1")
+    processor = MagicMock()
+    processor.org_id = "org-1"
+    c = await JiraDataCenterConnector.create_connector(
+        log, dsp, cs, "cid", "team", "user-1",
+        data_entities_processor=processor,
+    )
     assert isinstance(c, JiraDataCenterConnector)
-    dep_inst.initialize.assert_awaited_once()
 
 
 def test_parse_jira_timestamp_strptime_fallback_and_warn():

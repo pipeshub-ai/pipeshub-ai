@@ -2510,8 +2510,6 @@ class TestCreateConnector:
             self.app = app
 
         with patch(
-            "app.connectors.sources.snowflake.connector.DataSourceEntitiesProcessor"
-        ) as dep_cls, patch(
             "app.connectors.sources.snowflake.connector.BaseConnector.__init__",
             new=_fake_base_init,
         ), patch(
@@ -2519,16 +2517,15 @@ class TestCreateConnector:
         ), patch(
             "app.connectors.sources.snowflake.connector.SnowflakeApp"
         ):
-            dep_instance = MagicMock()
-            dep_instance.initialize = AsyncMock()
-            dep_instance.org_id = "org-1"
-            dep_cls.return_value = dep_instance
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             conn = await SnowflakeConnector.create_connector(
                 logger=logging.getLogger("x"),
                 data_store_provider=MagicMock(),
                 config_service=MagicMock(),
                 connector_id="conn-xyz",
+                data_entities_processor=processor,
             )
         assert isinstance(conn, SnowflakeConnector)
         assert conn.connector_id == "conn-xyz"

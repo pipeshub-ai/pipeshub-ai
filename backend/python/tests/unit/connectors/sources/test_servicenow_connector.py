@@ -2038,10 +2038,9 @@ class TestExtractPermissionsFromUserCriteria:
 class TestCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector_factory(self):
-        with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"), \
-             patch("app.connectors.sources.servicenow.servicenow.connector.DataSourceEntitiesProcessor") as mock_proc_cls:
-            mock_proc = AsyncMock()
-            mock_proc_cls.return_value = mock_proc
+        with patch("app.connectors.sources.servicenow.servicenow.connector.ServicenowApp"):
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             result = await ServiceNowConnector.create_connector(
                 logger=logging.getLogger("test"),
@@ -2050,9 +2049,9 @@ class TestCreateConnector:
                 connector_id="factory-1",
                 scope="team",
                 created_by="user-1",
+                data_entities_processor=processor,
             )
             assert isinstance(result, ServiceNowConnector)
-            mock_proc.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_reindex_records_logs_warning(self, servicenow_connector):

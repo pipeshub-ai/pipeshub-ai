@@ -5783,25 +5783,21 @@ class TestCreateConnector:
 
     @pytest.mark.asyncio
     async def test_create_connector_builds_instance(self):
-        with patch(
-            "app.connectors.sources.salesforce.connector.DataSourceEntitiesProcessor",
-        ) as MockProcessor:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockProcessor.return_value = mock_dep
+        processor = MagicMock()
+        processor.org_id = "org-1"
 
-            logger, _, dsp, cs = _make_mock_deps()
-            result = await SalesforceConnector.create_connector(
-                logger=logger,
-                data_store_provider=dsp,
-                config_service=cs,
-                connector_id="create-sf-1",
-                scope="team",
-                created_by="user-1",
-            )
-            assert isinstance(result, SalesforceConnector)
-            assert result.connector_id == "create-sf-1"
-            mock_dep.initialize.assert_awaited_once()
+        logger, _, dsp, cs = _make_mock_deps()
+        result = await SalesforceConnector.create_connector(
+            logger=logger,
+            data_store_provider=dsp,
+            config_service=cs,
+            connector_id="create-sf-1",
+            scope="team",
+            created_by="user-1",
+            data_entities_processor=processor,
+        )
+        assert isinstance(result, SalesforceConnector)
+        assert result.connector_id == "create-sf-1"
 
 
 # ===========================================================================

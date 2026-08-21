@@ -2335,20 +2335,16 @@ class TestBookStackCoverageGaps:
         self, mock_logger, mock_data_store_provider, mock_config_service
     ):
         with patch("app.connectors.sources.bookstack.connector.BookStackApp"):
-            with patch(
-                "app.connectors.sources.bookstack.connector.DataSourceEntitiesProcessor"
-            ) as mock_proc_cls:
-                mock_proc = MagicMock()
-                mock_proc.initialize = AsyncMock()
-                mock_proc_cls.return_value = mock_proc
-                result = await BookStackConnector.create_connector(
-                    mock_logger,
-                    mock_data_store_provider,
-                    mock_config_service,
-                    "bs-factory-1",
-                    "personal",
-                    "creator-1",
-                )
+            processor = MagicMock()
+            processor.org_id = "org-1"
+            result = await BookStackConnector.create_connector(
+                mock_logger,
+                mock_data_store_provider,
+                mock_config_service,
+                "bs-factory-1",
+                "personal",
+                "creator-1",
+                data_entities_processor=processor,
+            )
         assert isinstance(result, BookStackConnector)
         assert result.connector_id == "bs-factory-1"
-        mock_proc.initialize.assert_awaited_once()

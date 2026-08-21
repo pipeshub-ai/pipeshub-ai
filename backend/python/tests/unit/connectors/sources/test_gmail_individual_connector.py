@@ -1605,14 +1605,7 @@ class TestCreateConnector:
             "app.connectors.sources.google.gmail.individual.connector.GmailIndividualApp"
         ), patch(
             "app.connectors.sources.google.gmail.individual.connector.SyncPoint"
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.DataSourceEntitiesProcessor"
-        ) as MockDEP:
-            mock_dep_instance = AsyncMock()
-            mock_dep_instance.org_id = "org-1"
-            mock_dep_instance.initialize = AsyncMock()
-            MockDEP.return_value = mock_dep_instance
-
+        ):
             from app.connectors.sources.google.gmail.individual.connector import (
                 GoogleGmailIndividualConnector,
             )
@@ -1620,6 +1613,8 @@ class TestCreateConnector:
             logger = _make_logger()
             ds_provider = MagicMock()
             config_service = AsyncMock()
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             result = await GoogleGmailIndividualConnector.create_connector(
                 logger=logger,
@@ -1628,9 +1623,9 @@ class TestCreateConnector:
                 connector_id="gmail-test",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert result is not None
-            mock_dep_instance.initialize.assert_called_once()
 
 
 # ===========================================================================

@@ -352,19 +352,18 @@ class TestSharePointReindex:
 class TestSharePointCreateConnector:
     @pytest.mark.asyncio
     async def test_create_connector(self):
-        with patch("app.connectors.sources.microsoft.sharepoint_online.connector.DataSourceEntitiesProcessor") as MockDSEP:
-            mock_dep = MagicMock()
-            mock_dep.initialize = AsyncMock()
-            MockDSEP.return_value = mock_dep
-            connector = await SharePointConnector.create_connector(
-                logger=logging.getLogger("test"),
-                data_store_provider=MagicMock(),
-                config_service=AsyncMock(),
-                connector_id="test-sp",
-                scope="personal",
-                created_by="test-user-id",
-            )
-            assert isinstance(connector, SharePointConnector)
+        processor = MagicMock()
+        processor.org_id = "org-1"
+        connector = await SharePointConnector.create_connector(
+            logger=logging.getLogger("test"),
+            data_store_provider=MagicMock(),
+            config_service=AsyncMock(),
+            connector_id="test-sp",
+            scope="personal",
+            created_by="test-user-id",
+            data_entities_processor=processor,
+        )
+        assert isinstance(connector, SharePointConnector)
 
 
 # ---------------------------------------------------------------------------

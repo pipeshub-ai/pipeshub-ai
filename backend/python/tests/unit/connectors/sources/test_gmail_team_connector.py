@@ -429,19 +429,16 @@ class TestCreateConnector:
             "app.connectors.sources.google.gmail.team.connector.GoogleClient"
         ), patch(
             "app.connectors.sources.google.gmail.team.connector.SyncPoint"
-        ) as MockSyncPoint, patch(
-            "app.connectors.sources.google.gmail.team.connector.DataSourceEntitiesProcessor"
-        ) as MockProcessor:
+        ) as MockSyncPoint:
             mock_sync_point = AsyncMock()
             MockSyncPoint.return_value = mock_sync_point
-
-            mock_dep = AsyncMock()
-            mock_dep.org_id = "org-create"
-            MockProcessor.return_value = mock_dep
 
             from app.connectors.sources.google.gmail.team.connector import (
                 GoogleGmailTeamConnector,
             )
+
+            processor = MagicMock()
+            processor.org_id = "org-1"
 
             result = await GoogleGmailTeamConnector.create_connector(
                 logger=_make_logger(),
@@ -450,9 +447,9 @@ class TestCreateConnector:
                 connector_id="create-1",
                 scope="personal",
                 created_by="test-user-id",
+                data_entities_processor=processor,
             )
             assert result is not None
-            MockProcessor.return_value.initialize.assert_called_once()
 
 
 # ===========================================================================
