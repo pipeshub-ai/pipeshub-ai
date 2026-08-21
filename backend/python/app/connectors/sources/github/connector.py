@@ -1,165 +1,253 @@
-import base64
-import os
-import re
-import uuid
-from collections.abc import AsyncGenerator
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from io import BytesIO
-from logging import Logger
-from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
+"""
+Personal GitHub connector.
 
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from github.Issue import Issue
-from PIL import Image
+Thin wrapper over ``GitHubTeamsConnector`` — the canonical implementation for
+all GitHub sync logic (repos, issues, PRs, code, streaming) lives in
+``app.connectors.sources.github_teams``. This mirrors the exact pattern
+``gitlab_personal/connector.py`` uses over ``gitlab/connector.py``.
+
+Sync scope is deliberately the SAME as the team connector's: every repository
+the token can read. Only two things differ.
+
+Overridden here:
+- Repo discovery: ``list_user_repos(type="all")`` — owner, organization member
+  and collaborator — instead of enumerating orgs and their repos. Account-
+  anchored rather than org-anchored, which is why there is no org filter; the
+  explicit ``REPO_IDS`` path is identical to the team connector's, so public
+  repositories sync on both once named.
+- Permissions: every record group is granted to a single internal
+  ``ConnectorGroup`` (via ``ensure_connector_group_permission``) and to nothing
+  else — no per-collaborator edges, and no visibility-derived ORG
+  grant either. This is the real difference between the connectors: "I vouch
+  for this content entering my workspace" versus "mirror GitHub's ACLs".
+  Anyone needing the latter for an org repo should use the team connector.
+- User sync is skipped entirely (no org member enumeration, no email
+  resolution phases — there is only one user, the connector creator).
+- Filters: repository filter only.
+
+BREAKING CHANGE (pre-release, no migration shipped): re-basing on
+``GitHubTeamsConnector`` moved external IDs from URL-derived to
+``repo.id``-anchored — ``external_group_id`` from ``repo.url`` to
+``str(repo.id)``, and ``external_record_id`` from ``issue.url`` to
+``{repo.id}/issues/{number}``. Records written by the pre-refactor connector
+are unreachable under the new scheme and would be re-created as duplicates.
+This is accepted because the connector has no production installs; if that
+changes, a migration rewriting both fields must land before upgrading.
+"""
+
+from __future__ import annotations
+
+from logging import Logger
+
+from app.sources.external.github.github_async import GhObject
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    PermissionModel,
-)
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
-from app.connectors.core.base.sync_point.sync_point import (
-    SyncDataPointType,
-    SyncPoint,
-    generate_record_sync_point_key,
-)
-from app.connectors.core.registry.auth_builder import (
-    AuthBuilder,
-    AuthType,
-    OAuthScopeConfig,
-)
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType, OAuthScopeConfig
 from app.connectors.core.registry.connector_builder import (
     AuthField,
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import (
-    IconPaths,
-    CONNECTOR_EMAIL_IDENTITY_INFO,
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterField,
+    FilterOperator,
+    FilterType,
+    IndexingFilterKey,
+    OptionSourceType,
+    SyncFilterKey,
+    load_connector_filters,
 )
 from app.connectors.sources.github.common.apps import GithubApp
-from app.models.blocks import (
-    Block,
-    BlockComment,
-    BlockGroup,
-    BlocksContainer,
-    BlockSubType,
-    BlockType,
-    ChildRecord,
-    ChildType,
-    CommentAttachment,
-    DataFormat,
-    GroupSubType,
-    GroupType,
-)
-from app.models.entities import (
-    AppUser,
-    CommentRecord,
-    FileRecord,
-    PullRequestRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    TicketRecord,
-)
-from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.github.github import (
-    GitHubClient,
-    GitHubResponse,
-)
-from app.sources.external.github.github_ import GitHubDataSource
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.sources.github_teams.connector import AUTHORIZE_URL, TOKEN_URL, GitHubTeamsConnector
+from app.connectors.sources.github_teams.projects import ProjectsSync
+from app.models.permission import Permission
 
-if TYPE_CHECKING:
-    from github.PullRequest import PullRequest
-    from github.PullRequestReview import PullRequestReview
-
-AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
-TOKEN_URL = "https://github.com/login/oauth/access_token"
+AUTH_REDIRECT_URI = "connectors/oauth/callback/Github"
 
 
-@dataclass
-class RecordUpdate:
-    """Tracks updates to a Ticket"""
+class GitHubPersonalProjectsSync(ProjectsSync):
+    """``ProjectsSync`` variant for the personal connector.
 
-    record: Record | None
-    is_new: bool
-    is_updated: bool
-    is_deleted: bool
-    metadata_changed: bool
-    content_changed: bool
-    permissions_changed: bool
-    old_permissions: list[Permission] | None = None
-    new_permissions: list[Permission] | None = None
-    external_record_id: str | None = None
-
-
-@ConnectorBuilder("Github").in_group("Github").with_description(
-    "Sync content from your Github instance"
-).with_categories(["Knowledge Management"]).with_scopes(
-    [ConnectorScope.PERSONAL.value]
-).with_permission_model(PermissionModel.APP_LEVEL).with_auth(
-    [
-        AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Github",
-            authorize_url=AUTHORIZE_URL,
-            token_url=TOKEN_URL,
-            redirect_uri="connectors/oauth/callback/Github",
-            scopes=OAuthScopeConfig(
-                personal_sync=["user", "repo"], team_sync=[], agent=[]
-            ),
-            fields=[
-                AuthField(
-                    name="clientId",
-                    display_name="Application (Client) ID",
-                    placeholder="Enter your Github Application ID",
-                    description="The Application (Client) ID from Github OAuth Registration",
-                ),
-                AuthField(
-                    name="clientSecret",
-                    display_name="Client Secret",
-                    placeholder="Enter your Github Client Secret",
-                    description="The Client Secret from Github OAuth Registration",
-                    field_type="PASSWORD",
-                    is_secret=True,
-                ),
-            ],
-            app_description="OAuth application for accessing Github services",
-            app_categories=["Knowledge Management"],
-        )
-    ]
-).with_info(CONNECTOR_EMAIL_IDENTITY_INFO).configure(
-    lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.GITHUB.value))
-    .with_realtime_support(False)
-    .add_documentation_link(
-        DocumentationLink("Github API Docs", "https://docs.github.com/en", "docs")
-    )
-    .add_documentation_link(
-        DocumentationLink(
-            "Pipeshub Documentation",
-            "https://docs.pipeshub.com/connectors/github/github",
-            "pipeshub",
-        )
-    )
-    .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
-    .with_sync_support(True)
-    .with_agent_support(False)
-).build_decorator()
-class GithubConnector(BaseConnector):
+    Overrides every hook that builds per-principal permissions so a repo — and
+    its work-items/PRs/code children — is granted access through the single
+    internal ``ConnectorGroup`` and nothing else.
     """
-    Connector for synching data from a Github instance.
+
+    async def _sync_repo_members(
+        self, owner: str, repo: str, repo_obj: GhObject | None = None,
+    ) -> list[Permission]:
+        """Route all repo access through the ConnectorGroup — no collaborator/team fetch.
+
+        ``repo_obj`` (used by the team connector to bind individual-repo
+        collaborators) is deliberately ignored: personal access is the
+        ConnectorGroup, never GitHub's ACL.
+        """
+        permission = self.c.creator_user_permission()
+        return [permission] if permission is not None else []
+
+    def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
+        """No visibility-derived grants on a personal connector.
+
+        The team connector mirrors GitHub's ACL, so a public repo legitimately
+        becomes ``Permission(READ, ORG)`` — that is its real audience. A
+        personal connector makes the opposite promise: the creator vouches for
+        content entering their workspace, and access is whoever is in
+        ``ConnectorGroup``. An ORG grant breaks that promise in a way removing
+        someone from the group cannot undo, which is precisely the single-edge
+        revocation the group exists to provide.
+
+        Every other personal-identity connector (gitlab_personal, dropbox,
+        jira/confluence personal, outlook) emits zero ORG grants; inheriting
+        this hook made GitHub the sole exception, and by accident rather than
+        by decision.
+        """
+        return []
+
+    async def _resolve_repos_with_filters(self) -> list[GhObject]:
+        """Personal repo discovery: every repo the authenticated account reaches.
+
+        ``type="all"`` is owner + organization_member + collaborator, matching
+        what every other Personal connector means by scope — "content my account
+        can see, into my personal workspace" — rather than "content I own". An
+        earlier ownership gate here rejected org and public repositories even
+        though the token could read them, which contradicted the repo picker
+        (shared with the team connector) and made a selected repo sync nothing
+        but an error line.
+
+        Applies the ``REPO_IDS`` filter only: the team connector's org filter
+        exists because it enumerates *by org*, while this one enumerates *by
+        account*. On the explicit path both connectors behave identically —
+        ``get_repo`` succeeding is the access check, so any readable repo,
+        public ones included, is in scope.
+        """
+        c = self.c
+        sf = c.sync_filters
+        repo_f = sf.get(SyncFilterKey.REPO_IDS) if sf else None
+        repo_vals = list(repo_f.value) if (repo_f and not repo_f.is_empty()) else []  # type: ignore[arg-type]
+        repo_op = repo_f.operator_value if repo_vals else None
+        repo_in = repo_vals if repo_op == FilterOperator.IN else []
+        repo_not_in = repo_vals if repo_op == FilterOperator.NOT_IN else []
+
+        if repo_in:
+            by_id: dict[int, GhObject] = {}
+            for full_name in repo_in:
+                if "/" not in full_name:
+                    self.logger.error("Skipping malformed repo filter value (expected owner/repo): %s", full_name)
+                    continue
+                owner, name = full_name.split("/", 1)
+                res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
+                if not res.success or not res.data:
+                    self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
+                    continue
+                by_id[int(res.data.id)] = res.data
+            return list(by_id.values())
+
+        res = await c.runtime.ds_call(c.data_source.list_user_repos, None, "all")
+        if not res.success:
+            self.logger.error("list_user_repos failed: %s", res.error)
+            return []
+        candidates = list(res.data or [])
+        if repo_not_in:
+            excluded = set(repo_not_in)
+            candidates = [r for r in candidates if getattr(r, "full_name", None) not in excluded]
+        return candidates
+
+
+
+@(
+    ConnectorBuilder("Github")
+    .in_group("Github")
+    .with_description("Sync content from your Github instance")
+    .with_categories(["Knowledge Management"])
+    .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
+    .with_auth(
+        [
+            AuthBuilder.type(AuthType.OAUTH).oauth(
+                connector_name="Github",
+                authorize_url=AUTHORIZE_URL,
+                token_url=TOKEN_URL,
+                redirect_uri=AUTH_REDIRECT_URI,
+                scopes=OAuthScopeConfig(personal_sync=["user", "repo"], team_sync=[], agent=[]),
+                fields=[
+                    AuthField(
+                        name="clientId",
+                        display_name="Application (Client) ID",
+                        placeholder="Enter your Github Application ID",
+                        description="The Application (Client) ID from Github OAuth Registration",
+                    ),
+                    AuthField(
+                        name="clientSecret",
+                        display_name="Client Secret",
+                        placeholder="Enter your Github Client Secret",
+                        description="The Client Secret from Github OAuth Registration",
+                        field_type="PASSWORD",
+                        is_secret=True,
+                    ),
+                ],
+                app_description="OAuth application for accessing Github services",
+                app_categories=["Knowledge Management"],
+            )
+        ]
+    )
+    .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)
+    .configure(
+        lambda builder: builder
+        .with_icon(IconPaths.connector_icon(Connectors.GITHUB.value))
+        .with_realtime_support(False)
+        .add_documentation_link(DocumentationLink("Github API Docs", "https://docs.github.com/en", "docs"))
+        .add_documentation_link(DocumentationLink("Pipeshub Documentation", "https://docs.pipeshub.com/connectors/github/github", "pipeshub"))
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
+        .with_sync_support(True)
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.REPO_IDS.value,
+            display_name="Repositories",
+            description="Limit sync to specific repositories (full_name, e.g. my-username/my-repo)",
+            filter_type=FilterType.MULTISELECT, category=FilterCategory.SYNC,
+            option_source_type=OptionSourceType.DYNAMIC,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ISSUES.value,
+            display_name="Index Issues",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.MERGE_REQUESTS.value,
+            display_name="Index Pull Requests",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.CODE_FILES.value,
+            display_name="Index Code Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .with_agent_support(False)
+    )
+    .build_decorator()
+)
+class GithubConnector(GitHubTeamsConnector):
+    """Personal GitHub connector.
+
+    Permission model:
+      - No GitHub user directory is synced.
+      - An internal ``AppUserGroup`` (name: ``ConnectorGroup``, scoped by
+        ``connector_id``) is materialized once per sync. The connector's
+        creator is the sole USER -> GROUP member edge.
+      - Every repo / work-items / PRs / code-repository ``RecordGroup``
+        receives a GROUP permission edge pointing at that internal group,
+        instead of per-collaborator edges.
     """
 
     def __init__(
@@ -173,1491 +261,63 @@ class GithubConnector(BaseConnector):
         created_by: str,
     ) -> None:
         super().__init__(
-            GithubApp(connector_id),
-            logger,
-            data_entities_processor,
-            data_store_provider,
-            config_service,
-            connector_id,
-            scope,
-            created_by,
+            logger, data_entities_processor, data_store_provider,
+            config_service, connector_id, scope, created_by,
         )
+        self.app = GithubApp(connector_id)
         self.connector_name = Connectors.GITHUB.value
-        self.connector_id = connector_id
-        self.data_source: GitHubDataSource | None = None
-        self.external_client: GitHubClient | None = None
-        self.batch_size = 5
-        self.max_concurrent_batches = 5
-        self._create_sync_points()
+        # Replace the default ProjectsSync with the personal variant so repo
+        # discovery and permission-building route through ConnectorGroup.
+        self.projects = GitHubPersonalProjectsSync(self)
 
-    def _create_sync_points(self) -> None:
-        """Initialize sync points for different data types."""
+    def creator_user_permission(self) -> Permission | None:
+        """Override: emit a GROUP permission on the shared ConnectorGroup.
 
-        def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
-            return SyncPoint(
-                connector_id=self.connector_id,
-                org_id=self.data_entities_processor.org_id,
-                sync_data_point_type=sync_data_point_type,
-                data_store_provider=self.data_store_provider,
-            )
-
-        self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
-
-    async def init(self) -> bool:
-        """_summary_
-
-        Returns:
-            bool: _description_
+        The team connector grants the creator direct USER access on repos as
+        a fallback; the personal connector instead routes every record-group
+        permission through the single internal ``AppUserGroup``
+        (``ConnectorGroup``) materialized by ``ensure_connector_group_permission``,
+        so that granting/revoking access to all synced content is a single-edge
+        operation, not an N-record fan-out.
         """
-        try:
-            # for client
-            self.external_client = await GitHubClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id,
-            )
-            # for data source
-            self.data_source = GitHubDataSource(self.external_client)
-            self.logger.info("✅✅ Github connector initialized successfully.")
-            return True
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Github client: {e}", exc_info=True)
-            return False
-
-    # --------------------Sync Points------------------------#
-    async def _fetch_sync_point_of_issue(self, repo_name: str) -> str:
-        """ summary """
-        try:
-            issue_sync_point_key = generate_record_sync_point_key(
-                "github",repo_name, "issues"
-            )
-            sync_point_data = await self.record_sync_point.read_sync_point(issue_sync_point_key)
-            return sync_point_data.get("last_sync_time") if sync_point_data else None
-        except Exception:
-            return None
-
-    async def _update_sync_point_of_issue(self, repo_name: str, last_sync_time: int) -> None:
-        """ summary """
-        try:
-            issue_sync_point_key = generate_record_sync_point_key(
-                "github",repo_name, "issues"
-            )
-            await self.record_sync_point.update_sync_point(issue_sync_point_key, {"last_sync_time": last_sync_time})
-        except Exception:
-            return
-
-    async def test_connection_and_access(self) -> bool:
-        """_summary_
-
-        Returns:
-            bool: _description_
-        """
-        if not self.data_source:
-            self.logger.error("Github data source not initialized")
-            return False
-        try:
-            response: GitHubResponse = self.data_source.get_authenticated()
-            if response.success:
-                self.logger.info("Github connection test successful.")
-                return True
-            else:
-                self.logger.error(f"Github connection test failed: {response.error}")
-                return False
-        except Exception as e:
-            self.logger.error(f"Github connection test failed: {e}", exc_info=True)
-            return False
-
-    async def stream_record(self, record: Record) -> StreamingResponse:
-        if record.record_type == RecordType.TICKET:
-            self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-
-            blocks_container= await self._build_ticket_blocks(record)
-
-            async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                json_str = blocks_container.model_dump_json(indent=2)
-                chunk_size = 81920
-                encoded = json_str.encode("utf-8")
-                for i in range(0, len(encoded), chunk_size):
-                    yield encoded[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=generate_blocks_json(),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        elif record.record_type == RecordType.PULL_REQUEST:
-            self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-
-            block_container= await self._build_pull_request_blocks(record)
-
-
-            async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                json_str = block_container.model_dump_json(indent=2)
-                chunk_size = 81920
-                encoded = json_str.encode("utf-8")
-                for i in range(0, len(encoded), chunk_size):
-                    yield encoded[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=generate_blocks_json(),
-                media_type=MimeTypes.BLOCKS.value,
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        elif record.record_type == RecordType.FILE:
-            self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
-            record_url = record.weburl
-            file_data_res = await self.data_source.get_attachment_files_content(record_url)
-            if not file_data_res.success or not file_data_res.data:
-                raise Exception(f"Failed to fetch file from {record_url}: {file_data_res.error}")
-            file_data = file_data_res.data
-            async def stream_markdown(
-                markdown_content:str, chunk_size:int=160000
-            ) -> AsyncGenerator[bytes, None]:
-                """Stream markdown content in optimal chunks"""
-                for i in range(0, len(markdown_content), chunk_size):
-                    yield markdown_content[i : i + chunk_size]
-
-            return StreamingResponse(
-                content=stream_markdown(file_data),
-                media_type=(
-                    record.mime_type if record.mime_type else "application/octet-stream"
-                ),
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                },
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported record type for streaming: {record.record_type}",
-            )
+        return self._connector_group_permission
 
     async def run_sync(self) -> None:
+        """Sync every repo the configured account reaches; skip org member/email sync."""
         try:
-            # getting user
-            github_users = await self._fetch_users()
-            if not github_users:
-                raise ValueError(
-                    "Failed to retrieve account information for user sync."
-                )
-
-            await self.data_entities_processor.on_new_app_users(github_users)
-            self.logger.info("👥 Synced Individual Github user")
-            # get all repos
-            await self._sync_all_repo_issue()
-        except Exception as ex:
-            self.logger.error(
-                f"Error in Github Individual connector run: {ex}", exc_info=True
+            self.record_sync_point.org_id = self.data_entities_processor.org_id
+            await self.repos.timestamps.cancel()
+            await self.runtime.refresh_token_if_needed()
+            self.logger.info("Starting GitHub Personal sync")
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "github", self.connector_id, self.logger
             )
+            # Force a fresh ConnectorGroup upsert each run so re-runs after the
+            # creator email is rotated pick up the new identity instead of
+            # reusing a stale cached permission.
+            self._connector_group_permission = None
+
+            if not self.creator_email and self.created_by:
+                await self._load_creator_email()
+
+            if not self.creator_email:
+                self.logger.warning(
+                    "GitHub Personal connector %s: no creator email — "
+                    "record groups will sync without user permissions",
+                    self.connector_id,
+                )
+            else:
+                await self.ensure_connector_group_permission()
+
+            self.logger.info("Starting sync of GitHub repositories")
+            await self.projects.sync_all_repos()
+            self.repos.timestamps.schedule()
+        except Exception as e:
+            self.logger.error("Error in GitHub Personal sync: %s", e, exc_info=True)
             raise
 
-    # ---------------------------Users Sync-----------------------------------#
-    async def _fetch_users(self) -> list[AppUser]:
-        """
-        Fetch all active Github users using DataSource
-        """
-        if not self.data_source:
-            raise ValueError("Data source not initialized")
-        auth_res = self.data_source.get_authenticated()
-        if not auth_res.success:
-            self.logger.error(f"Authentication failed: {auth_res.error}")
-            return []
-        user_login = auth_res.data.login
-        app_users: list[AppUser] = []
-        user = await self.data_entities_processor.get_app_creator_user(
-            connector_id=self.connector_id
-        )
-        if not user:
-            self.logger.error(
-                "No valid app users found, cannot proceed with syncing issues."
-            )
-            return []
-        user_email = getattr(user,"email")
-        app_user = AppUser(
-            app_name=self.connector_name,
-            connector_id=self.connector_id,
-            source_user_id=user_login,
-            is_active=True,
-            org_id=self.data_entities_processor.org_id,
-            email=user_email,
-            full_name=user_login,
-        )
-        app_users.append(app_user)
-        self.logger.info(f"👥 Fetched {len(app_users)} active user ")
-        return app_users
-
-    # ---------------------------Repo level Sync-----------------------------------#
-    async def _sync_all_repo_issue(self) -> None:
-        # TODO: sync point repo level ask plan acc.
-        current_timestamp = self._get_iso_time()
-        github_record_sync_key = generate_record_sync_point_key(
-            "github", "records", "global"
-        )
-        github_record_sync_point = await self.record_sync_point.read_sync_point(
-            github_record_sync_key
-        )
-        if not github_record_sync_point.get("timestamp"):
-            await self._sync_issues_full()
-            await self.record_sync_point.update_sync_point(
-                github_record_sync_key, {"timestamp": current_timestamp}
-            )
-        else:
-            last_sync_timestamp = github_record_sync_point.get("timestamp")
-            await self._sync_issues_full(last_sync_timestamp)
-            await self.record_sync_point.update_sync_point(
-                github_record_sync_key, {"timestamp": current_timestamp}
-            )
-
-    # ---------------------------Issues Sync-----------------------------------#
-
-    async def _sync_issues_full(self, last_sync_time: str | None = None) -> None:
-        """_summary_
-
-        Args:
-            users (List[AppUser]): _description_
-        """
-        self.logger.info("Starting sync for issues as records.")
-        user = await self.data_entities_processor.get_app_creator_user(
-            connector_id=self.connector_id
-        )
-
-        if not user:
-            self.logger.error(
-                "No valid app users found, cannot proceed with syncing issues."
-            )
-            return
-        user_email = getattr(user,"email")
-        if not user_email:
-            self.logger.error(
-                "No valid user found, cannot proceed with syncing issues."
-            )
-            return
-        # NOTE: list_repos returns all repos user is owner of.
-        repos_res = self.data_source.list_user_repos(type="owner")
-        if not repos_res.success or not repos_res.data:
-            self.logger.error(f"Failed to get repositories: {repos_res.error}")
-            return
-        repos = repos_res.data
-        for repo in repos:
-            record_group = RecordGroup(
-                id=str(uuid.uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                name=repo.full_name,
-                group_type=RecordGroupType.REPOSITORY.value,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                external_group_id=repo.url,
-            )
-            permissions = [
-                Permission(
-                    email=user_email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            ]
-            await self.data_entities_processor.on_new_record_groups(
-                [(record_group, permissions)]
-            )
-            # TODO: Place for code indexing records
-            await self._fetch_issues_batched(
-                full_repo_name=repo.full_name
-            )
-
-    async def _fetch_issues_batched(
-        self, full_repo_name: str
-    ) -> None:
-        """
-        received: batch of issues
-        process: for each make TicketRecord or PullRequestRecord
-        return: list of Records consisting of Tickets and PR
-        Args:
-            issue_batch (List[Issue]): _description_
-            last_sync_time (str): _description_
-        """
-        owner, repo_name = full_repo_name.split("/")
-        # fetch sync point of issues of this repo
-        last_sync_time = await self._fetch_sync_point_of_issue(repo_name)
-        if last_sync_time:
-            ts = round(last_sync_time)
-            if ts >= 10**12:
-                ts = ts / 1000
-                # ts+=1 # to avoid last duplicates
-            since_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-        else:
-            since_dt = None
-        self.logger.info(f"Fetching issues for repository: {repo_name}")
-        issues_res = self.data_source.list_issues(
-            owner, repo_name, state="all", since=since_dt,sort="updated",direction="asc",
-        )
-        issues_batch: list[Issue] = []
-        if not issues_res.success:
-            self.logger.error(f"Failed to get issues: {issues_res.error}")
-            return []
-        if not issues_res.data:
-            self.logger.info(f"No issues found for repository: {repo_name}")
-            return []
-        all_issues = issues_res.data
-        total_issues = len(all_issues)
-        self.logger.info(f"📦 Fetched {total_issues} issues, processing in batches...")
-        # Process issues in batches
-        batch_size = self.batch_size
-        batch_number = 0
-        for i in range(0, total_issues, batch_size):
-            batch_number += 1
-            issues_batch = all_issues[i : i + batch_size]
-            batch_records: list[tuple[Record, list[Permission]]] = []
-            self.logger.info(
-                f"📦 Processing batch {batch_number}: {len(issues_batch)} issues"
-            )
-            batch_records = await self._build_issue_records(
-                issues_batch, last_sync_time
-            )
-            # send batch results to process
-            await self._process_new_records(batch_records)
-        return None
-
-    async def _process_new_records(self, batch_records: list[RecordUpdate]) -> None:
-        need_sync_update:bool=True
-        for i in range(0, len(batch_records), self.batch_size):
-            batch = batch_records[i : i + self.batch_size]
-            batch_sent: list[tuple[Record, list[Permission]]] = [
-                (record_update.record, record_update.new_permissions)
-                for record_update in batch
-            ]
-            try:
-                await self.data_entities_processor.on_new_records(batch_sent)
-                if not need_sync_update:
-                    continue
-                last_sync_time = None
-                repo_name:str=""
-                for record_update in batch:
-                    if record_update.record.record_type in (RecordType.TICKET,RecordType.PULL_REQUEST):
-                        last_sync_time=record_update.record.source_updated_at
-                        repo_url  = record_update.record.external_record_group_id
-                        repo_name = repo_url.split("/")[-1]
-                    else:
-                        continue
-                if repo_name and last_sync_time:
-                    await self._update_sync_point_of_issue(repo_name,last_sync_time)
-            except Exception as e:
-                self.logger.error(f"Error in processing new record batch, batch partially processed: {e}")
-                need_sync_update=False
-
-    async def _build_issue_records(
-        self, issue_batch: list[Issue], last_sync_time: str | None = None
-    ) -> list[RecordUpdate]:
-        # NOTE:Github considers all Pull Requests as issues not True Vice-Versa
-        record_updates_batch: list[RecordUpdate] = []
-        for issue in issue_batch:
-            # check and send not to be pull request
-            pull_request = getattr(issue, "pull_request", None)
-            if pull_request is None:
-                record_update = await self._process_issue_to_ticket(issue)
-                # fetch comment attachments
-                if record_update:
-                    issue_comment_attachments = await self.make_issue_comment_records(issue, record_update.record)
-                    record_updates_batch.extend(issue_comment_attachments)
-            else:
-                record_update = await self._process_pr_to_pull_request(issue)
-                # fetch comment, reviews, review_comment attachments
-                if record_update:
-                    issue_comment_attachments = await self.make_issue_comment_records(issue, record_update.record)
-                    record_updates_batch.extend(issue_comment_attachments)
-                    # r_comment
-                    r_comment_attachments = await self.make_r_comment_attachments(issue, record_update.record)
-                    record_updates_batch.extend(r_comment_attachments)
-                    # reviews
-                    reviews_attachments = await self.make_reviews_attachments(issue, record_update.record)
-                    record_updates_batch.extend(reviews_attachments)
-
-            if record_update:
-                record_updates_batch.append(record_update)
-                # get the file attachments from issue description / pr description
-                # make file records for all except images
-                markdown_content_raw: str = getattr(issue,"body","") or ""
-                markdown_content, attachments = await self.clean_github_content(
-                    markdown_content_raw
-                )
-                self.logger.debug(f"Processed markdown description for issue {issue.url}")
-                if attachments:
-                    file_record_updates = await self.make_file_records_from_list(
-                        attachments=attachments, record=record_update.record
-                    )
-                    if file_record_updates:
-                        record_updates_batch.extend(file_record_updates)
-                        self.logger.info(
-                            f"Added {len(file_record_updates)} attachments for issue {issue.url}"
-                        )
-        return record_updates_batch
-
-    async def _process_issue_to_ticket(self, issue: Issue) -> RecordUpdate | None:
-        """_summary_
-
-        Args:
-            issue (Issue): _description_
-        """
-        try:
-            # check if record already exists
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=f"{issue.url}"
-                )
-            # detect changes
-            is_new = existing_record is None
-            is_updated = False
-            metadata_changed = False
-            content_changed = False
-            permissions_changed = False
-            if existing_record:
-                # TODO: add more changes especially body ones as of now default fallback to full body reindexing
-                # check if title changed
-                if existing_record.record_name != issue.title:
-                    metadata_changed = True
-                    is_updated = True
-                # TODO: body changes check as of now True default
-                content_changed = True
-                is_updated = True
-            # NOTE: using url as external record id as it is unique and can be used to fetch the issue, used as sub_issue parent
-            parent_external_id = None
-            parent_record_type = None
-            issue_type = "issue"
-            parent_issue_ul: dict = getattr(issue, "raw_data", {})
-            parent_issue_url = parent_issue_ul.get("parent_issue_url")
-            if parent_issue_url:
-                parent_external_id = parent_issue_url
-                parent_record_type = RecordType.TICKET
-                issue_type = "sub_issue"
-            label_names: list[str] = [label.name for label in issue.labels]
-            assignee_list: list[str] = []
-            if issue.assignees:
-                assignee_list.extend(assignee.login for assignee in issue.assignees)
-
-            ticket_record = TicketRecord(
-                id=existing_record.id if existing_record else str(uuid.uuid4()),
-                record_name=issue.title,
-                external_record_id=str(issue.url),
-                record_type=RecordType.TICKET.value,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                origin=OriginTypes.CONNECTOR.value,
-                source_updated_at=self.datetime_to_epoch_ms(issue.updated_at),
-                source_created_at=self.datetime_to_epoch_ms(issue.created_at),
-                version=0,  # not used further so 0
-                external_record_group_id=issue.repository_url,
-                org_id=self.data_entities_processor.org_id,
-                record_group_type=RecordGroupType.REPOSITORY,
-                parent_external_record_id=parent_external_id,
-                parent_record_type=parent_record_type,
-                mime_type=MimeTypes.BLOCKS.value,
-                weburl=issue.html_url,
-                status=issue.state,
-                external_revision_id=str(self.datetime_to_epoch_ms(issue.updated_at)),
-                preview_renderable=False,
-                type=issue_type,
-                labels=label_names,
-                inherit_permissions=True,
-                assignee_source_id=assignee_list,
-            )
-            return RecordUpdate(
-                record=ticket_record,
-                is_new=is_new,
-                is_updated=is_updated,
-                is_deleted=False,
-                metadata_changed=metadata_changed,
-                content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=[],
-                new_permissions=[],
-                external_record_id=str(issue.url),
-            )
-        except Exception as e:
-            self.logger.error(
-                f"Error in processing issue to ticket: {e}", exc_info=True
-            )
-            return None
-
-    async def _build_ticket_blocks(self, record: Record) ->BlocksContainer:
-        """_summary_
-
-        Args:
-            record (Record): _description_
-
-        Returns:
-            BlocksContainer: _description_
-        """
-        raw_url = record.weburl.split("/")
-        repo_name = raw_url[4]
-        username = raw_url[3]
-        issue_number = int(raw_url[6])
-        issue_res = self.data_source.get_issue(
-            owner=username, repo=repo_name, number=issue_number
-        )
-        if not issue_res.success:
-            raise Exception(f"❌❌ Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
-        if not issue_res.data:
-            raise Exception(f"❌❌ No issue data found for record {record.external_record_id}")
-        block_group_number = 0
-        blocks: list[Block] = []
-        block_groups: list[BlockGroup] = []
-        list_remaining_records: list[RecordUpdate] = []
-        issue = issue_res.data
-
-        # getting modi. markdown  content with images as base64
-        markdown_content_raw: str = issue.body or ""
-        markdown_content_with_images_base64 = await self.embed_images_as_base64(
-            markdown_content_raw
-        )
-        self.logger.debug(f"Processed markdown content for issue {issue.url}")
-        # get linked attachments to issue->ticket
-        child_records, remaining_record_updates = await self.make_child_records_of_attachments(markdown_content_raw, record)
-        list_remaining_records.extend(remaining_record_updates)
-        # bg of title and desc./body
-        bg_0 = BlockGroup(
-            index=block_group_number,
-            name=record.record_name,
-            type=GroupType.TEXT_SECTION.value,
-            format=DataFormat.MARKDOWN.value,
-            sub_type=GroupSubType.CONTENT.value,
-            source_group_id=record.weburl,
-            # NOTE: Adding record name into Content for record name search Permanent FIX todo
-            data=f"{issue.title}\n\n{markdown_content_with_images_base64}",
-            source_modified_date=str(self.datetime_to_epoch_ms(issue.updated_at)),
-            requires_processing=True,
-            children_records=child_records,
-        )
-        block_groups.append(bg_0)
-        # make blocks of issue comments
-        comments_bg,remaining_record_updates = await self._build_comment_blocks(
-            issue_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        block_groups.extend(comments_bg)
-        block_group_number += len(comments_bg)
-        list_remaining_records.extend(remaining_record_updates)
-        self.logger.info(f"Sending remaining {len(list_remaining_records)} attachments to process of issues")
-        await self._process_new_records(list_remaining_records)
-        return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
-    async def _sync_records_incremental(self) -> None:
-        """_summary_
-        {NOT USED} use _sync_issues_full with last sync time
-        when syncing so to avoid previosly synced files
-        Args:
-        """
-        return
-
-    async def _handle_page_upsert_event_issue(self) -> None:
-        return
-
-    async def _handle_record_updates(self, issue_update: RecordUpdate) -> None:
-        """_summary_
-
-        Args:
-            issue_update (IssueUpdate): _description_
-        """
-        try:
-            if issue_update.is_deleted:
-                # await self.data_entities_processor.on_record_deleted(
-                # record_id=issu_update.external_record_id
-                # )
-                self.logger.info("need to implement")
-            elif issue_update.is_updated:
-                if issue_update.metadata_changed:
-                    self.logger.info(
-                        f"Metadata changed for record: {issue_update.record.record_name}"
-                    )
-                    await self.data_entities_processor.on_record_metadata_update(
-                        issue_update.record
-                    )
-                # if issue_update.permissions_changed:
-                #     self.logger.info(f"Permissions changed for record: {issue_update.record.record_name}")
-                #     await self.data_entities_processor.on_updated_record_permissions(
-                #         issue_update.record,
-                #         issue_update.new_permissions
-                #     )
-                if issue_update.content_changed:
-                    self.logger.info(
-                        f"Content changed for record: {issue_update.record.record_name}"
-                    )
-                    await self.data_entities_processor.on_record_content_update(
-                        issue_update.record
-                    )
-        except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
-
-    async def reindex_records(self, record_results: list[Record]) -> None:
-        return
-
     async def run_incremental_sync(self) -> None:
-        return
-
-    # ---------------------------Comments sync-----------------------------------#
-    async def _process_comments_to_commentrecord(self) -> CommentRecord:
-        return
-
-    async def make_issue_comment_records(self, issue: Issue, record: Record) -> list[RecordUpdate]:
-        issue_comment_attachments: list[RecordUpdate] = []
-        repo_fullname = issue.repository.full_name.split("/")
-        owner = repo_fullname[0]
-        repo = repo_fullname[1]
-        issue_number = issue.number
-        issue_comments_res = self.data_source.list_issue_comments(
-            owner=owner, repo=repo, number=issue_number
-        )
-        if not issue_comments_res.success:
-            self.logger.error(f"Failed to get issue comments: {issue_comments_res.error}")
-            return []
-        if not issue_comments_res.data:
-            self.logger.info(f"No comments found for issue {issue.url}")
-            return []
-        issue_comments = issue_comments_res.data
-        for issue_comment in issue_comments:
-            raw_comment_data = getattr(issue_comment,"body","") or ""
-            cleaned_content, attachments = await self.clean_github_content(raw_comment_data)
-            if attachments:
-                record_updates = await self.make_file_records_from_list(attachments,record)
-                if record_updates:
-                    issue_comment_attachments.extend(record_updates)
-        return issue_comment_attachments
-
-    async def make_r_comment_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
-        r_comment_attachments: list[RecordUpdate] = []
-        repo_fullname = issue.repository.full_name.split("/")
-        owner = repo_fullname[0]
-        repo = repo_fullname[1]
-        issue_number = issue.number
-        r_comments_res = self.data_source.get_pull_review_comments(
-            owner=owner, repo=repo, number=issue_number
-        )
-        if not r_comments_res.success:
-            self.logger.error(f"Failed to get review comments: {r_comments_res.error}")
-            return []
-        if not r_comments_res.data:
-            self.logger.info(f"No review comments found for issue {issue.url}")
-            return []
-        r_comments = r_comments_res.data
-        for r_comment in r_comments:
-            raw_comment_data = getattr(r_comment,"body","") or ""
-            cleaned_content, attachments = await self.clean_github_content(raw_comment_data)
-            if attachments:
-                record_updates = await self.make_file_records_from_list(attachments,record)
-                r_comment_attachments.extend(record_updates)
-        return r_comment_attachments
-
-    async def make_reviews_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
-        reviews_attachments: list[RecordUpdate] = []
-        repo_fullname = issue.repository.full_name.split("/")
-        owner = repo_fullname[0]
-        repo = repo_fullname[1]
-        issue_number = issue.number
-        reviews_res = self.data_source.get_pull_reviews(
-            owner=owner, repo=repo, number=issue_number
-        )
-        if not reviews_res.success:
-            self.logger.error(f"Failed to get reviews: {reviews_res.error}")
-            return []
-        if not reviews_res.data:
-            self.logger.info(f"No reviews found for issue {issue.url}")
-            return []
-        reviews = reviews_res.data
-        for review in reviews:
-            raw_review_data = getattr(review,"body","") or ""
-            cleaned_content, attachments = await self.clean_github_content(raw_review_data)
-            if attachments:
-                record_updates = await self.make_file_records_from_list(attachments,record)
-                if record_updates:
-                    reviews_attachments.extend(record_updates)
-        return reviews_attachments
-
-    async def _build_comment_blocks(
-        self, issue_url: str, parent_index: int, record: Record
-    ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
-        """_summary_
-        Args:
-            issue_url (str): _description_
-        Returns:
-            List[BlockGroup]: _description_
-        """
-        self.logger.info(f"Building comment blocks for issue: {issue_url}")
-        raw_url = issue_url.split("/")
-        # self.logger.info(f"raw_url : {raw_url}")
-        repo_name = raw_url[4]
-        username = raw_url[3]
-        issue_number = int(raw_url[6])
-        # Fetching issue comments if present
-        # TODO: will date wise filtering be needed here, as of now None
-        since_dt = None
-        comments_res = self.data_source.list_issue_comments(
-            owner=username, repo=repo_name, number=int(issue_number), since=since_dt
-        )
-        if not comments_res.success :
-            self.logger.error(
-                f"Failed to fetch comments for issue {issue_url}: {comments_res.error}"
-            )
-            return [],[]
-        if not comments_res.data:
-            self.logger.info(f"No comments found for issue {issue_url}")
-            return [],[]
-        self.logger.info(f"Found {len(comments_res.data)} comments for issue {issue_url}")
-        list_remaining_records: list[RecordUpdate] = []
-        block_groups: list[BlockGroup] = []
-        block_group_number = parent_index + 1
-        comments = comments_res.data
-        for comment in comments:
-            raw_markdown_content: str = getattr(comment,"body","") or ""
-            markdown_content_with_images_base64 = await self.embed_images_as_base64(
-                raw_markdown_content
-            )
-            child_records, remaining_record_updates = await self.make_child_records_of_attachments(raw_markdown_content, record)
-            list_remaining_records.extend(remaining_record_updates)
-            bg = BlockGroup(
-                index=block_group_number,
-                parent_index=parent_index,
-                name=f"Comment by {comment.user.login} on issue {issue_number}",
-                type=GroupType.TEXT_SECTION.value,
-                format=DataFormat.MARKDOWN.value,
-                sub_type=GroupSubType.COMMENT.value,
-                source_group_id=comment.url,
-                data=markdown_content_with_images_base64,
-                source_modified_date=str(self.datetime_to_epoch_ms(comment.updated_at)),
-                requires_processing=True,
-                weburl=comment.html_url,
-                children_records=child_records,
-            )
-            block_group_number += 1
-            block_groups.append(bg)
-        return block_groups , list_remaining_records
-
-    # ---------------------------Pull Requests-----------------------------------#
-    async def _process_pr_to_pull_request(self, issue: Issue) -> RecordUpdate | None:
-
-        # make call to fetch a pull request details
-        # getting issue number and details
-        issue_url = issue.url.split("/")
-        issue_number = int(issue_url[7])
-        owner = issue_url[4]
-        repo_name = issue_url[5]
-        pull_request_raw = self.data_source.get_pull(owner, repo_name, issue_number)
-        if not pull_request_raw.success:
-            self.logger.error(
-                f"Failed to fetch pull request details for issue {issue.url}: {pull_request_raw.error}"
-            )
-            return None
-        pull_request = pull_request_raw.data
-        if not pull_request:
-            self.logger.error(f"No pull request data found for issue {issue.url}")
-            return None
-        try:
-            # check if record already exists
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=f"{pull_request.url}"
-                )
-            # detect changes
-            is_new = existing_record is None
-            is_updated = False
-            metadata_changed = False
-            content_changed = False
-            permissions_changed = False
-            if existing_record:
-                # TODO: add more changes like body ones as of now default fallback to full body reindexing
-                # check if title changed
-                if existing_record.record_name != pull_request.title:
-                    metadata_changed = True
-                    is_updated = True
-                # TODO: body changes check as of now True default
-                content_changed = True
-                is_updated = True
-
-            # NOTE: using url as external record id as it is unique and can be used to fetch the issue, used as sub_issue parent
-            parent_external_id = None
-            parent_record_type = None
-            label_names: list[str] = [label.name for label in pull_request.labels]
-
-            # making pull request record
-            pr_record = PullRequestRecord(
-                id=existing_record.id if existing_record else str(uuid.uuid4()),
-                record_name=pull_request.title,
-                external_record_id=str(pull_request.url),
-                record_type=RecordType.PULL_REQUEST.value,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                origin=OriginTypes.CONNECTOR.value,
-                source_updated_at=self.datetime_to_epoch_ms(pull_request.updated_at),
-                source_created_at=self.datetime_to_epoch_ms(pull_request.created_at),
-                version=0,  # not used further so 0
-                external_record_group_id=issue.repository_url,
-                org_id=self.data_entities_processor.org_id,
-                record_group_type=RecordGroupType.REPOSITORY,
-                parent_external_record_id=parent_external_id,
-                parent_record_type=parent_record_type,
-                mime_type=MimeTypes.BLOCKS.value,
-                weburl=pull_request.html_url,
-                status=pull_request.state,
-                external_revision_id=str(
-                    self.datetime_to_epoch_ms(pull_request.updated_at)
-                ),
-                preview_renderable=False,
-                labels=label_names,
-                mergeable=str(pull_request.mergeable),
-                inherit_permissions=True,
-            )
-            return RecordUpdate(
-                record=pr_record,
-                is_new=is_new,
-                is_updated=is_updated,
-                is_deleted=False,
-                metadata_changed=metadata_changed,
-                content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=[],
-                new_permissions=[],
-                external_record_id=str(pull_request.url),
-            )
-        except Exception as e:
-            self.logger.error(
-                f"Error in processing issues to tickets: {e}", exc_info=True
-            )
-            return None
-
-    async def _build_pull_request_blocks(self, record: Record) -> BlocksContainer:
-        # TODO: think for BG as code file updates how as in newer commit some files same as old
-        # TODO: think of keys when PR gets updated like only when metadata is getting updated or say body and also consider it for file changes
-        # pr_url = record.weburl.split("/")
-        pr_url = getattr(record,"weburl","")
-        if not pr_url:
-            raise ValueError("Web URL is required for indexing pull request")
-        self.logger.info(f"Building blocks for pull request: {record.weburl}")
-        pr_url = pr_url.split("/")
-        pr_number = int(pr_url[6])
-        owner = pr_url[3]
-        repo_name = pr_url[4]
-        pull_request_res = self.data_source.get_pull(owner, repo_name, pr_number)
-        if not pull_request_res.success:
-            raise Exception(f"Failed to fetch pull request details for record {record.external_record_id}: {pull_request_res.error}")
-        if not pull_request_res.data:
-            raise Exception(f"No pull request data found for record {record.external_record_id}")
-        pull_request: PullRequest = pull_request_res.data
-        block_group_number = 0
-        block_number = 0
-        blocks: list[Block] = []
-        block_groups: list[BlockGroup] = []
-        list_remaining_records: list[RecordUpdate] = []
-        markdown_content_raw: str = getattr(pull_request,"body","") or ""
-        # getting modified markdown  content with images as base64
-        markdown_with_base64 = await self.embed_images_as_base64(markdown_content_raw)
-        self.logger.debug(f"Processed markdown content for pull request {pull_request.url}")
-        # get linked attachments to pull request
-        child_records, remaining_record_updates = await self.make_child_records_of_attachments(markdown_content_raw, record)
-        list_remaining_records.extend(remaining_record_updates)
-            # bg of title and desc./body
-        bg_0 = BlockGroup(
-            index=block_group_number,
-            name=pull_request.title,
-            type=GroupType.TEXT_SECTION,
-            # NOTE: Adding record name into Content for record name search Permanently FIX todo
-            data=f"{pull_request.title}\n\n{markdown_with_base64}",
-            format=DataFormat.MARKDOWN,
-            weburl=pull_request.html_url,
-            sub_type=GroupSubType.CONTENT.value,
-            requires_processing=True,
-            source_modified_date= str(self.datetime_to_epoch_ms(pull_request.updated_at)),
-            children_records=child_records,
-        )
-        self.logger.info(f"bg for title and desc created for pr{pr_number}")
-        block_groups.append(bg_0)
-
-        comment_block_groups, remaining_record_updates = await self._build_comment_blocks(
-            issue_url=record.weburl, parent_index=block_group_number, record=record
-        )
-        list_remaining_records.extend(remaining_record_updates)
-        block_groups.extend(comment_block_groups)
-        block_group_number += len(comment_block_groups)
-        block_group_number += 1
-
-        # blocks for commits of pr
-        commits_res = self.data_source.get_pull_commits(owner, repo_name, pr_number)
-        if commits_res.success and commits_res.data:
-            commits = commits_res.data
-            for commit in commits:
-                block = Block(
-                    index=block_number,
-                    parent_index=block_group_number,
-                    type=BlockType.TEXT.value,
-                    sub_type=BlockSubType.COMMIT.value,
-                    weburl=commit.html_url,
-                    format=DataFormat.MARKDOWN,
-                    data=commit.commit.message,
-                    source_creation_date=str(
-                        self.datetime_to_epoch_ms(commit.commit.committer.date)
-                    ),
-                    source_id=commit.sha,
-                )
-                block_number += 1
-                blocks.append(block)
-        bg_1 = BlockGroup(
-            index=block_group_number,
-            name="block group for pull request commits",
-            type=GroupType.COMMITS,
-            description=f"List of commits for pull request : {pr_number}",
-            weburl=pull_request.commits_url,
-            # TODO: ask is group subtype needed here
-        )
-        block_groups.append(bg_1)
-        block_group_number += 1
-        self.logger.info(
-            f"Block groups and Blocks of length {block_number},  for commits created for pr{pr_number}"
-        )
-        # block group for files changed in pr
-        files_res = self.data_source.get_pull_file_changes(owner, repo_name, pr_number,fetch_full_content=False)
-        if files_res.success and files_res.data:
-            files = files_res.data
-            # in file data patch is present which is diff make another call for files content
-            review_comments_res = self.data_source.get_pull_review_comments(
-                owner, repo_name, pr_number
-            )
-            review_comments_map: dict[str, list[BlockComment]] = {}
-            if review_comments_res.success and review_comments_res.data:
-                review_comments = review_comments_res.data
-                for r_comment in review_comments:
-                    raw_markdown_content: str = getattr(r_comment,"body","") or ""
-                    markdown_content_with_images_base64 = (
-                        await self.embed_images_as_base64(raw_markdown_content)
-                    )
-                    attachments,remaining_record_updates = await self.make_block_comment_of_attachments(raw_markdown_content, record)
-                    list_remaining_records.extend(remaining_record_updates)
-                    block_comment = BlockComment(
-                        text=markdown_content_with_images_base64,
-                        format=DataFormat.MARKDOWN,
-                        weburl=r_comment.html_url,
-                        updated_at=str(self.datetime_to_epoch_ms(r_comment.updated_at)),
-                        created_at=str(self.datetime_to_epoch_ms(r_comment.created_at)),
-                        attachments=attachments,
-                    )
-                    if r_comment.path in review_comments_map:
-                        review_comments_map[r_comment.path].append([block_comment])
-                    else:
-                        review_comments_map[r_comment.path] = [[block_comment]]
-            changes_url = pull_request.html_url + "/changes"
-            for file in files:
-                self.logger.info(f"Fetching content for file: {file.filename}")
-                # file content details
-                file_blob_url = getattr(file, "blob_url", "").split("/")
-                file_ref = file_blob_url[6]
-                file_content_res = self.data_source.get_file_contents(
-                    owner, repo_name, file.filename, file_ref
-                )
-
-                if file_content_res.success and file_content_res.data:
-                    self.logger.info(f"Fetched content for file: {file.filename}")
-                    # file content is base64 encoded
-                    file_content = None
-                    try:
-                        # Decode base64 content from GitHub API
-                        file_content = base64.b64decode(
-                            file_content_res.data.content
-                        ).decode("utf-8")
-                    except Exception as e:
-                        self.logger.error(
-                            f"Failed to decode code file content for {file.filename}: {e}"
-                        )
-                        file_content = file_content_res.data.content
-                    bg_n = BlockGroup(
-                        index=block_group_number,
-                        name=f"block for file {file.filename}",
-                        type=GroupType.FULL_CODE_PATCH,
-                        format=DataFormat.MARKDOWN,
-                        sub_type=GroupSubType.PR_FILE_CHANGE,
-                        data=str(file.patch)
-                        + str("\n\nFull File Content:\n")
-                        + str(file_content),
-                        comments=review_comments_map.get(file.filename, []),
-                        requires_processing=True,
-                        weburl=changes_url,
-                    )
-                    block_groups.append(bg_n)
-                    block_group_number += 1
-
-        # making blockgroups for reviews
-        # keeping parent of reviews as description bg
-        reviews_res = self.data_source.get_pull_reviews(owner, repo_name, pr_number)
-        if reviews_res.success and reviews_res.data:
-            reviews:list[PullRequestReview] = reviews_res.data
-            for review in reviews:
-                raw_review_data = getattr(review,"body","") or ""
-                markdown_content_with_images_base64 = await self.embed_images_as_base64(raw_review_data)
-                child_records,remaining_record_updates = await self.make_child_records_of_attachments(raw_review_data, record)
-                list_remaining_records.extend(remaining_record_updates)
-                bg_n  = BlockGroup(
-                    index = block_group_number,
-                    parent_index =0,
-                    name =f"Review by {review.user.login} on pull request {pr_number}",
-                    type=GroupType.TEXT_SECTION.value,
-                    format=DataFormat.MARKDOWN.value,
-                    sub_type=GroupSubType.COMMENT.value,
-                    source_group_id=review.html_url,
-                    data = markdown_content_with_images_base64,
-                    weburl=review.html_url,
-                    requires_processing=True,
-                    children_records=child_records,
-                )
-                block_groups.append(bg_n)
-                block_group_number += 1
-
-        self.logger.info(f"Blocks container created for pull request {pr_number}")
-        self.logger.info(f"Sending remaining {len(list_remaining_records)} attachments to process of pull request")
-        await self._process_new_records(list_remaining_records)
-        return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
-    # ---------------------------Attachment functions-----------------------------------#
-    async def embed_images_as_base64(self, body_content: str) -> str:
-        """
-        getting raw markdown content, then getting images as base64 and appending in markdown content
-        """
-        if not body_content:
-            return ""
-        self.logger.debug(
-            "Embedding images as base64 in markdown content in embed_images_as_base64 function"
-        )
-        markdown_content_clean, attachments = await self.clean_github_content(
-            body_content
-        )
-
-        if not attachments:
-            return markdown_content_clean
-
-        for attach in attachments:
-            if attach.get("type") != "image":
-                continue
-            attachment_url = attach.get("href")
-            self.logger.debug(f"Fetching image from URL: {attachment_url}")
-            try:
-                image_bytes_res = await self.data_source.get_img_bytes(attachment_url)
-                if not image_bytes_res.success or not image_bytes_res.data:
-                    self.logger.error(f"Failed to fetch image from {attachment_url}: {image_bytes_res.error}")
-                    continue
-                image_bytes = image_bytes_res.data
-                if image_bytes:
-                    start = image_bytes.lstrip()
-                    if start.startswith((b"<?xml", b"<svg")):
-                        fmt = "svg+xml"
-                    else:
-                        # to get image format as in attachment data just an image
-                        img = Image.open(BytesIO(image_bytes))
-                        fmt = img.format.lower() if img.format else "png"
-                    base64_data = base64.b64encode(image_bytes).decode("utf-8")
-                    md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
-                    markdown_content_clean += f"{md_image_data}"
-            except Exception as e:
-                self.logger.error(f"Error embedding image from {attachment_url}: {str(e)}")
-                continue
-        return markdown_content_clean
-
-    async def process_other_attachments_blocks(
-        self, raw_markdown_content: str, record: Record
-    ) -> list[ChildRecord]:
-        cleaned_content, attachments = await self.clean_github_content(
-            raw_markdown_content
-        )
-        child_records: list[ChildRecord] = []
-        record_updates: list[RecordUpdate] = []
-        record_updates = await self.make_file_records_from_list(attachments, record)
-        await self._process_new_records(record_updates)
-        self.logger.debug(f"processed other attachments blocks for record of length {len(record_updates)}")
-        for record_update in record_updates:
-            child_record = ChildRecord(
-                child_id=record_update.record.id,
-                child_type=ChildType.RECORD,
-                child_name=record_update.record.record_name,
-            )
-            child_records.append(child_record)
-        return child_records
-
-    async def process_other_attachments_block_comment(
-        self, raw_markdown_content: str, record: Record
-    ) -> list[CommentAttachment]:
-        cleaned_content, attachments = await self.clean_github_content(
-            raw_markdown_content
-        )
-        comment_attachments: list[CommentAttachment] = []
-        record_updates: list[RecordUpdate] = []
-        record_updates = await self.make_file_records_from_list(attachments, record)
-        await self._process_new_records(record_updates)
-        for record_update in record_updates:
-            comment_attachment = CommentAttachment(
-                name=record_update.record.record_name,
-                id=record_update.record.id,
-            )
-            comment_attachments.append(comment_attachment)
-        return comment_attachments
-
-    async def make_file_records_from_list(
-        self, attachments: list[dict[str, Any]], record: Record
-    ) -> list[RecordUpdate]:
-        """Building file records from list of attachment links."""
-        list_records_new: list[RecordUpdate] = []
-        for attach in attachments:
-            if attach.get("type") == "image":
-                continue
-            # creating file record for each attachment
-            attachment_url = attach.get("href")
-            attachment_name = attach.get("filename")
-            attachment_type = attach.get("type")
-            self.logger.info(
-                f"Processing attachment: {attachment_name} of type {attachment_type} from URL: {attachment_url}"
-            )
-            if not attachment_url or not attachment_name:
-                self.logger.warning(
-                    f"Skipping attachment due to missing URL or name: {attach}"
-                )
-                continue
-            # below look up to be removed below part as such not reqd. mostly as in block comments will look up record, come here only if not present
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=f"{attachment_url}"
-                )
-            # detect changes
-            record_id = str(uuid.uuid4())
-
-            filerecord = FileRecord(
-                id=existing_record.id if existing_record else record_id,
-                org_id=self.data_entities_processor.org_id,
-                record_name=attachment_name,
-                record_type=RecordType.FILE,
-                external_record_id=str(attachment_url),
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                origin=OriginTypes.CONNECTOR,
-                weburl=str(attachment_url),
-                record_group_type=RecordGroupType.REPOSITORY,
-                parent_external_record_id=record.external_record_id,
-                parent_record_type=record.record_type,
-                external_record_group_id=record.external_record_group_id,
-                mime_type=getattr(
-                    MimeTypes, attachment_type.upper(), MimeTypes.UNKNOWN
-                ).value,
-                extension=attachment_type.lower(),
-                source_created_at=get_epoch_timestamp_in_ms(),
-                source_updated_at=get_epoch_timestamp_in_ms(),
-                created_at=get_epoch_timestamp_in_ms(),
-                updated_at=get_epoch_timestamp_in_ms(),
-                is_file=True,
-                inherit_permissions=True,
-                preview_renderable=True,
-                version=0,
-                size_in_bytes=0,  # unknown
-            )
-
-            record_update = RecordUpdate(
-                record=filerecord,
-                is_new=True,
-                is_updated=False,
-                is_deleted=False,
-                metadata_changed=False,
-                content_changed=False,
-                permissions_changed=False,
-                old_permissions=[],
-                new_permissions=[],
-                external_record_id=attachment_url,
-            )
-            list_records_new.append(record_update)
-
-        return list_records_new
-
-    async def make_child_records_of_attachments(self, markdown_raw:str, record:Record)->tuple[list[ChildRecord],list[RecordUpdate]]:
-        cleaned_content, attachments = await self.clean_github_content(markdown_raw)
-        child_records: list[ChildRecord] = []
-        remaining_record_updates: list[RecordUpdate] = []
-        for attachment in attachments:
-            if attachment.get("type") == "image":
-                continue
-            attachment_url = attachment.get("href")
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=f"{attachment_url}"
-                )
-            if existing_record:
-                child_records.append(ChildRecord(
-                    child_type=ChildType.RECORD,
-                    child_id=existing_record.id,
-                    child_name=existing_record.record_name,
-                ))
-            else:
-                # make file record collect over all block groups send for indexing
-                record_update = await self.make_file_records_from_list([attachment], record)
-                if record_update:
-                    remaining_record_updates.extend(record_update)
-                    child_records.append(ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=record_update[0].record.id,
-                        child_name=record_update[0].record.record_name,
-                    ))
-        return child_records, remaining_record_updates
-
-    async def make_block_comment_of_attachments(self, markdown_raw:str, record:Record)->tuple[list[CommentAttachment],list[RecordUpdate]] :
-        cleaned_content, attachments = await self.clean_github_content(markdown_raw)
-        child_comment_records: list[CommentAttachment] = []
-        remaining_record_updates: list[RecordUpdate] = []
-        for attachment in attachments:
-            if attachment.get("type") == "image":
-                continue
-            attachment_url = attachment.get("href")
-            existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=f"{attachment_url}"
-                )
-            if existing_record:
-                child_comment_records.append(CommentAttachment(
-                    name=existing_record.record_name,
-                    id=existing_record.id,
-                ))
-            else:
-                # make file record collect over all block groups send for indexing
-                record_update = await self.make_file_records_from_list([attachment], record)
-                if record_update:
-                    remaining_record_updates.extend(record_update)
-                    child_comment_records.append(CommentAttachment(
-                    name=record_update[0].record.record_name,
-                    id=record_update[0].record.id,
-                ))
-        return child_comment_records, remaining_record_updates
-    # ---------------------------insitu functions-----------------------------------#
-    def datetime_to_epoch_ms(self, dt:datetime) -> int:
-        # make sure it's timezone-aware (assume UTC if missing)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return round(dt.timestamp() * 1000)
-
-    async def _get_api_token_(self) -> str:
-        """getting bearer token for file data streaming
-
-        Raises:
-            ValueError: _description_
-            ValueError: _description_
-
-        Returns:
-            str: _description_
-        """
-        config = await self.config_service.get_config(
-            f"/services/connectors/{self.connector_id}/config"
-        )
-        if not config:
-            self.logger.error("❌Github configuration not found.")
-            raise Exception("Github configuration not found")
-
-        credentials_config = config.get("credentials", {})
-        access_token = credentials_config.get("access_token", "")
-
-        if not access_token:
-            self.logger.error("❌Github configuration not found.")
-            raise ValueError("Github credentials not found")
-
-        return access_token
-
-    def _get_iso_time(self) -> str:
-        # Get the current time in UTC
-        utc_now = datetime.now(timezone.utc)
-        # Format the time into the ISO 8601 string format with 'Z'
-        return utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    async def get_signed_url(self, record: Record) -> str | None:
-        """Get signed URL for record access (optional - if API supports it)."""
-
-        return None
-
-    async def _log_rate_limit(self, label: str = "") -> None:
-        """Log GitHub rate limit: remaining, limit, and reset time."""
-        try:
-            res = self.data_source.get_rate_limit()
-            if not res or not res.success or not res.data:
-                self.logger.info(f"Rate Limit {label}: unavailable")
-                return
-
-            # res.data is RateLimitOverview; .rate has .remaining/.limit/.reset
-            rate = getattr(res.data, "rate", res.data)
-            remaining = getattr(rate, "remaining", None)
-            limit = getattr(rate, "limit", None)
-            reset = getattr(rate, "reset", None)
-
-            reset_str = "unknown"
-            extra = ""
-            if isinstance(reset, datetime):
-                reset_utc = (
-                    reset if reset.tzinfo else reset.replace(tzinfo=timezone.utc)
-                )
-                secs = max(
-                    int((reset_utc - datetime.now(timezone.utc)).total_seconds()), 0
-                )
-                reset_str = reset_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-                extra = f" (in {secs}s)"
-            elif reset is not None:
-                reset_str = str(reset)
-
-            self.logger.info(
-                f"Rate Limit {label}: {remaining}/{limit} remaining, resets at {reset_str}{extra}"
-            )
-        except Exception as e:
-            self.logger.warning(f"Rate Limit {label}: failed to read ({e})")
-
-    async def clean_github_content(self, text: str) -> tuple[str, list[dict[str, Any]]]:
-        """
-        Removes all attachments (images, files) from GitHub markdown/HTML content
-        and extracts their metadata.
-
-        Returns:
-            tuple: (cleaned_text, attachments_list)
-        """
-        attachments = []
-
-        def get_file_type(url:str, filename:str="") -> str:
-            """Determine file type from URL or filename"""
-            # Try to get extension from filename first (more reliable)
-            if filename:
-                ext = os.path.splitext(filename)[1].lower()
-                if ext:
-                    return ext.replace(".", "")
-
-            # Parse URL path
-            path = urlparse(url).path
-            ext = os.path.splitext(path)[1].lower()
-
-            if ext:
-                return ext.replace(".", "")
-
-            # GitHub-specific patterns
-            if "user-attachments/assets" in url:
-                return "image"  # GitHub assets are typically images
-            elif "user-attachments/files" in url:
-                return "file"
-
-            return "unknown"
-
-        # --- 1. HTML IMG TAGS ---
-        # More robust pattern that handles various attribute orders
-        html_img_pattern = r'<img\s+[^>]*?src=["\'](.*?)["\'][^>]*?/?>'
-
-        def _is_allowed_github_image(url: str) -> bool:
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme != "https":
-                    return False
-                host = (parsed.hostname or "").lower()
-                if host != "github.com":
-                    return False
-                return parsed.path.startswith("/user-attachments/assets/")
-            except Exception:
-                return False
-
-        def html_img_handler(match:re.Match[str]) -> str:
-            url = match.group(1)
-            if not _is_allowed_github_image(url):
-                return match.group(0)  # Keep original if not valid
-            # Try to extract alt text if present
-            alt_match = re.search(r'alt=["\'](.*?)["\']', match.group(0))
-            alt_text = alt_match.group(1) if alt_match else None
-
-            attachments.append(
-                {
-                    "type": get_file_type(url),
-                    "source": "html_img",
-                    "href": url,
-                    "alt": alt_text,
-                }
-            )
-            return ""
-
-        text = re.sub(
-            html_img_pattern, html_img_handler, text, flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # --- 2. MARKDOWN IMAGES: ![alt](url) ---
-        md_image_pattern = r"!\[(.*?)\]\((.*?)\)"
-
-        def md_image_handler(match:re.Match[str]) -> str:
-            alt_text = match.group(1)
-            url = match.group(2)
-            if not _is_allowed_github_image(url):
-                return match.group(0)  # Keep original if not valid
-            attachments.append(
-                {
-                    "type": get_file_type(url, alt_text),
-                    "source": "markdown_image",
-                    "href": url,
-                    "alt": alt_text if alt_text else None,
-                }
-            )
-            return ""
-
-        text = re.sub(md_image_pattern, md_image_handler, text)
-
-        # --- 3. MARKDOWN FILE LINKS: [filename.ext](url) ---
-        # This pattern specifically looks for file attachments
-        # (links with extensions or GitHub file paths)
-        md_link_pattern = r"\[(.*?)\]\((.*?)\)"
-
-        def _is_allowed_github_attachment(url: str) -> bool:
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme != "https":
-                    return False
-                host = (parsed.hostname or "").lower()
-                if host != "github.com":
-                    return False
-                return parsed.path.startswith("/user-attachments/")
-            except Exception:
-                return False
-
-        def md_link_handler(match:re.Match[str]) -> str:
-            link_text = match.group(1)
-            url = match.group(2)
-
-            # Check if this is a valid file attachment
-            is_github_file = _is_allowed_github_attachment(url)
-
-            # If it's a file attachment with github attachment base url match ONLY, extract it
-            if is_github_file:
-                attachments.append(
-                    {
-                        "type": get_file_type(url, link_text),
-                        "source": "file_attachment",
-                        "href": url,
-                        "filename": link_text,
-                    }
-                )
-                return ""
-
-            # Otherwise, keep the link (it's a regular hyperlink)
-            return match.group(0)
-
-        text = re.sub(md_link_pattern, md_link_handler, text)
-
-        # --- 4. CLEANUP ---
-        # Remove excessive blank lines created by deletions
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-
-        return text, attachments
-
-    async def handle_webhook_notification(self) -> bool:
-        """Handle webhook notifications (optional - for real-time sync)."""
-        return True
-
-    def get_filter_options(self) -> None:
-        return
-
-    async def cleanup(self) -> None:
-        """
-        Cleanup resources used by the connector.
-        """
-        self.logger.info("Cleaning up Github connector resources.")
-        self.data_source = None
+        await self.run_sync()
 
     @classmethod
     async def create_connector(
@@ -1668,29 +328,14 @@ class GithubConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-    ) -> "BaseConnector":
-        """
-        Factory method to create a Github connector instance.
-
-        Args:
-            logger: Logger instance
-            data_store_provider: Data store provider for database operations
-            config_service: Configuration service for accessing credentials
-
-        Returns:
-            Initialized GithubConnector instance
-        """
+    ) -> BaseConnector:
+        """Factory method to create a GitHub Personal connector instance."""
         data_entities_processor = DataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
         await data_entities_processor.initialize()
 
         return GithubConnector(
-            logger,
-            data_entities_processor,
-            data_store_provider,
-            config_service,
-            connector_id,
-            scope,
-            created_by,
+            logger, data_entities_processor, data_store_provider,
+            config_service, connector_id, scope, created_by,
         )

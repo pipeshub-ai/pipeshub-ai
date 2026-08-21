@@ -325,12 +325,22 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
   return map;
 }
 
-/** Scope GitLab repository picker based on the current `group_ids` sync filter row. */
-function groupPathsForProjectOptionsScope(
-  syncValues: Record<string, unknown> | undefined
+/**
+ * Repository pickers that narrow to a parent container the user already picked,
+ * keyed by the child filter name -> the parent filter supplying the scope.
+ */
+const OPTION_SCOPE_PARENT_FIELD: Record<string, string> = {
+  project_ids: 'group_ids', // GitLab: projects under the selected groups
+  repo_ids: 'org_ids', // GitHub: repos under the selected orgs
+};
+
+/** Scope a repository picker based on the parent container currently selected. */
+function groupPathsForOptionsScope(
+  syncValues: Record<string, unknown> | undefined,
+  parentFieldName: string
 ): { include?: string[]; exclude?: string[] } | undefined {
   if (!syncValues) return undefined;
-  const raw = syncValues.group_ids;
+  const raw = syncValues[parentFieldName];
   if (raw === undefined || raw === null) return undefined;
   if (!isFilterRowValue(raw)) return undefined;
   const op = String(raw.operator || '')
@@ -431,9 +441,9 @@ function ConnectorFilterMultiSelect({
   onValueChange: (v: unknown) => void;
   connectorId: string | null;
   portalContainer: HTMLElement | null;
-  /** When loading project_ids options, limit to repos under these GitLab group paths (sync filter). */
+  /** Limit repository options to those under these parent containers (GitLab groups / GitHub orgs). */
   optionContextGroupPaths?: string[];
-  /** When loading project_ids options, exclude repos under these GitLab group paths (sync filter, NOT_IN). */
+  /** Exclude repository options under these parent containers (sync filter, NOT_IN). */
   optionExcludeContextGroupPaths?: string[];
 }) {
   const selectedIds = useMemo(() => listFilterIds(value), [value]);
@@ -490,14 +500,14 @@ function ConnectorFilterMultiSelect({
               : { page: pageRef.current + 1 }),
         };
         if (
-          field.name === 'project_ids' &&
+          OPTION_SCOPE_PARENT_FIELD[field.name] &&
           optionContextGroupPaths &&
           optionContextGroupPaths.length > 0
         ) {
           params.contextGroupPath = optionContextGroupPaths;
         }
         if (
-          field.name === 'project_ids' &&
+          OPTION_SCOPE_PARENT_FIELD[field.name] &&
           optionExcludeContextGroupPaths &&
           optionExcludeContextGroupPaths.length > 0
         ) {
@@ -1161,7 +1171,7 @@ function FilterFieldRow({
   onChange: (section: FilterSection, name: string, value: unknown) => void;
   onClear: () => void;
   allowClear?: boolean;
-  /** Full sync filter form values (used to scope GitLab project_ids by selected group_ids). */
+  /** Full sync filter form values (used to scope a repo picker by its parent container filter). */
   allSyncValues?: Record<string, unknown>;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
@@ -1183,9 +1193,10 @@ function FilterFieldRow({
   const listLike = isListLikeField(field);
   const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
+  const optionsScopeParentField = OPTION_SCOPE_PARENT_FIELD[field.name];
   const projectOptionsScope =
-    section === 'sync' && field.name === 'project_ids'
-      ? groupPathsForProjectOptionsScope(allSyncValues)
+    section === 'sync' && optionsScopeParentField
+      ? groupPathsForOptionsScope(allSyncValues, optionsScopeParentField)
       : undefined;
 
   const commit = (next: FilterRowValue) => {

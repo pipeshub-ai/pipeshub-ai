@@ -473,6 +473,54 @@ class MockTransactionStore:
     async def delete_record_by_key(self, key: str) -> None:
         self._s.delete_node(CollectionNames.RECORDS.value, key)
 
+    async def delete_single_record(self, record_id: str) -> dict:
+        empty = {
+            "success": True, "deleted_records": [], "failed_records": [],
+            "total_requested": 1 if record_id else 0, "successfully_deleted": 0,
+            "failed_count": 0, "eventData": None,
+        }
+        if not record_id:
+            empty["total_requested"] = 0
+            return empty
+        rec = self._s.get_node(CollectionNames.RECORDS.value, record_id)
+        if not rec or rec.get("isDeleted") is True:
+            return empty
+        node_id = f"{CollectionNames.RECORDS.value}/{record_id}"
+        for coll, edges in list(self._s.edges.items()):
+            kept = []
+            for e in edges:
+                if e.get("_from") == node_id or e.get("_to") == node_id:
+                    if coll == CollectionNames.IS_OF_TYPE.value and e.get("_from") == node_id:
+                        to = e.get("_to") or ""
+                        if "/" in to:
+                            tcoll, tkey = to.split("/", 1)
+                            self._s.delete_node(tcoll, tkey)
+                    continue
+                kept.append(e)
+            self._s.edges[coll] = kept
+        self._s.delete_node(CollectionNames.RECORDS.value, record_id)
+        event_data = None
+        if rec.get("virtualRecordId"):
+            event_data = {
+                "eventType": "deleteRecord",
+                "topic": "record-events",
+                "payloads": [{
+                    "recordId": record_id,
+                    "virtualRecordId": rec.get("virtualRecordId"),
+                    "connectorName": rec.get("connectorName"),
+                    "origin": rec.get("origin"),
+                }],
+            }
+        return {
+            "success": True,
+            "deleted_records": [{"record_id": record_id, "name": rec.get("recordName", "Unknown")}],
+            "failed_records": [],
+            "total_requested": 1,
+            "successfully_deleted": 1,
+            "failed_count": 0,
+            "eventData": event_data,
+        }
+
     async def get_all_orgs(self) -> List[Dict]:
         return list(self._s.collections.get(CollectionNames.ORGS.value, {}).values())
 
