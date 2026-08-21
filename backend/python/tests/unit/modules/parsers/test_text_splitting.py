@@ -1,6 +1,6 @@
 """Unit tests for text_splitting helpers."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.modules.parsers.text_splitting import (
     MAX_TEXT_BLOCK_CHARS,
@@ -81,16 +81,12 @@ class TestSplitIntoSentences:
         assert len(result) >= 1
 
     def test_yasbd_segmenter_success_path(self):
-        mock_segmenter = type(
-            "MockSegmenter",
-            (),
-            {
-                "segment": lambda self, text, preserve_whitespace=True: [
-                    "First sentence.",
-                    "Second sentence.",
-                ]
-            },
-        )()
+        mock_segmenter = Mock()
+        mock_segmenter.segment.return_value = [
+            "First sentence.",
+            " Second sentence.",
+        ]
+        input_text = "First sentence. Second sentence."
         with (
             patch("app.modules.parsers.text_splitting._HAS_YASBD", True),
             patch(
@@ -98,19 +94,32 @@ class TestSplitIntoSentences:
                 return_value=mock_segmenter,
             ),
         ):
-            result = split_into_sentences("First sentence. Second sentence.", "en")
+            result = split_into_sentences(input_text, "en")
+        mock_segmenter.segment.assert_called_once_with(
+            input_text, preserve_whitespace=True
+        )
         assert len(result) == 2
-        assert result == ["First sentence.", "Second sentence."]
+        assert result == ["First sentence.", " Second sentence."]
 
     def test_yasbd_failure_falls_back_to_pysbd(self):
+        mock_pysbd_segmenter = Mock()
+        mock_pysbd_segmenter.segment.return_value = [
+            "First sentence.",
+            "Second sentence.",
+        ]
         with (
             patch("app.modules.parsers.text_splitting._HAS_YASBD", True),
             patch(
                 "app.modules.parsers.text_splitting._get_yasbd_segmenter",
                 side_effect=RuntimeError("boom"),
             ),
+            patch(
+                "app.modules.parsers.text_splitting._get_segmenter",
+                return_value=mock_pysbd_segmenter,
+            ),
         ):
             result = split_into_sentences("First sentence. Second sentence.", "en")
+        mock_pysbd_segmenter.segment.assert_called_once()
         assert len(result) == 2
 
     def test_segmenter_failure_falls_back_to_regex(self):
