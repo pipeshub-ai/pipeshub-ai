@@ -73,7 +73,7 @@ async def get_oauth_credentials_for_toolset(
                     oauth_config_id = current_instance.get("oauthConfigId")
                     if logger:
                         logger.info(
-                            f"Retrieved current oauthConfigId '{oauth_config_id}' from instance {instance_id}"
+                            f"Retrieved oauthConfigId from instance {instance_id}"
                         )
         except Exception as e:
             if logger:
@@ -98,9 +98,10 @@ async def get_oauth_credentials_for_toolset(
         )
         if not oauth_config:
             if logger:
+                available_ids = [c.get('_id') for c in oauth_configs]
                 logger.error(
                     f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
-                    f"Available configs: {[c.get('_id') for c in oauth_configs]}"
+                    f"Available config IDs: {available_ids}"
                 )
             raise ValueError(
                 f"OAuth configuration '{oauth_config_id}' not found for toolset '{toolset_type}'. "
@@ -123,14 +124,13 @@ async def get_oauth_credentials_for_toolset(
         if not client_id or not client_secret:
             raise ValueError(
                 f"OAuth configuration '{oauth_config_id}' is missing clientId or clientSecret. "
-                f"Available config keys: {list(config_data.keys())}. "
                 f"Please ask an administrator to update the OAuth configuration."
             )
 
         if logger:
             logger.debug(
                 f"✅ Fetched complete OAuth config '{oauth_config_id}' "
-                f"for toolset type '{toolset_type}' with fields: {list(config_data.keys())}"
+                f"for toolset type '{toolset_type}' ({len(config_data)} fields)"
             )
         return dict(config_data)
     except ValueError:
