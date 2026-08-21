@@ -473,18 +473,12 @@ class TestCreateAppUsers:
     async def test_team_scope_creates_team_app_edge(self):
         connector = _make_connector()
         connector.scope = "team"
-
-        tx_store = MagicMock()
-        tx_store.ensure_team_app_edge = AsyncMock()
-        tx_ctx = MagicMock()
-        tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        tx_ctx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction = MagicMock(return_value=tx_ctx)
+        connector.data_entities_processor.ensure_team_app_edge = AsyncMock()
 
         await connector._create_app_users()
 
-        tx_store.ensure_team_app_edge.assert_awaited_once_with(
-            "conn-mdb-1", "org-mdb-1"
+        connector.data_entities_processor.ensure_team_app_edge.assert_awaited_once_with(
+            "conn-mdb-1"
         )
         connector.data_entities_processor.on_new_app_users.assert_not_called()
 
@@ -542,13 +536,9 @@ class TestCreateAppUsers:
     async def test_raises_on_error(self):
         connector = _make_connector()
         connector.scope = "team"
-
-        tx_store = MagicMock()
-        tx_store.ensure_team_app_edge = AsyncMock(side_effect=Exception("DB error"))
-        tx_ctx = MagicMock()
-        tx_ctx.__aenter__ = AsyncMock(return_value=tx_store)
-        tx_ctx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction = MagicMock(return_value=tx_ctx)
+        connector.data_entities_processor.ensure_team_app_edge = AsyncMock(
+            side_effect=Exception("DB error")
+        )
 
         with pytest.raises(Exception, match="DB error"):
             await connector._create_app_users()

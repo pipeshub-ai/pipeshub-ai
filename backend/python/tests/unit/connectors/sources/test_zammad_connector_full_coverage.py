@@ -54,6 +54,8 @@ def mock_data_entities_processor():
     proc.on_new_app_roles = AsyncMock()
     proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -570,11 +572,7 @@ class TestSyncKBAnswersPaginated:
         existing.inherit_permissions = True
         existing.external_revision_id = "1000"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         first_assets = {
             "KnowledgeBaseAnswer": {
@@ -1964,11 +1962,7 @@ class TestBuildTicketAttachmentChildRecords:
         existing.id = "existing-att-1"
         existing.record_name = "file.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         parent = MagicMock()
         attachments = [{"id": 99, "filename": "file.pdf"}]
@@ -2037,11 +2031,7 @@ class TestBuildKBAnswerChildRecords:
         existing.id = "existing-kb-att"
         existing.record_name = "kb-file.pdf"
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         record = MagicMock()
         record.inherit_permissions = False
@@ -2209,11 +2199,7 @@ class TestTransformAttachmentEdgeCases:
         existing.id = "existing-att"
         existing.version = 5
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         parent = MagicMock(spec=TicketRecord)
         parent.id = "p1"
@@ -2727,11 +2713,7 @@ class TestTransformTicketEdgeCases:
         existing.version = 5
         existing.source_updated_at = 1719792000000
 
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         ds = _mock_ds()
         ds.list_links = AsyncMock(return_value=_resp(success=False))

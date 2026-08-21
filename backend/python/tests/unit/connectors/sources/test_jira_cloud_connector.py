@@ -94,6 +94,8 @@ def _make_mock_deps():
     ])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_by_parent = AsyncMock(return_value=[])
+    dep.delete_records_and_relations = AsyncMock()
     dep.initialize = AsyncMock()
 
     dsp = MagicMock()
@@ -1791,11 +1793,11 @@ class TestBuildIssueRecordsCoverage:
         issue = _make_issue()
         user = _make_app_user()
 
-        mock_tx, mock_tx_store = _make_tx_store(None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [user], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [user])
         assert len(result) == 1
         assert result[0][0].version == 0
 
@@ -1812,13 +1814,11 @@ class TestBuildIssueRecordsCoverage:
         existing.version = 1
         existing.source_updated_at = 1700000000000  # Different from issue updated
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 1
         assert result[0][0].version == 2
 
@@ -1836,12 +1836,10 @@ class TestBuildIssueRecordsCoverage:
         existing.version = 1
         existing.source_updated_at = ts
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -1852,13 +1850,11 @@ class TestBuildIssueRecordsCoverage:
 
         issue = _make_issue(issue_type="Epic", hierarchy_level=1)
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 1
 
     @pytest.mark.asyncio
@@ -1874,13 +1870,11 @@ class TestBuildIssueRecordsCoverage:
             parent_key="PROJ-100",
         )
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 1
         assert result[0][0].parent_external_record_id == "parent-100"
 
@@ -1895,13 +1889,11 @@ class TestBuildIssueRecordsCoverage:
 
         issue = _make_issue()
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
@@ -1915,13 +1907,11 @@ class TestBuildIssueRecordsCoverage:
             "outwardIssue": {"id": "99"},
         }])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].related_external_records is not None
 
     @pytest.mark.asyncio
@@ -1934,15 +1924,13 @@ class TestBuildIssueRecordsCoverage:
             {"id": "att-1", "filename": "report.pdf", "size": 1024, "mimeType": "application/pdf", "created": "2024-01-15T10:30:45.000+0000"}
         ])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[
             (_make_file_record(attachment_id="att-1"), [])
         ])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 2
 
     @pytest.mark.asyncio
@@ -1953,13 +1941,11 @@ class TestBuildIssueRecordsCoverage:
 
         issue = _make_issue(attachments=[{"id": "att-1"}])
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(side_effect=Exception("fetch err"))
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert len(result) == 1
 
     @pytest.mark.asyncio
@@ -1970,13 +1956,11 @@ class TestBuildIssueRecordsCoverage:
 
         issue = _make_issue()
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].weburl is None
 
     @pytest.mark.asyncio
@@ -1993,13 +1977,11 @@ class TestBuildIssueRecordsCoverage:
             parent_key="PROJ-100",
         )
 
-        mock_tx_store = AsyncMock()
-        mock_tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        result = await connector._build_issue_records([issue], "proj-1", [], mock_tx_store)
+        result = await connector._build_issue_records([issue], "proj-1", [])
         assert result[0][0].parent_external_record_id == "epic-100"
         assert result[0][0].parent_record_type == RecordType.TICKET
 
@@ -2015,7 +1997,7 @@ class TestFetchIssueAttachmentsCoverage:
     async def test_no_attachments(self):
         connector = _make_connector()
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", {}, [], "proj-1", RecordGroupType.PROJECT, AsyncMock()
+            "issue-1", "PROJ-1", {}, [], "proj-1", RecordGroupType.PROJECT
         )
         assert result == []
 
@@ -2030,11 +2012,10 @@ class TestFetchIssueAttachmentsCoverage:
              "created": "2024-01-15T10:30:45.000+0000"}
         ]}
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT
         )
         assert len(result) == 1
         assert result[0][0].record_name == "report.pdf"
@@ -2057,11 +2038,10 @@ class TestFetchIssueAttachmentsCoverage:
         ts = connector._parse_jira_timestamp("2024-01-15T10:30:45.000+0000")
         existing.source_updated_at = ts
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT
         )
         assert len(result) == 1
         assert result[0][0].version == 1
@@ -2071,9 +2051,8 @@ class TestFetchIssueAttachmentsCoverage:
         connector = _make_connector()
         fields = {"attachment": [{"filename": "no-id.txt"}]}
 
-        tx_store = AsyncMock()
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT
         )
         assert result == []
 
@@ -2083,11 +2062,10 @@ class TestFetchIssueAttachmentsCoverage:
         connector.site_url = "https://company.atlassian.net"
 
         fields = {"attachment": [{"id": "att-1"}]}
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT, tx_store
+            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT
         )
         assert result == []
 
@@ -2102,11 +2080,10 @@ class TestFetchIssueAttachmentsCoverage:
              "created": "2024-01-15T10:30:45.000+0000"}
         ]}
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         result = await connector._fetch_issue_attachments(
-            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT, tx_store,
+            "issue-1", "PROJ-1", fields, [], "proj-1", RecordGroupType.PROJECT,
             parent_node_id="node-123"
         )
         assert len(result) == 1
@@ -2250,13 +2227,12 @@ class TestProcessIssueAttachmentsForChildren:
         existing.id = "rec-att-1"
         existing.record_name = "file.pdf"
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         attachments = [{"id": "att1", "filename": "file.pdf", "size": 100, "mimeType": "application/pdf"}]
 
         result = await connector._process_issue_attachments_for_children(
-            attachments, "issue-1", "node-1", "proj-1", "https://jira/browse/PROJ-1", tx_store
+            attachments, "issue-1", "node-1", "proj-1", "https://jira/browse/PROJ-1"
         )
         assert "att1" in result
 
@@ -2265,14 +2241,13 @@ class TestProcessIssueAttachmentsForChildren:
         connector = _make_connector()
         connector.indexing_filters = None
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         attachments = [{"id": "att1", "filename": "new.pdf", "size": 200, "mimeType": "application/pdf",
                         "created": "2024-01-15T10:00:00.000Z"}]
 
         result = await connector._process_issue_attachments_for_children(
-            attachments, "issue-1", "node-1", "proj-1", "https://jira/browse/PROJ-1", tx_store
+            attachments, "issue-1", "node-1", "proj-1", "https://jira/browse/PROJ-1"
         )
         assert "att1" in result
         connector.data_entities_processor.on_new_records.assert_awaited_once()
@@ -2281,11 +2256,10 @@ class TestProcessIssueAttachmentsForChildren:
     async def test_skips_empty_id(self):
         connector = _make_connector()
 
-        tx_store = AsyncMock()
         attachments = [{"id": "", "filename": "no-id.txt"}]
 
         result = await connector._process_issue_attachments_for_children(
-            attachments, "issue-1", "node-1", "proj-1", None, tx_store
+            attachments, "issue-1", "node-1", "proj-1", None
         )
         assert result == {}
 
@@ -2293,8 +2267,7 @@ class TestProcessIssueAttachmentsForChildren:
     async def test_exception_continues(self):
         connector = _make_connector()
 
-        tx_store = AsyncMock()
-        tx_store.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
 
         attachments = [
             {"id": "att1", "filename": "fail.pdf"},
@@ -2302,7 +2275,7 @@ class TestProcessIssueAttachmentsForChildren:
         ]
 
         result = await connector._process_issue_attachments_for_children(
-            attachments, "issue-1", "node-1", "proj-1", None, tx_store
+            attachments, "issue-1", "node-1", "proj-1", None
         )
         # Both may fail or second may succeed depending on implementation
 
@@ -2585,16 +2558,14 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
     @pytest.mark.asyncio
     async def test_no_histories(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
         issue = {"key": "P-1", "changelog": {"histories": []}}
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        await connector._handle_attachment_deletions_from_changelog(issue)
 
     @pytest.mark.asyncio
     async def test_no_issue_id(self):
         connector = _make_connector()
-        tx_store = AsyncMock()
         issue = {"changelog": {"histories": [{"items": []}]}}
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        await connector._handle_attachment_deletions_from_changelog(issue)
 
     @pytest.mark.asyncio
     async def test_description_change_removed_inline_image(self):
@@ -2625,16 +2596,12 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
         mock_record2.external_record_id = "attachment_400"
         mock_record2.record_name = "orphan.pdf"
 
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-        tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record, mock_record2])
-
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[mock_record, mock_record2])
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(side_effect=[None])
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        # removed.png should be deleted by filename match
-        # orphan.pdf should be deleted because it's not in current_attachment_ids
-        assert tx_store.delete_records_and_relations.await_count >= 1
+        await connector._handle_attachment_deletions_from_changelog(issue)
+        assert connector.data_entities_processor.delete_records_and_relations.await_count >= 1
 
     @pytest.mark.asyncio
     async def test_attachment_to_empty_string(self):
@@ -2661,12 +2628,11 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
         mock_record.external_record_id = "attachment_55"
         mock_record.record_name = "file.txt"
 
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=mock_record)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations.assert_awaited()
+        await connector._handle_attachment_deletions_from_changelog(issue)
+        connector.data_entities_processor.delete_records_and_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_attachment_not_found_in_db(self):
@@ -2687,11 +2653,9 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
             },
         }
 
-        tx_store = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations = AsyncMock()
+        await connector._handle_attachment_deletions_from_changelog(issue)
 
     @pytest.mark.asyncio
     async def test_attachment_still_exists_at_source(self):
@@ -2720,14 +2684,13 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
         mock_record.external_record_id = "attachment_200"
         mock_record.record_name = "kept.png"
 
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-        tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[mock_record])
+        connector.data_entities_processor.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        await connector._handle_attachment_deletions_from_changelog(issue)
         # kept.png is still in current attachments, should NOT be deleted
-        tx_store.delete_records_and_relations.assert_not_awaited()
+        connector.data_entities_processor.delete_records_and_relations.assert_not_awaited()
 
 
 # ===========================================================================

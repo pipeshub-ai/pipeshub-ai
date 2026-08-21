@@ -192,6 +192,8 @@ def connector():
         dep.delete_permission_from_record = AsyncMock()
         dep.get_users_with_permission_to_node = AsyncMock(return_value=[])
         dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
+        dep.create_record_relation = AsyncMock()
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -933,6 +935,7 @@ class TestDeleteMessageAndAttachments:
         attachment.id = "att-rec-1"
         provider = _make_mock_data_store_provider(attachment_records=[attachment])
         connector.data_store_provider = provider
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[attachment])
         await connector._delete_message_and_attachments("rec-1", "msg-1")
         assert connector.data_entities_processor.on_record_deleted.await_count == 2
 
@@ -1403,11 +1406,15 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.team.connector.quotations.extract_from_html",
+            side_effect=lambda x: x,
+        ), patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=lambda gen, **kwargs: gen,
-        ):
-            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
-            async for chunk in stream_gen:
+        ) as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            gen = mock_stream.call_args[0][0]
+            async for chunk in gen:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
@@ -1429,11 +1436,15 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.team.connector.quotations.extract_from_html",
+            side_effect=lambda x: x,
+        ), patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=lambda gen, **kwargs: gen,
-        ):
-            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
-            async for chunk in stream_gen:
+        ) as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            gen = mock_stream.call_args[0][0]
+            async for chunk in gen:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
@@ -1461,11 +1472,15 @@ class TestStreamMailRecord:
         streamed_chunks: list[bytes] = []
 
         with patch(
+            "app.connectors.sources.google.gmail.team.connector.quotations.extract_from_html",
+            side_effect=lambda x: x,
+        ), patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
-            side_effect=lambda gen, **kwargs: gen,
-        ):
-            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
-            async for chunk in stream_gen:
+        ) as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+            gen = mock_stream.call_args[0][0]
+            async for chunk in gen:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()

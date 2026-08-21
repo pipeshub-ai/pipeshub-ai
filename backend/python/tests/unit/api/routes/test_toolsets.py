@@ -3550,7 +3550,7 @@ class TestGetMyToolsetsWithRegistry:
         instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "instanceName": "My Jira", "authType": "OAUTH"}]
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=instances):
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances):
             result = await get_my_toolsets(
                 request, search=None, page=1, limit=20,
                 include_registry=True, toolset_type=None, auth_status=None,
@@ -6149,7 +6149,7 @@ class TestGetMyToolsetsRoute:
         req = _make_request()
         req.app.state.toolset_registry = _make_registry("jira")
 
-        with patch("app.api.routes.toolsets._load_instances_for_mutation", new_callable=AsyncMock, return_value=[]):
+        with patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=[]):
             result = await get_my_toolsets(
                 req, search=None, page=1, limit=20,
                 include_registry=False, toolset_type=None, auth_status=None,

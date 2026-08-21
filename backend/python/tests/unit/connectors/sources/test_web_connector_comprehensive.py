@@ -61,6 +61,7 @@ def _make_connector(scope: str = "personal", created_by: str = "test-user-id"):
     dep.on_record_metadata_update = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.ensure_team_app_edge = AsyncMock()
     dsp = MagicMock()
 
     mock_tx = AsyncMock()
@@ -908,7 +909,7 @@ class TestRunSyncOrchestration:
         c._crawl_single_page = AsyncMock()
         c.process_retry_urls = AsyncMock()
         await c.run_sync()
-        c.data_store_provider._mock_tx.ensure_team_app_edge.assert_awaited_once()
+        c.data_entities_processor.ensure_team_app_edge.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)

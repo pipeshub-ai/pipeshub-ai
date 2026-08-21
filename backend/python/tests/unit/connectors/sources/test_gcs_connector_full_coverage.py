@@ -74,6 +74,9 @@ def mock_data_entities_processor():
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     proc.get_user_by_user_id = AsyncMock(
         return_value=User(
             email="user@test.com",
@@ -674,25 +677,6 @@ class TestSyncBucket95:
         await connector._sync_bucket("bucket")
 
 
-class TestRemoveOldParentRelationship95:
-    @pytest.mark.asyncio
-    async def test_removed_edges(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=2)
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_zero_edges(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connector):
-        tx = AsyncMock()
-        tx.delete_parent_child_edge_to_record = AsyncMock(side_effect=Exception("err"))
-        await connector._remove_old_parent_relationship("rec-1", tx)
-
 
 class TestEnsureParentFoldersExist95:
     @pytest.mark.asyncio
@@ -763,7 +747,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -784,7 +768,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 1
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -804,9 +788,8 @@ class TestProcessGcsObject95:
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(
-            existing_record=None, existing_revision_record=existing
-        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -838,7 +821,7 @@ class TestProcessGcsObject95:
         existing.external_record_id = "bucket/file.txt"
         existing.version = 0
         existing.source_created_at = 1700000000000
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {"Key": "file.txt", "LastModified": "2025-06-01T00:00:00Z", "Size": 100}
@@ -878,8 +861,7 @@ class TestProcessGcsObject95:
 
     @pytest.mark.asyncio
     async def test_exception_in_processing(self, connector):
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = MagicMock(side_effect=Exception("db err"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("db err"))
         obj = {"Key": "file.txt", "LastModified": "2025-06-01T00:00:00Z", "Size": 100}
         record, perms = await connector._process_gcs_object(obj, "bucket")
         assert record is None
@@ -1425,19 +1407,21 @@ class TestRunIncrementalSync95:
 class TestCreateConnector95:
     @pytest.mark.asyncio
     async def test_create_connector(self, mock_logger, mock_data_store_provider, mock_config_service):
-        processor = MagicMock()
-        processor.org_id = "org-1"
         with patch("app.connectors.sources.google_cloud_storage.connector.GCSApp"):
-            result = await GCSConnector.create_connector(
-                logger=mock_logger,
-                data_store_provider=mock_data_store_provider,
-                config_service=mock_config_service,
-                connector_id="gcs-new-1",
-                scope="personal",
-                created_by="test-user-id",
-                data_entities_processor=processor,
-            )
-            assert isinstance(result, GCSConnector)
+            with patch("app.connectors.sources.google_cloud_storage.connector.GCSDataSourceEntitiesProcessor") as mock_proc_cls:
+                mock_proc_instance = MagicMock()
+                mock_proc_instance.initialize = AsyncMock()
+                mock_proc_cls.return_value = mock_proc_instance
+                result = await GCSConnector.create_connector(
+                    logger=mock_logger,
+                    data_store_provider=mock_data_store_provider,
+                    config_service=mock_config_service,
+                    connector_id="gcs-new-1",
+                    scope="personal",
+                    created_by="test-user-id",
+                    data_entities_processor=mock_proc_instance,
+                )
+                assert isinstance(result, GCSConnector)
 
 
 class TestGetGcsRevisionId95:

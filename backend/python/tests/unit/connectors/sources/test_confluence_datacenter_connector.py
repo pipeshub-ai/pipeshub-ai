@@ -64,6 +64,8 @@ def _make_mock_deps():
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
+    data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+    data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
     data_store_provider = MagicMock()
     mock_tx = MagicMock()
@@ -1394,12 +1396,13 @@ def _make_mock_deps_cov():
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.get_all_user_groups = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-    mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     dsp.transaction.return_value = mock_tx
@@ -2091,11 +2094,7 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         mock_user = MagicMock()
         mock_user.email = "alice@test.com"
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=mock_user)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
 
         perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
         assert perm is not None
@@ -2105,11 +2104,7 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_user_not_found_no_pseudo(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
 
         perm = await c._create_permission_from_principal(
             "user", "acc-1", PermissionType.READ, create_pseudo_group_if_missing=False
@@ -2119,12 +2114,8 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_user_not_found_create_pseudo(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         pseudo_group = MagicMock()
         pseudo_group.source_user_group_id = "acc-1"
@@ -2141,12 +2132,8 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         pseudo = MagicMock()
         pseudo.source_user_group_id = "acc-1"
-        mock_tx = MagicMock()
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=pseudo)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=pseudo)
 
         perm = await c._create_permission_from_principal(
             "user", "acc-1", PermissionType.READ, create_pseudo_group_if_missing=True
@@ -2159,11 +2146,7 @@ class TestCreatePermissionFromPrincipal:
         c = _conn()
         mock_group = MagicMock()
         mock_group.source_user_group_id = "grp-1"
-        mock_tx = MagicMock()
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=mock_group)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=mock_group)
 
         perm = await c._create_permission_from_principal("group", "grp-1", PermissionType.READ)
         assert perm is not None
@@ -2173,11 +2156,7 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_group_not_found(self):
         c = _conn()
-        mock_tx = MagicMock()
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider.transaction.return_value = mock_tx
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         perm = await c._create_permission_from_principal("group", "grp-x", PermissionType.READ)
         assert perm is None
@@ -2191,7 +2170,7 @@ class TestCreatePermissionFromPrincipal:
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
         c = _conn()
-        c.data_store_provider.transaction.side_effect = Exception("DB error")
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=Exception("DB error"))
         perm = await c._create_permission_from_principal("user", "acc-1", PermissionType.READ)
         assert perm is None
 
@@ -3579,12 +3558,13 @@ def _make_mock_deps_fullcov():
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.get_all_user_groups = AsyncMock(return_value=[])
 
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
-    mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     dsp.transaction.return_value = mock_tx
@@ -3959,10 +3939,8 @@ class TestProcessWebpageWithUpdateFullCoverage:
 class TestCreatePermissionFromPrincipalFullCoverage:
     @pytest.mark.asyncio
     async def test_user_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps_fullcov()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=MagicMock(email="u@t.com"))
         perm = await c._create_permission_from_principal("user", "u1", PermissionType.READ)
         assert perm is not None
         assert perm.email == "u@t.com"
@@ -3983,10 +3961,8 @@ class TestCreatePermissionFromPrincipalFullCoverage:
 
     @pytest.mark.asyncio
     async def test_group_found(self):
-        _, _, dsp, _, mock_tx = _make_mock_deps_fullcov()
         c = _c()
-        c.data_store_provider = dsp
-        mock_tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(source_user_group_id="g1"))
         perm = await c._create_permission_from_principal("group", "g1", PermissionType.READ)
         assert perm is not None
         assert perm.entity_type == EntityType.GROUP

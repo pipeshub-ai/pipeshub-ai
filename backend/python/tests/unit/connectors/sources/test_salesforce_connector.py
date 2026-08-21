@@ -3434,27 +3434,17 @@ class TestSyncPermissionsForUser:
 
 class TestSalesforcePermissionsSync:
 
-    def _make_tx_with_record_and_user(self):
-        mock_tx = MagicMock()
-        record = MagicMock()
-        record.id = "rec-internal-1"
-        user = MagicMock()
-        user.id = "user-internal-1"
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=record)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.delete_edge = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        return mock_tx
-
     @pytest.mark.asyncio
     async def test_creates_permission_edge(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = self._make_tx_with_record_and_user()
-        connector.data_store_provider.transaction.return_value = mock_tx
+        record = MagicMock()
+        record.id = "rec-internal-1"
+        user = MagicMock()
+        user.id = "user-internal-1"
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=None)
 
         await connector.salesforce_permissions_sync(
             connector_id="conn-sf-1",
@@ -3462,18 +3452,17 @@ class TestSalesforcePermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_awaited_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_when_record_not_found(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        user = MagicMock()
+        user.id = "user-1"
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         await connector.salesforce_permissions_sync(
             connector_id="conn-sf-1",
@@ -3481,21 +3470,14 @@ class TestSalesforcePermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_user_not_found(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = MagicMock()
-        record = MagicMock()
-        record.id = "rec-1"
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=record)
-        mock_tx.get_user_by_email = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         await connector.salesforce_permissions_sync(
             connector_id="conn-sf-1",
@@ -3503,26 +3485,19 @@ class TestSalesforcePermissionsSync:
             users_email="missing@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_replaces_edge_when_level_changes(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = MagicMock()
         record = MagicMock()
         record.id = "rec-1"
         user = MagicMock()
         user.id = "user-1"
-        existing_edge = {"role": "READER"}  # lower level than WRITER
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=record)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value=existing_edge)
-        mock_tx.delete_edge = AsyncMock()
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=None)
 
         await connector.salesforce_permissions_sync(
             connector_id="conn-sf-1",
@@ -3530,18 +3505,13 @@ class TestSalesforcePermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.WRITE,
         )
-        mock_tx.delete_edge.assert_awaited_once()
-        mock_tx.batch_create_edges.assert_awaited_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_propagates_exception(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(side_effect=Exception("DB crash"))
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(side_effect=Exception("DB crash"))
 
         with pytest.raises(Exception, match="DB crash"):
             await connector.salesforce_permissions_sync(
@@ -3559,29 +3529,19 @@ class TestSalesforcePermissionsSync:
 
 class TestSalesforceRecordGroupPermissionsSync:
 
-    def _make_rg_tx(self, group_type=None):
-        from app.models.entities import RecordGroupType
-        mock_tx = MagicMock()
-        rg = MagicMock()
-        rg.id = "rg-internal-1"
-        rg.group_type = group_type or RecordGroupType.SALESFORCE_ORG
-        user = MagicMock()
-        user.id = "user-internal-1"
-        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.delete_edge = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        return mock_tx
-
     @pytest.mark.asyncio
     async def test_creates_permission_edge_for_org_group(self):
+        from app.models.entities import RecordGroupType
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = self._make_rg_tx()
-        connector.data_store_provider.transaction.return_value = mock_tx
+        rg = MagicMock()
+        rg.id = "rg-internal-1"
+        rg.group_type = RecordGroupType.SALESFORCE_ORG
+        user = MagicMock()
+        user.id = "user-internal-1"
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=None)
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -3589,18 +3549,17 @@ class TestSalesforceRecordGroupPermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_awaited_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_when_record_group_not_found(self):
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = MagicMock()
-        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        user = MagicMock()
+        user.id = "user-1"
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -3608,15 +3567,21 @@ class TestSalesforceRecordGroupPermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_group_type_not_salesforce_org(self):
         from app.models.entities import RecordGroupType
         from app.models.permission import PermissionType
         connector = _make_connector()
-        mock_tx = self._make_rg_tx(group_type=RecordGroupType.SALESFORCE_FILE)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        rg = MagicMock()
+        rg.id = "rg-1"
+        rg.group_type = RecordGroupType.SALESFORCE_FILE
+        user = MagicMock()
+        user.id = "user-1"
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -3624,7 +3589,7 @@ class TestSalesforceRecordGroupPermissionsSync:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_not_awaited()
 
 
 # ===========================================================================
@@ -6695,18 +6660,14 @@ class TestSalesforcePermissionsSyncRemaining:
         from app.models.permission import PermissionType
 
         connector = _make_connector()
-        mock_tx = MagicMock()
         record = MagicMock()
         record.id = "rec-1"
         user = MagicMock()
         user.id = "user-1"
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=record)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=record)
+        existing_edge = {"role": "READER"}
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=existing_edge)
 
         await connector.salesforce_permissions_sync(
             connector_id="conn-sf-1",
@@ -6714,7 +6675,7 @@ class TestSalesforcePermissionsSyncRemaining:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
 
 class TestSalesforceRecordGroupPermissionsSyncRemaining:
@@ -6724,16 +6685,8 @@ class TestSalesforceRecordGroupPermissionsSyncRemaining:
         from app.models.permission import PermissionType
 
         connector = _make_connector()
-        mock_tx = MagicMock()
-        rg = MagicMock()
-        rg.id = "rg-1"
-        rg.group_type = RecordGroupType.SALESFORCE_ORG
-        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
-        mock_tx.get_user_by_email = AsyncMock(return_value=None)
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=None)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock()
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -6741,26 +6694,22 @@ class TestSalesforceRecordGroupPermissionsSyncRemaining:
             users_email="missing@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_when_existing_permission_level_matches(self):
         from app.models.permission import PermissionType
 
         connector = _make_connector()
-        mock_tx = MagicMock()
         rg = MagicMock()
         rg.id = "rg-1"
         rg.group_type = RecordGroupType.SALESFORCE_ORG
         user = MagicMock()
         user.id = "user-1"
-        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        existing_edge = {"role": "READER"}
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=existing_edge)
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -6768,18 +6717,14 @@ class TestSalesforceRecordGroupPermissionsSyncRemaining:
             users_email="alice@example.com",
             access_level=PermissionType.READ,
         )
-        mock_tx.batch_create_edges.assert_not_awaited()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_propagates_exception(self):
         from app.models.permission import PermissionType
 
         connector = _make_connector()
-        mock_tx = MagicMock()
-        mock_tx.get_record_group_by_external_id = AsyncMock(side_effect=Exception("DB crash"))
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(side_effect=Exception("DB crash"))
 
         with pytest.raises(Exception, match="DB crash"):
             await connector.salesforce_record_group_permissions_sync(
@@ -7476,20 +7421,14 @@ class TestSalesforceRecordGroupPermissionsUpgrade:
         from app.models.permission import PermissionType
 
         connector = _make_connector()
-        mock_tx = MagicMock()
         rg = MagicMock()
         rg.id = "rg-1"
         rg.group_type = RecordGroupType.SALESFORCE_ORG
         user = MagicMock()
         user.id = "user-1"
-        mock_tx.get_record_group_by_external_id = AsyncMock(return_value=rg)
-        mock_tx.get_user_by_email = AsyncMock(return_value=user)
-        mock_tx.get_edge = AsyncMock(return_value={"role": "READER"})
-        mock_tx.delete_edge = AsyncMock()
-        mock_tx.batch_create_edges = AsyncMock()
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=None)
-        connector.data_store_provider.transaction.return_value = mock_tx
+        connector.data_entities_processor.get_user_by_email = AsyncMock(return_value=user)
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=rg)
+        connector.data_entities_processor.upsert_permission_edge = AsyncMock(return_value=None)
 
         await connector.salesforce_record_group_permissions_sync(
             connector_id="conn-sf-1",
@@ -7497,8 +7436,7 @@ class TestSalesforceRecordGroupPermissionsUpgrade:
             users_email="alice@example.com",
             access_level=PermissionType.WRITE,
         )
-        mock_tx.delete_edge.assert_awaited_once()
-        mock_tx.batch_create_edges.assert_awaited_once()
+        connector.data_entities_processor.upsert_permission_edge.assert_awaited_once()
 
 
 class TestSyncProductsAndCasesRemaining:

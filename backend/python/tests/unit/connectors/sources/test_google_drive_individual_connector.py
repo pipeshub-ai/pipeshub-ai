@@ -179,10 +179,12 @@ def connector():
         dep.on_new_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
         dep.on_record_deleted = AsyncMock()
+        dep.on_records_deleted_cascade = AsyncMock()
         dep.on_record_metadata_update = AsyncMock()
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -791,7 +793,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -812,7 +814,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -829,7 +831,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -846,7 +848,7 @@ class TestProcessDriveItem:
             external_record_group_id="old-drive-id",
             parent_external_record_id="parent-1",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -863,7 +865,7 @@ class TestProcessDriveItem:
             external_record_group_id="d1",
             parent_external_record_id="old-parent",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -882,7 +884,7 @@ class TestProcessDriveItem:
             parent_external_record_id="parent-1",
             version=5,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -996,7 +998,7 @@ class TestProcessDriveItem:
             indexing_status=ProgressStatus.COMPLETED.value,
             extraction_status=ProgressStatus.COMPLETED.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
 
@@ -1136,7 +1138,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -1234,7 +1236,7 @@ class TestHandleRecordUpdates:
             record_name="Folder A",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "folder-ext-1"
@@ -1253,7 +1255,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -1272,7 +1274,7 @@ class TestHandleRecordUpdates:
             record_name="test.txt",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
@@ -3003,7 +3005,7 @@ class TestApplyFolderScopeToChange:
             parent_external_record_id="folder-a",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(
             return_value={"deleted_records": ["rec-folder-b", "rec-child"]}
         )
@@ -3026,7 +3028,7 @@ class TestApplyFolderScopeToChange:
             parent_external_record_id="folder-a",
             mime_type="text/plain",
         )
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         moved_out = _make_file_metadata(file_id="f1", parents=["outside"])
         assert await connector._apply_folder_scope_to_change(moved_out, set()) == []

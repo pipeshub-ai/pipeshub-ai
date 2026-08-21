@@ -379,6 +379,11 @@ def mock_data_entities_processor_fullcov():
     proc.on_record_deleted = AsyncMock()
     proc.on_record_metadata_update = AsyncMock()
     proc.on_record_content_update = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
+    proc.get_record_path = AsyncMock(return_value=None)
+    proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     return proc
 
 
@@ -718,11 +723,10 @@ class TestTestConnectionAndAccess:
 
 class TestHandleRecordUpdates:
     @pytest.mark.asyncio
-    async def test_deleted_record(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_deleted_record(self, nextcloud_connector):
         existing = MagicMock()
         existing.id = "rec-del"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        nextcloud_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
         update = RecordUpdate(
@@ -907,13 +911,12 @@ class TestClearParentChildEdges:
         await nextcloud_connector._clear_parent_child_edges_for_records([])
 
     @pytest.mark.asyncio
-    async def test_deletes_edges(self, nextcloud_connector, mock_data_store_provider_fullcov):
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
+    async def test_deletes_edges(self, nextcloud_connector):
+        nextcloud_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
         record = MagicMock()
         record.id = "rec-1"
         await nextcloud_connector._clear_parent_child_edges_for_records([(record, [])])
-        mock_tx.delete_parent_child_edge_to_record.assert_awaited_once()
+        nextcloud_connector.data_entities_processor.delete_parent_child_edge_to_record.assert_awaited_once()
 
 
 class TestStreamRecord:
@@ -925,26 +928,24 @@ class TestStreamRecord:
             await nextcloud_connector.stream_record(MagicMock())
 
     @pytest.mark.asyncio
-    async def test_no_file_record_raises(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_no_file_record_raises(self, nextcloud_connector):
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=None)
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
         with pytest.raises(HTTPException):
             await nextcloud_connector.stream_record(MagicMock(id="r1"))
 
     @pytest.mark.asyncio
-    async def test_folder_raises(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_folder_raises(self, nextcloud_connector):
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.FOLDER
         file_rec.record_name = "Documents"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/Documents")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/Documents")
         with pytest.raises(HTTPException, match="Cannot download folders"):
             await nextcloud_connector.stream_record(MagicMock(id="r1", record_name="Documents"))
 
@@ -1099,26 +1100,23 @@ class TestParseActivityResponse:
 
 class TestProcessDeletions:
     @pytest.mark.asyncio
-    async def test_deletes_existing_record(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_deletes_existing_record(self, nextcloud_connector):
         existing = MagicMock()
         existing.id = "del-rec"
         existing.record_name = "deleted.txt"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+        nextcloud_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         await nextcloud_connector._process_deletions({"file-123"})
         nextcloud_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_record_not_found(self, nextcloud_connector, mock_data_store_provider_fullcov):
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+    async def test_record_not_found(self, nextcloud_connector):
+        nextcloud_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         await nextcloud_connector._process_deletions({"nonexistent"})
         nextcloud_connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_handled(self, nextcloud_connector, mock_data_store_provider_fullcov):
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_record_by_external_id = AsyncMock(side_effect=Exception("fail"))
+    async def test_exception_handled(self, nextcloud_connector):
+        nextcloud_connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("fail"))
         await nextcloud_connector._process_deletions({"bad-id"})
 
 
@@ -1165,11 +1163,10 @@ class TestReindexRecords:
         await nextcloud_connector.reindex_records([])
 
     @pytest.mark.asyncio
-    async def test_no_user_permission_skips(self, nextcloud_connector, mock_data_store_provider_fullcov):
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=MagicMock())
-        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+    async def test_no_user_permission_skips(self, nextcloud_connector):
+        nextcloud_connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock())
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         record = MagicMock(id="r1", record_name="test.txt")
@@ -1431,7 +1428,7 @@ class TestStreamRecordAdditional:
     """Cover additional branches in stream_record."""
 
     @pytest.mark.asyncio
-    async def test_stream_record_path_fallback_on_empty_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_path_fallback_on_empty_path(self, nextcloud_connector):
         """When path is empty string, fallback to record_name (line 1587-1588)."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
@@ -1439,9 +1436,8 @@ class TestStreamRecordAdditional:
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
         file_rec.record_name = "test.txt"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="")  # empty path
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="")
 
         mock_resp = MagicMock()
         mock_resp.success = True
@@ -1455,16 +1451,15 @@ class TestStreamRecordAdditional:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_stream_record_with_files_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_with_files_path(self, nextcloud_connector):
         """When path contains /files/ prefix, extract relative path."""
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
         file_rec.record_name = "doc.txt"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin/docs/doc.txt")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin/docs/doc.txt")
 
         mock_resp = MagicMock()
         mock_resp.success = True
@@ -1477,16 +1472,15 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_files_path_no_subpath(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_files_path_no_subpath(self, nextcloud_connector):
         """Path with /files/username but no sub-path sets relative_path to '' (line 1617)."""
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
         file_rec.record_name = "root.txt"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/remote.php/dav/files/admin")
 
         mock_resp = MagicMock()
         mock_resp.success = True
@@ -1499,16 +1493,15 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_no_files_in_path(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_no_files_in_path(self, nextcloud_connector):
         """Path without /files/ prefix uses lstrip (line 1618-1619)."""
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
         file_rec.record_name = "simple.txt"
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/simple.txt")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/simple.txt")
 
         mock_resp = MagicMock()
         mock_resp.success = True
@@ -1521,16 +1514,15 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_download_fails(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_download_fails(self, nextcloud_connector):
         """Download response is not successful (line 1628-1632)."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
 
         mock_resp = MagicMock()
         mock_resp.success = False
@@ -1542,16 +1534,15 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_empty_content(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_empty_content(self, nextcloud_connector):
         """Download succeeds but body is empty (line 1636-1640)."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
 
         mock_resp = MagicMock()
         mock_resp.success = True
@@ -1565,16 +1556,15 @@ class TestStreamRecordAdditional:
             await nextcloud_connector.stream_record(record)
 
     @pytest.mark.asyncio
-    async def test_stream_record_generic_exception(self, nextcloud_connector, mock_data_store_provider_fullcov):
+    async def test_stream_record_generic_exception(self, nextcloud_connector):
         """Generic exception during download (lines 1654-1659)."""
         from fastapi import HTTPException
         nextcloud_connector.data_source = MagicMock()
         nextcloud_connector.current_user_id = "admin"
         file_rec = MagicMock()
         file_rec.mime_type = MimeTypes.PLAIN_TEXT
-        mock_tx = mock_data_store_provider_fullcov.transaction.return_value
-        mock_tx.get_file_record_by_id = AsyncMock(return_value=file_rec)
-        mock_tx.get_record_path = AsyncMock(return_value="/test.txt")
+        nextcloud_connector.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=file_rec)
+        nextcloud_connector.data_entities_processor.get_record_path = AsyncMock(return_value="/test.txt")
 
         nextcloud_connector.data_source.download_file = AsyncMock(
             side_effect=RuntimeError("unexpected")

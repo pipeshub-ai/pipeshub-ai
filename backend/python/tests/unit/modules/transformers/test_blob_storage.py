@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from yarl import URL
 
 from app.modules.transformers.blob_storage import BlobStorage
 
@@ -1341,7 +1342,7 @@ class TestUploadRawToSignedUrl:
             mock_session, "https://s3/signed", b"file content", "text/csv"
         )
         mock_session.put.assert_called_once_with(
-            "https://s3/signed",
+            URL("https://s3/signed", encoded=True),
             data=b"file content",
             skip_auto_headers={"Content-Type"},
         )

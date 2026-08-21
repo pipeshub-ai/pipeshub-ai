@@ -124,6 +124,13 @@ def _make_connector(existing_record=None):
     dep.on_updated_record_permissions = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.initialize = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=existing_record)
+    dep.update_user_group_name = AsyncMock(return_value=True)
+    dep.get_user_by_email = AsyncMock(return_value=None)
+    dep.get_user_group_by_external_id = AsyncMock(return_value=None)
+    dep.upsert_permission_edge = AsyncMock()
+    dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
 
     dsp = _make_mock_data_store_provider(existing_record)
     cs = AsyncMock()
@@ -163,6 +170,19 @@ def mock_data_entities_processor():
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.get_app_creator_user = AsyncMock(return_value=MagicMock(email="user@test.com"))
+    proc.on_record_deleted = AsyncMock()
+    proc.on_record_metadata_update = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
+    proc.on_updated_record_permissions = AsyncMock()
+    proc.reindex_existing_records = AsyncMock()
+    proc.initialize = AsyncMock()
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.update_user_group_name = AsyncMock(return_value=True)
+    proc.get_user_by_email = AsyncMock(return_value=None)
+    proc.get_user_group_by_external_id = AsyncMock(return_value=None)
+    proc.upsert_permission_edge = AsyncMock()
+    proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
+    proc.get_file_record_by_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -625,14 +645,9 @@ class TestProcessDropboxEntry:
     async def test_entry_processing_exception_returns_none(self):
         c, _, dsp = _make_connector()
         entry = _make_file_entry()
-        tx = AsyncMock()
-        tx.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db down"))
-
-        @asynccontextmanager
-        async def _broken_tx():
-            yield tx
-
-        dsp.transaction = _broken_tx
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
 
         result = await c._process_dropbox_entry(entry, "uid", "u@test.com", "uid")
         assert result is None

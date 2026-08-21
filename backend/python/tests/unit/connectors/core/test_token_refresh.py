@@ -1024,8 +1024,10 @@ class TestEnrichFromRegistrySlack:
         )
 
     def test_no_enrichment_needed_when_all_keys_present(self):
-        from app.connectors.core.constants import OAuthConfigKeys
+        from app.connectors.core.constants import AuthFieldKeys, OAuthConfigKeys
         cfg = {
+            AuthFieldKeys.TOKEN_URL: "https://example.com/token",
+            AuthFieldKeys.AUTHORIZE_URL: "https://example.com/authorize",
             OAuthConfigKeys.TOKEN_ACCESS_TYPE: "offline",
             OAuthConfigKeys.ADDITIONAL_PARAMS: {},
             OAuthConfigKeys.SCOPE_PARAMETER_NAME: "scope",

@@ -250,15 +250,8 @@ class TestCreatePermissionFromPrincipal:
         user = MagicMock()
         user.email = "found@example.com"
 
-        tx_store = MagicMock()
-        tx_store.get_user_by_source_id = AsyncMock(return_value=user)
-        tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
-
-        context_manager = MagicMock()
-        context_manager.__aenter__ = AsyncMock(return_value=tx_store)
-        context_manager.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(return_value=context_manager)
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=user)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         from app.models.permission import EntityType, PermissionType
         result = await projects_sync._create_permission_from_principal(
@@ -271,22 +264,12 @@ class TestCreatePermissionFromPrincipal:
         c = make_mock_connector()
         projects_sync = ProjectsSync(c)
 
-        tx_store = MagicMock()
-        tx_store.get_user_by_source_id = AsyncMock(return_value=None)
-        tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
-
-        context_manager = MagicMock()
-        context_manager.__aenter__ = AsyncMock(return_value=tx_store)
-        context_manager.__aexit__ = AsyncMock(return_value=None)
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(return_value=context_manager)
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=None)
 
         pseudo = MagicMock()
         pseudo.source_user_group_id = "pseudo-123"
         projects_sync._create_pseudo_group = AsyncMock(return_value=pseudo)
-        c.data_entities_processor = MagicMock()
-        c.data_entities_processor.org_id = "org-1"
-        c.data_entities_processor.on_new_user_groups = AsyncMock()
 
         from app.models.permission import EntityType, PermissionType
         result = await projects_sync._create_permission_from_principal(
@@ -301,8 +284,9 @@ class TestCreatePermissionFromPrincipal:
         c = make_mock_connector()
         projects_sync = ProjectsSync(c)
 
-        c.data_store_provider = MagicMock()
-        c.data_store_provider.transaction = MagicMock(side_effect=Exception("DB error"))
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(
+            side_effect=Exception("DB error")
+        )
 
         from app.models.permission import EntityType, PermissionType
         result = await projects_sync._create_permission_from_principal(

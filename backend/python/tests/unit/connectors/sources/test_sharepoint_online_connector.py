@@ -76,6 +76,7 @@ def _make_mock_deps():
     dep.on_user_group_member_removed = AsyncMock(return_value=True)
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.reindex_existing_records = AsyncMock()
+    dep.get_record_by_external_id = AsyncMock(return_value=None)
 
     dsp = MagicMock()
     cs = MagicMock()
@@ -938,6 +939,7 @@ class TestProcessDriveItem:
         existing = _make_existing_record(external_revision_id="etag-old")
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-new")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
@@ -959,6 +961,7 @@ class TestProcessDriveItem:
         )
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-1", quick_xor_hash="new-hash")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
@@ -1474,6 +1477,7 @@ class TestProcessSitePages:
 
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)

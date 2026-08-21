@@ -136,6 +136,11 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.on_record_deleted = AsyncMock()
+    proc.get_all_app_users = AsyncMock(return_value=[])
+    proc.batch_upsert_user_groups = AsyncMock()
+    proc.create_user_group_membership = AsyncMock()
+    proc.get_user_by_source_id = AsyncMock(return_value=None)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
     return proc
 
 
@@ -589,15 +594,7 @@ class TestGetAdminUsers:
             )
             mock_ds.return_value = mock_datasource
 
-            tx = _make_mock_tx_store()
-            tx.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
-
-            @asynccontextmanager
-            async def _tx():
-                yield tx
-
-            servicenow_connector.data_store_provider = MagicMock()
-            servicenow_connector.data_store_provider.transaction = _tx
+            servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
 
             result = await servicenow_connector._get_admin_users()
             assert len(result) == 1
@@ -738,14 +735,7 @@ class TestFlattenAndCreateUserGroups:
         mock_user2 = MagicMock(spec=AppUser)
         mock_user2.source_user_id = "u2"
 
-        tx = _make_mock_tx_store(app_users=[mock_user1, mock_user2])
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[mock_user1, mock_user2])
 
         with patch.object(servicenow_connector, "_transform_to_user_group") as mock_transform:
             mock_group = MagicMock(spec=AppUserGroup)
@@ -763,14 +753,7 @@ class TestFlattenAndCreateUserGroups:
         groups = [SysUserGroup(sys_id="g1", name="Group 1")]
         memberships = [SysUserGroupMembership(sys_id="m1", user="u1", group="g1")]
 
-        tx = _make_mock_tx_store(app_users=[])
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         with patch.object(servicenow_connector, "_transform_to_user_group") as mock_transform:
             mock_group = MagicMock(spec=AppUserGroup)
@@ -789,8 +772,7 @@ class TestFlattenAndCreateUserGroups:
     async def test_flatten_skips_none_user_group(self, servicenow_connector):
         groups = [SysUserGroup(sys_id="g1", name="Group")]
         memberships = [SysUserGroupMembership(sys_id="m1", user="u1", group="g1")]
-        provider = _make_mock_data_store_provider()
-        servicenow_connector.data_store_provider = provider
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         with patch.object(servicenow_connector, "_transform_to_user_group", return_value=None):
             result = await servicenow_connector._flatten_and_create_user_groups(groups, memberships)
@@ -798,8 +780,7 @@ class TestFlattenAndCreateUserGroups:
 
     @pytest.mark.asyncio
     async def test_flatten_exception_propagates(self, servicenow_connector):
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx fail"))
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("tx fail"))
         with pytest.raises(RuntimeError, match="tx fail"):
             await servicenow_connector._flatten_and_create_user_groups([], [])
 
@@ -1135,16 +1116,6 @@ class TestSyncSingleOrganizationalEntity:
         sync_point.update_sync_point = AsyncMock()
         servicenow_connector.org_entity_sync_points = {"company": sync_point}
 
-        tx = _make_mock_tx_store()
-        tx.batch_upsert_user_groups = AsyncMock()
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
-
         with patch.object(servicenow_connector, "_get_fresh_datasource", new_callable=AsyncMock) as mock_ds, \
              patch.object(servicenow_connector, "_transform_to_organizational_group", return_value=MagicMock()):
             mock_datasource = AsyncMock()
@@ -1178,16 +1149,6 @@ class TestSyncSingleOrganizationalEntity:
         sync_point.read_sync_point = AsyncMock(return_value=None)
         sync_point.update_sync_point = AsyncMock()
         servicenow_connector.org_entity_sync_points = {"location": sync_point}
-
-        tx = _make_mock_tx_store()
-        tx.batch_upsert_user_groups = AsyncMock()
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
 
         page1_data = [{"sys_id": f"l{i}", "name": f"Location {i}", "sys_updated_on": "2024-01-01"} for i in range(100)]
         page2_data = [{"sys_id": "l100", "name": "Location 100", "sys_updated_on": "2024-01-02"}]
@@ -1386,15 +1347,6 @@ class TestSyncUsersDeep:
         servicenow_connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         servicenow_connector.user_sync_point.update_sync_point = AsyncMock()
 
-        tx = _make_mock_tx_store()
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
-
         user_data = {
             "sys_id": "u1",
             "email": "user@example.com",
@@ -1414,7 +1366,7 @@ class TestSyncUsersDeep:
             mock_ds.return_value = mock_datasource
             await servicenow_connector._sync_users()
             # Should create links for company and department (not location/cost_center since empty)
-            assert tx.create_user_group_membership.call_count == 2
+            assert servicenow_connector.data_entities_processor.create_user_group_membership.call_count == 2
 
 
 # ===========================================================================
@@ -1657,15 +1609,7 @@ class TestGetAdminUsersDeep:
             )
             mock_ds.return_value = mock_datasource
 
-            tx = _make_mock_tx_store()
-            tx.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
-
-            @asynccontextmanager
-            async def _tx():
-                yield tx
-
-            servicenow_connector.data_store_provider = MagicMock()
-            servicenow_connector.data_store_provider.transaction = _tx
+            servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_app_user)
 
             result = await servicenow_connector._get_admin_users()
             assert len(result) == 1
@@ -1698,15 +1642,9 @@ class TestGetAdminUsersDeep:
         )
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        tx = _make_mock_tx_store()
-        tx.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("lookup fail"))
-
-        @asynccontextmanager
-        async def _tx():
-            yield tx
-
-        servicenow_connector.data_store_provider = MagicMock()
-        servicenow_connector.data_store_provider.transaction = _tx
+        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(
+            side_effect=RuntimeError("lookup fail")
+        )
 
         with patch.object(servicenow_connector.logger, "warning") as mock_warn:
             result = await servicenow_connector._get_admin_users()
@@ -1859,14 +1797,12 @@ class TestSyncKnowledgeBasesDeep:
 class TestConvertPermissionsToObjects:
     @pytest.mark.asyncio
     async def test_convert_permissions_user_type(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         mock_user = MagicMock(spec=AppUser)
         mock_user.email = "user@test.com"
-        tx.get_user_by_source_id = AsyncMock(return_value=mock_user)
+        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
 
         perms = await servicenow_connector._convert_permissions_to_objects(
             [RawPermission(entity_type="USER", source_sys_id="u1", role="READER")],
-            tx,
         )
         assert len(perms) == 1
         assert perms[0].email == "user@test.com"
@@ -1874,19 +1810,15 @@ class TestConvertPermissionsToObjects:
 
     @pytest.mark.asyncio
     async def test_convert_permissions_user_not_found(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         perms = await servicenow_connector._convert_permissions_to_objects(
             [RawPermission(entity_type="USER", source_sys_id="missing", role="READER")],
-            tx,
         )
         assert perms == []
 
     @pytest.mark.asyncio
     async def test_convert_permissions_group_type(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         perms = await servicenow_connector._convert_permissions_to_objects(
             [RawPermission(entity_type="GROUP", source_sys_id="g1", role="WRITER")],
-            tx,
         )
         assert len(perms) == 1
         assert perms[0].external_id == "g1"
@@ -1894,46 +1826,40 @@ class TestConvertPermissionsToObjects:
 
     @pytest.mark.asyncio
     async def test_convert_permissions_unknown_entity_type(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         bad_perm = MagicMock()
         bad_perm.entity_type = "ROLE"
         bad_perm.source_sys_id = "r1"
         bad_perm.role = "READER"
 
-        perms = await servicenow_connector._convert_permissions_to_objects([bad_perm], tx)
+        perms = await servicenow_connector._convert_permissions_to_objects([bad_perm])
         assert perms == []
 
     @pytest.mark.asyncio
     async def test_convert_permissions_exception_handling(self, servicenow_connector):
-        tx = AsyncMock()
-        tx.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db error"))
+        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(side_effect=RuntimeError("db error"))
 
         perms = await servicenow_connector._convert_permissions_to_objects(
             [RawPermission(entity_type="USER", source_sys_id="u1", role="READER")],
-            tx,
         )
         assert perms == []
 
     @pytest.mark.asyncio
     async def test_convert_permissions_mixed_types(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         mock_user = MagicMock(spec=AppUser)
         mock_user.email = "user@test.com"
-        tx.get_user_by_source_id = AsyncMock(return_value=mock_user)
+        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
 
         perms = await servicenow_connector._convert_permissions_to_objects(
             [
                 RawPermission(entity_type="USER", source_sys_id="u1", role="READER"),
                 RawPermission(entity_type="GROUP", source_sys_id="g1", role="WRITER"),
             ],
-            tx,
         )
         assert len(perms) == 2
 
     @pytest.mark.asyncio
     async def test_convert_permissions_empty_list(self, servicenow_connector):
-        tx = _make_mock_tx_store()
-        perms = await servicenow_connector._convert_permissions_to_objects([], tx)
+        perms = await servicenow_connector._convert_permissions_to_objects([])
         assert perms == []
 
 
@@ -2238,8 +2164,7 @@ class TestFlattenAndRoles:
         mock_user = MagicMock(spec=AppUser)
         mock_user.source_user_id = "u1"
 
-        provider = _make_mock_data_store_provider(app_users=[mock_user])
-        servicenow_connector.data_store_provider = provider
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[mock_user])
 
         with patch.object(servicenow_connector, "_transform_to_user_group") as mock_transform:
             mock_group = MagicMock(spec=AppUserGroup)
@@ -2257,8 +2182,7 @@ class TestFlattenAndRoles:
         ]
         memberships = []
 
-        provider = _make_mock_data_store_provider()
-        servicenow_connector.data_store_provider = provider
+        servicenow_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         with patch.object(servicenow_connector, "_transform_to_user_group") as mock_transform:
             mock_transform.return_value = MagicMock(spec=AppUserGroup)
@@ -2411,13 +2335,11 @@ class TestInitRefreshToken:
 class TestProcessCriteriaPermissions:
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_empty_criteria_ids(self, servicenow_connector):
-        tx = _make_mock_tx_store()
-        result = await servicenow_connector._process_criteria_permissions([], PermissionType.READ, tx)
+        result = await servicenow_connector._process_criteria_permissions([], PermissionType.READ)
         assert result == []
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_batch_fetch_success(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
             {"sys_id": "crit1", "user": "u1", "group": "", "role": "",
@@ -2433,13 +2355,12 @@ class TestProcessCriteriaPermissions:
                           new_callable=AsyncMock, return_value=[
                               Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER),
                           ]):
-            result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ, tx)
+            result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
 
         assert len(result) == 1
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_api_error(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(
             side_effect=ServiceNowAPIError(500, "fail", None)
@@ -2448,16 +2369,15 @@ class TestProcessCriteriaPermissions:
 
         with patch.object(servicenow_connector, "_convert_permissions_to_objects",
                           new_callable=AsyncMock, return_value=[]):
-            result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ, tx)
+            result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
 
         assert result == []
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_extract_and_convert(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         mock_user = MagicMock(spec=AppUser)
         mock_user.email = "extracted@test.com"
-        tx.get_user_by_source_id = AsyncMock(return_value=mock_user)
+        servicenow_connector.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=mock_user)
 
         mock_ds = AsyncMock()
         mock_ds.get_now_table_tableName = AsyncMock(return_value=_table_api_response([
@@ -2465,16 +2385,15 @@ class TestProcessCriteriaPermissions:
         ]))
         servicenow_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ, tx)
+        result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
         assert len(result) == 1
         assert result[0].email == "extracted@test.com"
 
     @pytest.mark.asyncio
     async def test_process_criteria_permissions_general_exception(self, servicenow_connector):
-        tx = _make_mock_tx_store()
         servicenow_connector._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
 
-        result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ, tx)
+        result = await servicenow_connector._process_criteria_permissions(["crit1"], PermissionType.READ)
         assert result == []
 
 

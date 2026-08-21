@@ -240,6 +240,7 @@ def connector():
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
         dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -791,15 +792,9 @@ class TestDeleteMessageAndAttachments:
     async def test_deletes_message_and_attachments(self, connector):
         mock_attachment = MagicMock()
         mock_attachment.id = "att-rec-1"
-        tx = AsyncMock()
-        tx.get_records_by_parent = AsyncMock(return_value=[mock_attachment])
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(
+            return_value=[mock_attachment]
+        )
 
         await connector._delete_message_and_attachments("rec-1", "msg-1")
         connector.data_entities_processor.on_record_deleted.assert_any_call("att-rec-1")
@@ -809,15 +804,9 @@ class TestDeleteMessageAndAttachments:
     async def test_handles_attachment_delete_error(self, connector):
         mock_attachment = MagicMock()
         mock_attachment.id = "att-rec-fail"
-        tx = AsyncMock()
-        tx.get_records_by_parent = AsyncMock(return_value=[mock_attachment])
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(
+            return_value=[mock_attachment]
+        )
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=[Exception("delete attachment error"), None]
         )
@@ -827,13 +816,9 @@ class TestDeleteMessageAndAttachments:
 
     @pytest.mark.asyncio
     async def test_handles_transaction_error(self, connector):
-        @asynccontextmanager
-        async def _failing_tx():
-            raise Exception("tx error")
-            yield  # noqa: unreachable
-
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _failing_tx
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(
+            side_effect=Exception("get_records error")
+        )
 
         # Should not raise
         await connector._delete_message_and_attachments("rec-1", "msg-1")

@@ -1129,7 +1129,8 @@ class TestGetInstanceOAuthAuthorizationUrl:
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
              patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
-             patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=None):
+             patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=None), \
+             patch("app.api.routes.toolsets._get_oauth_config_resolver", return_value=None):
             with pytest.raises(OAuthConfigError, match="not found"):
                 await get_instance_oauth_authorization_url("i1", req, config_service=cs)
 
@@ -2176,7 +2177,8 @@ class TestGetAgentToolsetOAuthUrlFlows:
         with patch("app.api.routes.toolsets._require_agent_edit_access", new_callable=AsyncMock, return_value={"_key": "a1"}), \
              patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
              patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
-             patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=None):
+             patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=None), \
+             patch("app.api.routes.toolsets._get_oauth_config_resolver", return_value=None):
             with pytest.raises(OAuthConfigError, match="not found"):
                 await get_agent_toolset_oauth_url("a1", "i1", req, config_service=cs)
 

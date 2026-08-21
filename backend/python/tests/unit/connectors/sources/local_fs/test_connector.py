@@ -114,6 +114,9 @@ def folder_connector() -> LocalFsConnector:
     logger = MagicMock()
     proc = MagicMock()
     proc.org_id = "org-1"
+    proc.get_app_creator_user = AsyncMock(return_value=None)
+    proc.get_record_by_external_id = AsyncMock(return_value=None)
+    proc.delete_record_by_external_id = AsyncMock()
     return LocalFsConnector(
         logger,
         proc,
@@ -249,25 +252,6 @@ class TestLocalFsConnectorHelpers:
         with pytest.raises(HTTPException) as ei:
             folder_connector._resolve_event_file_path(root, "../outside")
         assert ei.value.status_code == HttpStatusCode.BAD_REQUEST.value
-
-    def test_parse_user_from_graph_result_none(self, folder_connector: LocalFsConnector):
-        assert folder_connector._parse_user_from_graph_result(None) is None
-
-    def test_parse_user_from_graph_result_passthrough(
-        self, folder_connector: LocalFsConnector
-    ):
-        u = User(email="a@b.com", id="u1")
-        assert folder_connector._parse_user_from_graph_result(u) is u
-
-    def test_parse_user_from_graph_result_from_dict(
-        self, folder_connector: LocalFsConnector
-    ):
-        u = folder_connector._parse_user_from_graph_result(
-            {"id": "x", "email": "e@x.com", "orgId": "o1"}
-        )
-        assert u is not None
-        assert u.id == "x"
-        assert u.email == "e@x.com"
 
     def test_extension_allowed_empty_filter(self, folder_connector: LocalFsConnector):
         coll = FilterCollection(filters=[])
@@ -453,15 +437,8 @@ class TestLocalFsConnectorAsync:
             return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
         )
         user = User(email="u@x.com", id="u1", org_id="org-1")
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.graph_provider.get_document = AsyncMock(
-            return_value={"createdBy": "u1"}
-        )
-        txn.get_user_by_user_id = AsyncMock(return_value=user)
-        folder_connector.data_store_provider.transaction = MagicMock(
-            return_value=txn
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
         )
         with patch(
             "app.connectors.sources.local_fs.connector.load_connector_filters",
@@ -582,13 +559,12 @@ class TestLocalFsConnectorAsync:
             return_value={"sync": {SYNC_ROOT_PATH_KEY: str(tmp_path)}}
         )
         user = User(email="u@x.com", id="u1", org_id="org-1")
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
         txn = MagicMock()
         txn.__aenter__ = AsyncMock(return_value=txn)
         txn.__aexit__ = AsyncMock(return_value=None)
-        txn.graph_provider.get_document = AsyncMock(
-            return_value={"createdBy": "u1"}
-        )
-        txn.get_user_by_user_id = AsyncMock(return_value=user)
         stale_1 = MagicMock(external_record_id="stale-1")
         stale_2 = MagicMock(external_record_id="stale-2")
         txn.get_records_by_status = AsyncMock(side_effect=[[stale_1, stale_2], []])
@@ -728,13 +704,9 @@ class TestLocalFsConnectorAsync:
             return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
         )
         user = User(email="u@x.com", id="u1", org_id="org-1")
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
-        txn.get_user_by_user_id = AsyncMock(return_value=user)
-        txn.get_record_by_external_id = AsyncMock(return_value=None)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
 
         async def fake_upload(**kwargs):
             assert kwargs["content"] == b"hello upload"
@@ -787,13 +759,9 @@ class TestLocalFsConnectorAsync:
             return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
         )
         user = User(email="u@x.com", id="u1", org_id="org-1")
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
-        txn.get_user_by_user_id = AsyncMock(return_value=user)
-        txn.get_record_by_external_id = AsyncMock(return_value=None)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
         folder_connector._upload_storage_file = AsyncMock(return_value="doc-123")
 
         with patch(
@@ -850,14 +818,13 @@ class TestLocalFsConnectorAsync:
             mime_type="text/plain",
             record_group_type=RecordGroupType.DRIVE,
         )
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
-        txn.get_user_by_user_id = AsyncMock(return_value=user)
-        txn.get_record_by_external_id = AsyncMock(return_value=existing)
-        txn.delete_record_by_external_id = AsyncMock()
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
+        folder_connector.data_entities_processor.delete_record_by_external_id = AsyncMock()
         folder_connector._delete_storage_document = AsyncMock()
 
         with patch(
@@ -879,12 +846,11 @@ class TestLocalFsConnectorAsync:
             )
 
         assert stats.deleted == 1
-        # Storage GC reuses the open aiohttp session; allow any session arg.
         assert folder_connector._delete_storage_document.await_count == 1
         gc_call = folder_connector._delete_storage_document.await_args
         assert gc_call.args == ("doc-del",)
         assert "session" in gc_call.kwargs
-        txn.delete_record_by_external_id.assert_awaited_once_with(
+        folder_connector.data_entities_processor.delete_record_by_external_id.assert_awaited_once_with(
             folder_connector.connector_id,
             folder_connector._external_record_id_for_rel_path("old.txt"),
             user.id,
@@ -917,29 +883,21 @@ class TestLocalFsConnectorAsync:
             record_group_type=RecordGroupType.DRIVE,
         )
 
-        # data_store_provider.transaction is called twice: once for the bulk
-        # pre-fetch (returns existing_old for old_ext_id; None for new_ext_id),
-        # and once when _delete_external_ids runs after the upsert flush.
-        bulk_txn = MagicMock()
-        bulk_txn.__aenter__ = AsyncMock(return_value=bulk_txn)
-        bulk_txn.__aexit__ = AsyncMock(return_value=None)
-        bulk_txn.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
-        bulk_txn.get_user_by_user_id = AsyncMock(return_value=user)
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
 
         async def _bulk_lookup(connector_id, ext_id):
             if ext_id == old_ext_id:
                 return existing_old
             return None
 
-        bulk_txn.get_record_by_external_id = AsyncMock(side_effect=_bulk_lookup)
-        bulk_txn.delete_record_by_external_id = AsyncMock()
-        folder_connector.data_store_provider.transaction = MagicMock(
-            return_value=bulk_txn
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=_bulk_lookup
         )
         folder_connector._upload_storage_file = AsyncMock(return_value="doc-new")
         folder_connector._delete_storage_document = AsyncMock()
 
-        # Track relative ordering of upsert vs old-delete vs old-blob GC.
         order: list[str] = []
         order_lock = asyncio.Lock()
 
@@ -964,7 +922,7 @@ class TestLocalFsConnectorAsync:
             folder_connector.data_entities_processor.on_new_records = AsyncMock(
                 side_effect=_record_upsert
             )
-            bulk_txn.delete_record_by_external_id = AsyncMock(
+            folder_connector.data_entities_processor.delete_record_by_external_id = AsyncMock(
                 side_effect=_record_delete
             )
             folder_connector._delete_storage_document = AsyncMock(
@@ -2529,17 +2487,15 @@ class TestRunSync:
 @pytest.mark.asyncio
 class TestMisc:
     async def test_bulk_get_records_dedupes_and_skips_empty(self, folder_connector):
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
         seen: list[str] = []
 
         async def _lookup(connector_id, ext_id):
             seen.append(ext_id)
             return MagicMock(external_record_id=ext_id) if ext_id == "x" else None
 
-        txn.get_record_by_external_id = AsyncMock(side_effect=_lookup)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=_lookup
+        )
 
         result = await folder_connector._bulk_get_records_by_external_ids(
             ["x", "x", "y", "", None]  # type: ignore[list-item]
@@ -2552,22 +2508,15 @@ class TestMisc:
     async def test_bulk_get_records_empty_input_short_circuits(
         self, folder_connector
     ):
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
         out = await folder_connector._bulk_get_records_by_external_ids([])
         assert out == {}
-        # Transaction must NOT have been opened.
         folder_connector.data_store_provider.transaction.assert_not_called()
 
     async def test_get_record_by_external_id_delegates(self, folder_connector):
         record = MagicMock(external_record_id="ext-1")
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.get_record_by_external_id = AsyncMock(return_value=record)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=record
+        )
 
         out = await folder_connector._get_record_by_external_id("ext-1")
         assert out is record
@@ -3025,44 +2974,30 @@ class TestEnsureOwnerAndRecordGroup:
 
 
 # --------------------------------------------------------------------------- #
-# _resolve_owner_user — missing app doc / missing createdBy / bad user shape  #
+# _resolve_owner_user                                                          #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
 class TestResolveOwnerUser:
-    def _txn(self, *, app_doc, user_raw=None):
-        txn = MagicMock()
-        txn.__aenter__ = AsyncMock(return_value=txn)
-        txn.__aexit__ = AsyncMock(return_value=None)
-        txn.txn = MagicMock()
-        txn.graph_provider.get_document = AsyncMock(return_value=app_doc)
-        txn.get_user_by_user_id = AsyncMock(return_value=user_raw)
-        return txn
-
-    async def test_returns_none_when_app_doc_missing(self, folder_connector):
-        txn = self._txn(app_doc=None)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+    async def test_returns_none_when_get_app_creator_user_returns_none(self, folder_connector):
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=None
+        )
 
         out = await folder_connector._resolve_owner_user()
         assert out is None
         folder_connector.logger.error.assert_called()
 
-    async def test_returns_none_when_app_doc_has_no_created_by(self, folder_connector):
-        txn = self._txn(app_doc={"_id": "apps/x"})
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
+    async def test_returns_user_when_get_app_creator_user_succeeds(self, folder_connector):
+        user = User(email="owner@x.com", id="u-1", org_id="org-1")
+        folder_connector.data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=user
+        )
 
         out = await folder_connector._resolve_owner_user()
-        assert out is None
-        folder_connector.logger.error.assert_called()
-
-    async def test_logs_error_when_user_lookup_returns_none(self, folder_connector):
-        txn = self._txn(app_doc={"createdBy": "u-1"}, user_raw=None)
-        folder_connector.data_store_provider.transaction = MagicMock(return_value=txn)
-
-        out = await folder_connector._resolve_owner_user()
-        assert out is None
-        folder_connector.logger.error.assert_called()
+        assert out is user
+        folder_connector.logger.error.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

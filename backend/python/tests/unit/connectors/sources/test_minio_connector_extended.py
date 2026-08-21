@@ -191,10 +191,12 @@ class TestParseParentExternalId:
 # ===========================================================================
 
 class TestCreateConnector:
+    @patch("app.connectors.sources.minio.connector.S3CompatibleDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.minio.connector.MinIOApp")
-    async def test_create_connector_default_endpoint(self, mock_app):
-        processor = MagicMock()
-        processor.org_id = "org-1"
+    async def test_create_connector_default_endpoint(self, mock_app, mock_processor_cls):
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_processor_cls.return_value = mock_proc
 
         logger = logging.getLogger("test")
         ds = MagicMock()
@@ -205,14 +207,16 @@ class TestCreateConnector:
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
             scope="team", created_by="test-user-id",
-            data_entities_processor=processor,
+            data_entities_processor=mock_proc,
         )
         assert connector is not None
 
+    @patch("app.connectors.sources.minio.connector.S3CompatibleDataSourceEntitiesProcessor")
     @patch("app.connectors.sources.minio.connector.MinIOApp")
-    async def test_create_connector_with_config(self, mock_app):
-        processor = MagicMock()
-        processor.org_id = "org-1"
+    async def test_create_connector_with_config(self, mock_app, mock_processor_cls):
+        mock_proc = MagicMock()
+        mock_proc.initialize = AsyncMock()
+        mock_processor_cls.return_value = mock_proc
 
         logger = logging.getLogger("test")
         ds = MagicMock()
@@ -225,7 +229,7 @@ class TestCreateConnector:
             logger=logger, data_store_provider=ds,
             config_service=config_service, connector_id="test-id",
             scope="team", created_by="test-user-id",
-            data_entities_processor=processor,
+            data_entities_processor=mock_proc,
         )
         assert connector.endpoint_url == "https://minio.prod.com:9000"
 

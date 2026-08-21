@@ -60,6 +60,13 @@ def _make_connector():
     data_entities_processor.on_user_group_deleted = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_app_user_by_email = AsyncMock(return_value=None)
+    data_entities_processor.get_all_user_groups = AsyncMock(return_value=[])
+    data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
+    data_entities_processor.remove_user_access_to_record = AsyncMock()
+    data_entities_processor.reindex_existing_records = AsyncMock()
 
     data_store_provider = _make_mock_data_store_provider()
     config_service = AsyncMock()
@@ -556,7 +563,7 @@ class TestHandleRecordUpdates:
         update.is_updated = False
         update.external_record_id = "ext-1"
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_called_once()
 
@@ -583,15 +590,7 @@ class TestReconcileDeletedGroups:
         connector = _make_connector()
         mock_group = MagicMock()
         mock_group.source_user_group_id = "g1"
-        tx = _make_mock_tx_store()
-        tx.get_user_groups = AsyncMock(return_value=[mock_group])
-        connector.data_store_provider = _make_mock_data_store_provider()
-
-        # Need to set up the provider to return the right tx store
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[mock_group])
 
         await connector._reconcile_deleted_groups({"g1"})
         connector.data_entities_processor.on_user_group_deleted.assert_not_called()
@@ -602,14 +601,7 @@ class TestReconcileDeletedGroups:
         mock_group = MagicMock()
         mock_group.source_user_group_id = "g-stale"
         mock_group.name = "Stale Group"
-        tx = _make_mock_tx_store()
-        tx.get_user_groups = AsyncMock(return_value=[mock_group])
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[mock_group])
 
         await connector._reconcile_deleted_groups({"g-active"})
         connector.data_entities_processor.on_user_group_deleted.assert_called_once()
@@ -630,14 +622,7 @@ class TestGetAppUsersByEmails:
     async def test_found_users(self):
         connector = _make_connector()
         mock_user = MagicMock()
-        tx = _make_mock_tx_store()
-        tx.get_app_user_by_email = AsyncMock(return_value=mock_user)
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_app_user_by_email = AsyncMock(return_value=mock_user)
 
         result = await connector._get_app_users_by_emails(["user@test.com"])
         assert len(result) == 1
@@ -725,32 +710,17 @@ class TestRemoveUserAccessRecursively:
     @pytest.mark.asyncio
     async def test_removes_access(self):
         connector = _make_connector()
-        tx = _make_mock_tx_store()
-        tx.get_records_by_parent = AsyncMock(return_value=[])
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
         await connector._remove_user_access_from_folder_recursively("folder-1", "user-1")
-        tx.remove_user_access_to_record.assert_called_once()
+        connector.data_entities_processor.remove_user_access_to_record.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handles_children(self):
         connector = _make_connector()
         child = MagicMock()
         child.external_record_id = "child-1"
-        tx = _make_mock_tx_store()
-        # First call returns children, second returns empty
-        tx.get_records_by_parent = AsyncMock(side_effect=[[child], []])
-
-        @asynccontextmanager
-        async def _transaction():
-            yield tx
-        connector.data_store_provider = MagicMock()
-        connector.data_store_provider.transaction = _transaction
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=[[child], []])
 
         await connector._remove_user_access_from_folder_recursively("folder-1", "user-1")
-        assert tx.remove_user_access_to_record.call_count == 2
+        assert connector.data_entities_processor.remove_user_access_to_record.call_count == 2

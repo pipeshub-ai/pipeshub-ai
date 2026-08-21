@@ -102,6 +102,8 @@ def connector():
         dep.on_new_record_groups = AsyncMock()
         dep.on_record_deleted = AsyncMock()
         dep.reindex_existing_records = AsyncMock()
+        dep.get_record_by_external_id = AsyncMock(return_value=None)
+        dep.get_records_by_parent = AsyncMock(return_value=[])
 
         conn = GoogleGmailIndividualConnector(
             logger=_make_logger(),
@@ -364,6 +366,8 @@ class TestCreateConnector:
         mock_sp.return_value = AsyncMock()
         processor = MagicMock()
         processor.org_id = "org-1"
+        processor.get_record_by_external_id = AsyncMock(return_value=None)
+        processor.get_records_by_parent = AsyncMock(return_value=[])
         result = await GoogleGmailIndividualConnector.create_connector(
             logger=_make_logger(),
             data_store_provider=_make_mock_data_store_provider(),

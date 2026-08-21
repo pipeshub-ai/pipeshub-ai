@@ -26,6 +26,7 @@ def mock_data_entities_processor():
     processor.on_new_record_groups = AsyncMock()
     processor.on_new_records = AsyncMock()
     processor.reindex_existing_records = AsyncMock()
+    processor.delete_record_by_external_id = AsyncMock()
     return processor
 
 
@@ -502,8 +503,7 @@ class TestDeltaAndMessageProcessing:
         connector.email_delta_sync_point.update_sync_point.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_single_message_handles_deleted_message(self, connector, mock_data_store_provider):
-        tx = mock_data_store_provider.transaction.return_value
+    async def test_process_single_message_handles_deleted_message(self, connector, mock_data_entities_processor):
         user = MagicMock(source_user_id="u-1", email="user@test.com")
 
         message = MagicMock()
@@ -520,7 +520,7 @@ class TestDeltaAndMessageProcessing:
 
         assert updates == []
         assert success is True
-        tx.delete_record_by_external_id.assert_awaited_once_with(
+        mock_data_entities_processor.delete_record_by_external_id.assert_awaited_once_with(
             "conn-outlook-individual-1", "msg-1", "u-1"
         )
 
