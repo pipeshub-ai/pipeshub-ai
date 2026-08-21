@@ -93,4 +93,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       'Allow agents to use MCP (Model Context Protocol) servers and show MCP server management in the UI. Disable to hide MCP everywhere and stop agents from loading MCP tools.',
     defaultEnabled: false,
   },
+  {
+    key: 'ENABLE_ACTIONS',
+    label: 'Enable Actions',
+    description:
+      'Allow agents to use toolset actions (connector integrations like Slack, Jira, etc.) and show Actions management in the UI. Disable to hide Actions everywhere and stop agents from loading toolset tools.',
+    defaultEnabled: true,
+  },
 ];
