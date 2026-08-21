@@ -16,6 +16,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import stat
 import unicodedata
 import uuid
 from logging import Logger
@@ -559,7 +560,18 @@ class LocalFsConnector(BaseConnector):
         else:
             for name in os.listdir(root):
                 p = root / name
-                if p.is_file():
+                try:
+                    # stat() classification, not p.is_file(): pathlib on
+                    # Python 3.14+ suppresses ALL OSError (including
+                    # PermissionError) from is_file()/is_dir(), turning a
+                    # stat failure into a silent "doesn't exist" instead of
+                    # surfacing through on_error.
+                    is_reg = stat.S_ISREG(p.stat().st_mode)
+                except OSError as e:
+                    if on_error:
+                        on_error(e)
+                    continue
+                if is_reg:
                     out.append(p)
         return out
 
@@ -576,7 +588,19 @@ class LocalFsConnector(BaseConnector):
         else:
             for name in os.listdir(root):
                 p = root / name
-                if p.is_dir() and not p.is_symlink():
+                try:
+                    # lstat() classification for the same reason as
+                    # _iter_file_paths above: is_dir()/is_symlink() silently
+                    # swallow OSError on Python 3.14+.
+                    lst = p.lstat()
+                    is_dir = not stat.S_ISLNK(lst.st_mode) and stat.S_ISDIR(
+                        lst.st_mode
+                    )
+                except OSError as e:
+                    if on_error:
+                        on_error(e)
+                    continue
+                if is_dir:
                     out.append(p)
         return out
 
@@ -2289,11 +2313,16 @@ class LocalFsConnector(BaseConnector):
             processed = 0
             for abs_folder_path in folder_paths:
                 try:
-                    if abs_folder_path.is_symlink():
+                    # lstat() + stat.S_IS*, not is_symlink()/is_dir(): on
+                    # Python 3.14+ pathlib suppresses ALL OSError (including
+                    # PermissionError) from those, which would let this
+                    # `continue` past a genuine stat failure instead of
+                    # hitting the `except` below that sets walk_had_errors.
+                    st = abs_folder_path.lstat()
+                    if stat.S_ISLNK(st.st_mode):
                         continue
-                    if not abs_folder_path.is_dir():
+                    if not stat.S_ISDIR(st.st_mode):
                         continue
-                    st = abs_folder_path.stat()
                     rel_folder_path = abs_folder_path.relative_to(root).as_posix()
                     walked_external_ids.add(
                         self._external_record_id_for_rel_path(rel_folder_path)
@@ -2323,13 +2352,17 @@ class LocalFsConnector(BaseConnector):
 
             for abs_path in paths:
                 try:
-                    if abs_path.is_symlink():
+                    # See folder loop above: lstat()/S_IS* instead of
+                    # is_symlink()/is_file(), so a stat failure always
+                    # reaches the `except` below and sets walk_had_errors,
+                    # regardless of pathlib version.
+                    st = abs_path.lstat()
+                    if stat.S_ISLNK(st.st_mode):
                         continue
-                    if not abs_path.is_file():
+                    if not stat.S_ISREG(st.st_mode):
                         continue
                     if not self._extension_allowed(abs_path, sync_filters):
                         continue
-                    st = abs_path.stat()
                     if not _file_stat_matches_date_filters(st, sync_filters):
                         continue
                     rel_path = abs_path.relative_to(root).as_posix()

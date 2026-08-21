@@ -405,3 +405,52 @@ class TestRunSyncWalkErrorsSkipPruning:
         # pruning must be skipped entirely, not just fraction-valved.
         assert flaky_ext in store
         assert keep_ext in store
+
+    async def test_permission_error_from_stat_classification_does_not_prune(
+        self, synced_folder
+    ):
+        """Regression for CodeRabbit's Python 3.14 pathlib finding: the walk
+        loop must classify files via ``lstat()`` + ``stat.S_ISREG``/``S_ISDIR``
+        (not ``Path.is_file()``/``Path.is_dir()``), so an ``OSError`` raised
+        during classification itself is caught and sets ``walk_had_errors`` —
+        rather than relying on ``is_file()``/``is_dir()`` to propagate it,
+        which pathlib on Python 3.14+ no longer does (it suppresses ALL
+        ``OSError``, returning ``False`` instead).
+
+        This targets the classification step directly (``Path.lstat``), not
+        a later check like ``_extension_allowed`` — proving the new
+        stat()-based path itself is exercised, not just the pre-existing
+        exception handling around it.
+        """
+        connector, store, root = synced_folder
+
+        (root / "keep.txt").write_text("same", encoding="utf-8")
+        (root / "flaky.txt").write_text("still here", encoding="utf-8")
+
+        await connector.run_sync()
+
+        keep_ext = connector._external_record_id_for_rel_path("keep.txt")
+        flaky_ext = connector._external_record_id_for_rel_path("flaky.txt")
+        assert flaky_ext in store
+        for ext_id in (keep_ext, flaky_ext):
+            store[ext_id].indexing_status = "COMPLETED"
+
+        from pathlib import Path as _Path
+
+        real_lstat = _Path.lstat
+
+        def _flaky_lstat(self, *args, **kwargs):
+            if self.name == "flaky.txt":
+                raise PermissionError(13, "Permission denied")
+            return real_lstat(self, *args, **kwargs)
+
+        _Path.lstat = _flaky_lstat
+        try:
+            await connector.run_incremental_sync()
+        finally:
+            _Path.lstat = real_lstat
+
+        # flaky.txt's record must survive a stat-time PermissionError: the
+        # walk was not clean, so pruning must be skipped entirely.
+        assert flaky_ext in store
+        assert keep_ext in store
