@@ -139,7 +139,6 @@ class TestSplitIntoSentences:
 
 
 
-
 class TestDetectLanguage:
     """Tests for the lingua-based language detector."""
 
