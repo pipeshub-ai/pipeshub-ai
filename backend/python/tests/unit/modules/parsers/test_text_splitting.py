@@ -80,16 +80,42 @@ class TestSplitIntoSentences:
         result = split_into_sentences("এটি প্রথম বাক্য। এটি দ্বিতীয় বাক্য।", "bn")
         assert len(result) >= 1
 
+    def test_yasbd_segmenter_success_path(self):
+        mock_segmenter = type(
+            "MockSegmenter",
+            (),
+            {
+                "segment": lambda self, text, preserve_whitespace=True: [
+                    "First sentence.",
+                    "Second sentence.",
+                ]
+            },
+        )()
+        with (
+            patch("app.modules.parsers.text_splitting._HAS_YASBD", True),
+            patch(
+                "app.modules.parsers.text_splitting._get_yasbd_segmenter",
+                return_value=mock_segmenter,
+            ),
+        ):
+            result = split_into_sentences("First sentence. Second sentence.", "en")
+        assert len(result) == 2
+        assert result == ["First sentence.", "Second sentence."]
+
     def test_yasbd_failure_falls_back_to_pysbd(self):
-        with patch(
-            "app.modules.parsers.text_splitting._get_yasbd_segmenter",
-            side_effect=RuntimeError("boom"),
+        with (
+            patch("app.modules.parsers.text_splitting._HAS_YASBD", True),
+            patch(
+                "app.modules.parsers.text_splitting._get_yasbd_segmenter",
+                side_effect=RuntimeError("boom"),
+            ),
         ):
             result = split_into_sentences("First sentence. Second sentence.", "en")
         assert len(result) == 2
 
     def test_segmenter_failure_falls_back_to_regex(self):
         with (
+            patch("app.modules.parsers.text_splitting._HAS_YASBD", True),
             patch(
                 "app.modules.parsers.text_splitting._get_yasbd_segmenter",
                 side_effect=RuntimeError("boom"),
@@ -101,6 +127,7 @@ class TestSplitIntoSentences:
         ):
             result = split_into_sentences("First sentence. Second sentence.", "en")
         assert len(result) == 2
+
 
 
 

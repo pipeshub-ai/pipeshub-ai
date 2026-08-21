@@ -145,7 +145,11 @@ def split_into_sentences(text: str, language: str = "en") -> list[str]:
         try:
             yasbd_seg = _get_yasbd_segmenter(language)
             if yasbd_seg is not None:
-                results = [s for s in yasbd_seg.segment(text) if s and s.strip()]
+                results = [
+                    s
+                    for s in yasbd_seg.segment(text, preserve_whitespace=True)
+                    if s and s.strip()
+                ]
                 if results:
                     return results
         except Exception:  # pragma: no cover
