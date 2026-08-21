@@ -130,6 +130,9 @@ class DataSourceEntitiesProcessor:
             self.org_id = org_id
             return
 
+        if self.org_id:
+            return
+
         async with self.data_store_provider.transaction() as tx_store:
             orgs = await tx_store.get_all_orgs()
             if not orgs:
@@ -1005,7 +1008,7 @@ class DataSourceEntitiesProcessor:
                         # re-queues — unless indexing is manual-only for this
                         # record, which a content change must not override.
                         if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
-                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
                     else:
                         # Unchanged content stays COMPLETED (blocks re-publish
                         # below). Resetting unconditionally made every full

@@ -220,6 +220,8 @@ class ConnectorFactory:
             from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
             processor_cls = data_entities_processor_cls or DataSourceEntitiesProcessor
             data_entities_processor = processor_cls(logger, data_store_provider, config_service)
+            if org_id:
+                data_entities_processor.org_id = org_id
             await data_entities_processor.initialize()
 
             connector = await connector_class.create_connector(
@@ -233,8 +235,6 @@ class ConnectorFactory:
                 **kwargs,
             )
             if connector is not None:
-                if org_id and getattr(connector, "data_entities_processor", None) is not None:
-                    connector.data_entities_processor.org_id = org_id
                 if notification_service is not None:
                     connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
