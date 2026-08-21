@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify'
 import jwt, { Algorithm, Secret } from 'jsonwebtoken'
 import crypto from 'crypto'
-import { v4 as uuidv4 } from 'uuid'
+import { randomUUID } from 'crypto'
 import { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import {
@@ -68,7 +68,7 @@ export class OAuthTokenService {
     accountType?: string,
     opts?: GenerateTokensOptions,
   ): Promise<GeneratedTokens> {
-    const jti = uuidv4()
+    const jti = randomUUID()
     const now = Math.floor(Date.now() / 1000)
     const accessTokenLifetime =
       opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime
@@ -117,7 +117,7 @@ export class OAuthTokenService {
 
     // Generate refresh token if requested and user is present
     if (includeRefreshToken && userId && scopes.includes('offline_access')) {
-      const refreshJti = uuidv4()
+      const refreshJti = randomUUID()
       const refreshTokenPayload: OAuthTokenPayload = {
         userId: userId,
         orgId,

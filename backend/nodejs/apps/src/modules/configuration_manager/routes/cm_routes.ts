@@ -350,6 +350,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getSmtpConfig(keyValueStoreService),
   );
 
+  router.get(
+    '/internal/smtpConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    getSmtpConfig(keyValueStoreService),
+  );
+
   // auth config routes
   router.get(
     '/authConfig/azureAd',

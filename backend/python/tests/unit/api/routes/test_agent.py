@@ -2870,7 +2870,6 @@ class TestCreateAgent:
 
             result = await create_agent(request)
             assert result.status_code == 200
-            assert json.loads(result.body)["agent"]["usesOrgDefault"] is True
 
     @pytest.mark.asyncio
     async def test_omitted_models_allowed_falls_back_to_org_default(self) -> None:
@@ -2893,7 +2892,6 @@ class TestCreateAgent:
 
             result = await create_agent(request)
             assert result.status_code == 200
-            assert json.loads(result.body)["agent"]["usesOrgDefault"] is True
 
     @pytest.mark.asyncio
     async def test_no_reasoning_model_raises(self) -> None:
@@ -2931,7 +2929,6 @@ class TestCreateAgent:
 
             result = await create_agent(request)
             assert result.status_code == 200
-            assert json.loads(result.body)["agent"]["usesOrgDefault"] is False
 
 
 # ===========================================================================

@@ -62,6 +62,7 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
+    GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
     SALESFORCE = "SALESFORCE"
     S3 = "S3"

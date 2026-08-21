@@ -545,3 +545,27 @@ class BlocksContainer(BaseModel):
 
         other.blocks = []
         other.block_groups = []
+
+
+def wire_block_group_parent_children(block_groups: list[BlockGroup]) -> None:
+    """Set parent.children.block_group_ranges from each child's parent_index.
+
+    Keeps existing block_ranges on the parent when present. Without this the
+    container validator reports REVERSE_LINKAGE_MISSING, since parent_index is
+    a one-way pointer.
+    """
+    children_map: dict[int, list[int]] = {}
+    for bg in block_groups:
+        if bg.parent_index is not None:
+            children_map.setdefault(bg.parent_index, []).append(bg.index)
+
+    for bg in block_groups:
+        child_indices = children_map.get(bg.index)
+        if not child_indices:
+            continue
+        wired = BlockGroupChildren.from_indices(block_group_indices=sorted(child_indices))
+        if bg.children is None:
+            bg.children = wired
+        else:
+            bg.children.block_group_ranges = wired.block_group_ranges
+
