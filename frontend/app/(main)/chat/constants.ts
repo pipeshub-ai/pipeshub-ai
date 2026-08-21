@@ -218,6 +218,22 @@ export const AGENT_CONVERSATIONS_PAGE_SIZE = 20;
  *  "load older messages" infinite scroll). Must match the backend's default limit. */
 export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;
 
+// ── Paste-to-attachment (large clipboard text) ──────────────────────────
+// Mirrors ChatGPT/Claude's "large paste becomes an attachment" behavior —
+// see `utils/paste-attachment.ts` for the detection/conversion logic.
+
+/** A paste longer than this many characters is converted to a text attachment. */
+export const CHAT_PASTE_CHARACTER_THRESHOLD = 5000;
+
+/** A paste with more lines than this is converted to a text attachment,
+ *  even if it is under the character threshold (e.g. a long list). */
+export const CHAT_PASTE_LINE_THRESHOLD = 10;
+
+/** Maximum bytes kept from a single paste; longer content is truncated with a notice. */
+export const CHAT_PASTE_MAX_SIZE_BYTES = 128 * 1024;
+
+/** Filename prefix for synthetic pasted-text attachments (`<prefix><timestamp>.txt`). */
+export const CHAT_PASTE_FILENAME_PREFIX = 'pasted-text-';
 /**
  * Shared content column for message body and composer. The message *scroll*
  * stays full-pane width (scrollbar on the pane edge); only the inner content
