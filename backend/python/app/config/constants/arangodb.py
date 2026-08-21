@@ -62,6 +62,7 @@ class Connectors(Enum):
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
     GITHUB = "GITHUB"
+    GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
@@ -302,6 +303,8 @@ class ExtensionTypes(Enum):
     EPUB = "epub"
     SQL_TABLE = "sql_table"  
     SQL_VIEW = "sql_view"
+    # Registry key for the tree-sitter code parser; not a file extension.
+    CODE = "code"
     PY = "py"
     JS = "js"
     JSX = "jsx"

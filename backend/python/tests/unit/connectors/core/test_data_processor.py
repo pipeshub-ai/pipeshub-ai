@@ -486,6 +486,92 @@ class TestOnNewRecords:
             await proc.on_new_records([(_make_record(), [])])
 
 
+class TestUnchangedRecordsAreNotRepublished:
+    """A re-synced record whose content did not change must not re-embed.
+
+    The old behaviour reset every previously-COMPLETED record to NOT_STARTED
+    and published a newRecord event regardless of revision, so every full
+    re-sync (force-push fallback, first sync after a filter change, ...)
+    re-indexed the entire already-indexed set — and clobbered AUTO_INDEX_OFF
+    on manually-indexed records.
+    """
+
+    @staticmethod
+    def _proc_with_existing(existing) -> tuple:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = existing
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        return proc, tx_store
+
+    @staticmethod
+    def _existing(revision: str, status: str):
+        existing = _make_record(version=1)
+        existing.id = "existing-id"
+        existing.external_revision_id = revision
+        existing.indexing_status = status
+        return existing
+
+    @pytest.mark.asyncio
+    async def test_unchanged_completed_record_publishes_nothing(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_completed_record_is_requeued_and_published(self):
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_content_change_does_not_override_manual_indexing(self):
+        """AUTO_INDEX_OFF (manual-only) survives a content change on a record
+        that was previously indexed — no auto re-index behind the admin's back."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.COMPLETED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+        record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_turning_indexing_on_still_backfills_auto_index_off_records(self):
+        """A record stored AUTO_INDEX_OFF whose connector filter is later enabled
+        arrives with a normal status and must still be published for indexing."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.AUTO_INDEX_OFF.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+
+
 # ===========================================================================
 # on_record_content_update
 # ===========================================================================
@@ -600,9 +686,14 @@ class TestOnRecordMetadataUpdate:
 class TestOnRecordDeleted:
     @pytest.mark.asyncio
     async def test_deletes_record(self):
-        """Calls delete_record_by_key within a transaction."""
         proc = _make_processor()
         tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "rec-1", "virtualRecordId": "v1"}]},
+            }
+        )
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -611,7 +702,9 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
 
 
 # ===========================================================================

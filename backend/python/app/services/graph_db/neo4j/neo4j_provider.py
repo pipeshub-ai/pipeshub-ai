@@ -10102,6 +10102,112 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
             return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
+    async def delete_single_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Same cleanup as ``delete_records_recursive`` for one record — no walk."""
+        try:
+            if not record_id:
+                return {
+                    "success": True, "deleted_records": [], "failed_records": [],
+                    "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+                    "eventData": None,
+                }
+            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=node_collections + [
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.PERMISSION.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
+                    ],
+                )
+            try:
+                inventory_query = """
+                UNWIND $record_ids AS rid
+                OPTIONAL MATCH (rec:Record {id: rid})
+                WITH collect(DISTINCT CASE
+                        WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true)
+                        THEN rec ELSE null END) AS roots_raw
+                WITH [r IN roots_raw WHERE r IS NOT NULL] AS valid_roots
+                WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
+                UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS vert
+                OPTIONAL MATCH (vert)-[:IS_OF_TYPE]->(t)
+                WITH valid_root_keys,
+                     collect(DISTINCT CASE WHEN vert IS NOT NULL THEN {record: vert, type_doc: t} ELSE null END) AS rwt_raw
+                RETURN {
+                    valid_root_keys: valid_root_keys,
+                    records_with_type: [x IN rwt_raw WHERE x IS NOT NULL]
+                } AS inventory
+                """
+                inv_results = await self.client.execute_query(
+                    inventory_query,
+                    parameters={"record_ids": [record_id]},
+                    txn_id=txn_id,
+                )
+                inventory = inv_results[0]["inventory"] if inv_results else {}
+                valid_root_keys = inventory.get("valid_root_keys", [])
+                records_with_type = inventory.get("records_with_type", [])
+                record_keys = [rt["record"]["id"] for rt in records_with_type if rt.get("record")]
+
+                if record_keys:
+                    await self.client.execute_query(
+                        "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
+                        parameters={"record_ids": record_keys}, txn_id=txn_id,
+                    )
+                    await self.client.execute_query(
+                        "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
+                        parameters={"record_ids": record_keys}, txn_id=txn_id,
+                    )
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+
+                event_payloads = []
+                try:
+                    for rt in records_with_type:
+                        rec = rt.get("record") or {}
+                        if not rec.get("virtualRecordId"):
+                            continue
+                        type_doc = rt.get("type_doc") or {}
+                        delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
+                        if delete_payload:
+                            delete_payload["connectorName"] = rec.get("connectorName")
+                            delete_payload["origin"] = rec.get("origin")
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads,
+                } if event_payloads else None
+
+                deleted_records = [
+                    {"record_id": rt["record"]["id"], "name": rt["record"].get("recordName", "Unknown")}
+                    for rt in records_with_type if rt.get("record")
+                ]
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": [],
+                    "total_requested": 1,
+                    "successfully_deleted": len(valid_root_keys),
+                    "failed_count": 0,
+                    "eventData": event_data,
+                }
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete single record: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500, "eventData": None}
 
     async def find_folder_by_name_in_parent(
         self,

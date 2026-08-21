@@ -925,6 +925,16 @@ describe('Configuration Manager Routes - handler coverage', () => {
       expect(layer).to.not.be.undefined
     })
 
+    it('should register GET /internal/smtpConfig route', () => {
+      const layer = router.stack.find(
+        (l: any) =>
+          l.route &&
+          l.route.path === '/internal/smtpConfig' &&
+          l.route.methods.get,
+      )
+      expect(layer).to.not.be.undefined
+    })
+
     it('should register auth config routes', () => {
       const paths = router.stack
         .filter((l: any) => l.route)

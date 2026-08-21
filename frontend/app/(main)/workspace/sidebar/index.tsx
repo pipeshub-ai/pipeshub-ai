@@ -42,7 +42,7 @@ const DEVELOPER_SETTINGS_ITEMS: NavItem[] = [
 ];
 
 const PEOPLE_SUB_ITEMS = [
-  { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users', adminOnly: true },
+  { labelKey: 'workspace.sidebar.nav.users', route: '/workspace/users' },
   { labelKey: 'workspace.sidebar.nav.groups', route: '/workspace/groups', adminOnly: true },
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];

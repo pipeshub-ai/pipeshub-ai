@@ -599,6 +599,10 @@ code_file_record_schema={
             "description": {"type": ["string", "null"]},
             "filePath": {"type": "string", "minLength": 0},
             "fileHash": {"type": "string", "minLength": 0},
+            "language": {"type": ["string", "null"]},
+            # source | test | config | build | migration | script |
+            # type_definition | generated -- see parsers/code_parser/file_role.py
+            "fileRole": {"type": ["string", "null"]},
         },
     },
 }

@@ -195,11 +195,6 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
-        .add_filter_field(FilterField(
-            name=IndexingFilterKey.COMMENTS.value,
-            display_name="Index Comments",
-            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
-        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_admin_access_required(True, personal_connector_type="GitLab Personal")
         .with_agent_support(False)
