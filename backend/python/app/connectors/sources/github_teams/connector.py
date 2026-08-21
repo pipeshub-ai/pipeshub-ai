@@ -400,7 +400,7 @@ class GitHubTeamsConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-        data_entities_processor=None,
+        data_entities_processor,
         **kwargs,
     ) -> "BaseConnector":
         """Factory method to create and return an initialized GitHubTeamsConnector."""
