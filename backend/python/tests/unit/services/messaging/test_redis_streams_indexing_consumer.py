@@ -2038,6 +2038,10 @@ class TestExceedsMaxRetries:
         hasn't reached the threshold — e.g. because the process crashed before
         ever incrementing it. Before the fix, the RetryManager branch always
         returned early and this backstop was unreachable dead code.
+
+        Uses a current message_id distinct from the stable retry-tracking id
+        (as a re-queued entry would carry) to prove the backstop clears retry
+        state under the stable id, not the current Redis message_id.
         """
         consumer.retry_manager = AsyncMock()
         consumer.retry_manager.get_count.return_value = 1  # app counter lagging
@@ -2054,13 +2058,16 @@ class TestExceedsMaxRetries:
             mock_env.max_pending_indexing_tasks = 100
             mock_env.max_concurrent_parsing = 5
             mock_env.max_concurrent_indexing = 10
-            result = await consumer._should_dead_letter("topic-a", "1-0")
+            result = await consumer._should_dead_letter(
+                "topic-a", "2-0", stable_message_id="stable-1"
+            )
 
         assert result is True
         consumer.redis.xack.assert_awaited_once_with(
-            "topic-a", consumer.config.group_id, "1-0"
+            "topic-a", consumer.config.group_id, "2-0"
         )
-        consumer.retry_manager.clear.assert_awaited_once_with("1-0")
+        consumer.retry_manager.get_count.assert_awaited_once_with("stable-1")
+        consumer.retry_manager.clear.assert_awaited_once_with("stable-1")
 
     @pytest.mark.asyncio
     async def test_app_counter_alone_still_dead_letters_with_retry_manager(

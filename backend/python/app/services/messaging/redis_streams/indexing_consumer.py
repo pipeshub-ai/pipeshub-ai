@@ -400,7 +400,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     exc,
                 )
 
-    async def _should_dead_letter(self, topic: str, message_id: str) -> bool:
+    async def _should_dead_letter(
+        self,
+        topic: str,
+        message_id: str,
+        stable_message_id: str | None = None,
+    ) -> bool:
         """Check if message should be dead-lettered based on failure retry count.
 
         Prefers RetryManager's app-tracked failure count (actual transient
@@ -410,15 +415,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         _process_message_wrapper's except handler, which a process crash or
         kill mid-handler skips entirely, so it can never catch up to the real
         delivery count on its own (#2992).
+
+        ``stable_message_id`` is the ``_retry_tracking_id`` a re-queued entry
+        carries in its payload — RetryManager state is keyed by that stable
+        id everywhere else (see ``_process_message_wrapper``), not by the
+        current Redis message_id, which changes on every re-queue. Falls back
+        to ``message_id`` when no stable id is available (first delivery).
         """
         max_attempts = messaging_env.max_delivery_attempts
+        tracking_id = stable_message_id or message_id
 
         try:
             if self.retry_manager is not None:
-                failure_count = await self._get_retry_count(message_id)
+                failure_count = await self._get_retry_count(tracking_id)
                 if failure_count >= max_attempts:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
-                    await self._clear_retry_tracking(message_id)
+                    await self._clear_retry_tracking(tracking_id)
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
                         message_id,
@@ -443,7 +455,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 times_delivered = details[0].get("times_delivered", 0)
                 if times_delivered >= max_attempts:
                     await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
-                    await self._clear_retry_tracking(message_id)
+                    await self._clear_retry_tracking(tracking_id)
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
                         message_id,
@@ -527,7 +539,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         ):
                             break
                         try:
-                            if await self._should_dead_letter(topic, message_id):
+                            parsed_message = self._parse_message(message_id, fields)
+                            stable_message_id = self._get_stable_message_id(
+                                message_id, parsed_message
+                            )
+                            if await self._should_dead_letter(
+                                topic, message_id, stable_message_id
+                            ):
                                 continue
                             processed_any = True
                             self.logger.info(
@@ -591,7 +609,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             drained_any = True
                             last_pending_id = message_id
                             try:
-                                if await self._should_dead_letter(topic, message_id):
+                                parsed_message = self._parse_message(message_id, fields)
+                                stable_message_id = self._get_stable_message_id(
+                                    message_id, parsed_message
+                                )
+                                if await self._should_dead_letter(
+                                    topic, message_id, stable_message_id
+                                ):
                                     continue
                                 processed_any = True
                                 self.logger.info(
