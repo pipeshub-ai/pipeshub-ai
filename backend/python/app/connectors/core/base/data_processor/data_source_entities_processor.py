@@ -1008,7 +1008,7 @@ class DataSourceEntitiesProcessor:
                         # re-queues — unless indexing is manual-only for this
                         # record, which a content change must not override.
                         if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
-                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                            record.indexing_status = ProgressStatus.NOT_STARTED.value
                     else:
                         # Unchanged content stays COMPLETED (blocks re-publish
                         # below). Resetting unconditionally made every full
