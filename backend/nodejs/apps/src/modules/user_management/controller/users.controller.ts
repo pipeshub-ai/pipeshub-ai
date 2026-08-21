@@ -79,13 +79,14 @@ function isValidEmail(email: string): boolean {
   return EMAIL_REGEX.test(email);
 }
 
-interface InviteResult {
+export interface InviteResult {
   invited: number;
   restored: number;
   reinvited: number;
   alreadyActive: number;
   mailFailed: string[];
   mailErrorCode?: number;
+  limitExceededRestorations?: string[];
 }
 
 @injectable()
@@ -2133,7 +2134,7 @@ export class UserController {
     );
   }
 
-  private async publishInviteNotification(
+  protected async publishInviteNotification(
     userId: string,
     orgId: string,
     title: string,
