@@ -61,28 +61,43 @@ def calculate_exact_image_union_area(images: list[dict], page_width: float, page
     if not rects:
         return 0.0
 
-    # Coordinate compression (O(N^3) exact sweep)
-    x_coords = sorted(list({x for r in rects for x in (r[0], r[2])}))
-    y_coords = sorted(list({y for r in rects for y in (r[1], r[3])}))
+    # Sweep-line algorithm for exact rectangle union area
+    events = []
+    for x0, y0, x1, y1 in rects:
+        events.append((x0, 1, y0, y1))
+        events.append((x1, -1, y0, y1))
     
-    total_area = 0.0
-    for i in range(len(x_coords) - 1):
-        cx0, cx1 = x_coords[i], x_coords[i+1]
-        if cx1 <= cx0:
-            continue
-        for j in range(len(y_coords) - 1):
-            cy0, cy1 = y_coords[j], y_coords[j+1]
-            if cy1 <= cy0:
-                continue
+    # Sort events by x. Tie-breaker: Left edges before right edges
+    events.sort(key=lambda e: (e[0], -e[1]))
+    
+    def get_active_y_length(active_intervals: list[tuple[float, float]]) -> float:
+        if not active_intervals:
+            return 0.0
+        # Sort intervals by y0
+        active_intervals.sort(key=lambda i: i[0])
+        y_length = 0.0
+        current_y0, current_y1 = active_intervals[0]
+        
+        for y0, y1 in active_intervals[1:]:
+            if y0 <= current_y1:
+                current_y1 = max(current_y1, y1)
+            else:
+                y_length += (current_y1 - current_y0)
+                current_y0, current_y1 = y0, y1
                 
-            # Midpoint of the cell
-            mx = (cx0 + cx1) / 2
-            my = (cy0 + cy1) / 2
-            
-            # If midpoint is inside ANY rectangle, the entire cell is covered
-            for r in rects:
-                if r[0] <= mx <= r[2] and r[1] <= my <= r[3]:
-                    total_area += (cx1 - cx0) * (cy1 - cy0)
-                    break
-                    
+        y_length += (current_y1 - current_y0)
+        return y_length
+
+    total_area = 0.0
+    active_intervals = []
+    last_x = events[0][0]
+    
+    for x, typ, y0, y1 in events:
+        total_area += (x - last_x) * get_active_y_length(active_intervals)
+        if typ == 1:
+            active_intervals.append((y0, y1))
+        else:
+            active_intervals.remove((y0, y1))
+        last_x = x
+        
     return total_area
