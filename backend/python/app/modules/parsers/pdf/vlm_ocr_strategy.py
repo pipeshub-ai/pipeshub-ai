@@ -14,7 +14,16 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.utils.aimodels import coerce_message_content_to_text, get_generator_model, is_multimodal_llm
+from app.utils.aimodels import (
+    coerce_message_content_to_text,
+    get_generator_model,
+    get_output_limit_kwargs,
+    is_multimodal_llm,
+)
+from app.utils.image_utils import (
+    convert_image_to_base64,
+    extract_page_image,
+)
 from app.utils.llm import get_llm_for_role
 
 
@@ -273,13 +282,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             # Call LLM
             self.logger.debug(f"📤 Calling LLM for page {page_number}")
             
-            # Pass max_tokens only for providers that support it in ainvoke to avoid validation errors
-            invoke_kwargs = {}
-            provider = self.llm_config.get("provider", "").lower() if getattr(self, "llm_config", None) else ""
-            if provider in ["openai", "azure_openai", "mistral", "anthropic"]:
-                invoke_kwargs["max_tokens"] = 4096
-            elif provider == "ollama":
-                invoke_kwargs["num_predict"] = 4096
+            # Resolve provider-specific output limits via the factory
+            invoke_kwargs = get_output_limit_kwargs(getattr(self, "llm_config", {}), limit=4096)
                 
             response = await self.llm.ainvoke([message], **invoke_kwargs)
 

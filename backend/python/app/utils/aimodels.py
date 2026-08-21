@@ -2916,3 +2916,21 @@ def get_stt_model(
         )
 
     raise ValueError(f"Unsupported STT provider: {provider}")
+
+
+def get_output_limit_kwargs(config: dict, limit: int = 4096) -> dict[str, int]:
+    """
+    Resolve output-limit options for LLM invocations based on the provider.
+    
+    This avoids hard-coding provider names and switch/if chains inside 
+    downstream logic (like OCR strategies), keeping provider specifics 
+    encapsulated in the aimodels factory.
+    """
+    provider = config.get("provider", "").lower() if config else ""
+    
+    if provider in ["openai", "azure_openai", "mistral", "anthropic"]:
+        return {"max_tokens": limit}
+    elif provider == "ollama":
+        return {"num_predict": limit}
+        
+    return {}
