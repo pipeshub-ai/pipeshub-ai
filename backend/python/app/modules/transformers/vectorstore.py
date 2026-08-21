@@ -210,6 +210,36 @@ def _build_text_documents(
     return documents
 
 
+def _build_code_documents(
+    code_blocks: List,
+    virtual_record_id: str,
+    org_id: str,
+) -> List[Document]:
+    """One embeddable Document per code symbol.
+
+    Sentence-splitting is meaningless for code, so each symbol is embedded
+    whole from ``block.data["text"]`` — the raw source text produced by the
+    parser, same pattern every other block type follows.
+    """
+    documents: List[Document] = []
+    for block in code_blocks:
+        data = block.data if isinstance(block.data, dict) else {}
+        text = data.get("text") or ""
+        if not text.strip():
+            continue
+        metadata = {
+            "virtualRecordId": virtual_record_id,
+            "blockId": block.id,
+            "blockIndex": block.index,
+            "orgId": org_id,
+            "isBlockGroup": False,
+        }
+        documents.append(
+            Document(page_content=text, metadata={**metadata, "isBlock": True})
+        )
+    return documents
+
+
 def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
@@ -1294,6 +1324,7 @@ class VectorStore(Transformer):
             image_blocks = []
             table_blocks = []
             sql_row_blocks = []
+            code_blocks = []
 
             for block in blocks:
                 block_type = (
@@ -1301,7 +1332,9 @@ class VectorStore(Transformer):
                     if hasattr(block.type, "value")
                     else str(block.type).lower()
                 )
-                if block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
+                if block_type == "code":
+                    code_blocks.append(block)
+                elif block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
                     text_blocks.append(block)
                 elif (
                     block_type in ["image", "drawing"]
@@ -1329,10 +1362,18 @@ class VectorStore(Transformer):
             )
             self.logger.debug(
                 f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
-                f"table={len(table_blocks)}, sql_row={len(sql_row_blocks)}"
+                f"table={len(table_blocks)}, sql_row={len(sql_row_blocks)}, "
+                f"code={len(code_blocks)}"
             )
 
             documents_to_embed: List = []
+
+            # ── Code blocks ──
+            if code_blocks:
+                documents_to_embed.extend(
+                    _build_code_documents(code_blocks, virtual_record_id, org_id)
+                )
+                self.logger.info("✅ Added code documents for embedding")
 
             # ── Text blocks ──
             if text_blocks:

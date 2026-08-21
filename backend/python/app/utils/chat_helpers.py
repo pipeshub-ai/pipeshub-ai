@@ -17,6 +17,7 @@ from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.models.entities import (
+    CodeFileRecord,
     Connectors,
     DealRecord,
     FileRecord,
@@ -59,13 +60,54 @@ valid_group_labels = [
 
 MAX_IMAGES_IN_MESSAGE = 25
 
+
+def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Children of a *group* flattened-result, or None when it is not a group.
+
+    `block_type` alone cannot tell the two apart: GroupType.CODE and
+    BlockType.CODE are both the string "code", so a code block and a code group
+    carry the same label. Only a group's content is a ``(summary, children)``
+    pair, so the shape is the reliable test -- keying off the label alone
+    unpacks a leaf's source string character by character.
+
+    None and [] are distinct on purpose: None means "treat this as a leaf",
+    while [] means "a group that contributed nothing", which must stay skipped.
+    """
+    content = doc.get("content")
+    if isinstance(content, tuple) and len(content) == 2:
+        children = content[1]
+        return children if isinstance(children, list) else []
+    return None
+
 def _safe_stringify_content(value: Any) -> str:
-    """Convert citation content to string without raising."""
+    """Convert citation content to string without raising.
+
+    A code block's ``data`` is a dict; stringifying it whole would put the
+    BM25 ``subtokens`` padding in front of the model as a Python repr, so the
+    source text is unwrapped first.
+    """
+    if isinstance(value, dict) and "text" in value:
+        value = value.get("text") or ""
     try:
         return str(value)
     except Exception as exc:
         logger.warning("Failed to cast citation content to string: %s", exc)
         return ""
+
+
+def block_qualified_name(block: dict[str, Any]) -> str:
+    """Qualified name of a code block, or "" for anything else."""
+    meta = block.get("code_metadata")
+    if not isinstance(meta, dict):
+        return ""
+    return meta.get("qualified_name") or ""
+
+
+def format_code_locator(file_path: str, qualified_name: str) -> str:
+    """`path#qualified_name` — human-readable locator for a code block."""
+    if file_path and qualified_name:
+        return f"{file_path}#{qualified_name}"
+    return file_path or qualified_name or ""
 
 def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> str:
     """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
@@ -421,6 +463,10 @@ collection_map = {
                     RecordType.MEETING.value: "meetings",
                     RecordType.DEAL.value: "deals",
                     RecordType.MESSAGE.value: "messages",
+                    # filePath lives only on the codeFiles node -- the blob record
+                    # is built from a plain Record, which has no such field. Without
+                    # this entry every code file renders with no path at all.
+                    RecordType.CODE_FILE.value: "codeFiles",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -509,6 +555,17 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "extension": graph_doc.get("extension"),
             }
             return FileRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.CODE_FILE.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.CODE_FILE,
+                "file_path": graph_doc.get("filePath"),
+                "file_hash": graph_doc.get("fileHash"),
+                "extension": graph_doc.get("extension"),
+                "language": graph_doc.get("language"),
+                "file_role": graph_doc.get("fileRole"),
+            }
+            return CodeFileRecord(**base_args, **specific_args)
 
         elif record_type == RecordType.MAIL.value and graph_doc:
             specific_args = {
@@ -1866,6 +1923,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
             adjacent_chunks[virtual_record_id].append(index+1)
+        elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+            # Without this a top-level code hit is dropped here and never reaches
+            # build_message_content_array, however well it scored.
+            result["content"] = _safe_stringify_content(block.get("data", ""))
+            result["qualified_name"] = block_qualified_name(block)
+            adjacent_chunks[virtual_record_id].append(index-1)
+            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
@@ -2418,6 +2482,11 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 else:
                     record["context_metadata"] = ""
 
+                # Code blocks are addressed by (file path, symbol id), and the
+                # path exists only on the codeFiles node -- not in the blob.
+                if graph_doc and graph_doc.get("filePath"):
+                    record["file_path"] = graph_doc.get("filePath")
+
             record["frontend_url"] = frontend_url or ""
             record["virtual_record_id"] = virtual_record_id
             virtual_record_id_to_result[virtual_record_id] = record
@@ -2888,6 +2957,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
             "block_index": block.get("index"),
+            "qualified_name": block_qualified_name(block),
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
@@ -2939,6 +3009,7 @@ def record_to_message_content(
         seen_block_groups = set()
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
+        record_file_path = record.get("file_path", "") or ""
 
         # Windowing: track how many renderable (non-fragment) blocks we have
         # rendered so we can truncate at max_blocks and emit a continuation hint.
@@ -2986,6 +3057,18 @@ def record_to_message_content(
                 content.append({
                     "type": "text",
                     "text": f"[{ref}] {data}\n\n"
+                })
+                _renderable_rendered += 1
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                # Top-level code -- module functions, imports, module-level
+                # statements. These belong to no group, so without this branch
+                # they fall to `else: continue` and a file with no classes
+                # reaches the model empty.
+                locator = format_code_locator(record_file_path, block_qualified_name(block))
+                header = f"[{ref}] {locator}\n" if locator else f"[{ref}] "
+                content.append({
+                    "type": "text",
+                    "text": f"{header}{_safe_stringify_content(data)}\n\n"
                 })
                 _renderable_rendered += 1
             elif block_type == BlockType.TABLE_ROW.value:
@@ -3114,6 +3197,7 @@ def record_to_message_content(
                         block_group_web_url="",
                         label=block_group.get("type"),
                         blocks=group_blocks,
+                        file_path=record_file_path,
                     )
                     content.append({
                         "type": "text",
@@ -3212,6 +3296,15 @@ def record_to_text(record: dict[str, Any]) -> str:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append(f"* Block Type: {block_type}\n* Block Content: {data}\n\n")
+            elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
+                locator = format_code_locator(
+                    record.get("file_path", "") or "", block_qualified_name(block)
+                )
+                header = f"* Symbol: {locator}\n" if locator else ""
+                content.append(
+                    f"* Block Type: {block_type}\n{header}"
+                    f"* Block Content: {_safe_stringify_content(data)}\n\n"
+                )
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -3290,6 +3383,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                     block_group_index=parent_index,
                     label=block_group.get("type"),
                     blocks=group_blocks,
+                    file_path=record.get("file_path", "") or "",
                 )
                 content.append(f"{rendered_form}\n\n")
             else:
@@ -3400,6 +3494,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
     seen_blocks = set()
     current_frontend_url = ""
     current_record_id = ""
+    current_file_path = ""
     # True so the first record's blocks get "Record blocks (sorted):"; later records reopen
     # pending via the i > 0 branch before the next record's metadata.
     pending_record_blocks_sorted_header = True
@@ -3452,6 +3547,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
 
             current_frontend_url = record.get("frontend_url", "")
             current_record_id = record.get("id", "")
+            current_file_path = record.get("file_path", "") or ""
 
             template = compiled_template(qna_prompt_context)
             rendered_form = template.render(
@@ -3555,6 +3651,22 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
                     ),
                 })
+            elif block_type == BlockType.CODE.value:
+                # A code hit is addressed by (file path, symbol id) so the model
+                # can pass it straight to the codegraph tools.
+                current_record_has_blocks = True
+                locator = format_code_locator(
+                    current_file_path, result.get("qualified_name", "") or ""
+                )
+                prefix = f"[{block_index}|{ref}]"
+                if locator:
+                    prefix = f"{prefix} {locator}"
+                content.append({
+                    "type": "text",
+                    "text": prepend_record_blocks_sorted_header(
+                        f"{prefix}\n{_safe_stringify_content(result.get('content'))}\n\n"
+                    ),
+                })
             elif block_type in valid_group_labels:
                 block_group_index = result.get("block_group_index")
                 group_blocks = result.get("content")[1] if isinstance(result.get("content"), tuple) else []
@@ -3572,6 +3684,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         block_group_web_url="",
                         label=block_type,
                         blocks=group_blocks,
+                        file_path=current_file_path,
                     )
                     current_record_has_blocks = True
                     content.append({
