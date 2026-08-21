@@ -25,12 +25,12 @@ from app.services.parsing.providers.ocr_parser import OCRParser
 
 logger = logging.getLogger(__name__)
 
-# Fraction of pages that must need OCR before we switch the whole document
+# Fraction of sampled pages that must meet the general OCR heuristics.
 _OCR_PAGE_THRESHOLD = 0.3
 
 
 def _detect_needs_ocr(content: bytes) -> bool:
-    """Return True when enough pages appear scanned/image-heavy."""
+    """Return True when sampled pages indicate that OCR is needed."""
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             total = len(pdf.pages)
@@ -38,12 +38,18 @@ def _detect_needs_ocr(content: bytes) -> bool:
                 return False
             sample_size = min(5, total)
             sample_pages = random.sample(pdf.pages, sample_size)
+            if any(
+                OCRStrategy.has_dominant_image_with_limited_text(page)
+                for page in sample_pages
+            ):
+                return True
             ocr_pages = sum(
                 1 for page in sample_pages if OCRStrategy.needs_ocr(page, logger)
             )
             return (ocr_pages / sample_size) >= _OCR_PAGE_THRESHOLD
     except Exception:  # noqa: BLE001
         return False
+
 
 class SmartPDFParser:
     """Delegates to OCR when the document appears to be scanned; otherwise uses

@@ -13,8 +13,8 @@ from PIL import Image
 
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.utils.aimodels import (
     LLMProvider,
     coerce_message_content_to_text,
@@ -40,7 +40,9 @@ class VLMOCRStrategy(OCRStrategy):
     # At 200 DPI each page is ~11 MB as a numpy array; 20 pages ≈ 220 MB peak.
     PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '20'))
     MAX_OUTPUT_TOKENS = 4096
-    _MULTIPLICATION_ASTERISK = re.compile(r"(?<=[0-9A-Za-z])\s*\*\s*(?=\d)")
+    _MULTIPLICATION_ASTERISK = re.compile(
+        r"(?<![0-9A-Za-z])(?P<left>\d[\dA-Za-z]*)\s*\*\s*(?=\d)"
+    )
     # Default prompt template
     DEFAULT_PROMPT = """# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.
@@ -287,19 +289,31 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 invoke_kwargs = {
                     "max_tokens": self.MAX_OUTPUT_TOKENS,
                     "temperature": 0,
-                    "extra_body": {
-                        "chat_template_kwargs": {"enable_thinking": False},
-                    },
                 }
+                model_name = str(
+                    self.llm_config.get("configuration", {}).get("model", "")
+                ).lower()
+                if "qwen" in model_name:
+                    invoke_kwargs["extra_body"] = {
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    }
 
             response = await self.llm.ainvoke([message], **invoke_kwargs)
+
+            response_metadata = getattr(response, "response_metadata", {}) or {}
+            if response_metadata.get("finish_reason") == "length":
+                raise DocumentProcessingError(
+                    f"VLM OCR output was truncated for page {page_number}"
+                )
 
             # Extract content. LangChain message content may be a plain string or
             # a list of content blocks (e.g. Gemini returns the latter), so coerce
             # to text before any string handling.
             raw_content = getattr(response, "content", response)
             markdown_content = self._coerce_content_to_text(raw_content)
-            markdown_content = self._MULTIPLICATION_ASTERISK.sub("×", markdown_content)
+            markdown_content = self._MULTIPLICATION_ASTERISK.sub(
+                r"\g<left>×", markdown_content
+            )
 
             # Clean up: Remove markdown code block wrapper if present
             markdown_content = markdown_content.strip()
