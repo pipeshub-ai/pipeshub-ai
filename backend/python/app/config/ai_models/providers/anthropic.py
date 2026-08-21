@@ -12,6 +12,7 @@ from .common_fields import API_KEY, LLM_COMMON_TAIL, model_field
     .with_capabilities([ModelCapability.TEXT_GENERATION])
     .with_icon("/icons/ai-models/claude-color.svg")
     .with_color("#D97706")
+    .with_output_limit_key("max_tokens")
     .popular()
     .add_field(API_KEY)
     .add_field(model_field("e.g., claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-6"))

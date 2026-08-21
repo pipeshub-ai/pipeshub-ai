@@ -58,6 +58,7 @@ OPENAI_TTS_FORMAT = AIModelField(
     ]) \
     .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#10A37F") \
+    .with_output_limit_key("max_tokens") \
     .popular() \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g., gpt-5, gpt-5-mini, gpt-5-nano"), ModelCapability.TEXT_GENERATION) \

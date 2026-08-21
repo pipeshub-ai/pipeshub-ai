@@ -2924,13 +2924,13 @@ def get_output_limit_kwargs(config: dict, limit: int = 4096) -> dict[str, int]:
     
     This avoids hard-coding provider names and switch/if chains inside 
     downstream logic (like OCR strategies), keeping provider specifics 
-    encapsulated in the aimodels factory.
+    encapsulated in the aimodels factory and relying on the provider capability registry.
     """
-    provider = config.get("provider", "").lower() if config else ""
-    
-    if provider in ["openai", "azureopenai", "azureai", "mistral", "anthropic", "bedrock", "openaicompatible", "openai_compatible"]:
-        return {"max_tokens": limit}
-    elif provider == "ollama":
-        return {"num_predict": limit}
+    from app.config.ai_models.registry import ai_model_registry
+
+    provider_id = config.get("provider", "") if config else ""
+    provider_meta = ai_model_registry.get_provider(provider_id)
+    if provider_meta and "outputLimitKey" in provider_meta and provider_meta["outputLimitKey"]:
+        return {provider_meta["outputLimitKey"]: limit}
         
     return {}

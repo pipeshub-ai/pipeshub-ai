@@ -91,10 +91,11 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
 
 
 @AIModelProviderBuilder("Azure OpenAI", "azureOpenAI") \
-    .with_description("Enterprise-grade OpenAI models") \
+    .with_description("Azure-hosted OpenAI models") \
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
-    .with_icon("/icons/ai-models/azure-color.svg") \
+    .with_icon("/icons/ai-models/azure.svg") \
     .with_color("#0078D4") \
+    .with_output_limit_key("max_tokens") \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(DEPLOYMENT_NAME, ModelCapability.TEXT_GENERATION) \
