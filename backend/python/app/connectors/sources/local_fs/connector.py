@@ -566,7 +566,7 @@ class LocalFsConnector(BaseConnector):
                     # PermissionError) from is_file()/is_dir(), turning a
                     # stat failure into a silent "doesn't exist" instead of
                     # surfacing through on_error.
-                    is_reg = stat.S_ISREG(p.stat().st_mode)
+                    is_reg = stat.S_ISREG(p.lstat().st_mode)
                 except OSError as e:
                     if on_error:
                         on_error(e)

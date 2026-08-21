@@ -77,6 +77,7 @@ if "etcd3" not in sys.modules:
 
 from app.connectors.core.registry.filters import FilterCollection  # noqa: E402
 from app.connectors.sources.local_fs.connector import (  # noqa: E402
+    INCLUDE_SUBFOLDERS_KEY,
     LOCAL_FS_PRUNE_VALVE_MAX_FRACTION,
     LOCAL_FS_PRUNE_VALVE_MIN_ABSOLUTE,
     SYNC_ROOT_PATH_KEY,
@@ -454,3 +455,32 @@ class TestRunSyncWalkErrorsSkipPruning:
         # walk was not clean, so pruning must be skipped entirely.
         assert flaky_ext in store
         assert keep_ext in store
+
+    async def test_non_recursive_dangling_symlink_uses_lstat_not_stat(
+        self, synced_folder
+    ):
+        """Regression for CodeRabbit's follow-up: the non-recursive file walk
+        (``include_subfolders=False``) must classify via ``lstat()``, not
+        ``stat()``. ``stat()`` follows symlinks, so a dangling symlink would
+        raise ``FileNotFoundError`` there and incorrectly flag the whole walk
+        as errored, even though a dangling symlink is simply not a regular
+        file to index — not a transient failure.
+        """
+        connector, store, root = synced_folder
+        connector.config_service.get_config = AsyncMock(
+            return_value={
+                "sync": {
+                    SYNC_ROOT_PATH_KEY: str(root),
+                    INCLUDE_SUBFOLDERS_KEY: False,
+                }
+            }
+        )
+
+        (root / "keep.txt").write_text("same", encoding="utf-8")
+        (root / "dangling-link").symlink_to(root / "missing-target")
+
+        await connector.run_sync()
+
+        keep_ext = connector._external_record_id_for_rel_path("keep.txt")
+        assert keep_ext in store
+        connector.logger.warning.assert_not_called()
