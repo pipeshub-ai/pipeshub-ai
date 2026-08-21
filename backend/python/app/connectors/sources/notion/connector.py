@@ -2236,6 +2236,7 @@ class NotionConnector(BaseConnector):
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BLOCKS.value,
+                        preview_renderable=False,
                         indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                         version=1,
                         origin=OriginTypes.CONNECTOR,
@@ -2897,8 +2898,30 @@ class NotionConnector(BaseConnector):
                     # Calculate comment group index
                     comment_group_index = len(block_groups)
 
+                    comment_block_indices: List[BlockContainerIndex] = []
+
+                    # The body as a child TEXT block, as Confluence does. Indexing only
+                    # embeds blocks, so text kept solely in the group's data is invisible.
+                    # The author is prefixed because the group's name/description are not
+                    # embedded either, leaving "who said this" unsearchable otherwise.
+                    if block_comment.text and block_comment.text.strip():
+                        author = block_comment.author_name
+                        body_block = Block(
+                            id=str(uuid4()),
+                            index=len(blocks),
+                            parent_index=comment_group_index,
+                            type=BlockType.TEXT,
+                            format=DataFormat.TXT,
+                            data=f"{author}: {block_comment.text}" if author else block_comment.text,
+                            source_id=comment_id,
+                            weburl=block_comment.weburl or page_url,
+                        )
+                        blocks.append(body_block)
+                        comment_block_indices.append(
+                            BlockContainerIndex(block_index=body_block.index)
+                        )
+
                     # Create CHILD_RECORD blocks for attachments
-                    attachment_block_indices: List[BlockContainerIndex] = []
                     if block_comment.attachments:
                         for attachment in block_comment.attachments:
                             # attachment.id is the FileRecord.id (internal DB ID)
@@ -2924,7 +2947,7 @@ class NotionConnector(BaseConnector):
                                     weburl=file_record.weburl or page_url,
                                 )
                                 blocks.append(attachment_block)
-                                attachment_block_indices.append(BlockContainerIndex(block_index=attachment_block.index))
+                                comment_block_indices.append(BlockContainerIndex(block_index=attachment_block.index))
 
                     # Sync: Create COMMENT BlockGroup (parser)
                     comment_group = parser.create_comment_group(
@@ -2932,7 +2955,7 @@ class NotionConnector(BaseConnector):
                         group_index=comment_group_index,
                         parent_group_index=thread_group_index,  # Parent is the thread group
                         source_id=comment_id,
-                        attachment_block_indices=attachment_block_indices if attachment_block_indices else None
+                        attachment_block_indices=comment_block_indices if comment_block_indices else None
                     )
 
                     # Orchestration: Add to list
@@ -3313,6 +3336,7 @@ class NotionConnector(BaseConnector):
                 connector_name=Connectors.NOTION,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.BLOCKS.value,
+                preview_renderable=False,
                 inherit_permissions=True,
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
@@ -3749,6 +3773,7 @@ class NotionConnector(BaseConnector):
                     record_group_type=RecordGroupType.NOTION_WORKSPACE,
                     external_record_group_id=self.workspace_id or "",
                     mime_type=MimeTypes.BLOCKS.value,
+                    preview_renderable=False,
                     indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                     version=1,
                     origin=OriginTypes.CONNECTOR,

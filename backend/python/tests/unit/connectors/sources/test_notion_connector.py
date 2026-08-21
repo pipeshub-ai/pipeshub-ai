@@ -5737,7 +5737,10 @@ class TestCreatePageLevelCommentGroups:
             [({"id": "c1", "discussion_id": "t1"}, "page-1")],
             "page-1", parser,
         )
-        assert blocks == []
+        # The unmatched attachment produces no block. The comment body still does —
+        # it is what makes the comment searchable.
+        assert [b for b in blocks if b.sub_type == BlockSubType.CHILD_RECORD] == []
+        assert [b.data for b in blocks] == ["x"]
 
 
 class _FakeHttpxStreamContext:
