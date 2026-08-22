@@ -32,6 +32,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.modules.parsers.code_parser.lang_config import config_for_extension, detect_language
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
@@ -1708,6 +1709,106 @@ class Processor:
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
+
+    async def _lookup_code_file_path(self, record_id: str) -> Optional[str]:
+        """Read filePath from the codeFiles node when the event omits it."""
+        try:
+            doc = await self.graph_provider.get_document(
+                record_id, CollectionNames.CODE_FILES.value
+            )
+            return (doc or {}).get("filePath")
+        except Exception as e:
+            self.logger.warning(f"Could not read filePath for {record_id}: {e}")
+            return None
+
+    async def process_code_document(
+        self, recordName, recordId, code_binary, virtual_record_id, extension=None,
+        file_path: Optional[str] = None,
+        event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process a source file into code blocks, yielding phase events."""
+        self.logger.info(f"🚀 Starting code document processing for record: {recordName}")
+
+        try:
+            if isinstance(code_binary, str):
+                code_binary = code_binary.encode("utf-8")
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            record = convert_record_dict_to_record(record)
+
+            # Preserve the repo-relative path so block metadata remains unique
+            # when different directories contain files with the same basename.
+            if not file_path:
+                file_path = await self._lookup_code_file_path(recordId)
+            file_path = file_path or recordName
+            language = detect_language(recordName) or detect_language(file_path)
+            if not language and extension:
+                cfg = config_for_extension(extension)
+                if cfg:
+                    language = cfg.name
+            if not language:
+                self.logger.info(
+                    f"No code grammar for {recordName}; falling back to text parsing"
+                )
+                async for event in self.process_md_document(
+                    recordName=recordName,
+                    recordId=recordId,
+                    md_binary=code_binary.decode("utf-8", errors="replace"),
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+                return
+
+            parser = self.parsers[ExtensionTypes.CODE.value]
+            block_containers = parser.parse_to_blocks(
+                code_binary, recordName, file_path, language
+            )
+
+            if block_containers is None:
+                self.logger.info(
+                    f"Code parser skipped {recordName} (oversized); marking as not supported"
+                )
+                await self._mark_record(recordId, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            if not block_containers.blocks and not block_containers.block_groups:
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+            self.logger.info("✅ Code processing completed successfully")
+            return
+        except IndexingError:
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Error processing code document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,

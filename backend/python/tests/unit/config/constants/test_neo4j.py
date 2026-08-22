@@ -118,6 +118,7 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.IS_OF_TYPE.value == "IS_OF_TYPE"
         assert Neo4jRelationshipType.PERMISSION.value == "PERMISSION"
         assert Neo4jRelationshipType.INHERIT_PERMISSIONS.value == "INHERIT_PERMISSIONS"
+        assert Neo4jRelationshipType.ENTITY_RELATIONS.value == "ENTITYRELATIONS"
         assert Neo4jRelationshipType.USER_APP_RELATION.value == "USER_APP_RELATION"
         assert Neo4jRelationshipType.ORG_APP_RELATION.value == "ORG_APP_RELATION"
         assert Neo4jRelationshipType.USER_DRIVE_RELATION.value == "USER_DRIVE_RELATION"
@@ -140,7 +141,7 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.AGENT_SKILL_RELATION.value == "AGENT_SKILL_RELATION"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jRelationshipType) == 27
+        assert len(Neo4jRelationshipType) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +225,7 @@ class TestEdgeCollectionToRelationshipMapping:
             (CollectionNames.IS_OF_TYPE.value, Neo4jRelationshipType.IS_OF_TYPE.value),
             (CollectionNames.PERMISSION.value, Neo4jRelationshipType.PERMISSION.value),
             (CollectionNames.INHERIT_PERMISSIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value),
+            (CollectionNames.ENTITY_RELATIONS.value, Neo4jRelationshipType.ENTITY_RELATIONS.value),
             (CollectionNames.USER_APP_RELATION.value, Neo4jRelationshipType.USER_APP_RELATION.value),
             (CollectionNames.ORG_APP_RELATION.value, Neo4jRelationshipType.ORG_APP_RELATION.value),
             (CollectionNames.USER_DRIVE_RELATION.value, Neo4jRelationshipType.USER_DRIVE_RELATION.value),
@@ -251,7 +253,7 @@ class TestEdgeCollectionToRelationshipMapping:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel
 
     def test_mapping_size(self) -> None:
-        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 27
+        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 28
 
     def test_all_values_are_strings(self) -> None:
         for k, v in EDGE_COLLECTION_TO_RELATIONSHIP.items():

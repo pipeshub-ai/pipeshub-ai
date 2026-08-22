@@ -796,6 +796,12 @@
       "actions": {
         "viewProfile": "प्रोफ़ाइल देखें",
         "changeRole": "भूमिका बदलें",
+        "changeRoleConfirmTitle": "भूमिका बदलें?",
+        "changeRoleConfirmMessage": "क्या आप वाकई {{name}} की भूमिका {{currentRole}} से {{newRole}} में बदलना चाहते हैं?",
+        "changeRoleConfirmButton": "भूमिका बदलें",
+        "changeRoleSuccess": "भूमिका अपडेट की गई",
+        "changeRoleSuccessDescription": "{{name}} अब {{role}} हैं",
+        "changeRoleError": "भूमिका बदलने में विफल",
         "removeFromWorkspace": "कार्यक्षेत्र से हटाएं",
         "removeUserTitle": "उपयोगकर्ता हटाएं?",
         "removeUserMessage": "क्या आप वाकई {{email}} को {{workspace}} कार्यक्षेत्र से हटाना चाहते हैं?",
@@ -889,6 +895,9 @@
     "groups": {
       "title": "समूह",
       "subtitle": "एक्सेस और अनुमतियाँ नियंत्रित करने के लिए समूह बनाएं और प्रबंधित करें",
+      "enterpriseTitle": "समूह अनुमतियाँ एंटरप्राइज़ संस्करण में उपलब्ध हैं",
+      "enterpriseMessage": "समूह अनुमतियाँ उपयोग करने के लिए एंटरप्राइज़ संस्करण में अपग्रेड करें।",
+      "enterpriseContact": "संपर्क करें",
       "createGroup": "समूह बनाएं",
       "searchPlaceholder": "खोजें...",
       "emptyTitle": "आपने अभी तक कोई समूह नहीं बनाया है",

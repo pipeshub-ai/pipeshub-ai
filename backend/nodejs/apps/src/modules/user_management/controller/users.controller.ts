@@ -1452,7 +1452,11 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
       const org = await Org.findOne({ _id: req.user.orgId, isDeleted: false });
-      const user = await Users.findOne({ _id: id, isDeleted: false });
+      const user = await Users.findOne({
+        _id: id,
+        orgId: req.user.orgId,
+        isDeleted: false,
+      });
       if (!user) {
         throw new UnauthorizedError('Error getting the user');
       }
@@ -1524,6 +1528,35 @@ export class UserController {
     }
   }
 
+  /**
+   * Members may invite only as member and may not attach groupIds.
+   * Admin role / group assignment stay org-admin only.
+   */
+  protected async assertMemberInviteConstraints(
+    actorUserId: string | undefined,
+    orgId: string | undefined,
+    inviteRole: 'admin' | 'member',
+    groupIds?: unknown,
+  ): Promise<void> {
+    const wantsAdminRole = inviteRole === 'admin';
+    const wantsGroups = Array.isArray(groupIds) && groupIds.length > 0;
+    if (!wantsAdminRole && !wantsGroups) {
+      return;
+    }
+
+    const actorIsAdmin =
+      !!actorUserId &&
+      !!orgId &&
+      (await isUserOrgAdmin(actorUserId, orgId));
+    if (actorIsAdmin) {
+      return;
+    }
+    if (wantsAdminRole) {
+      throw new ForbiddenError('Members can only invite users as member');
+    }
+    throw new ForbiddenError('Members cannot assign groups when inviting');
+  }
+
   async addManyUsers(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1549,6 +1582,12 @@ export class UserController {
 
       // role is validated by bulkInviteValidationSchema when present
       const inviteRole = role === 'admin' ? 'admin' : 'member';
+      await this.assertMemberInviteConstraints(
+        req.user.userId,
+        req.user.orgId,
+        inviteRole,
+        groupIds,
+      );
 
       const orgId = req.user.orgId;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });
@@ -1643,6 +1682,13 @@ export class UserController {
       if (groupIds?.some((id) => !mongoose.isValidObjectId(id))) {
         throw new BadRequestError('groupIds must contain valid MongoDB ObjectIds');
       }
+
+      await this.assertMemberInviteConstraints(
+        req.user.userId,
+        req.user.orgId,
+        'member',
+        groupIds,
+      );
 
       const orgId = req.user.orgId;
       const inviterUserId = req.user?.userId;

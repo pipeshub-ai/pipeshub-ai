@@ -280,6 +280,10 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.delete_records_recursive(record_ids, connector_id, transaction=self.txn)
 
+    async def delete_single_record(self, record_id: str) -> dict:
+        """Single-record delete within the active transaction — no containment walk."""
+        return await self.graph_provider.delete_single_record(record_id, transaction=self.txn)
+
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
         return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)
 

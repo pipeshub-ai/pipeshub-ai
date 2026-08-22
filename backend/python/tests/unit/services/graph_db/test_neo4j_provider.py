@@ -4357,3 +4357,95 @@ class TestTimeRangeThreading:
         mock_kb.assert_called_once()
         assert mock_kb.call_args.kwargs.get("time_range") == time_range
 
+
+class TestDeleteSingleRecord:
+    @pytest.mark.asyncio
+    async def test_empty_id(self, neo4j_provider: Neo4jProvider):
+        result = await neo4j_provider.delete_single_record("")
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_found_with_event(self, neo4j_provider: Neo4jProvider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {
+                    "id": "r1",
+                    "recordName": "doc.pdf",
+                    "virtualRecordId": "virt-1",
+                    "connectorName": "GITHUB",
+                    "origin": "CONNECTOR",
+                },
+                "type_doc": {},
+            }],
+        }
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"inventory": inventory}])
+        with patch.object(neo4j_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(neo4j_provider, "commit_transaction", AsyncMock()), \
+             patch.object(neo4j_provider, "_create_deleted_record_event_payload", AsyncMock(return_value={"recordId": "r1"})):
+            result = await neo4j_provider.delete_single_record("r1")
+
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"]["eventType"] == "deleteRecord"
+        assert result["eventData"]["payloads"][0]["connectorName"] == "GITHUB"
+        delete_queries = [c.args[0] for c in neo4j_provider.client.execute_query.await_args_list[1:]]
+        assert any("DETACH DELETE t" in q for q in delete_queries)
+        assert any("DETACH DELETE r" in q for q in delete_queries)
+
+    @pytest.mark.asyncio
+    async def test_missing_is_noop(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{
+            "inventory": {"valid_root_keys": [], "records_with_type": []},
+        }])
+        with patch.object(neo4j_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(neo4j_provider, "commit_transaction", AsyncMock()) as mock_commit:
+            result = await neo4j_provider.delete_single_record("missing")
+
+        mock_commit.assert_awaited_once()
+        assert result["success"] is True
+        assert result["successfully_deleted"] == 0
+        assert result["eventData"] is None
+        assert neo4j_provider.client.execute_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_virtual_record_id(self, neo4j_provider: Neo4jProvider):
+        inventory = {
+            "valid_root_keys": ["r1"],
+            "records_with_type": [{
+                "record": {"id": "r1", "recordName": "draft.txt", "connectorName": "GITHUB", "origin": "CONNECTOR"},
+                "type_doc": {},
+            }],
+        }
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"inventory": inventory}])
+        with patch.object(neo4j_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(neo4j_provider, "commit_transaction", AsyncMock()):
+            result = await neo4j_provider.delete_single_record("r1")
+
+        assert result["successfully_deleted"] == 1
+        assert result["eventData"] is None
+
+    @pytest.mark.asyncio
+    async def test_db_error_rolls_back(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
+        with patch.object(neo4j_provider, "begin_transaction", AsyncMock(return_value="txn1")), \
+             patch.object(neo4j_provider, "rollback_transaction", AsyncMock()) as mock_rb:
+            result = await neo4j_provider.delete_single_record("r1")
+
+        assert result["success"] is False
+        assert result["code"] == 500
+        mock_rb.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_external_transaction_not_committed(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{
+            "inventory": {"valid_root_keys": [], "records_with_type": []},
+        }])
+        with patch.object(neo4j_provider, "begin_transaction", AsyncMock()) as mock_begin, \
+             patch.object(neo4j_provider, "commit_transaction", AsyncMock()) as mock_commit:
+            await neo4j_provider.delete_single_record("r1", transaction="ext-txn")
+
+        mock_begin.assert_not_awaited()
+        mock_commit.assert_not_awaited()
+

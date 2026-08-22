@@ -46,6 +46,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -999,14 +1000,33 @@ class DataSourceEntitiesProcessor:
             #       the real parent record arrives to fill it in.
             if record.origin != OriginTypes.UPLOAD:
                 if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                    # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    if record.external_revision_id != existing_record.external_revision_id:
+                        # Real content change on an indexed record: reset so it
+                        # re-queues — unless indexing is manual-only for this
+                        # record, which a content change must not override.
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            record.indexing_status = ProgressStatus.NOT_STARTED.value
+                    else:
+                        # Unchanged content stays COMPLETED (blocks re-publish
+                        # below). Resetting unconditionally made every full
+                        # re-sync re-embed the entire already-indexed set, and
+                        # clobbered AUTO_INDEX_OFF on manually-indexed records.
+                        record.indexing_status = ProgressStatus.COMPLETED.value
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
                 record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
+            # Same fall-back rule for source timestamps: connectors whose source
+            # exposes no cheap per-item dates (e.g. git blobs) send None and
+            # backfill them later out-of-band. The Neo4j upsert is `SET n +=`,
+            # where a null-valued key DELETES the stored property — without this
+            # carry-forward every re-sync silently erased the backfilled dates.
+            if record.source_created_at is None:
+                record.source_created_at = existing_record.source_created_at
+            if record.source_updated_at is None:
+                record.source_updated_at = existing_record.source_updated_at
             # A real record replacing a stub promotes it out of placeholder state.
             # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
             if existing_record.is_placeholder and not record.is_placeholder:
@@ -1117,6 +1137,15 @@ class DataSourceEntitiesProcessor:
 
                 if record.is_internal:
                     self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
+
+                # Already indexed and unchanged — the COMPLETED status was carried
+                # forward from the stored record precisely so this publish can be
+                # skipped; there is nothing for the indexing consumer to redo.
+                if record.indexing_status == ProgressStatus.COMPLETED.value:
+                    self.logger.debug(
+                        f"Skipping indexing event for already-completed record {record.id}"
+                    )
                     continue
 
                 # KB folders carry no indexable content; they are created COMPLETED
@@ -1396,35 +1425,70 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
-    async def _publish_delete_events(self, event_data: dict | None) -> None:
+    async def _publish_delete_events(self, event_data: dict | None) -> list[str]:
         """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
 
         Called AFTER the DB transaction commits so the graph vertex is gone before
         the indexing consumer runs its cleanup — a guard there skips vector deletion
         while a graph record still references the virtualRecordId.
+
+        The graph deletion has already committed by the time this runs, so a
+        publish failure here cannot be undone by raising — that would only make
+        the caller misreport an already-completed deletion as failed. Retry
+        transient broker hiccups, then return the record ids whose cleanup event
+        could not be published (embeddings orphaned until a reconciliation pass)
+        instead of raising, so callers can report success accurately and surface
+        what still needs cleanup.
         """
         if not event_data:
-            return
+            return []
+
+        unpublished_record_ids: list[str] = []
         for payload in event_data.get("payloads", []):
-            await self.messaging_producer.send_message(
-                "record-events",
-                {
-                    "eventType": "deleteRecord",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                    "payload": payload,
-                },
-                key=payload.get("recordId"),
-            )
+            record_id = payload.get("recordId") if isinstance(payload, dict) else None
+            if not record_id:
+                # A malformed payload must not turn an already-committed
+                # deletion into an unhandled exception; count it as an
+                # unpublished cleanup instead of crashing the whole batch.
+                self.logger.error(f"Skipping malformed deleteRecord payload: {payload!r}")
+                unpublished_record_ids.append(str(payload))
+                continue
+            try:
+                await retry_async(
+                    lambda payload=payload, record_id=record_id: self.messaging_producer.send_message(
+                        "record-events",
+                        {
+                            "eventType": "deleteRecord",
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                            "payload": payload,
+                        },
+                        key=record_id,
+                    ),
+                    logger=self.logger,
+                    description=f"publish deleteRecord event for record {record_id}",
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Giving up publishing deleteRecord event for record {record_id} "
+                    f"after retries; embeddings for this record are orphaned until "
+                    f"reconciliation: {e}",
+                    exc_info=True,
+                )
+                unpublished_record_ids.append(record_id)
+        return unpublished_record_ids
 
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        # Connector per-record delete: remove the record vertex and its incoming
-        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
-        # call is a no-op for root records with no parent). Still shallow — KB deletes
-        # use on_records_deleted_cascade (recursive cascade + deleteRecord events).
+        """Shallow per-record delete for connectors (GitHub, GitLab, Drive, …).
+
+        Removes the record vertex, every edge on it, and its isOfType type doc.
+        Does not walk PARENT_CHILD / ATTACHMENT — connectors own hierarchy
+        (delete blobs then empty folders). Publishes deleteRecord when the
+        record had a virtualRecordId so indexing can drop Qdrant vectors.
+        """
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_parent_child_edge_to_record(record_id)
-            await tx_store.delete_record_by_key(record_id)
+            result = await tx_store.delete_single_record(record_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
@@ -1462,7 +1526,11 @@ class DataSourceEntitiesProcessor:
             # No-ops unless connector_id is a KB; connectors invalidate on sync
             # completion instead, so a mid-sync delete does not thrash the cache.
             await notify_kb_records_changed(connector_id)
-        await self._publish_delete_events((result or {}).get("eventData"))
+        unpublished_record_ids = await self._publish_delete_events((result or {}).get("eventData"))
+        if unpublished_record_ids:
+            result = dict(result or {})
+            result["vectorCleanupPending"] = True
+            result["vectorCleanupFailedRecordIds"] = unpublished_record_ids
         return result
 
 

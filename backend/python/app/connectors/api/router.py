@@ -102,6 +102,7 @@ from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
+from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1849,20 +1850,44 @@ async def delete_record(
         )
 
         if result["success"]:
-            # Publish deletion event
+            # Publish deletion event. The graph deletion above has already
+            # committed, so a publish failure here cannot be undone by failing
+            # the request — that would misreport an already-completed deletion.
+            # Retry transient broker hiccups, then flag (rather than silently
+            # swallow) a failure so the caller knows vector cleanup is pending.
+            vector_cleanup_pending = False
             event_data = result.get("eventData")
-            if event_data and event_data.get("payload"):
+            has_valid_event_data = (
+                isinstance(event_data, dict)
+                and event_data.get("payload")
+                and event_data.get("eventType")
+                and event_data.get("topic")
+            )
+            if event_data and not has_valid_event_data:
+                logger.error(
+                    f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
+                )
+                vector_cleanup_pending = True
+            elif has_valid_event_data:
+                timestamp = get_epoch_timestamp_in_ms()
+                event = {
+                    "eventType": event_data["eventType"],
+                    "timestamp": timestamp,
+                    "payload": event_data["payload"]
+                }
                 try:
-                    timestamp = get_epoch_timestamp_in_ms()
-                    event = {
-                        "eventType": event_data["eventType"],
-                        "timestamp": timestamp,
-                        "payload": event_data["payload"]
-                    }
-                    await kafka_service.publish_event(event_data["topic"], event)
+                    await retry_async(
+                        lambda: kafka_service.publish_event(event_data["topic"], event),
+                        logger=logger,
+                        description=f"publish {event_data['eventType']} event for record {record_id}",
+                    )
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                    logger.error(
+                        f"❌ Giving up publishing deletion event for record {record_id} "
+                        f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
+                    )
+                    vector_cleanup_pending = True
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -1870,13 +1895,17 @@ async def delete_record(
                 await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
 
             logger.info(f"✅ Successfully deleted record {record_id}")
-            return {
+            response = {
                 "success": True,
                 "message": f"Record {record_id} deleted successfully",
                 "recordId": record_id,
                 "connector": result.get("connector"),
                 "timestamp": result.get("timestamp")
             }
+            if vector_cleanup_pending:
+                response["vectorCleanupPending"] = True
+                response["vectorCleanupFailedRecordIds"] = [record_id]
+            return response
         else:
             logger.error(f"❌ Failed to delete record {record_id}: {result.get('reason')}")
             raise HTTPException(
