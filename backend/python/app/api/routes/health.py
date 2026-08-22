@@ -1,8 +1,10 @@
 import asyncio
+import ipaddress
 import os
 import shutil
 from logging import Logger
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
@@ -13,6 +15,7 @@ from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_F
 from app.services.vector_db.models import CollectionConfig
 from app.utils.aimodels import (
     ImageGenerationProvider,
+    LLMProvider,
     STTProvider,
     TTSProvider,
     get_default_embedding_model,
@@ -44,20 +47,65 @@ _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
 
 
 def _endpoint_is_local(endpoint: str) -> bool:
-    lower = endpoint.lower()
-    return any(
-        token in lower
-        for token in ("localhost", "127.0.0.1", "host.docker.internal", "[::1]", "::1")
-    )
+    """True when *endpoint* is loopback, private, or a compose/k8s short name.
+
+    Parses the hostname so ``::1`` is not a substring match against addresses
+    like ``http://[fd00::1234]:8000``.
+    """
+    if not endpoint:
+        return False
+    raw = endpoint.strip()
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    host = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"} or host.endswith(".local"):
+        return True
+    # Compose / Kubernetes short names: ``vllm``, ``pipeshub-ai``.
+    if "." not in host and ":" not in host:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(ip.is_loopback or ip.is_private or ip.is_link_local)
 
 
 def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any]) -> bool:
     if provider in _LOCAL_LLM_PROVIDERS:
         return False
-    if provider in ("openaiCompatible", "litellmProxy"):
+    if provider in (
+        LLMProvider.OPENAI_COMPATIBLE.value,
+        LLMProvider.LITELLM_PROXY.value,
+    ):
         endpoint = configuration.get("endpoint") or configuration.get("baseUrl") or ""
         return not _endpoint_is_local(str(endpoint))
     return True
+
+
+def _looks_like_connectivity_error(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, OSError),
+    ):
+        return True
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "connection refused",
+            "connecterror",
+            "connect timeout",
+            "connection timed out",
+            "failed to establish",
+            "name or service not known",
+            "nameresolutionerror",
+            "network is unreachable",
+            "temporary failure in name resolution",
+            "max retries exceeded",
+            "all connection attempts failed",
+        )
+    )
 
 
 async def _probe_outbound_connectivity(timeout: float = _OUTBOUND_PROBE_TIMEOUT_S) -> bool:
@@ -576,13 +624,6 @@ async def perform_llm_health_check(
 
         provider = llm_config.get("provider", "")
         configuration = llm_config.get("configuration", {}) or {}
-        if _llm_health_check_needs_outbound(provider, configuration):
-            if not await _probe_outbound_connectivity():
-                logger.error(
-                    "LLM health check skipped — container has no outbound internet "
-                    f"(provider={provider}, model={model_name})"
-                )
-                return _outbound_connectivity_error_response(provider, model_name)
         config_keys = list(configuration.keys()) if isinstance(configuration, dict) else type(configuration).__name__
         logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
 
@@ -695,6 +736,14 @@ async def perform_llm_health_check(
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
+        provider = llm_config.get("provider", "") or ""
+        configuration = llm_config.get("configuration", {}) or {}
+        if (
+            _looks_like_connectivity_error(e)
+            and _llm_health_check_needs_outbound(provider, configuration)
+            and not await _probe_outbound_connectivity()
+        ):
+            return _outbound_connectivity_error_response(provider, model_name)
         clean_msg = _extract_error_message(e)
         return JSONResponse(
             status_code=500,

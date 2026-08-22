@@ -10,8 +10,8 @@ import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
-import { isProcessedError, ErrorType } from '@/lib/api/api-error';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
+import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
@@ -128,49 +128,6 @@ function fieldStartAdornment(fieldName: string): React.ReactNode | undefined {
     return <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />;
   }
   return undefined;
-}
-
-function resolveModelConfigSaveError(err: unknown, t: TFunction): string {
-  if (isProcessedError(err)) {
-    const code = (err.details as { error_code?: string } | undefined)?.error_code;
-    if (code === 'outbound_connectivity') {
-      return err.message;
-    }
-    if (err.type === ErrorType.TIMEOUT_ERROR) {
-      return (
-        'Request timed out while validating the model. Cloud providers need outbound internet from the PipesHub container — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.'
-      );
-    }
-    if (err.message.trim()) {
-      return err.message.trim();
-    }
-  }
-
-  const e = err as {
-    response?: {
-      data?: {
-        error?: { message?: string; details?: { error_code?: string } };
-        message?: string;
-        details?: { error_code?: string };
-      };
-    };
-    message?: string;
-  };
-  const nestedDetails =
-    e?.response?.data?.error?.details ?? e?.response?.data?.details;
-  if (nestedDetails?.error_code === 'outbound_connectivity') {
-    return (
-      e?.response?.data?.error?.message ??
-      e?.response?.data?.message ??
-      'PipesHub cannot reach cloud LLM providers from inside the container.'
-    );
-  }
-  return (
-    e?.response?.data?.error?.message ??
-    e?.response?.data?.message ??
-    e?.message ??
-    t('workspace.aiModels.configSaveErrorFallback')
-  );
 }
 
 export interface ModelConfigSaveResult {

@@ -14,9 +14,8 @@
 #     progress, generous/overridable health-wait timeout).
 #   - Compose app healthcheck stays reconciled with the installer's readiness
 #     check (core services only; embedding excluded).
-#   - Compose runtime robustness guards: HuggingFace offline mode (default on,
-#     overridable) so baked-in models load without a network check that would
-#     otherwise hang indexing startup on offline hosts.
+#   - Compose runtime robustness: HuggingFace offline mode is documented and
+#     overridable, but not defaulted on (slim images must download on first use).
 #   - env.template documents the above knobs.
 #   - Image refresh policy: prebuilt installs refresh the app image by default
 #     (so a cached :latest is not run forever), with opt-outs for local builds,
@@ -141,6 +140,21 @@ echo "== Root wrapper: PIPESHUB_REF override wins =="
   if [[ "$log" == *"/v9.9.9/"* ]]; then fail "explicit ref must not fall back to release"; else pass "explicit ref overrides release tag"; fi
 )
 
+check "standalone names rate-limit fallback to main" "$(cat "$ROOT_INSTALLER")" "Falling back to main"
+
+echo "== Root wrapper: standalone mode rejects local builds =="
+(
+  work="$TMP_ROOT/standalone-build"; mkdir -p "$work"
+  cp "$ROOT_INSTALLER" "$work/install.sh"
+  set +e
+  out="$(cd "$work" && bash ./install.sh --build 2>&1)"
+  ec=$?
+  check "standalone --build names the clone path" "$out" "Clone the repository"
+  if [[ "$ec" -ne 0 ]]; then pass "standalone --build exits non-zero"; else fail "standalone --build exits non-zero"; fi
+  out="$(cd "$work" && PIPESHUB_IMAGE_SOURCE=local bash ./install.sh 2>&1)"
+  check "standalone local image source is rejected" "$out" "PIPESHUB_IMAGE_SOURCE=local"
+)
+
 echo "== Root wrapper: main fallback when no release =="
 (
   work="$TMP_ROOT/main"; mkdir -p "$work"
@@ -173,6 +187,7 @@ check "lost graph password guidance" "$inner" "cannot be recovered"
 check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
+check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
 # Compose animates progress with cursor escapes that explode into hundreds of
 # duplicated frames when output is captured; force append-only plain progress.
 check "plain progress flag defined" "$inner" "_PROGRESS=(--progress plain)"
@@ -212,15 +227,17 @@ if [[ "$compose" == *"s.get('embedding') in ('healthy','starting')"* ]]; then
 else
   pass "embedding excluded from app container health gate"
 fi
-# The default local models (dense embedding + Qdrant/BM25 sparse) are baked into
-# the image. huggingface_hub still does a network check before using the cache,
-# which blocks indexing startup *forever* (sync model load in IndexingPipeline
-# __init__) on hosts whose container has no outbound internet. Offline mode must
-# default ON and stay overridable for users who pull a custom remote model.
-check "HF hub offline defaults on + overridable" "$compose" 'HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}'
-check "transformers offline defaults on + overridable" "$compose" 'TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}'
-# Guard against a non-overridable hard-coded offline flag (would break custom
-# remote-model users with no escape hatch).
+# HuggingFace offline mode is optional. Defaulting it on breaks slim images,
+# which download the embedding model on first use. Sparse BM25 loads cache-first
+# in Python so air-gapped hosts do not hang.
+if [[ "$compose" == *'HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}'* ]]; then
+  fail "HF_HUB_OFFLINE must not default to 1 (breaks slim first-use download)"
+else
+  pass "HF_HUB_OFFLINE is not defaulted on"
+fi
+check "HF hub offline is overridable" "$compose" 'HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}'
+check "transformers offline is overridable" "$compose" 'TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}'
+# Guard against a non-overridable hard-coded offline flag.
 if [[ "$compose" == *"HF_HUB_OFFLINE=1"$'\n'* || "$compose" == *"- HF_HUB_OFFLINE=1 "* ]]; then
   fail "HF_HUB_OFFLINE must be overridable, not hard-coded"
 else
@@ -337,11 +354,11 @@ check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false 
 # reproducibility, not a reason to keep a stale local copy.
 if [[ "$(should_pull_image false false '')" == true ]]; then pass "pinned/explicit tag still refreshes by default"; else fail "pinned/explicit tag still refreshes by default"; fi
 # Launch-path guards.
-check "refreshes only the app service image" "$inner" "pull pipeshub-ai"
+check "refreshes app and sandbox images" "$inner" "pull pipeshub-ai sandbox-image"
 check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
 check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
 # A pull failure must NOT abort when an image is already cached (flaky network).
-check "pull failure tolerated when image cached" "$inner" "continuing with the cached"
+check "pull failure tolerated when image cached" "$inner" "continuing with cached"
 check "air-gapped guidance present" "$inner" "air-gapped host, preload the image"
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi

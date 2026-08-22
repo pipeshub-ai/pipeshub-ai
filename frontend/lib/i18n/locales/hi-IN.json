@@ -1201,6 +1201,8 @@
       "configUpdateModel": "मॉडल अपडेट करें",
       "configFillRequiredTooltip": "सभी आवश्यक फ़ील्ड भरें",
       "configSaveErrorFallback": "मॉडल कॉन्फ़िगरेशन सहेजा नहीं जा सका",
+      "configSaveOutboundError": "PipesHub cannot reach this model provider from inside the container. Cloud providers need outbound internet — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "Request timed out while validating the model. Cloud providers need outbound internet from the PipesHub container — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "इस प्रदाता के लिए कोई कॉन्फ़िगरेशन आवश्यक नहीं।",
       "configDefaultModelNotice": "\"{{modelName}}\" सिस्टम द्वारा डिफ़ॉल्ट रूप से उपयोग किया जाएगा।",
       "configSectionModelConfiguration": "मॉडल कॉन्फ़िगरेशन",

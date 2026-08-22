@@ -196,7 +196,10 @@ so any tool that can populate the container environment will work.
 ## Container outbound connectivity
 
 PipesHub starts and indexes documents **without** outbound internet when models are
-cached locally (`HF_HUB_OFFLINE=1` by default). **Cloud LLMs** (Gemini, OpenAI,
+already cached locally. The default **slim** image downloads the embedding model
+on first use, so leave `HF_HUB_OFFLINE` unset there. Set `HF_HUB_OFFLINE=1` only
+on air-gapped hosts that already have the models (or use the full `latest` image).
+**Cloud LLMs** (Gemini, OpenAI,
 Anthropic, …) and **external connectors** (Google, Slack, Microsoft, …) require
 the **`pipeshub-ai` container** to reach the public internet — not just your
 browser or host shell.

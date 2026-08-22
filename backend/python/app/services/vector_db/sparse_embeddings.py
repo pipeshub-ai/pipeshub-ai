@@ -62,10 +62,45 @@ class SparseEmbedder:
         return self._lock
 
     def _build_model(self):
-        """Synchronous model construction — runs inside a thread pool."""
+        """Synchronous model construction — runs inside a thread pool.
+
+        huggingface_hub otherwise probes the network even when Qdrant/bm25 is
+        already cached, which can hang indexing forever on a blocked network.
+        Try a cache-only load first; download only if the model is missing
+        and HF_HUB_OFFLINE is not set.
+        """
+        import os
+
         from fastembed import SparseTextEmbedding  # type: ignore
 
-        return SparseTextEmbedding(model_name=self._model_name)
+        def _construct(*, offline: bool):
+            if not offline:
+                return SparseTextEmbedding(model_name=self._model_name)
+            old = os.environ.get("HF_HUB_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            try:
+                return SparseTextEmbedding(model_name=self._model_name)
+            finally:
+                if old is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = old
+
+        try:
+            return _construct(offline=True)
+        except Exception:
+            explicitly_offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            if explicitly_offline:
+                raise
+            logger.info(
+                "Sparse model '%s' not in local cache; downloading from Hub",
+                self._model_name,
+            )
+            return _construct(offline=False)
 
     async def _ensure_initialized(self) -> object:
         """Ensure the model is loaded; return it."""

@@ -54,6 +54,15 @@ fi
 # ── Standalone mode ───────────────────────────────────────────────────────────
 note "PipesHub standalone installer (no local repository detected)."
 
+for _arg in "$@"; do
+  if [[ "$_arg" == "--build" ]]; then
+    err "Standalone install cannot build from source (the checkout is not present). Clone the repository and run ./install.sh --build."
+  fi
+done
+case "${PIPESHUB_IMAGE_SOURCE:-}" in
+  local) err "Standalone install cannot use PIPESHUB_IMAGE_SOURCE=local. Clone the repository and run ./install.sh --build." ;;
+esac
+
 if command -v curl >/dev/null 2>&1; then
   dl()    { curl -fsSL "$1" -o "$2"; }
   fetch() { curl -fsSL "$1"; }
@@ -68,10 +77,16 @@ fi
 # published release tag; otherwise main.
 REF="${PIPESHUB_REF:-}"
 if [[ -z "$REF" ]]; then
-  REF="$(fetch "$API_BASE/repos/$REPO/releases/latest" 2>/dev/null \
+  _latest="$(fetch "$API_BASE/repos/$REPO/releases/latest" 2>/dev/null \
           | grep -m1 '"tag_name"' | cut -d'"' -f4 || true)"
+  if [[ -n "$_latest" ]]; then
+    REF="$_latest"
+    note "Using latest GitHub release: $REF"
+  else
+    REF="main"
+    note "Could not read GitHub latest release (network or unauthenticated 60/hr rate limit). Falling back to main."
+  fi
 fi
-[[ -z "$REF" ]] && REF="main"
 note "Installing from ref: $REF"
 
 DEST="${PIPESHUB_DIR:-$PWD/pipeshub}"

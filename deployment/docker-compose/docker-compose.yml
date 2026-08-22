@@ -170,14 +170,12 @@ services:
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # HuggingFace Hub offline mode. The default local models (dense embedding
-      # + Qdrant/BM25 sparse) are baked into the image, so the runtime needs no
-      # network to load them. Without this, huggingface_hub performs a network
-      # check that blocks indexing startup indefinitely on hosts whose container
-      # has no outbound internet (air-gapped/firewalled). Set to 0 only if you
-      # configure a custom remote model that must be downloaded at runtime.
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
-      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
+      # HuggingFace Hub offline mode. Leave unset so slim images can download
+      # the embedding model on first use. The dense loader tries the local
+      # cache first; sparse BM25 does the same. Set both to 1 only for
+      # air-gapped hosts that already have models cached (the full `latest` image).
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
 
       # Indexing concurrency — upper caps on the CPU-derived slot counts
       # (heavy parse: 1 slot/CPU, light parse: 3 slots/CPU, indexing: 2x the

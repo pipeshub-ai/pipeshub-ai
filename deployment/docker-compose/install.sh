@@ -980,6 +980,10 @@ ENVFILE
 
 fi  # end wizard
 
+# Reused .env files from older installs may still be 644. Always lock them
+# before we print secrets in the summary or start containers.
+[[ -f "$ENV_FILE" ]] && chmod 600 "$ENV_FILE" 2>/dev/null || true
+
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY
 # ==============================================================================
@@ -1173,6 +1177,7 @@ _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:
 # pull: it fetches exactly that immutable tag rather than a moving :latest, so
 # reproducibility is preserved while a stale local copy is corrected.
 _APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"
+_SANDBOX_IMAGE="${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}"
 
 if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
@@ -1189,25 +1194,25 @@ if $_USE_BUILD; then
   fi
 else
   if [[ "$_DO_PULL" == true ]]; then
-    info "Refreshing the PipesHub image ($_APP_IMAGE)... (pass --no-pull to keep the cached image)"
-    # Only the app image is on a moving :latest; infra images use pinned tags and
-    # are fetched by `up -d` when absent, so refreshing just pipeshub-ai is enough.
+    info "Refreshing the PipesHub images ($_APP_IMAGE, $_SANDBOX_IMAGE)... (pass --no-pull to keep cached images)"
+    # App and sandbox images share the moving IMAGE_TAG (often :latest). Infra
+    # images use pinned tags and are fetched by `up -d` when absent.
     # A pull failure is non-fatal when an image is already cached, so a flaky
     # network or a temporary registry outage does not block a working install.
     if ! docker compose "${_PROGRESS[@]}" \
         -f "$COMPOSE_FILE" \
         -p "$PROJECT_NAME" \
         --env-file "$ENV_FILE" \
-        pull pipeshub-ai 2>&1; then
+        pull pipeshub-ai sandbox-image 2>&1; then
       if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1; then
-        warn "Could not refresh the image; continuing with the cached $_APP_IMAGE."
+        warn "Could not refresh images; continuing with cached copies if present."
       else
         warn "Could not pull $_APP_IMAGE and none is cached locally — the next step may fail."
         warn "On an air-gapped host, preload the image (docker load) and re-run with --no-pull."
       fi
     fi
   else
-    info "Skipping image refresh; using the locally cached $_APP_IMAGE (--no-pull)."
+    info "Skipping image refresh; using locally cached images (--no-pull)."
   fi
   info "Starting containers..."
   if ! docker compose "${_PROGRESS[@]}" \
@@ -1302,7 +1307,7 @@ while (( ELAPSED < HEALTH_WAIT_SECS )); do
   # After a grace period for normal startup churn (e.g. Kafka waiting on
   # Zookeeper), give up early if a container is clearly restart-looping — it will
   # not recover on its own, so there is no point waiting out the full timeout.
-  if (( ELAPSED >= 30 && ELAPSED % 15 == 0 )); then
+  if (( ELAPSED >= 90 && ELAPSED % 15 == 0 )); then
     _CRASH_REPORT="$(crash_looping_containers)"
     [[ -n "$_CRASH_REPORT" ]] && break
   fi
