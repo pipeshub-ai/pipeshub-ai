@@ -10,6 +10,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Standalone one-command install](#standalone-one-command-install)
 - [Deployment types (slim vs. full)](#deployment-types-slim-vs-full)
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
+- [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)
 - [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
@@ -109,6 +110,26 @@ PIPESHUB_VERSION=0.7.0 \
 
 ---
 
+## Upgrading an existing Compose install
+
+The next `./install.sh` or `./install.sh --upgrade` on a stack that still uses the old pinned names (`container_name: pipeshub-ai`, network `pipeshub-ai_network`) recreates every container. Data volumes are unchanged (they key off the Compose project name).
+
+After that start:
+
+- Container names are `{project}-{service}-1` (for the default project: `pipeshub-ai-pipeshub-ai-1`, `pipeshub-ai-mongodb-1`, …).
+- `docker exec pipeshub-ai …` and `docker logs pipeshub-ai` no longer find a container. Use the service name:
+
+```bash
+docker compose -p pipeshub-ai exec -T pipeshub-ai bash
+docker compose -p pipeshub-ai logs -f pipeshub-ai
+```
+
+- Compose creates a new network (`pipeshub-ai_pipeshub`) and does not delete `pipeshub-ai_network`. If that old network is unused: `docker network rm pipeshub-ai_network`.
+
+The installer prints this when it detects the old pinned names.
+
+---
+
 ## A second instance on the same host
 
 The first install is always Compose project `pipeshub-ai` on port `3000` (or the next free port). The installer does **not** ask new users for a project name.
@@ -129,11 +150,7 @@ PIPESHUB_PROJECT=pipeshub-eval PIPESHUB_PORT=3200 PIPESHUB_DEPLOY_TYPE=slim \
 
 The installer writes `COMPOSE_PROJECT_NAME` into `.env`. `--stop` and `--uninstall` in that directory read it, so they tear down **this** copy only.
 
-Container names are `{project}-{service}-1` (Compose default). Exec into the app with the service name, not a hardcoded container name:
-
-```bash
-docker compose -p pipeshub-eval exec -T pipeshub-ai bash
-```
+Exec and logs use the service name with `-p` set to that project (see [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)).
 
 ---
 
@@ -171,6 +188,10 @@ docker compose -p pipeshub-ai down
 
 # Stop and remove all data volumes (destructive)
 docker compose -p pipeshub-ai down -v
+
+# Logs / exec — service name, not a fixed container name
+docker compose -p pipeshub-ai logs -f pipeshub-ai
+docker compose -p pipeshub-ai exec -T pipeshub-ai bash
 ```
 
 ### Available profiles

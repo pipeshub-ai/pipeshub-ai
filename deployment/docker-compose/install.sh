@@ -242,8 +242,12 @@ valid_compose_project_name() {
 sanitize_compose_project_name() {
   local raw
   raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_-' '-')"
-  raw="${raw#-}"
+  while [[ "$raw" == -* || "$raw" == _* ]]; do
+    raw="${raw#-}"
+    raw="${raw#_}"
+  done
   raw="${raw%-}"
+  raw="${raw%_}"
   printf '%s' "$raw"
 }
 
@@ -258,7 +262,8 @@ suggest_separate_project_name() {
       base="$(sanitize_compose_project_name "$candidate")"
     fi
   fi
-  if [[ -z "$base" || "$base" == "$DEFAULT_PROJECT" || "$base" == "docker-compose" ]]; then
+  if [[ -z "$base" || "$base" == "$DEFAULT_PROJECT" || "$base" == "docker-compose" ]] \
+      || ! valid_compose_project_name "$base"; then
     base="pipeshub-2"
   fi
   printf '%s' "$base"
@@ -280,6 +285,31 @@ resolve_project_name() {
     return
   fi
   printf '%s' "${DEFAULT_PROJECT:-pipeshub-ai}"
+}
+
+require_valid_project_name() {
+  valid_compose_project_name "$1" || die "Compose project name must be lowercase letters, digits, hyphens, or underscores, starting with a letter or digit (got: $1)."
+}
+
+# True when this project still has the old pinned container_name values
+# (pipeshub-ai, mongodb, …). The next compose up recreates them as
+# {project}-{service}-1.
+project_has_pinned_container_names() {
+  docker ps -a \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --format '{{.Names}}' 2>/dev/null \
+    | grep -qxE 'pipeshub-ai|mongodb|redis|qdrant|sandbox-image|arango|neo4j|etcd|zookeeper|kafka-1'
+}
+
+warn_pinned_container_rename() {
+  info "Containers are being renamed to ${PROJECT_NAME}-<service>-1 (Compose default)."
+  info "Data volumes are unchanged. From now on use:"
+  info "  docker compose -p ${PROJECT_NAME} exec -T pipeshub-ai …"
+  info "  docker compose -p ${PROJECT_NAME} logs -f pipeshub-ai"
+  info "Replace docker exec / docker logs of the old container name in any scripts or runbooks."
+  if docker network ls --format '{{.Name}}' 2>/dev/null | grep -qx 'pipeshub-ai_network'; then
+    info "The old network pipeshub-ai_network may remain unused after this start. Remove it with: docker network rm pipeshub-ai_network"
+  fi
 }
 
 # Exec in the app service (Compose name, not a pinned container_name).
@@ -477,10 +507,8 @@ fi
 success "Docker daemon is running"
 
 # Resolve which Compose project this directory manages (needed for --stop too).
-if [[ -n "${PIPESHUB_PROJECT:-}" ]] && ! valid_compose_project_name "$PIPESHUB_PROJECT"; then
-  die "PIPESHUB_PROJECT must be lowercase letters, digits, hyphens, or underscores, starting with a letter or digit (got: ${PIPESHUB_PROJECT})."
-fi
 PROJECT_NAME="$(resolve_project_name)"
+require_valid_project_name "$PROJECT_NAME"
 if [[ "$PROJECT_NAME" != "$DEFAULT_PROJECT" && -z "${PIPESHUB_PORT:-}" ]]; then
   DEFAULT_APP_PORT=3200
 fi
@@ -493,6 +521,7 @@ if $FLAG_STOP; then
   header "Stopping PipesHub"
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
   PROJECT_NAME="$(resolve_project_name)"
+  require_valid_project_name "$PROJECT_NAME"
   # Enable ALL profiles so `down` removes every profile-gated container
   # (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which profile this
   # .env currently selects. Otherwise a container started under a different
@@ -516,6 +545,7 @@ if $FLAG_UNINSTALL; then
   fi
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
   PROJECT_NAME="$(resolve_project_name)"
+  require_valid_project_name "$PROJECT_NAME"
   # Enable ALL profiles so down -v includes every profile-gated service's
   # volume (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which
   # profile was active for this deployment.  Without this, volumes from a
@@ -1319,6 +1349,10 @@ _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:
 # reproducibility is preserved while a stale local copy is corrected.
 _APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"
 _SANDBOX_IMAGE="${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}"
+
+if project_has_pinned_container_names; then
+  warn_pinned_container_rename
+fi
 
 if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."

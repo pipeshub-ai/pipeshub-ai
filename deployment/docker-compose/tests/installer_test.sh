@@ -185,7 +185,9 @@ check "--yes never auto-creates a second stack" "$inner" "never invents a second
 check "--yes without PIPESHUB_PROJECT manages existing" "$inner" "Non-interactive (--yes): managing the existing"
 check "PIPESHUB_PROJECT is documented" "$inner" "PIPESHUB_PROJECT"
 check "persists COMPOSE_PROJECT_NAME into .env" "$inner" 'COMPOSE_PROJECT_NAME=${PROJECT_NAME}'
-check "health probe uses compose exec helper" "$inner" "compose_app_exec"
+check "validates resolved project name" "$inner" 'require_valid_project_name "$PROJECT_NAME"'
+check "pinned-name migration heads-up present" "$inner" "warn_pinned_container_rename"
+check "pinned-name heads-up mentions compose exec" "$inner" "Replace docker exec / docker logs of the old container name"
 check "reuse-path port check present" "$inner" "is already in use by another process"
 check "unset DATA_STORE defaults to neo4j" "$inner" "defaulting to Neo4j (no existing graph data found)"
 check "unset DATA_STORE reuses arango volume" "$inner" "reusing the existing ArangoDB data volume"
@@ -295,6 +297,7 @@ stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_
 check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
+check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
 uninstall_block="$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
 check "uninstall removes orphans" "$uninstall_block" "down -v --remove-orphans"
 
@@ -415,6 +418,9 @@ valid_compose_project_name "ab_c" && pass "accepts underscore" || fail "accepts 
 if valid_compose_project_name "-bad"; then fail "rejects leading hyphen"; else pass "rejects leading hyphen"; fi
 if valid_compose_project_name "BadName"; then fail "rejects uppercase"; else pass "rejects uppercase"; fi
 check "sanitizes mixed case directory" "$(sanitize_compose_project_name "My Repo!")" "my-repo"
+check "sanitizes leading underscore" "$(sanitize_compose_project_name "_work")" "work"
+check "sanitizes leading hyphen" "$(sanitize_compose_project_name "-lead")" "lead"
+if valid_compose_project_name "_work"; then fail "raw _work is invalid"; else pass "raw _work is invalid"; fi
 
 (
   unset PIPESHUB_PROJECT
@@ -453,6 +459,23 @@ check "sanitizes mixed case directory" "$(sanitize_compose_project_name "My Repo
   DEFAULT_PROJECT="pipeshub-ai"
   SCRIPT_DIR="$repo/deployment/docker-compose"
   check "suggests repo root when run from compose dir" "$(suggest_separate_project_name)" "my-repo"
+)
+
+eval "$(extract_fn project_has_pinned_container_names "$INNER_INSTALLER")"
+(
+  PROJECT_NAME="pipeshub-ai"
+  docker() { printf '%s\n' "pipeshub-ai" "mongodb"; }
+  if project_has_pinned_container_names; then pass "detects pinned container names"; else fail "detects pinned container names"; fi
+)
+(
+  PROJECT_NAME="pipeshub-ai"
+  docker() { printf '%s\n' "pipeshub-ai-pipeshub-ai-1" "pipeshub-ai-mongodb-1"; }
+  if project_has_pinned_container_names; then fail "ignores Compose default names"; else pass "ignores Compose default names"; fi
+)
+(
+  PROJECT_NAME="pipeshub-ai"
+  docker() { :; }
+  if project_has_pinned_container_names; then fail "silent when no containers"; else pass "silent when no containers"; fi
 )
 
 echo
