@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { S3 } from 'aws-sdk';
 import AmazonS3Adapter from '../providers/s3.provider';
 import { StorageError } from '../../../libs/errors/storage.errors';
@@ -88,7 +88,7 @@ export async function validateS3Capabilities(
   const region = (credentials.region ?? '').trim().toLowerCase();
   const bucketName = (credentials.bucketName ?? '').trim();
   const checks: S3CapabilityCheckResult[] = [];
-  const probeId = uuidv4();
+  const probeId = randomUUID();
   const testKey = `${HEALTH_CHECK_PREFIX}/${probeId}`;
   const directUploadKey = `${HEALTH_CHECK_PREFIX}/${probeId}-direct`;
   const keysToCleanup = new Set<string>();

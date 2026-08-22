@@ -35,6 +35,11 @@ from app.connectors.core.constants import (
     IconPaths,
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
+from app.modules.parsers.code_parser.file_role import (
+    classify_file_role,
+    should_index_code_file,
+)
+from app.modules.parsers.code_parser.lang_config import detect_language
 
 from .constants import (
     GITLAB_COMPARE_DIFF_LIMIT,
@@ -732,7 +737,10 @@ class ReposSync:
         """
         c = self.c
         extension = _blob_extension(file_name)
+        file_role = classify_file_role(file_path, file_name)
         record = CodeFileRecord(
+            language=detect_language(file_name),
+            file_role=file_role.value,
             id=str(uuid.uuid4()),
             org_id=c.data_entities_processor.org_id,
             record_name=file_name,
@@ -783,6 +791,10 @@ class ReposSync:
             if file_name.startswith("."):
                 files_skipped += 1
                 continue
+            should_index, _role = should_index_code_file(file_path, file_name)
+            if not should_index:
+                files_skipped += 1
+                continue
             if "/" in file_path:
                 parent_blob_path = external_record_id.rpartition("/")[0]
                 parent_external_record_id = parent_blob_path.replace("/-/blob/", "/-/tree/", 1)
@@ -806,7 +818,7 @@ class ReposSync:
         if list_records_new:
             await self._process_records(list_records_new)
             if files_skipped:
-                self.logger.info("Processed %s code file records; %s skipped (dotfiles/missing metadata)", len(list_records_new), files_skipped)
+                self.logger.info("Processed %s code file records; %s skipped (non-indexable/missing metadata)", len(list_records_new), files_skipped)
 
     # ------------------------------------------------------------------
     # Content streaming
@@ -1033,9 +1045,17 @@ def _should_continue_repo_tree_pagination(
 
 
 def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
-    """True when the basename of a repo path starts with '.'."""
+    """True when a repo path should not become a record at all.
+
+    Dotfiles, plus dependency/build-output/cache trees and generated code. This
+    runs off the git tree listing, so a rejected file is never fetched, never
+    queued and never streamed — the whole cost is avoided, not just the parse.
+    """
     basename = repo_path.rsplit("/", 1)[-1]
-    return basename.startswith(".")
+    if basename.startswith("."):
+        return True
+    should_index, _role = should_index_code_file(repo_path, basename)
+    return not should_index
 
 
 def _blob_extension(file_name: str) -> str | None:

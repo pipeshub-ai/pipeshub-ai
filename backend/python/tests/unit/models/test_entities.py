@@ -2905,12 +2905,21 @@ class TestFileRecordToLlmFullContextExtended:
         with pytest.raises(RuntimeError, match="Error in record_to_message_content"):
             rec.to_llm_full_context()
 
-    def test_unsupported_block_type_hits_else_continue(self):
+    def test_top_level_code_block_is_rendered(self):
+        # Code belongs to no group, so before it had its own branch it fell to
+        # `else: continue` and never reached the model.
         block = Block(type=BlockType.CODE, data="print(1)", parent_index=None)
         rec = _make_file_record_with_blocks(blocks=[block])
         with patch("app.utils.chat_helpers.valid_group_labels", []):
             items = rec.to_llm_full_context()
-        assert not any("print(1)" in i.text for i in items)
+        assert any("print(1)" in i.text for i in items)
+
+    def test_unsupported_block_type_hits_else_continue(self):
+        block = Block(type=BlockType.DIVIDER, data="---", parent_index=None)
+        rec = _make_file_record_with_blocks(blocks=[block])
+        with patch("app.utils.chat_helpers.valid_group_labels", []):
+            items = rec.to_llm_full_context()
+        assert not any("---" in i.text for i in items)
 
     def test_parent_block_skips_duplicate_seen_group(self):
         b1 = Block(type=BlockType.TEXT, data="first", parent_index=0)

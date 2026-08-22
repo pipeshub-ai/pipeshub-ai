@@ -3403,8 +3403,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         ai_models_config = llm_result[2] if len(llm_result) > 2 else {}
         is_multimodal_llm = llm_config.get("isMultimodal", False)
 
-        # Get and filter toolsets
-        agent_toolsets = agent.get("toolsets", [])
+        # Get and filter toolsets — gated on the `ENABLE_ACTIONS` platform flag:
+        # when disabled, this is forced empty so `PipesHubToolLoader` (which only
+        # loads an external toolset when it appears in `context.agent_toolsets`)
+        # loads none of them, regardless of what's attached.
+        from app.api.routes.toolsets import is_actions_enabled
+
+        agent_toolsets = (
+            agent.get("toolsets", [])
+            if await is_actions_enabled(config_service)
+            else []
+        )
         if chat_query.tools is not None:
             enabled_tools_set = set(chat_query.tools)
             filtered_toolsets = []
@@ -3884,18 +3893,24 @@ async def get_assistant_agent(
         Dictionary containing assistant agent configuration with toolsets and knowledge sources
     """
     from app.agents.mcp.service import get_authenticated_mcp_servers, is_mcp_enabled
-    from app.api.routes.toolsets import get_authenticated_toolsets
+    from app.api.routes.toolsets import get_authenticated_toolsets, is_actions_enabled
 
-    # Get authenticated toolsets using the helper method
-    try:
-        authenticated_toolsets_list = await get_authenticated_toolsets(
-            user_id=user_id,
-            org_id=org_id,
-            config_service=config_service,
-            registry=toolset_registry,
-        )
-    except Exception as e:
-        logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
+    # Get authenticated toolsets using the helper method — skipped entirely when
+    # Actions is disabled (mirrors the MCP gate below): the chat handler forces
+    # `agent_toolsets` empty regardless, so this would just be a wasted etcd/graph
+    # round-trip on every assistant chat.
+    if await is_actions_enabled(config_service):
+        try:
+            authenticated_toolsets_list = await get_authenticated_toolsets(
+                user_id=user_id,
+                org_id=org_id,
+                config_service=config_service,
+                registry=toolset_registry,
+            )
+        except Exception as e:
+            logger.error(f"Error fetching authenticated toolsets: {e}", exc_info=True)
+            authenticated_toolsets_list = []
+    else:
         authenticated_toolsets_list = []
 
     # Get authenticated MCP server instances — parallel to toolsets above, no

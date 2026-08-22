@@ -338,9 +338,8 @@ class PipesHubAgentFactory:
 
         # Gate on the SAME resolution the legacy LangGraph path uses
         # (per-request state flag -> PIPESHUB_ENABLE_CODE_EXECUTION env ->
-        # ENABLE_CODE_EXECUTION Labs feature flag -> default True) rather
-        # than re-deriving an env-only check here, so the admin Labs toggle
-        # applies identically to both paths.
+        # default True) rather than re-deriving an env-only check here, so
+        # both paths apply identically.
         code_exec_enabled = code_execution_enabled(context.tool_state)
         logger.info(
             "PipesHubAgentFactory.create: code_execution_enabled=%s (org_id=%s conversation_id=%s)",
@@ -352,10 +351,10 @@ class PipesHubAgentFactory:
         # `code_exec_enabled`: when enabled, agent_loop_lib's own run_code
         # is registered below as the sole code-execution tool, so the model
         # never sees two competing code-execution tools; when disabled,
-        # skipping `coding_sandbox` here is what actually makes the
-        # ENABLE_CODE_EXECUTION flag disable code execution — `coding_sandbox`
-        # is `.as_internal()` (see coding_sandbox.py), so it bypasses the
-        # "configured on this agent" gate in tool_loader.py and would
+        # skipping `coding_sandbox` here is what actually makes
+        # `PIPESHUB_ENABLE_CODE_EXECUTION` disable code execution —
+        # `coding_sandbox` is `.as_internal()` (see coding_sandbox.py), so it
+        # bypasses the "configured on this agent" gate in tool_loader.py and would
         # otherwise load unconditionally even with the flag off.
         # database_sandbox is dropped outright — its functionality is
         # subsumed by the coding sandbox's SQL capabilities.

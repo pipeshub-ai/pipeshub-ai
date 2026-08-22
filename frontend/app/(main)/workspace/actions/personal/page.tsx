@@ -10,6 +10,11 @@ import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import {
+  useFeatureFlagsStore,
+  selectActionsEnabled,
+  selectFeatureFlagsLoaded,
+} from '@/lib/store/feature-flags-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import {
   ToolsetsApi,
@@ -41,6 +46,8 @@ function PersonalActionsPageContent() {
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
+  const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
   const toolsetTypeParam = searchParams.get('toolsetType');
   const instanceTabParam = searchParams.get('instanceTab');
   const instanceFilterTab = useMemo((): ActionInstanceAuthTab => {
@@ -158,9 +165,15 @@ function PersonalActionsPageContent() {
   }, [addToast, t, catalogTab, debouncedCatalogSearch]);
 
   useEffect(() => {
-    if (toolsetTypeParam) return;
+    if (flagsLoaded && !actionsEnabled) {
+      router.replace('/workspace/general');
+    }
+  }, [flagsLoaded, actionsEnabled, router]);
+
+  useEffect(() => {
+    if (toolsetTypeParam || (flagsLoaded && !actionsEnabled)) return;
     void load();
-  }, [load, refreshKey, toolsetTypeParam]);
+  }, [load, refreshKey, toolsetTypeParam, flagsLoaded, actionsEnabled]);
 
   useEffect(() => {
     if (!toolsetTypeParam) return;
@@ -353,6 +366,10 @@ function PersonalActionsPageContent() {
     const q = params.toString();
     router.replace(q ? `/workspace/actions/personal/?${q}` : '/workspace/actions/personal/');
   }, [router, searchParams]);
+
+  if (flagsLoaded && !actionsEnabled) {
+    return null;
+  }
 
   if (toolsetTypeParam) {
     return (

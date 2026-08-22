@@ -793,6 +793,12 @@
       "actions": {
         "viewProfile": "Profil anzeigen",
         "changeRole": "Rolle ändern",
+        "changeRoleConfirmTitle": "Rolle ändern?",
+        "changeRoleConfirmMessage": "Möchten Sie die Rolle von {{name}} wirklich von {{currentRole}} zu {{newRole}} ändern?",
+        "changeRoleConfirmButton": "Rolle ändern",
+        "changeRoleSuccess": "Rolle aktualisiert",
+        "changeRoleSuccessDescription": "{{name}} ist jetzt {{role}}",
+        "changeRoleError": "Rolle konnte nicht geändert werden",
         "removeFromWorkspace": "Aus dem Arbeitsbereich entfernen",
         "removeUserTitle": "Benutzer entfernen?",
         "removeUserMessage": "Sind Sie sicher, dass Sie {{email}} aus dem {{workspace}} Arbeitsbereich entfernen möchten?",
@@ -886,6 +892,9 @@
     "groups": {
       "title": "Gruppen",
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
+      "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
+      "enterpriseMessage": "Upgraden Sie auf die Enterprise Edition, um Gruppenberechtigungen zu nutzen.",
+      "enterpriseContact": "Kontakt",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",

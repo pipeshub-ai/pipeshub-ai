@@ -98,6 +98,16 @@ class TestOpenRouterEmbedding:
         get_embedding_model(EmbeddingProvider.OPENROUTER.value, cfg)
         assert mock_cls.call_args.kwargs["dimensions"] == 512
 
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_sends_plain_strings_not_token_arrays(self, mock_cls):
+        """OpenRouter proxies non-OpenAI models that 400 on token-ID input."""
+        mock_cls.return_value = MagicMock()
+        get_embedding_model(
+            EmbeddingProvider.OPENROUTER.value,
+            _config("nvidia/llama-nemotron-embed-vl-1b-v2:free"),
+        )
+        assert mock_cls.call_args.kwargs["check_embedding_ctx_length"] is False
+
 
 # ---------------------------------------------------------------------------
 # TTS dispatch

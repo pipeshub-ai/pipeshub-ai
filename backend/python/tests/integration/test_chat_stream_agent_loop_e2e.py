@@ -109,7 +109,7 @@ def _fake_agent_run():
     would need a live LLM/tool registry -- the one boundary this E2E test
     still mocks, at the exact same seam `test_bridge.py` uses."""
 
-    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
         agent = MagicMock()
         agent.last_stream_result = MagicMock(success=True, error=None, output="The answer, with citations.")
 
@@ -213,7 +213,7 @@ class TestChatStreamAgentLoopEndToEnd:
         not just the org's ambient knowledge base."""
         captured_goal = {}
 
-        async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name=""):
+        async def _fake_create_capturing_goal(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             agent = MagicMock()
             agent.last_stream_result = MagicMock(success=True, error=None, output="Per the attached deck, revenue is up 12%.")
 
@@ -284,8 +284,10 @@ class TestChatStreamAgentLoopEndToEnd:
             chunks = await _drain(response)
 
         events = _events_by_name(chunks)
-        assert "error" in events
+        assert "RUN_ERROR" in events
+        assert events["RUN_ERROR"][-1]["code"] == "llm_initialization_failed"
         assert "complete" not in events
+        assert "RUN_FINISHED" not in events
 
 
 @pytest.mark.usefixtures("_no_connectors", "_agent_loop_llm")
@@ -310,7 +312,7 @@ class TestWebSearchCitationEndToEnd:
             }
         ]
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             from app.agents.agent_loop.tool_loader import _build_dynamic_tools  # noqa: PLC0415
 
             tools = _build_dynamic_tools(context)
@@ -355,8 +357,8 @@ class TestWebSearchCitationEndToEnd:
             chunks = await _drain(response)
 
         events = _events_by_name(chunks)
-        assert "complete" in events
-        completion = events["complete"][-1]
+        assert "RUN_FINISHED" in events
+        completion = events["RUN_FINISHED"][-1]["result"]
         assert completion["citations"], "web_search tool call should have produced a resolvable citation"
         assert completion["citations"][0]["citationType"] == "web|url"
         assert "[1]" in completion["answer"]

@@ -225,15 +225,6 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 default_value=True,
             )
         )
-        .add_filter_field(
-            FilterField(
-                name=IndexingFilterKey.COMMENTS.value,
-                display_name="Index Comments",
-                filter_type=FilterType.BOOLEAN,
-                category=FilterCategory.INDEXING,
-                default_value=True,
-            )
-        )
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_agent_support(False)
     )

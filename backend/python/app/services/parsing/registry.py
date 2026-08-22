@@ -26,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 # Canonical mime-type / extension strings mapped to a short format key.
 # Keep aligned with MimeTypes / ExtensionTypes / CODE_FILE_* in arangodb.py.
-# Code sources map to "txt" (registered MarkdownIt parser).
+# Code sources with a tree-sitter grammar map to "code"; the rest stay on
+# "txt" (registered MarkdownIt parser). Languages still on "txt" are the ones
+# with no grammar wired up yet: vue, svelte, perl, r, elixir, erlang, haskell
+# and clojure.
 _MIME_TO_FORMAT: dict[str, str] = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -65,27 +68,32 @@ _MIME_TO_FORMAT: dict[str, str] = {
     # Canonical MIME types used by MimeTypes enum in arangodb.py
     "application/vnd.sql.table": "sql_table",
     "application/vnd.sql.view": "sql_view",
-    # Source / code files (MimeTypes.PYTHON … SHELL) → txt parser
-    "text/x-python": "txt",
-    "text/x-java-source": "txt",
-    "text/x-c": "txt",
-    "text/x-c++": "txt",
-    "text/x-php": "txt",
-    "application/javascript": "txt",
-    "text/javascript": "txt",
-    "application/typescript": "txt",
-    "text/x-csharp": "txt",
-    "text/x-go": "txt",
-    "text/x-rust": "txt",
-    "text/x-ruby": "txt",
-    "text/x-swift": "txt",
-    "text/x-kotlin": "txt",
-    "application/dart": "txt",
+    # Source / code files (MimeTypes.PYTHON … SHELL)
+    "text/x-python": "code",
+    "text/x-java-source": "code",
+    "text/x-c": "code",
+    "text/x-c++": "code",
+    "text/x-php": "code",
+    "application/javascript": "code",
+    "text/javascript": "code",
+    "application/typescript": "code",
+    "text/x-csharp": "code",
+    "text/x-go": "code",
+    "text/x-rust": "code",
+    "text/x-ruby": "code",
+    "text/x-swift": "code",
+    "text/x-kotlin": "code",
+    "application/dart": "code",
+    "text/x-scala": "code",
+    "text/x-lua": "code",
+    "text/x-c++src": "code",
+    "text/x-csrc": "code",
+    "text/x-groovy": "code",
     "application/x-sh": "txt",
     "text/x-sh": "txt",
     "text/x-shellscript": "txt",
-    "text/x-python-script": "txt",
-    "text/x-script.python": "txt",
+    "text/x-python-script": "code",
+    "text/x-script.python": "code",
     "text/css": "txt",
 }
 
@@ -117,38 +125,40 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "sql_table": "sql_table",
     "sql_view": "sql_view",
     "blocks": "blocks",
-    # Source / code / stylesheet extensions — keep aligned with
-    # SUPPORTED_CODE_FILE_EXTENSIONS in arangodb.py (text-like → txt parser).
-    "py": "txt",
-    "pyi": "txt",
-    "js": "txt",
-    "jsx": "txt",
-    "mjs": "txt",
-    "cjs": "txt",
-    "ts": "txt",
-    "tsx": "txt",
+    # Source / code / stylesheet extensions — the "code" entries must stay in
+    # step with SUPPORTED_CODE_EXTENSIONS in the code parser's lang_config.
+    "py": "code",
+    "pyi": "code",
+    "js": "code",
+    "jsx": "code",
+    "mjs": "code",
+    "cjs": "code",
+    "ts": "code",
+    "tsx": "code",
+    "mts": "code",
+    "cts": "code",
     "vue": "txt",
     "svelte": "txt",
-    "java": "txt",
-    "c": "txt",
-    "h": "txt",
-    "cpp": "txt",
-    "cc": "txt",
-    "cxx": "txt",
-    "hpp": "txt",
-    "hxx": "txt",
-    "cs": "txt",
-    "go": "txt",
-    "rs": "txt",
-    "rb": "txt",
-    "php": "txt",
-    "swift": "txt",
-    "kt": "txt",
-    "kts": "txt",
-    "scala": "txt",
-    "groovy": "txt",
-    "gradle": "txt",
-    "dart": "txt",
+    "java": "code",
+    "c": "code",
+    "h": "code",
+    "cpp": "code",
+    "cc": "code",
+    "cxx": "code",
+    "hpp": "code",
+    "hxx": "code",
+    "cs": "code",
+    "go": "code",
+    "rs": "code",
+    "rb": "code",
+    "php": "code",
+    "swift": "code",
+    "kt": "code",
+    "kts": "code",
+    "scala": "code",
+    "groovy": "code",
+    "gradle": "code",
+    "dart": "code",
     "sh": "txt",
     "bash": "txt",
     "zsh": "txt",
@@ -158,7 +168,7 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "scss": "txt",
     "sass": "txt",
     "less": "txt",
-    "lua": "txt",
+    "lua": "code",
     "pl": "txt",
     "pm": "txt",
     "r": "txt",
@@ -179,10 +189,14 @@ _EXT_TO_FORMAT: dict[str, str] = {
 
 def _normalize_format(mime_type: str, extension: str) -> str | None:
     """Return a canonical format key or None if unknown."""
+    ext_format = _EXT_TO_FORMAT.get((extension or "").lower().lstrip("."))
+    # Mime normally wins, but a source file read out of a git tree arrives as
+    # text/plain, which would send every .go and .java to the prose parser.
+    if ext_format == "code":
+        return ext_format
     if mime_type and mime_type in _MIME_TO_FORMAT:
         return _MIME_TO_FORMAT[mime_type]
-    ext = (extension or "").lower().lstrip(".")
-    return _EXT_TO_FORMAT.get(ext)
+    return ext_format
 
 
 class ParserRegistry:

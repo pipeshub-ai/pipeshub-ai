@@ -3723,6 +3723,7 @@ components:
         - "WEB"
         - "BOOKSTACK"
         - "GITHUB"
+        - "GITHUB TEAMS"
         - "SERVICENOW"
         - "SALESFORCE"
         - "S3"

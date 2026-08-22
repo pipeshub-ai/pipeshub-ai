@@ -10,10 +10,12 @@ describe('smtpConfigCheck Middleware', () => {
   let next: sinon.SinonStub;
   let executeStub: sinon.SinonStub;
   const cmBackend = 'http://localhost:3004';
+  const scopedJwtSecret = 'test-scoped-secret';
 
   beforeEach(() => {
     req = {
       user: {
+        userId: '507f1f77bcf86cd799439011',
         orgId: '507f1f77bcf86cd799439012',
       },
       headers: {
@@ -32,7 +34,7 @@ describe('smtpConfigCheck Middleware', () => {
   });
 
   it('should return a middleware function when called with cmBackend', () => {
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     expect(middleware).to.be.a('function');
   });
 
@@ -46,11 +48,22 @@ describe('smtpConfigCheck Middleware', () => {
       },
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
     expect(next.firstCall.args).to.have.lengthOf(0);
+  });
+
+  it('should call next with InternalServerError when execute returns a malformed response', async () => {
+    executeStub = sinon.stub(ConfigurationManagerServiceCommand.prototype, 'execute').resolves(undefined as any);
+
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
+    await middleware(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    const error = next.firstCall.args[0];
+    expect(error.message).to.equal('Error getting smtp config');
   });
 
   it('should call next with InternalServerError when response statusCode is not 200', async () => {
@@ -59,7 +72,7 @@ describe('smtpConfigCheck Middleware', () => {
       data: { error: { message: 'Server error' } },
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
@@ -74,7 +87,7 @@ describe('smtpConfigCheck Middleware', () => {
       data: null,
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
@@ -92,7 +105,7 @@ describe('smtpConfigCheck Middleware', () => {
       },
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
@@ -110,7 +123,7 @@ describe('smtpConfigCheck Middleware', () => {
       },
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
@@ -128,7 +141,7 @@ describe('smtpConfigCheck Middleware', () => {
       },
     });
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;
@@ -137,11 +150,22 @@ describe('smtpConfigCheck Middleware', () => {
     expect(error.message).to.equal('Smtp not configured: From Email is missing');
   });
 
+  it('should call next with NotFoundError when userId is missing', async () => {
+    req.user.userId = undefined;
+
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
+    await middleware(req, res, next);
+
+    expect(next.calledOnce).to.be.true;
+    const error = next.firstCall.args[0];
+    expect(error.message).to.equal('Account not found');
+  });
+
   it('should handle errors from the command execution', async () => {
     const commandError = new Error('Network error');
     executeStub = sinon.stub(ConfigurationManagerServiceCommand.prototype, 'execute').rejects(commandError);
 
-    const middleware = smtpConfigCheck(cmBackend);
+    const middleware = smtpConfigCheck(cmBackend, scopedJwtSecret);
     await middleware(req, res, next);
 
     expect(next.calledOnce).to.be.true;

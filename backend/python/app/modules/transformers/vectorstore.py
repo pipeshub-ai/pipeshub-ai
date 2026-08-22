@@ -15,6 +15,7 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import os
+import math
 import re
 import time
 import uuid
@@ -245,6 +246,36 @@ def _build_text_documents(
     return documents
 
 
+def _build_code_documents(
+    code_blocks: List,
+    virtual_record_id: str,
+    org_id: str,
+) -> List[Document]:
+    """One embeddable Document per code symbol.
+
+    Sentence-splitting is meaningless for code, so each symbol is embedded
+    whole from ``block.data["text"]`` — the raw source text produced by the
+    parser, same pattern every other block type follows.
+    """
+    documents: List[Document] = []
+    for block in code_blocks:
+        data = block.data if isinstance(block.data, dict) else {}
+        text = data.get("text") or ""
+        if not text.strip():
+            continue
+        metadata = {
+            "virtualRecordId": virtual_record_id,
+            "blockId": block.id,
+            "blockIndex": block.index,
+            "orgId": org_id,
+            "isBlockGroup": False,
+        }
+        documents.append(
+            Document(page_content=text, metadata={**metadata, "isBlock": True})
+        )
+    return documents
+
+
 def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
@@ -291,6 +322,7 @@ class VectorStore(Transformer):
 
         self.dense_embeddings = None
         self.api_key = None
+        self.embedding_endpoint = None
         self.model_name = None
         self.embedding_provider = None
         self.is_multimodal_embedding = False
@@ -850,6 +882,9 @@ class VectorStore(Transformer):
         self.api_key = (
             configuration.get("apiKey") if configuration and "apiKey" in configuration else None
         )
+        self.embedding_endpoint = (
+            configuration.get("endpoint") if configuration else None
+        )
         self.model_name = model_name
         self.region_name = (
             configuration.get("region") if configuration else None
@@ -1162,6 +1197,129 @@ class VectorStore(Transformer):
                 points.extend(r)
         return points
 
+    @staticmethod
+    def _extract_embedding_from_response(payload: dict) -> List[float]:
+        data = payload.get("data")
+        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+            raise ValueError("response contains no embedding data")
+        embedding = data[0].get("embedding")
+        if (
+            not isinstance(embedding, list)
+            or not embedding
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in embedding
+            )
+        ):
+            raise ValueError("response contains no embedding vector")
+        return embedding
+
+    async def _post_embedding_request(
+        self, client: httpx.AsyncClient, endpoint: str, headers: dict, body: dict
+    ) -> List[float]:
+        response = await client.post(endpoint, headers=headers, json=body)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("response payload is not an object")
+        return self._extract_embedding_from_response(payload)
+
+    async def _process_image_embeddings_openai_compatible(
+        self, image_chunks: List[dict], image_base64s: List[str]
+    ) -> List[VectorPoint]:
+        """Embed images via an OpenAI-compatible ``/embeddings`` endpoint.
+
+        Two incompatible multimodal conventions exist in the wild, so we try
+        both:
+        1. Standard OpenAI schema with a data-URI string inside ``input`` —
+           used by routers such as Requesty/LiteLLM when proxying to
+           natively multimodal embedding models (e.g. Gemini Embedding 2).
+        2. vLLM's chat-``messages`` extension — used by self-hosted vLLM
+           multimodal embedding servers, which never adopted (1).
+        """
+        if not self.embedding_endpoint:
+            self.logger.warning(
+                "OpenAI-compatible image embedding skipped: endpoint is not configured"
+            )
+            return []
+
+        semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
+        endpoint = f"{self.embedding_endpoint.rstrip('/')}/embeddings"
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        async def embed_single(
+            client: httpx.AsyncClient, i: int, image_ref: str
+        ) -> Optional[VectorPoint]:
+            async with semaphore:
+                normalized = await self._normalize_image_to_base64(image_ref)
+                if not normalized:
+                    return None
+                image_url = (
+                    image_ref.strip()
+                    if image_ref.strip().startswith("data:")
+                    else f"data:image/jpeg;base64,{normalized}"
+                )
+                try:
+                    embedding = await self._post_embedding_request(
+                        client,
+                        endpoint,
+                        headers,
+                        {
+                            "model": self.model_name,
+                            "input": [image_url],
+                            "encoding_format": "float",
+                        },
+                    )
+                except Exception as standard_err:
+                    try:
+                        embedding = await self._post_embedding_request(
+                            client,
+                            endpoint,
+                            headers,
+                            {
+                                "model": self.model_name,
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "image_url",
+                                                "image_url": {"url": image_url},
+                                            }
+                                        ],
+                                    }
+                                ],
+                                "encoding_format": "float",
+                            },
+                        )
+                    except Exception as vllm_err:
+                        self.logger.warning(
+                            f"OpenAI-compatible image embedding failed for index {i}: "
+                            f"input-format error={standard_err}, messages-format error={vllm_err}"
+                        )
+                        return None
+                return VectorPoint(
+                    id=str(uuid.uuid4()),
+                    dense_vector=embedding,
+                    payload={
+                        "metadata": image_chunks[i].get("metadata", {}),
+                        "page_content": image_chunks[i].get("image_uri", ""),
+                    },
+                )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            results = await asyncio.gather(
+                *[
+                    embed_single(client, i, image_ref)
+                    for i, image_ref in enumerate(image_base64s)
+                ]
+            )
+        return [point for point in results if point is not None]
+
     async def _process_image_embeddings(
         self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
     ) -> List[VectorPoint]:
@@ -1178,19 +1336,22 @@ class VectorStore(Transformer):
             )
             return []
 
-        if self.embedding_provider == EmbeddingProvider.COHERE.value:
-            return await self._process_image_embeddings_cohere(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.VOYAGE.value:
-            return await self._process_image_embeddings_voyage(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.AWS_BEDROCK.value:
-            return await self._process_image_embeddings_bedrock(image_chunks, image_base64s)
-        elif self.embedding_provider == EmbeddingProvider.JINA_AI.value:
-            return await self._process_image_embeddings_jina(image_chunks, image_base64s)
-        else:
+        processors = {
+            EmbeddingProvider.COHERE.value: self._process_image_embeddings_cohere,
+            EmbeddingProvider.VOYAGE.value: self._process_image_embeddings_voyage,
+            EmbeddingProvider.AWS_BEDROCK.value: self._process_image_embeddings_bedrock,
+            EmbeddingProvider.JINA_AI.value: self._process_image_embeddings_jina,
+            EmbeddingProvider.OPENAI_COMPATIBLE.value: (
+                self._process_image_embeddings_openai_compatible
+            ),
+        }
+        processor = processors.get(self.embedding_provider)
+        if processor is None:
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
             )
             return []
+        return await processor(image_chunks, image_base64s)
 
     async def _store_image_points(self, points: List[VectorPoint]) -> None:
         if not points:
@@ -1431,6 +1592,7 @@ class VectorStore(Transformer):
             image_blocks = []
             table_blocks = []
             sql_row_blocks = []
+            code_blocks = []
 
             for block in blocks:
                 block_type = (
@@ -1438,7 +1600,9 @@ class VectorStore(Transformer):
                     if hasattr(block.type, "value")
                     else str(block.type).lower()
                 )
-                if block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
+                if block_type == "code":
+                    code_blocks.append(block)
+                elif block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
                     text_blocks.append(block)
                 elif (
                     block_type in ["image", "drawing"]
@@ -1466,10 +1630,18 @@ class VectorStore(Transformer):
             )
             self.logger.debug(
                 f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
-                f"table={len(table_blocks)}, sql_row={len(sql_row_blocks)}"
+                f"table={len(table_blocks)}, sql_row={len(sql_row_blocks)}, "
+                f"code={len(code_blocks)}"
             )
 
             documents_to_embed: List = []
+
+            # ── Code blocks ──
+            if code_blocks:
+                documents_to_embed.extend(
+                    _build_code_documents(code_blocks, virtual_record_id, org_id)
+                )
+                self.logger.info("✅ Added code documents for embedding")
 
             # ── Text blocks ──
             if text_blocks:
