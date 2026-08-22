@@ -231,20 +231,41 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
-check "embedding concurrency defaults to 2 not empty" "$compose" 'EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-2}'
-check "parse concurrency defaults to 5 not empty" "$compose" 'MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}'
-check "index concurrency defaults to 7 not empty" "$compose" 'MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}'
-check "pending indexing tasks default to 28 not empty" "$compose" 'MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-28}'
-if [[ "$compose" == *'EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}'$'\n'* ]]; then
-  fail "must not inject empty EMBEDDING_SERVER_MAX_CONCURRENCY (breaks published slim images)"
+echo "== Compose: Hub slim cannot int() empty strings =="
+# int(os.getenv(KEY, default)) still crashes when KEY is set to "" because
+# the default is only used when the key is absent. Compose ${KEY:-} always
+# sets the key. These must have a numeric ${KEY:-N} in the shipped file.
+_hub_int_keys=(
+  MAX_CONCURRENT_PARSING
+  MAX_CONCURRENT_INDEXING
+  MAX_PENDING_INDEXING_TASKS
+  EMBEDDING_SERVER_MAX_CONCURRENCY
+  EMBEDDING_BATCH_CONCURRENCY
+)
+for _k in "${_hub_int_keys[@]}"; do
+  if grep -E "^[[:space:]]+- ${_k}=\\\$\\{${_k}:-\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+    fail "${_k} must not use empty Compose default (Hub slim int(\"\"))"
+  else
+    pass "${_k} is not empty-defaulted"
+  fi
+  if grep -E "^[[:space:]]+- ${_k}=\\\$\\{${_k}:-[0-9]+\\}[[:space:]]*$" <<<"$compose" >/dev/null; then
+    pass "${_k} has a numeric Compose default"
+  else
+    fail "${_k} needs a numeric \${${_k}:-N} Compose default for Hub slim"
+  fi
+done
+if [[ "$inner" == *$'\nMAX_CONCURRENT_PARSING=\n'* ]]; then
+  fail "installer must not write empty MAX_CONCURRENT_PARSING="
 else
-  pass "does not inject empty EMBEDDING_SERVER_MAX_CONCURRENCY"
+  pass "installer writes numeric MAX_CONCURRENT_PARSING"
 fi
-if [[ "$compose" == *'MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}'$'\n'* ]]; then
-  fail "must not inject empty MAX_CONCURRENT_PARSING (breaks published slim images)"
-else
-  pass "does not inject empty MAX_CONCURRENT_PARSING"
-fi
+check "installer writes parse concurrency 5" "$inner" "MAX_CONCURRENT_PARSING=5"
+check "installer writes index concurrency 7" "$inner" "MAX_CONCURRENT_INDEXING=7"
+check "installer writes pending indexing tasks 28" "$inner" "MAX_PENDING_INDEXING_TASKS=28"
+check "installer writes embedding concurrency 2" "$inner" "EMBEDDING_SERVER_MAX_CONCURRENCY=2"
+check "installer writes embedding batch concurrency 5" "$inner" "EMBEDDING_BATCH_CONCURRENCY=5"
+check "wizard port scan skips this project's own port" "$inner" 'port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"'
+check "reconfigure seeds port from existing .env" "$inner" 'get_existing_val APP_PORT "$DEFAULT_APP_PORT"'
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
 else
@@ -284,6 +305,9 @@ envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 check "env.template documents HF_HUB_OFFLINE" "$envtmpl" "HF_HUB_OFFLINE"
 check "env.template documents TRANSFORMERS_OFFLINE" "$envtmpl" "TRANSFORMERS_OFFLINE"
 check "env.template documents COMPOSE_PROJECT_NAME" "$envtmpl" "COMPOSE_PROJECT_NAME"
+check "env.template pins parse concurrency (Hub slim)" "$envtmpl" "MAX_CONCURRENT_PARSING=5"
+check "env.template pins index concurrency (Hub slim)" "$envtmpl" "MAX_CONCURRENT_INDEXING=7"
+check "env.template pins pending indexing tasks (Hub slim)" "$envtmpl" "MAX_PENDING_INDEXING_TASKS=28"
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"

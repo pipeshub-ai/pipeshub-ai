@@ -176,13 +176,16 @@ services:
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
       - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
 
-      # Hub slim images still do int(os.getenv("MAX_CONCURRENT_PARSING", "5"));
-      # an empty string (Compose `${VAR:-}`) crashes indexing on startup.
-      # 5/7 match the in-tree fallbacks when the operator has not pinned a cap.
+      # Numeric defaults required: published Hub slim still does
+      # int(os.getenv(KEY, default)), and Compose `${KEY:-}` with an empty
+      # .env injects "" which crashes (the Python default is only used when
+      # the key is absent). 5/7/28 match this repo's legacy fallbacks
+      # (pending = max(5, 7) * 4). Raise them to lift the cap; do not clear
+      # them on a Hub slim install.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
-      # Slots-per-CPU and the indexing multiplier above, for a workload whose
-      # documents are unusually cheap or expensive. Leave unset for 1 / 3 / 2.
+      # Slots-per-CPU / indexing multiplier (in-tree defaults 1 / 10 / 100).
+      # Empty is safe: Hub slim ignores these; new Python treats empty as unset.
       - GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=${GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU:-}
       - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
       - GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=${GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT:-}
@@ -196,8 +199,6 @@ services:
       # explicit MiB figure when the idle footprint is known. Growth-side
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
-      # Hub slim still does int(os.getenv(...)); empty crashes the consume loop.
-      # 28 = max(5, 7) * 4, the Hub fallback when this var is unset.
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-28}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
@@ -213,7 +214,7 @@ services:
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
-      # Must be a number: published slim images crash on int("") if this is empty.
+      # Same Hub slim int("") trap as MAX_CONCURRENT_* above.
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-2}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-5}
 

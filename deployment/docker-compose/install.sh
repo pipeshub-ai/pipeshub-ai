@@ -946,7 +946,15 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 10. PORT SELECTION ──────────────────────────────────────────────────────
   header "Port selection"
 
-  DESIRED_PORT="${PIPESHUB_PORT:-$DEFAULT_APP_PORT}"
+  if [[ -n "${PIPESHUB_PORT:-}" ]]; then
+    DESIRED_PORT="$PIPESHUB_PORT"
+  elif $FLAG_RECONFIGURE && $ENV_EXISTS && ! ${INSTALL_SEPARATE:-false}; then
+    # Keep the port this stack already publishes; the scan below would
+    # otherwise treat our own listener as busy and walk to DESIRED+1.
+    DESIRED_PORT="$(get_existing_val APP_PORT "$DEFAULT_APP_PORT")"
+  else
+    DESIRED_PORT="$DEFAULT_APP_PORT"
+  fi
   if ! $FLAG_YES; then
     prompt_input DESIRED_PORT "Port to expose PipesHub on?" "$DESIRED_PORT"
   fi
@@ -956,12 +964,12 @@ if ! ${SKIP_WIZARD:-false}; then
   APP_PORT="$DESIRED_PORT"
   MAX_PORT=$(( DESIRED_PORT + 20 ))
 
-  while port_in_use "$APP_PORT" 2>/dev/null && (( APP_PORT < MAX_PORT )); do
+  while port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT" && (( APP_PORT < MAX_PORT )); do
     warn "Port ${APP_PORT} is in use, trying $(( APP_PORT + 1 ))..."
     APP_PORT=$(( APP_PORT + 1 ))
   done
 
-  if port_in_use "$APP_PORT" 2>/dev/null; then
+  if port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"; then
     die "No free port found in range ${DESIRED_PORT}–${MAX_PORT}. Free a port or set PIPESHUB_PORT."
   fi
 
@@ -1096,22 +1104,18 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-# Left empty by default. Slot counts derive from this container's CPU quota —
-# heavy parse 1 slot per CPU, light parse 3 slots per CPU, indexing 2x the
-# wider parse tier — and these two vars cap those numbers. The parse numbers
-# are ceilings, not starting points: parsing ramps up from its floor as samples
-# prove the headroom is real, and heavy parsing is additionally held back
-# whenever free memory can't hold that many at once. The indexing budget is
-# fixed at startup.
-MAX_CONCURRENT_PARSING=
-MAX_CONCURRENT_INDEXING=
-# Retune the per-CPU slot counts / indexing multiplier themselves (defaults
-# 1, 3 and 2), and the memory assumed per in-flight heavy parse in GiB (1.5).
+# Published Hub slim still does int(os.getenv(...)); empty values crash
+# indexing. 5/7/28 match this repo's legacy fallbacks (pending = max(5,7)*4).
+# Raise them to lift the cap. Governor slot ratios (1 / 10 / 100) stay empty.
+MAX_CONCURRENT_PARSING=5
+MAX_CONCURRENT_INDEXING=7
 GOVERNOR_HEAVY_PARSE_SLOTS_PER_CPU=
 GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=
 GOVERNOR_INDEX_SLOTS_PER_PARSE_SLOT=
 GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=
-MAX_PENDING_INDEXING_TASKS=
+MAX_PENDING_INDEXING_TASKS=28
+EMBEDDING_SERVER_MAX_CONCURRENCY=2
+EMBEDDING_BATCH_CONCURRENCY=5
 INDEXING_UVICORN_WORKERS=1
 PARSING_UVICORN_WORKERS=1
 DOCLING_UVICORN_WORKERS=1
