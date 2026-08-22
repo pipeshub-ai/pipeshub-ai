@@ -599,22 +599,27 @@ async def perform_llm_health_check(
     logger: Logger,
 ) -> dict[str, Any]:
     """Perform health check for LLM models"""
+    provider = llm_config.get("provider", "") or ""
+    configuration = llm_config.get("configuration") or {}
+    if not isinstance(configuration, dict):
+        configuration = {}
+    model_name = ""
     try:
-        logger.info(f"Performing LLM health check for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
+        logger.info(f"Performing LLM health check for {provider} with configuration model {configuration.get('model', '')}")
         # Use the first model from comma-separated list
-        model_string = llm_config.get("configuration", {}).get("model", "")
+        model_string = configuration.get("model", "") or ""
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
 
         if not model_names:
-            logger.error(f"No valid model names found in configuration for {llm_config.get('provider')} with configuration model {llm_config.get('configuration', {}).get('model', '')}")
+            logger.error(f"No valid model names found in configuration for {provider} with configuration model {configuration.get('model', '')}")
             return JSONResponse(
                 status_code=500,
                 content={
                     "status": "error",
                     "message": "No valid model names found in configuration",
                     "details": {
-                    "provider": llm_config.get("provider"),
-                    "model": llm_config.get("configuration", {}).get("model", "")
+                    "provider": provider,
+                    "model": configuration.get("model", "")
                     },
                 },
             )
@@ -622,9 +627,7 @@ async def perform_llm_health_check(
         model_name = model_names[0]
         logger.info("Getting generator model")
 
-        provider = llm_config.get("provider", "")
-        configuration = llm_config.get("configuration", {}) or {}
-        config_keys = list(configuration.keys()) if isinstance(configuration, dict) else type(configuration).__name__
+        config_keys = list(configuration.keys())
         logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
 
         # Create LLM model
@@ -638,7 +641,7 @@ async def perform_llm_health_check(
         logger.info("Generator model created")
 
         # Check if multimodal is enabled
-        is_multimodal = llm_config.get("isMultimodal", False) or llm_config.get("configuration", {}).get("isMultimodal", False)
+        is_multimodal = llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
 
         # Set timeout for the test
         if is_multimodal:
@@ -713,7 +716,7 @@ async def perform_llm_health_check(
         )
 
     except asyncio.TimeoutError:
-        logger.error(f"LLM health check timed out for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')})")
+        logger.error(f"LLM health check timed out for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')})")
         return JSONResponse(
             status_code=500,
             content={
@@ -725,19 +728,17 @@ async def perform_llm_health_check(
                 ),
                 "details": {
                     "error_code": "health_check_timeout",
-                    "provider": llm_config.get("provider"),
+                    "provider": provider,
                     "model": model_name,
                     "timeout_seconds": 120,
                 },
             },
         )
     except HTTPException as he:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(he)}")
+        logger.error(f"LLM health check failed for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')}): {str(he)}")
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
-        logger.error(f"LLM health check failed for {llm_config.get('provider')} with model {llm_config.get('configuration', {}).get('model', '')} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
-        provider = llm_config.get("provider", "") or ""
-        configuration = llm_config.get("configuration", {}) or {}
+        logger.error(f"LLM health check failed for {provider} with model {model_name} ({llm_config.get('modelFriendlyName', '')}): {str(e)}")
         if (
             _looks_like_connectivity_error(e)
             and _llm_health_check_needs_outbound(provider, configuration)

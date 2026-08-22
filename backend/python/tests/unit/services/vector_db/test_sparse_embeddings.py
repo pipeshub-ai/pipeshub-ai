@@ -181,6 +181,41 @@ def test_build_model_does_not_download_when_explicitly_offline(monkeypatch):
         with pytest.raises(RuntimeError, match="not in cache"):
             embedder._build_model()
     assert calls == ["1"]
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+
+
+def test_concurrent_build_does_not_leave_hub_offline_set(monkeypatch):
+    import os
+    import sys
+    import threading
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+
+    class FakeSparse:
+        def __init__(self, model_name):
+            if os.environ.get("HF_HUB_OFFLINE") == "1":
+                raise RuntimeError("not in cache")
+            self.model_name = model_name
+
+    fake_module = MagicMock()
+    fake_module.SparseTextEmbedding = FakeSparse
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            SparseEmbedder()._build_model()
+        except BaseException as exc:
+            errors.append(exc)
+
+    with patch.dict(sys.modules, {"fastembed": fake_module}):
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert errors == []
+    assert os.environ.get("HF_HUB_OFFLINE") is None
 
 
 @pytest.mark.asyncio

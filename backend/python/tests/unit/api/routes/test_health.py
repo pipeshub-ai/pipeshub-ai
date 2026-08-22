@@ -2065,3 +2065,12 @@ class TestLlmHealthCheckNeedsOutbound:
         assert resp.status_code == 500
         assert "outbound_connectivity" not in resp.body.decode()
 
+    @pytest.mark.asyncio
+    async def test_null_configuration_does_not_crash(self):
+        logger = MagicMock()
+        config = {"provider": "openai", "configuration": None}
+        from app.api.routes.health import perform_llm_health_check
+        resp = await perform_llm_health_check(config, logger)
+        assert resp.status_code == 500
+        assert "No valid model names" in resp.body.decode()
+

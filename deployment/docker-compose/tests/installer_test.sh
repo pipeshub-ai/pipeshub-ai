@@ -152,7 +152,9 @@ echo "== Root wrapper: standalone mode rejects local builds =="
   check "standalone --build names the clone path" "$out" "Clone the repository"
   if [[ "$ec" -ne 0 ]]; then pass "standalone --build exits non-zero"; else fail "standalone --build exits non-zero"; fi
   out="$(cd "$work" && PIPESHUB_IMAGE_SOURCE=local bash ./install.sh 2>&1)"
+  ec=$?
   check "standalone local image source is rejected" "$out" "PIPESHUB_IMAGE_SOURCE=local"
+  if [[ "$ec" -ne 0 ]]; then pass "standalone local image source exits non-zero"; else fail "standalone local image source exits non-zero"; fi
 )
 
 echo "== Root wrapper: main fallback when no release =="
@@ -186,6 +188,7 @@ check "ambiguous both-volumes still errors" "$inner" "data volumes for BOTH grap
 check "lost graph password guidance" "$inner" "cannot be recovered"
 check "summary graph DB fallback is honest" "$inner" '"${DATA_STORE:-(unset)}"'
 check ".env locked to owner-only" "$inner" 'chmod 600 "$ENV_FILE"'
+check ".env chmod failure is fatal" "$inner" "Could not restrict permissions"
 check ".env backup locked to owner-only" "$inner" 'chmod 600 "$_backup"'
 check "crash-loop wait has 90s startup grace" "$inner" "ELAPSED >= 90"
 # Compose animates progress with cursor escapes that explode into hundreds of
@@ -359,6 +362,7 @@ check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
 check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
 # A pull failure must NOT abort when an image is already cached (flaky network).
 check "pull failure tolerated when image cached" "$inner" "continuing with cached"
+check "pull fallback inspects sandbox image" "$inner" 'docker image inspect "$_SANDBOX_IMAGE"'
 check "air-gapped guidance present" "$inner" "air-gapped host, preload the image"
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi

@@ -982,7 +982,9 @@ fi  # end wizard
 
 # Reused .env files from older installs may still be 644. Always lock them
 # before we print secrets in the summary or start containers.
-[[ -f "$ENV_FILE" ]] && chmod 600 "$ENV_FILE" 2>/dev/null || true
+if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE"; then
+  die "Could not restrict permissions on $ENV_FILE"
+fi
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY
@@ -1204,10 +1206,11 @@ else
         -p "$PROJECT_NAME" \
         --env-file "$ENV_FILE" \
         pull pipeshub-ai sandbox-image 2>&1; then
-      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1; then
+      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1 &&
+          docker image inspect "$_SANDBOX_IMAGE" >/dev/null 2>&1; then
         warn "Could not refresh images; continuing with cached copies if present."
       else
-        warn "Could not pull $_APP_IMAGE and none is cached locally — the next step may fail."
+        warn "Could not pull a required image and it is not cached locally — the next step may fail."
         warn "On an air-gapped host, preload the image (docker load) and re-run with --no-pull."
       fi
     fi

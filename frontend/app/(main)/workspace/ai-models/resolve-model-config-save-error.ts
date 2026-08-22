@@ -1,3 +1,5 @@
+'use client';
+
 import type { TFunction } from 'i18next';
 import { ErrorType, isProcessedError } from '@/lib/api/api-error';
 
@@ -22,7 +24,7 @@ export function resolveModelConfigSaveError(err: unknown, t: TFunction): string 
     );
     const code = fromDetails ?? fromAxiosBody;
     if (code === 'outbound_connectivity') {
-      return err.message.trim() || t('workspace.aiModels.configSaveOutboundError');
+      return t('workspace.aiModels.configSaveOutboundError');
     }
     if (err.type === ErrorType.TIMEOUT_ERROR) {
       return t('workspace.aiModels.configSaveTimeoutError');

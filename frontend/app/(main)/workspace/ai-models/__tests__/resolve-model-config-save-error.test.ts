@@ -35,7 +35,7 @@ describe('extractErrorCode', () => {
 });
 
 describe('resolveModelConfigSaveError', () => {
-  it('uses the Python message when outbound_connectivity is nested on the axios body', () => {
+  it('uses the outbound i18n key when outbound_connectivity is nested on the axios body', () => {
     const pythonMessage = 'Cannot reach cloud LLM providers from PipesHub.';
     const err = processed({
       type: ErrorType.SERVER_ERROR,
@@ -55,10 +55,12 @@ describe('resolveModelConfigSaveError', () => {
         },
       } as ProcessedError['originalError'],
     });
-    expect(resolveModelConfigSaveError(err, t)).toBe(pythonMessage);
+    expect(resolveModelConfigSaveError(err, t)).toBe(
+      'workspace.aiModels.configSaveOutboundError'
+    );
   });
 
-  it('falls back to the i18n key when outbound_connectivity has an empty message', () => {
+  it('uses the outbound i18n key when error_code is on processed details', () => {
     const err = processed({
       type: ErrorType.SERVER_ERROR,
       message: '   ',
