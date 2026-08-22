@@ -1,4 +1,7 @@
 from typing import Optional
+import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx  # type: ignore
 
@@ -67,8 +70,37 @@ class HTTPClient(IClient):
         elif isinstance(request.body, bytes):
             request_kwargs["content"] = request.body
 
-        response = await client.request(request.method, url, **request_kwargs)
-        return HTTPResponse(response)
+        max_retries = 3
+        base_delay = 1.0
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.request(request.method, url, **request_kwargs)
+                if response.status_code == 429 and attempt < max_retries:
+                    retry_after = response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            delay = float(retry_after)
+                        except ValueError:
+                            try:
+                                parsed_date = parsedate_to_datetime(retry_after)
+                                delay = max(0.0, (parsed_date - datetime.now(timezone.utc)).total_seconds())
+                            except (TypeError, ValueError):
+                                delay = base_delay * (2 ** attempt)
+                    else:
+                        delay = base_delay * (2 ** attempt)
+                    
+                    delay = min(delay, 60.0)
+                    await asyncio.sleep(delay)
+                    continue
+                    
+                return HTTPResponse(response)
+            except httpx.TimeoutException:
+                if attempt == max_retries or request.method.upper() not in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}:
+                    raise
+                
+                delay = base_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
 
     async def close(self) -> None:
         """Close the client"""

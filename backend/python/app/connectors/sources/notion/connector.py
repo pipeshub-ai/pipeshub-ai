@@ -1021,10 +1021,13 @@ class NotionConnector(BaseConnector):
                                     total_files += 1
 
                         except Exception as error:
-                            self.logger.warning(
+                            self.logger.error(
                                 f"Failed to fetch attachments for page {obj_id}: {error}. "
-                                f"Continuing with page sync."
+                                f"Marking page as FAILED."
                             )
+                            if record:
+                                record.indexing_status = ProgressStatus.FAILED.value
+                                record.reason = f"Sync-phase content fetch failed: {error}"
 
                 # Save batch
                 if records_with_permissions:
@@ -1244,7 +1247,7 @@ class NotionConnector(BaseConnector):
                 e,
                 exc_info=True,
             )
-            return [], {}
+            raise
 
     async def _fetch_attachment_blocks_and_block_ids_recursive(
         self,
@@ -1392,8 +1395,8 @@ class NotionConnector(BaseConnector):
 
                 if not response.success:
                     error_msg = response.error if response else "No response"
-                    self.logger.warning(f"API call failed for block {block_id}: {error_msg}")
-                    break
+                    self.logger.error(f"API call failed for block {block_id}: {error_msg}")
+                    raise Exception(f"Notion API error while fetching comments for {block_id}: {error_msg}")
 
                 # Only try to parse JSON if response is successful
                 data = {}
@@ -1402,7 +1405,7 @@ class NotionConnector(BaseConnector):
                         data = response.data.json()
                     except Exception as parse_error:
                         self.logger.error(f"Failed to parse response.data as JSON: {parse_error}")
-                        break
+                        raise
                 else:
                     break
 
@@ -1411,7 +1414,7 @@ class NotionConnector(BaseConnector):
                     error_msg = data.get("message", "Unknown error")
                     error_code = data.get("code", "unknown")
                     self.logger.error(f"Notion API returned error for block {block_id}: [{error_code}] {error_msg}")
-                    break
+                    raise Exception(f"Notion API error for block {block_id}: [{error_code}] {error_msg}")
 
                 if not isinstance(data, dict):
                     break
@@ -1431,7 +1434,7 @@ class NotionConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error fetching comments for block {block_id}: {e}", exc_info=True)
-                break
+                raise
 
         return all_comments
 
@@ -1474,11 +1477,10 @@ class NotionConnector(BaseConnector):
 
             for block_id, comments_or_error in zip(block_ids, comment_results):
                 if isinstance(comments_or_error, Exception):
-                    self.logger.warning(
-                        f"Failed to fetch comments for block {block_id}: {comments_or_error}. "
-                        f"Continuing with other blocks."
+                    self.logger.error(
+                        f"Failed to fetch comments for block {block_id}: {comments_or_error}."
                     )
-                    continue
+                    raise comments_or_error
 
                 for comment in comments_or_error:
                     all_comments.append((comment, block_id))
@@ -1490,6 +1492,7 @@ class NotionConnector(BaseConnector):
                 f"Error fetching comments for page {page_id} and blocks: {e}",
                 exc_info=True
             )
+            raise
 
         return all_comments
 
