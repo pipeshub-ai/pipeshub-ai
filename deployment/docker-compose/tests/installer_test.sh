@@ -231,6 +231,12 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
+check "embedding concurrency defaults to 2 not empty" "$compose" 'EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-2}'
+if [[ "$compose" == *'EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}'$'\n'* ]]; then
+  fail "must not inject empty EMBEDDING_SERVER_MAX_CONCURRENCY (breaks published slim images)"
+else
+  pass "does not inject empty EMBEDDING_SERVER_MAX_CONCURRENCY"
+fi
 if [[ "$compose" == *"container_name:"* ]]; then
   fail "compose must not pin container_name (blocks a second project)"
 else
