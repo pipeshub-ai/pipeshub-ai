@@ -21,6 +21,8 @@ export interface EntityPageHeaderProps {
   ctaIcon: string;
   /** Callback when CTA is clicked */
   onCtaClick: () => void;
+  /** Optional extra actions rendered to the left of the primary CTA button */
+  additionalActions?: React.ReactNode;
 }
 
 /**
@@ -38,6 +40,7 @@ export function EntityPageHeader({
   ctaLabel,
   ctaIcon,
   onCtaClick,
+  additionalActions,
 }: EntityPageHeaderProps) {
   return (
     <Flex
@@ -71,6 +74,8 @@ export function EntityPageHeader({
             <MaterialIcon name="search" size={16} color="var(--slate-9)" />
           </TextField.Slot>
         </TextField.Root>
+
+        {additionalActions}
 
         <Button size="2" onClick={onCtaClick}>
           <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
