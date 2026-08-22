@@ -16,12 +16,13 @@ import hashlib
 import json
 import mimetypes
 import os
+import stat
 import unicodedata
 import uuid
 from logging import Logger
 from pathlib import Path
 from collections.abc import AsyncIterator
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 from fastapi import HTTPException
@@ -86,6 +87,15 @@ from .models import LocalFsFileEvent, LocalFsFileEventBatchStats
 LOCAL_FS_CONNECTOR_NAME = "Local FS"
 LOCAL_FS_ICON_PATH = "/icons/connectors/local-fs.png"
 FULL_SYNC_RESET_BATCH_SIZE = 500
+# Refuse to prune this many-or-more stale records in one sync once they're also
+# this fraction-or-more of everything stored — a sign of a failed/partial
+# directory walk (e.g. a transiently unmounted volume), not real deletions.
+# Analogous to (not identical to) the valve in
+# app/connectors/sources/github_teams/repos.py's _prune_deleted_paths: that one
+# refuses above 5 records (>) at the same fraction; this one refuses at 50
+# records or more (>=).
+LOCAL_FS_PRUNE_VALVE_MIN_ABSOLUTE = 50
+LOCAL_FS_PRUNE_VALVE_MAX_FRACTION = 0.5
 
 # Sync config keys (flat under config["sync"] — same as RSS/Web custom fields).
 SYNC_ROOT_PATH_KEY = "sync_root_path"
@@ -537,29 +547,60 @@ class LocalFsConnector(BaseConnector):
         ext = path.suffix.lower().lstrip(".") or ""
         return ext in allowed
 
-    def _iter_file_paths(self, root: Path) -> List[Path]:
+    def _iter_file_paths(
+        self, root: Path, on_error: Optional[Callable[[OSError], None]] = None
+    ) -> List[Path]:
         out: List[Path] = []
         if self.include_subfolders:
-            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            for dirpath, _dirnames, filenames in os.walk(
+                root, followlinks=False, onerror=on_error
+            ):
                 for name in filenames:
                     out.append(Path(dirpath) / name)
         else:
             for name in os.listdir(root):
                 p = root / name
-                if p.is_file():
+                try:
+                    # stat() classification, not p.is_file(): pathlib on
+                    # Python 3.14+ suppresses ALL OSError (including
+                    # PermissionError) from is_file()/is_dir(), turning a
+                    # stat failure into a silent "doesn't exist" instead of
+                    # surfacing through on_error.
+                    is_reg = stat.S_ISREG(p.lstat().st_mode)
+                except OSError as e:
+                    if on_error:
+                        on_error(e)
+                    continue
+                if is_reg:
                     out.append(p)
         return out
 
-    def _iter_folder_paths(self, root: Path) -> List[Path]:
+    def _iter_folder_paths(
+        self, root: Path, on_error: Optional[Callable[[OSError], None]] = None
+    ) -> List[Path]:
         out: List[Path] = []
         if self.include_subfolders:
-            for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
+            for dirpath, dirnames, _filenames in os.walk(
+                root, followlinks=False, onerror=on_error
+            ):
                 for name in dirnames:
                     out.append(Path(dirpath) / name)
         else:
             for name in os.listdir(root):
                 p = root / name
-                if p.is_dir() and not p.is_symlink():
+                try:
+                    # lstat() classification for the same reason as
+                    # _iter_file_paths above: is_dir()/is_symlink() silently
+                    # swallow OSError on Python 3.14+.
+                    lst = p.lstat()
+                    is_dir = not stat.S_ISLNK(lst.st_mode) and stat.S_ISDIR(
+                        lst.st_mode
+                    )
+                except OSError as e:
+                    if on_error:
+                        on_error(e)
+                    continue
+                if is_dir:
                     out.append(p)
         return out
 
@@ -1451,6 +1492,107 @@ class LocalFsConnector(BaseConnector):
             for document_id in storage_document_ids:
                 await self._delete_storage_document(document_id)
 
+    async def _prune_stale_records(
+        self,
+        owner_user_id: str,
+        record_group_external_id: str,
+        walked_external_ids: set[str],
+        walk_had_errors: bool = False,
+    ) -> int:
+        """Delete only the records for paths a completed walk did not find.
+
+        Called after the walk has already upserted every path it saw:
+        ``_process_record``'s revision diff (external_revision_id) leaves an
+        unchanged file's record COMPLETED and un-republished on its own, so
+        this only needs to clean up genuine deletions — unlike the old
+        pre-walk ``_reset_existing_records`` call, it must never touch a
+        record for a path still on disk.
+
+        ``walk_had_errors`` means the walk itself was incomplete (a stat /
+        permission error, or an unreadable subtree os.walk silently skipped),
+        so anything "missing" from ``walked_external_ids`` may just be
+        unseen, not deleted. Skip pruning entirely rather than risk deleting
+        a record — and its storage document — for a file still on disk; the
+        large-fraction valve below only catches big failures, not this.
+        """
+        if walk_had_errors:
+            self.logger.warning(
+                "Local FS: skipping stale-record pruning for record group %s "
+                "because the walk hit errors; a record for a path still on "
+                "disk could otherwise be deleted.",
+                record_group_external_id,
+            )
+            return 0
+
+        async with self.data_store_provider.transaction() as tx_store:
+            record_group = await tx_store.get_record_group_by_external_id(
+                self.connector_id, record_group_external_id
+            )
+            if record_group is None:
+                return 0
+
+            status_filters = [status.value for status in ProgressStatus]
+            existing: Dict[str, Record] = {}
+            after_key: Optional[str] = None
+            while True:
+                page = await tx_store.get_records_by_status(
+                    self.data_entities_processor.org_id,
+                    self.connector_id,
+                    status_filters,
+                    limit=FULL_SYNC_RESET_BATCH_SIZE,
+                    after_key=after_key,
+                    record_group_id=record_group.id,
+                )
+                if not page:
+                    break
+                for record in page:
+                    external_id = getattr(record, "external_record_id", None)
+                    if external_id:
+                        existing[external_id] = record
+                if len(page) < FULL_SYNC_RESET_BATCH_SIZE:
+                    break
+                after_key = page[-1].id
+
+            stale = {
+                external_id: record
+                for external_id, record in existing.items()
+                if external_id not in walked_external_ids
+            }
+            if not stale:
+                return 0
+
+            if (
+                len(stale) >= LOCAL_FS_PRUNE_VALVE_MIN_ABSOLUTE
+                and existing
+                and len(stale) / len(existing) >= LOCAL_FS_PRUNE_VALVE_MAX_FRACTION
+            ):
+                self.logger.error(
+                    "Local FS: refusing to prune %d of %d stored record(s) (%.0f%%) "
+                    "for record group %s in a single sync — looks like a "
+                    "failed/partial directory walk, not real deletions.",
+                    len(stale),
+                    len(existing),
+                    len(stale) / len(existing) * 100,
+                    record_group_external_id,
+                )
+                return 0
+
+            storage_document_ids: List[str] = []
+            for external_id, record in stale.items():
+                document_id = self._storage_document_id_from_path(
+                    getattr(record, "path", None)
+                )
+                if document_id:
+                    storage_document_ids.append(document_id)
+                await tx_store.delete_record_by_external_id(
+                    self.connector_id, external_id, owner_user_id
+                )
+
+        for document_id in storage_document_ids:
+            await self._delete_storage_document(document_id)
+
+        return len(stale)
+
     async def apply_file_event_batch(
         self,
         events: List[LocalFsFileEvent],
@@ -2152,25 +2294,42 @@ class LocalFsConnector(BaseConnector):
                 ]
             )
 
-            deleted = await self._reset_existing_records(
-                owner.id, delete_storage_documents=True
-            )
+            # A walk error (permission/stat failure, or an unreadable subtree
+            # os.walk silently skips) means walked_external_ids is incomplete —
+            # anything "missing" from it might just be unseen, not deleted.
+            walk_had_errors = False
 
-            folder_paths = self._iter_folder_paths(root)
-            paths = self._iter_file_paths(root)
+            def _record_walk_error(_e: OSError) -> None:
+                nonlocal walk_had_errors
+                walk_had_errors = True
+
+            folder_paths = self._iter_folder_paths(root, on_error=_record_walk_error)
+            paths = self._iter_file_paths(root, on_error=_record_walk_error)
             batch: List[Tuple[FileRecord, List[Permission]]] = []
             emitted_folder_paths: set[str] = set()
+            # Every path the walk actually finds, so unchanged files/folders are
+            # never mistaken for deletions after the loop below diff-prunes.
+            walked_external_ids: set[str] = set()
             processed = 0
             for abs_folder_path in folder_paths:
                 try:
-                    if abs_folder_path.is_symlink():
+                    # lstat() + stat.S_IS*, not is_symlink()/is_dir(): on
+                    # Python 3.14+ pathlib suppresses ALL OSError (including
+                    # PermissionError) from those, which would let this
+                    # `continue` past a genuine stat failure instead of
+                    # hitting the `except` below that sets walk_had_errors.
+                    st = abs_folder_path.lstat()
+                    if stat.S_ISLNK(st.st_mode):
                         continue
-                    if not abs_folder_path.is_dir():
+                    if not stat.S_ISDIR(st.st_mode):
                         continue
-                    st = abs_folder_path.stat()
+                    rel_folder_path = abs_folder_path.relative_to(root).as_posix()
+                    walked_external_ids.add(
+                        self._external_record_id_for_rel_path(rel_folder_path)
+                    )
                     self._append_folder_upsert_records(
                         batch,
-                        abs_folder_path.relative_to(root).as_posix(),
+                        rel_folder_path,
                         root,
                         rg_external,
                         int(st.st_mtime * 1000),
@@ -2188,20 +2347,28 @@ class LocalFsConnector(BaseConnector):
                         e,
                         exc_info=True,
                     )
+                    walk_had_errors = True
                     continue
 
             for abs_path in paths:
                 try:
-                    if abs_path.is_symlink():
+                    # See folder loop above: lstat()/S_IS* instead of
+                    # is_symlink()/is_file(), so a stat failure always
+                    # reaches the `except` below and sets walk_had_errors,
+                    # regardless of pathlib version.
+                    st = abs_path.lstat()
+                    if stat.S_ISLNK(st.st_mode):
                         continue
-                    if not abs_path.is_file():
+                    if not stat.S_ISREG(st.st_mode):
                         continue
                     if not self._extension_allowed(abs_path, sync_filters):
                         continue
-                    st = abs_path.stat()
                     if not _file_stat_matches_date_filters(st, sync_filters):
                         continue
                     rel_path = abs_path.relative_to(root).as_posix()
+                    walked_external_ids.add(
+                        self._external_record_id_for_rel_path(rel_path)
+                    )
                     folder_records = self._build_parent_folder_records(
                         rel_path,
                         root,
@@ -2224,10 +2391,15 @@ class LocalFsConnector(BaseConnector):
                         await asyncio.sleep(0)
                 except Exception as e:
                     self.logger.warning("Local FS: skip %s: %s", abs_path, e)
+                    walk_had_errors = True
                     continue
 
             if batch:
                 await self.data_entities_processor.on_new_records(batch)
+
+            deleted = await self._prune_stale_records(
+                owner.id, rg_external, walked_external_ids, walk_had_errors
+            )
 
             self.logger.info(
                 "Local FS: finished sync from %s (%d file(s) processed, %d stale record(s) deleted)",
@@ -2242,6 +2414,10 @@ class LocalFsConnector(BaseConnector):
             self._owner_user_for_permissions = None
 
     async def run_incremental_sync(self) -> None:
+        # Local FS has no cursor/webhook signal, so a directory walk is the
+        # only way to detect changes — but run_sync no longer wipes and
+        # re-embeds unchanged files (see _prune_stale_records), so reusing it
+        # here is a real incremental sync, not a full destructive one.
         await self.run_sync()
 
     def handle_webhook_notification(self, notification: Dict) -> None:
