@@ -42,7 +42,7 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
     "true",
     "yes",
 )
-_ENV_MAX_CONCURRENT_EMBEDDINGS = os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY")
+_ENV_MAX_CONCURRENT_EMBEDDINGS = (os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY") or "").strip()
 MAX_CONCURRENT_EMBEDDINGS = (
     int(_ENV_MAX_CONCURRENT_EMBEDDINGS)
     if _ENV_MAX_CONCURRENT_EMBEDDINGS
@@ -438,11 +438,24 @@ class ModelManager:
                             model_name, status, self._download_status_lock
                         )
                     except Exception as download_exc:
+                        offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
+                            "1",
+                            "true",
+                            "yes",
+                        }
+                        if offline:
+                            err = RuntimeError(
+                                "HuggingFace offline mode is on (HF_HUB_OFFLINE=1), so "
+                                f"'{model_name}' cannot be downloaded. Set HF_HUB_OFFLINE=0 "
+                                "to allow the download, or use a model already in the image."
+                            )
+                            err.__cause__ = download_exc
+                            download_exc = err
                         with self._download_status_lock:
                             status.status = "failed"
                             status.error = str(download_exc)
                             status.updated_at = time.time()
-                        raise
+                        raise download_exc
 
                     with self._download_status_lock:
                         status.status = "loading"

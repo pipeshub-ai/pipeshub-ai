@@ -1223,6 +1223,8 @@
       "configUpdateModel": "Update Model",
       "configFillRequiredTooltip": "Fill in all required fields",
       "configSaveErrorFallback": "Failed to save model configuration",
+      "configSaveOutboundError": "PipesHub cannot reach this model provider from inside the container. Cloud providers need outbound internet — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "Request timed out while validating the model. Cloud providers need outbound internet from the PipesHub container — see deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "No configuration required for this provider.",
       "configDefaultModelNotice": "\"{{modelName}}\" will be used by the system by default.",
       "configSectionModelConfiguration": "Model Configuration",

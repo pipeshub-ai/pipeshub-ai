@@ -1209,6 +1209,8 @@
       "configUpdateModel": "Actualizar modelo",
       "configFillRequiredTooltip": "Rellene todos los campos obligatorios",
       "configSaveErrorFallback": "No se pudo guardar la configuración del modelo",
+      "configSaveOutboundError": "PipesHub no puede alcanzar este proveedor de modelos desde el contenedor. Los proveedores en la nube necesitan acceso a Internet de salida — véase deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveTimeoutError": "La solicitud superó el tiempo de espera al validar el modelo. Los proveedores en la nube necesitan acceso a Internet de salida desde el contenedor de PipesHub — véase deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configNoConfigRequired": "No se requiere configuración para este proveedor.",
       "configDefaultModelNotice": "\"{{modelName}}\" será utilizado por el sistema de forma predeterminada.",
       "configSectionModelConfiguration": "Configuración del modelo",
