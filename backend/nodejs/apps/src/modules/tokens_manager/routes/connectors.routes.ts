@@ -56,6 +56,8 @@ import {
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
+  cleanupVectorStore,
+  reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
 } from '../controllers/connector.controllers';
@@ -633,6 +635,30 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(getRecordContentSchema),
     getRecordContent(config),
+  );
+
+  /**
+   * POST /vector-store/cleanup
+   * Drop and recreate the shared records vector collection. Admin only.
+   */
+  router.post(
+    '/vector-store/cleanup',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    cleanupVectorStore(config),
+  );
+
+  /**
+   * POST /vector-store/reindex
+   * Re-embed every connector from blob storage. Admin only. Does not drop the collection.
+   */
+  router.post(
+    '/vector-store/reindex',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    reindexVectorStore(config),
   );
 
   /**

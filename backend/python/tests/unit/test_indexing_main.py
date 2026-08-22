@@ -575,8 +575,10 @@ class TestRecoverInProgressRecords:
 
         await recover_in_progress_records(mock_container, gp)
 
-        gp.update_node.assert_awaited_once()
-        updates = gp.update_node.await_args.args[2]
+        # The stranded-record sweep runs in the same pass and re-sees this row,
+        # because the stub returns a static page rather than reflecting the
+        # update. Assert the recovery write itself rather than a call count.
+        updates = gp.update_node.await_args_list[0].args[2]
         assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
@@ -603,8 +605,10 @@ class TestRecoverInProgressRecords:
 
         await recover_in_progress_records(mock_container, gp)
 
-        gp.update_node.assert_awaited_once()
-        updates = gp.update_node.await_args.args[2]
+        # The stranded-record sweep runs in the same pass and re-sees this row,
+        # because the stub returns a static page rather than reflecting the
+        # update. Assert the recovery write itself rather than a call count.
+        updates = gp.update_node.await_args_list[0].args[2]
         assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
@@ -1793,3 +1797,347 @@ class TestRecoverInProgressRecordsAdditional:
         gp.update_node.assert_not_awaited()
         producer = mock_container.kafka_consumers[0][2]
         producer.send_event.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Queued/stranded records on disabled connectors
+# ---------------------------------------------------------------------------
+
+
+def _sweep_graph(pages, active_ids):
+    """Graph stub paging by indexingStatus, with a fixed set of live connectors.
+
+    The pagination signature is spelled out rather than absorbed by **kwargs so a
+    caller using the wrong keyword fails here. AsyncMock accepts anything, which
+    is how `offset=` shipped against providers whose parameter is `skip=`.
+    """
+    graph = AsyncMock()
+
+    async def _paged(
+        collection,
+        skip=0,
+        limit=50,
+        filters=None,
+        sort_field=None,
+        transaction=None,
+        raise_on_error=False,
+    ):
+        if skip:
+            return []
+        return pages.get((filters or {}).get("indexingStatus"), [])
+
+    graph.get_documents_paginated = AsyncMock(side_effect=_paged)
+    graph.get_document = AsyncMock(
+        side_effect=lambda key, collection: {"isActive": key in active_ids}
+    )
+    graph.update_node = AsyncMock()
+    return graph
+
+
+class TestSweepStrandedRecordsOnInactiveConnectors:
+    @pytest.mark.asyncio
+    async def test_queued_records_on_disabled_connector_are_moved(self):
+        """QUEUED rows are invisible to the main stale scan.
+
+        It filters on IN_PROGRESS, and a QUEUED row has no processingStartedAt
+        to age out, so without this sweep they sit in QUEUED for ever.
+        """
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    {"_key": "q1", "connectorId": "dead", "origin": "CONNECTOR"}
+                ]
+            },
+            active_ids=set(),
+        )
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 1
+        key, collection, fields = graph.update_node.await_args.args
+        assert key == "q1"
+        assert collection == CollectionNames.RECORDS.value
+        assert fields["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert fields["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_live_connector_records_are_left_alone(self):
+        """A queued row on a live connector may still have a message in the
+        broker; re-marking it would fight the pipeline."""
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    {"_key": "q1", "connectorId": "live", "origin": "CONNECTOR"}
+                ]
+            },
+            active_ids={"live"},
+        )
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 0
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recently_started_in_progress_is_not_yanked(self):
+        """A row inside the lease window may still be owned by a worker."""
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        future_ms = 9_999_999_999_999
+        graph = _sweep_graph(
+            {
+                ProgressStatus.IN_PROGRESS.value: [
+                    {
+                        "_key": "p1",
+                        "connectorId": "dead",
+                        "origin": "CONNECTOR",
+                        "processingStartedAt": future_ms,
+                    }
+                ]
+            },
+            active_ids=set(),
+        )
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 0
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_aged_in_progress_on_dead_connector_is_moved(self):
+        """Past the lease window nothing in flight can succeed: the connector is
+        already out of connectors_map, so waiting the full ~32 min stale window
+        just leaves it looking stuck."""
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = _sweep_graph(
+            {
+                ProgressStatus.IN_PROGRESS.value: [
+                    {
+                        "_key": "p1",
+                        "connectorId": "dead",
+                        "origin": "CONNECTOR",
+                        "processingStartedAt": 1,
+                    }
+                ]
+            },
+            active_ids=set(),
+        )
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_connector_instance_counts_as_inactive(self):
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    {"_key": "q1", "connectorId": "gone", "origin": "CONNECTOR"}
+                ]
+            },
+            active_ids=set(),
+        )
+        graph.get_document = AsyncMock(return_value=None)
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 1
+
+    @pytest.mark.asyncio
+    async def test_non_connector_records_are_ignored(self):
+        """KB/upload records have no connector to be disabled."""
+        from app.indexing_main import _sweep_queued_records_for_inactive_connectors
+
+        graph = _sweep_graph(
+            {
+                ProgressStatus.QUEUED.value: [
+                    {"_key": "kb1", "connectorId": "kb-1", "origin": "UPLOAD"}
+                ]
+            },
+            active_ids=set(),
+        )
+
+        swept = await _sweep_queued_records_for_inactive_connectors(
+            graph_provider=graph, logger=MagicMock(), page_size=100
+        )
+
+        assert swept == 0
+        graph.update_node.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Orphaned virtual-record mappings
+# ---------------------------------------------------------------------------
+
+
+def _orphan_graph(mappings, records_by_vrid):
+    """Graph stub paging virtualRecordToDocIdMapping.
+
+    Signature spelled out for the same reason as _sweep_graph: AsyncMock would
+    happily accept a misspelled pagination keyword.
+    """
+    graph = AsyncMock()
+    state = {"rows": list(mappings)}
+
+    async def _paged(
+        collection,
+        skip=0,
+        limit=50,
+        filters=None,
+        sort_field=None,
+        transaction=None,
+        raise_on_error=False,
+    ):
+        return state["rows"][skip : skip + limit]
+
+    graph.get_documents_paginated = AsyncMock(side_effect=_paged)
+    graph.get_records_by_virtual_record_id = AsyncMock(
+        side_effect=lambda vrid: list(records_by_vrid.get(vrid, []))
+    )
+    return graph
+
+
+class TestSweepOrphanedVirtualRecordMappings:
+    @pytest.fixture(autouse=True)
+    def _reset_cursor(self):
+        """The scan cursor is module state that persists across ticks."""
+        import app.indexing_main as m
+
+        m._orphan_sweep_cursor = 0
+        yield
+        m._orphan_sweep_cursor = 0
+
+    @pytest.mark.asyncio
+    async def test_vrid_with_no_records_is_cleaned_up(self):
+        """The abandoned side of an N:1 split.
+
+        The record is repointed at the new VRID before the old one is cleaned
+        up, so a failed cleanup leaves vectors no record can reach — and the
+        membership backfill walks records, so it cannot reach them either.
+        """
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        graph = _orphan_graph([{"_key": "vr-abandoned"}], records_by_vrid={})
+        pipeline = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph,
+            pipeline=pipeline,
+            logger=MagicMock(),
+            page_size=100,
+        )
+
+        assert swept == 1
+        pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with(
+            "vr-abandoned"
+        )
+
+    @pytest.mark.asyncio
+    async def test_vrid_still_referenced_is_never_touched(self):
+        """Deleting a live VRID's points would silently drop it from search."""
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        graph = _orphan_graph(
+            [{"_key": "vr-live"}], records_by_vrid={"vr-live": [{"_key": "r1"}]}
+        )
+        pipeline = AsyncMock()
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph,
+            pipeline=pipeline,
+            logger=MagicMock(),
+            page_size=100,
+        )
+
+        assert swept == 0
+        pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_one_failed_cleanup_does_not_abort_the_rest(self):
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        graph = _orphan_graph(
+            [{"_key": "vr-bad"}, {"_key": "vr-good"}], records_by_vrid={}
+        )
+        pipeline = AsyncMock()
+
+        async def _cleanup(vrid):
+            if vrid == "vr-bad":
+                raise RuntimeError("qdrant down")
+            return "deleted"
+
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(side_effect=_cleanup)
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph,
+            pipeline=pipeline,
+            logger=MagicMock(),
+            page_size=100,
+        )
+
+        assert swept == 1
+        assert pipeline.rewrite_or_delete_vector_membership.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_scan_is_bounded_and_resumes_where_it_stopped(self):
+        """A full scan per tick would be a standing N+1 for a rare payoff.
+
+        Each tick walks a bounded slice; the next one picks up the cursor rather
+        than re-walking the head of the collection for ever.
+        """
+        import app.indexing_main as m
+
+        rows = [{"_key": f"vr{i}"} for i in range(40)]
+        graph = _orphan_graph(rows, records_by_vrid={r["_key"]: [{}] for r in rows})
+        pipeline = AsyncMock()
+
+        await m._sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+        )
+
+        scanned = m.ORPHAN_SCAN_MAX_PAGES_PER_TICK * 5
+        assert graph.get_records_by_virtual_record_id.await_count == scanned
+        assert m._orphan_sweep_cursor == scanned
+
+        graph.get_records_by_virtual_record_id.reset_mock()
+        await m._sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
+        )
+
+        resumed = [
+            c.args[0] for c in graph.get_records_by_virtual_record_id.await_args_list
+        ]
+        assert resumed[0] == f"vr{scanned}"
+
+    @pytest.mark.asyncio
+    async def test_cursor_wraps_at_the_end_of_the_collection(self):
+        """Without the wrap the sweep would stick past the tail and never
+        revisit rows that became orphans in the meantime."""
+        import app.indexing_main as m
+
+        rows = [{"_key": "vr-live"}]
+        graph = _orphan_graph(rows, records_by_vrid={"vr-live": [{}]})
+
+        await m._sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=AsyncMock(), logger=MagicMock(), page_size=5
+        )
+
+        assert m._orphan_sweep_cursor == 0

@@ -164,15 +164,25 @@ class TestIndexingPipelineBulkDelete:
         assert result["virtual_record_ids_processed"] == 0
 
     @pytest.mark.asyncio
-    async def test_skips_ids_with_remaining_records(self):
+    async def test_rewrites_ids_with_remaining_records(self):
         pipeline = _make_indexing_pipeline()
         pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
             return_value=["rec-1"]
         )
+        pipeline.graph_provider.get_document = AsyncMock(
+            return_value={"connectorId": "conn-1", "recordGroupId": "rg-1"}
+        )
+        pipeline.graph_provider.get_edges_from_node = AsyncMock(return_value=[])
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.delete_points = AsyncMock()
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
-        assert result["virtual_record_ids_processed"] == 0
+        assert result["success"] is True
+        assert result["virtual_record_ids_processed"] == 1
+        pipeline.vector_db_service.set_payload.assert_awaited_once()
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deletes_safe_ids(self):
@@ -187,3 +197,73 @@ class TestIndexingPipelineBulkDelete:
         assert result["success"] is True
         assert result["virtual_record_ids_processed"] == 1
         pipeline.vector_db_service.delete_points.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mixed_rewrite_and_delete(self):
+        pipeline = _make_indexing_pipeline()
+
+        async def remaining(virtual_record_id):
+            return ["rec-keep"] if virtual_record_id == "vr-shared" else []
+
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=remaining
+        )
+        pipeline.graph_provider.get_document = AsyncMock(
+            return_value={"connectorId": "conn-2"}
+        )
+        pipeline.graph_provider.get_edges_from_node = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value=MagicMock())
+        pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        result = await pipeline.bulk_delete_embeddings(["vr-shared", "vr-last"])
+
+        assert result["success"] is True
+        assert result["virtual_record_ids_processed"] == 2
+        pipeline.vector_db_service.set_payload.assert_awaited_once()
+        pipeline.vector_db_service.delete_points.assert_awaited_once()
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()
+
+
+class TestBulkDeleteConfirmation:
+    """Bulk deletion must re-confirm before destroying points."""
+
+    @pytest.mark.asyncio
+    async def test_vrid_that_reappears_is_rewritten_not_deleted(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.modules.indexing import run as run_mod
+
+        gp = AsyncMock()
+        # empty on the candidate pass, populated on the confirming pass
+        reads = [[], ["r1"]]
+        gp.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=lambda *a, **k: reads.pop(0) if reads else ["r1"]
+        )
+        gp.get_document = AsyncMock(return_value={"connectorId": "c1"})
+        gp.get_edges_from_node = AsyncMock(return_value=[])
+
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=MagicMock())
+
+        pipeline = run_mod.IndexingPipeline(
+            logger=MagicMock(),
+            config_service=AsyncMock(),
+            graph_provider=gp,
+            collection_name="records",
+            vector_db_service=vdb,
+        )
+
+        original = run_mod.EMPTY_CONFIRM_DELAY_SECONDS
+        run_mod.EMPTY_CONFIRM_DELAY_SECONDS = 0
+        try:
+            result = await pipeline.bulk_delete_embeddings(["vr-lag"])
+        finally:
+            run_mod.EMPTY_CONFIRM_DELAY_SECONDS = original
+
+        assert result["success"] is True
+        assert result["virtual_record_ids_deleted"] == 0
+        assert result["virtual_record_ids_rewritten"] == 1
+        vdb.delete_points.assert_not_awaited()
+        gp.delete_nodes.assert_not_awaited()

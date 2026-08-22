@@ -176,6 +176,7 @@ class TestInitializeCollection:
         await vs._initialize_collection(embedding_size=1024)
 
         vs.vector_db_service.create_collection.assert_awaited_once()
+        assert vs.vector_db_service.create_index.call_count == 4
 
     @pytest.mark.asyncio
     async def test_collection_creation_failure_raises(self):

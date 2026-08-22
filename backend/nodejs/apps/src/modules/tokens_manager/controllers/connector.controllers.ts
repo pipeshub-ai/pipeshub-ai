@@ -2072,6 +2072,42 @@ const validateConnectorNotLocked = async (
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
+const proxyVectorStoreJob =
+  (appConfig: AppConfig, operation: 'cleanup' | 'reindex') =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated or missing organization ID');
+      }
+
+      const headers = buildProxyHeaders(req);
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/vector-store/${operation}`,
+        HttpMethod.POST,
+        headers,
+        {},
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        `Vector store ${operation} not started`,
+        `Vector store ${operation} failed`,
+      );
+      logger.info(`Vector store ${operation} accepted`);
+    } catch (error: any) {
+      logger.error(`Error starting vector store ${operation}`, { error });
+      next(handleBackendError(error, `vector store ${operation}`));
+    }
+  };
+
+export const cleanupVectorStore = (appConfig: AppConfig) =>
+  proxyVectorStoreJob(appConfig, 'cleanup');
+
+export const reindexVectorStore = (appConfig: AppConfig) =>
+  proxyVectorStoreJob(appConfig, 'reindex');
+
 export const reindexConnector =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

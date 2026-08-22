@@ -3018,6 +3018,14 @@ class AppMetadata(BaseModel):
     status: str | None = Field(default=None, description="Current sync status")
     is_locked: bool | None = Field(default=None, description="Whether the app is locked")
     permission_model: str | None = Field(default=None, description="How the connector's records derive per-user visibility (PermissionModel: APP_LEVEL or RECORD_LEVEL)")
+    vector_membership_backfilled: bool = Field(
+        default=False,
+        description="Whether indexed vectors for this connector have connectorIds/recordGroupIds",
+    )
+    vector_membership_backfill_after_key: str | None = Field(
+        default=None,
+        description="Keyset cursor for an in-progress vector membership backfill",
+    )
 
     @staticmethod
     def from_db_document(doc: dict[str, Any]) -> "AppMetadata":
@@ -3040,6 +3048,12 @@ class AppMetadata(BaseModel):
             status=doc.get("status"),
             is_locked=doc.get("isLocked"),
             permission_model=doc.get("permissionModel"),
+            vector_membership_backfilled=bool(
+                doc.get("vectorMembershipBackfilled", False)
+            ),
+            vector_membership_backfill_after_key=doc.get(
+                "vectorMembershipBackfillAfterKey"
+            ),
         )
 
 class MeetingRecord(Record):

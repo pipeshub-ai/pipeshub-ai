@@ -543,7 +543,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 group_type=RecordGroupType.BUCKET,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                description=f"{self.connector_name} Bucket: {bucket_name}",
+                description=f"{self.connector_name.value} Bucket: {bucket_name}",
                 web_url=self._generate_parent_web_url(bucket_name),
                 source_created_at=creation_ms,
                 source_updated_at=creation_ms,

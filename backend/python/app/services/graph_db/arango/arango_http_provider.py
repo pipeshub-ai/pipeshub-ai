@@ -127,6 +127,10 @@ from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.vector_membership_queries import (
+    build_app_needing_vector_membership_backfill_aql,
+    build_page_records_for_vector_membership_backfill_aql,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format
@@ -669,6 +673,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["connectorId"],
+        )
+
+        # COMPOUND: the vector-membership backfill keyset walk filters on
+        # connectorId then sorts by _key. Same reasoning as the reindex compound
+        # below — without _key trailing the filter field the SORT is not
+        # index-satisfied and every page re-sorts the connector's whole record set.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "_key"],
         )
 
         # SINGLE: indexingStatus (pipeline queries)
@@ -1582,6 +1595,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(to_upsert), status)
         except Exception as e:
             self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
+
+    async def reset_indexing_status_for_connector(
+        self,
+        connector_id: str,
+        status: str,
+        exclude_statuses: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> None:
+        if not connector_id:
+            return
+        coll = CollectionNames.RECORDS.value
+        excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        try:
+            exclude_clause = (
+                "FILTER doc.indexingStatus NOT IN @exclude_statuses"
+                if excluded
+                else ""
+            )
+            query = f"""
+            FOR doc IN @@collection
+                FILTER doc.connectorId == @connector_id
+                {exclude_clause}
+                UPDATE doc WITH {{ indexingStatus: @status }} IN @@collection
+            """
+            bind_vars: dict = {
+                "@collection": coll,
+                "connector_id": connector_id,
+                "status": status,
+            }
+            if excluded:
+                bind_vars["exclude_statuses"] = excluded
+            await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+        except Exception as e:
+            # Must not be swallowed: the rebuild drops the vector collection
+            # straight after this, and a connector whose records kept their old
+            # statuses is never re-indexed, so search stays silently empty.
+            self.logger.error(
+                "❌ Failed to reset indexing status for connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            raise
 
     async def compare_and_set_indexing_status(
         self,
@@ -3680,6 +3735,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             return []
 
+    async def get_app_needing_vector_membership_backfill(
+        self,
+        transaction: str | None = None,
+    ) -> dict | None:
+        results = await self.http_client.execute_aql(
+            build_app_needing_vector_membership_backfill_aql(),
+            bind_vars={},
+            txn_id=transaction,
+        )
+        if not results:
+            return None
+        return results[0]
+
+    async def page_records_for_vector_membership_backfill(
+        self,
+        connector_id: str,
+        after_key: str | None,
+        limit: int,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        try:
+            has_after_key = bool(after_key)
+            bind_vars: dict = {
+                "connector_id": connector_id,
+                "limit": max(1, int(limit)),
+            }
+            if has_after_key:
+                bind_vars["after_key"] = after_key
+            results = await self.http_client.execute_aql(
+                build_page_records_for_vector_membership_backfill_aql(
+                    has_after_key=has_after_key
+                ),
+                bind_vars=bind_vars,
+                txn_id=transaction,
+            )
+            if not results:
+                return []
+            return [
+                {
+                    "_key": row.get("_key"),
+                    "virtualRecordId": row.get("virtualRecordId"),
+                }
+                for row in results
+            ]
+        except Exception as e:
+            self.logger.error(
+                "Failed to page records for vector membership backfill "
+                "connector %s: %s",
+                connector_id,
+                str(e),
+            )
+            # Must not degrade to []: the backfill scanner reads an empty page as
+            # "this connector is finished" and sets vectorMembershipBackfilled,
+            # so a swallowed error would permanently mark it done having
+            # processed nothing.
+            raise
+
     async def get_records_by_record_group(
         self,
         record_group_id: str,
@@ -5471,17 +5583,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_org_apps(
         self,
-        org_id: str
+        org_id: str,
+        *,
+        active_only: bool = True,
     ) -> list[dict]:
         """
         Get organization apps.
         """
         try:
+            active_filter = "FILTER app.isActive == true" if active_only else ""
             query = f"""
             FOR app IN OUTBOUND
                 '{CollectionNames.ORGS.value}/{org_id}'
                 {CollectionNames.ORG_APP_RELATION.value}
-            FILTER app.isActive == true
+            {active_filter}
             RETURN app
             """
 
@@ -5565,6 +5680,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "isAgentActive": True,
                 "isConfigured": True,
                 "isAuthenticated": True,
+                "vectorMembershipBackfilled": False,
                 "hideConnector": True,
                 "createdAtTimestamp": created_at,
                 "updatedAtTimestamp": updated_at,
@@ -6012,7 +6128,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return 0
 
             # Find all queued duplicate records directly from RECORDS collection
@@ -11478,6 +11598,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "mimeType": mime_type,
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
+                "connectorId": record.get("connectorId"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
@@ -18275,7 +18396,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             size_in_bytes = ref_record.get("sizeInBytes")
 
             if not md5_checksum:
-                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                # Expected, not a fault: duplicates are matched by md5Checksum
+                # alone, so a record without one (a folder, or anything with no
+                # content) can have none waiting on it. Warning-level here fires
+                # once per such record and drowns real problems.
+                self.logger.debug(f"Record {record_id} missing md5Checksum")
                 return None
 
             # Find the first queued duplicate record directly from RECORDS collection

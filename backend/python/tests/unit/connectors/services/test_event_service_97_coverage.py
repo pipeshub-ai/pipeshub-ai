@@ -107,6 +107,7 @@ class TestFullSyncSyncPointDeletionFailure:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -128,6 +129,7 @@ class TestFullSyncSyncPointDeletionFailure:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -160,6 +162,7 @@ class TestFullSyncEdgeDeletionException:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -181,6 +184,7 @@ class TestFullSyncEdgeDeletionException:
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -276,6 +280,7 @@ class TestFullSyncUnlockFailure:
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=update_status_side_effect), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -302,6 +307,7 @@ class TestNormalSyncStatusFailure:
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=Exception("status write failed")), \
              patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
             mock_stm.start_sync = AsyncMock()
+            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": False
             })

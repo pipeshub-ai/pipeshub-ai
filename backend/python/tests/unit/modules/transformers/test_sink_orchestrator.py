@@ -169,3 +169,34 @@ class TestApply:
 
         orch.vector_store.apply.assert_awaited_once()
         orch.graph_provider.batch_upsert_nodes.assert_awaited()
+
+
+class TestSkipBlob:
+    @pytest.mark.asyncio
+    async def test_skip_blob_does_not_write_storage(self):
+        orch = _make_orchestrator(
+            graph_doc={"indexingStatus": "NOT_STARTED"},
+            vector_result=True,
+        )
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+
+        await orch.index(ctx)
+
+        orch.blob_storage.apply.assert_not_awaited()
+        orch.vector_store.apply.assert_awaited_once_with(ctx)
+        orch.graph_provider.batch_upsert_nodes.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skip_blob_reindexes_even_if_completed(self):
+        orch = _make_orchestrator(
+            graph_doc={"indexingStatus": "COMPLETED"},
+            vector_result=True,
+        )
+        ctx = _make_ctx()
+        ctx.settings = {"skip_blob": True}
+
+        await orch.index(ctx)
+
+        orch.blob_storage.apply.assert_not_awaited()
+        orch.vector_store.apply.assert_awaited_once_with(ctx)
