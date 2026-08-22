@@ -180,6 +180,12 @@ check "ready banner is health-gated" "$inner" "PipesHub AI is ready!"
 check "not-ready banner exists" "$inner" "not confirmed ready yet"
 check "profile repair on reuse present" "$inner" "Repairing to"
 check "cross-directory guard present" "$inner" "Existing deployment detected"
+check "separate-instance prompt present" "$inner" "Install a separate instance here"
+check "--yes never auto-creates a second stack" "$inner" "never invents a second stack"
+check "--yes without PIPESHUB_PROJECT manages existing" "$inner" "Non-interactive (--yes): managing the existing"
+check "PIPESHUB_PROJECT is documented" "$inner" "PIPESHUB_PROJECT"
+check "persists COMPOSE_PROJECT_NAME into .env" "$inner" 'COMPOSE_PROJECT_NAME=${PROJECT_NAME}'
+check "health probe uses compose exec helper" "$inner" "compose_app_exec"
 check "reuse-path port check present" "$inner" "is already in use by another process"
 check "unset DATA_STORE defaults to neo4j" "$inner" "defaulting to Neo4j (no existing graph data found)"
 check "unset DATA_STORE reuses arango volume" "$inner" "reusing the existing ArangoDB data volume"
@@ -223,6 +229,16 @@ fi
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "app healthcheck gates on core services" "$compose" "required=('query','connector','indexing','docling')"
+if [[ "$compose" == *"container_name:"* ]]; then
+  fail "compose must not pin container_name (blocks a second project)"
+else
+  pass "compose does not pin container_name"
+fi
+if [[ "$compose" == *"pipeshub-ai_network"* ]]; then
+  fail "compose must not pin the network name (blocks a second project)"
+else
+  pass "compose does not pin the network name"
+fi
 # embedding may be absent or 'unhealthy' for minutes on first run; gating the app
 # container on it leaves docker ps perpetually 'unhealthy' while the app works.
 if [[ "$compose" == *"s.get('embedding') in ('healthy','starting')"* ]]; then
@@ -251,6 +267,7 @@ echo "== env.template documents runtime robustness knobs =="
 envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 check "env.template documents HF_HUB_OFFLINE" "$envtmpl" "HF_HUB_OFFLINE"
 check "env.template documents TRANSFORMERS_OFFLINE" "$envtmpl" "TRANSFORMERS_OFFLINE"
+check "env.template documents COMPOSE_PROJECT_NAME" "$envtmpl" "COMPOSE_PROJECT_NAME"
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
@@ -277,6 +294,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
 check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
+check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 uninstall_block="$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
 check "uninstall removes orphans" "$uninstall_block" "down -v --remove-orphans"
 
@@ -379,6 +397,63 @@ if [[ "$inner" == *"warn_container_outbound_connectivity"* ]] && ! [[ "$inner" =
 else
   fail "outbound check does not hard-fail install"
 fi
+if [[ "$inner" == *"docker exec pipeshub-ai"* ]]; then
+  fail "must not docker exec a pinned container name"
+else
+  pass "does not docker exec a pinned container name"
+fi
+
+echo "== In-tree installer: Compose project name helpers (real functions) =="
+eval "$(extract_fn get_existing_val "$INNER_INSTALLER")"
+eval "$(extract_fn resolve_project_name "$INNER_INSTALLER")"
+eval "$(extract_fn valid_compose_project_name "$INNER_INSTALLER")"
+eval "$(extract_fn sanitize_compose_project_name "$INNER_INSTALLER")"
+eval "$(extract_fn suggest_separate_project_name "$INNER_INSTALLER")"
+
+valid_compose_project_name "pipeshub-2" && pass "accepts pipeshub-2" || fail "accepts pipeshub-2"
+valid_compose_project_name "ab_c" && pass "accepts underscore" || fail "accepts underscore"
+if valid_compose_project_name "-bad"; then fail "rejects leading hyphen"; else pass "rejects leading hyphen"; fi
+if valid_compose_project_name "BadName"; then fail "rejects uppercase"; else pass "rejects uppercase"; fi
+check "sanitizes mixed case directory" "$(sanitize_compose_project_name "My Repo!")" "my-repo"
+
+(
+  unset PIPESHUB_PROJECT
+  ENV_FILE="/no/such/.env"
+  DEFAULT_PROJECT="pipeshub-ai"
+  check "resolve defaults to pipeshub-ai" "$(resolve_project_name)" "pipeshub-ai"
+)
+(
+  PIPESHUB_PROJECT="my-copy"
+  ENV_FILE="$TMP_ROOT/env_proj"
+  printf 'COMPOSE_PROJECT_NAME=from-env\n' >"$ENV_FILE"
+  DEFAULT_PROJECT="pipeshub-ai"
+  check "PIPESHUB_PROJECT wins over .env" "$(resolve_project_name)" "my-copy"
+)
+(
+  unset PIPESHUB_PROJECT
+  ENV_FILE="$TMP_ROOT/env_proj2"
+  printf 'COMPOSE_PROJECT_NAME=from-env\n' >"$ENV_FILE"
+  DEFAULT_PROJECT="pipeshub-ai"
+  check "COMPOSE_PROJECT_NAME from .env" "$(resolve_project_name)" "from-env"
+)
+(
+  DEFAULT_PROJECT="pipeshub-ai"
+  SCRIPT_DIR="/tmp/pipeshub-pr2634"
+  check "suggests directory basename" "$(suggest_separate_project_name)" "pipeshub-pr2634"
+)
+(
+  DEFAULT_PROJECT="pipeshub-ai"
+  SCRIPT_DIR="/tmp/docker-compose"
+  check "docker-compose dir falls back to pipeshub-2" "$(suggest_separate_project_name)" "pipeshub-2"
+)
+(
+  repo="$TMP_ROOT/my-repo"
+  mkdir -p "$repo/deployment/docker-compose"
+  touch "$repo/Dockerfile"
+  DEFAULT_PROJECT="pipeshub-ai"
+  SCRIPT_DIR="$repo/deployment/docker-compose"
+  check "suggests repo root when run from compose dir" "$(suggest_separate_project_name)" "my-repo"
+)
 
 echo
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"

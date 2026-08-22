@@ -27,7 +27,8 @@
 #   PIPESHUB_VERSION         image tag (e.g. latest, slim, 0.7.0); for local builds the tag
 #                            applied to the locally built image (default: local)
 #   PIPESHUB_IMAGE_SOURCE    prebuilt | local (default: prebuilt)
-#   PIPESHUB_PORT            host port to expose on (default 3000)
+#   PIPESHUB_PORT            host port to expose on (default 3000; 3200 for a separate instance)
+#   PIPESHUB_PROJECT         Compose project name (default pipeshub-ai; use to run a second copy)
 #   PIPESHUB_PUBLIC_URL      public HTTPS URL for external access (optional)
 # ==============================================================================
 set -euo pipefail
@@ -74,7 +75,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
-PROJECT_NAME="pipeshub-ai"
+DEFAULT_PROJECT="pipeshub-ai"
+PROJECT_NAME="$DEFAULT_PROJECT"
+INSTALL_SEPARATE=false
+# Fresh install uses 3000. A second copy on the same host defaults to 3200 so it
+# does not steal the first instance's published port.
+DEFAULT_APP_PORT=3000
 # First start downloads the embedding model and cold-starts the full stack, which
 # on smaller hosts can edge past 5 min; default generously and allow overriding.
 HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-420}"
@@ -119,7 +125,8 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_IMAGE_SOURCE  prebuilt | local  (default: prebuilt)
   PIPESHUB_NO_PULL       1 | true to skip the image refresh (same as --no-pull)
   PIPESHUB_VERSION       image tag (prebuilt) or local build tag (default: local)
-  PIPESHUB_PORT          host port (default: 3000)
+  PIPESHUB_PORT          host port (default: 3000; 3200 when installing a second copy)
+  PIPESHUB_PROJECT       Compose project name (default: pipeshub-ai)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
 EOF
 }
@@ -215,17 +222,76 @@ docker_vm_mem_mb() {
   echo $(( bytes / 1024 / 1024 ))
 }
 
-# List working directories of RUNNING containers in our Compose project that
-# were launched from a directory other than this one. Compose stamps each
-# container with com.docker.compose.project.working_dir. Because the project
-# name, container names, network, and volumes are all fixed, a stack started
-# from elsewhere shares all of them — launching from here reconciles/takes over
-# that deployment instead of starting an independent one.
+# List working directories of RUNNING containers in a Compose project that were
+# launched from a directory other than this one. Compose stamps each container
+# with com.docker.compose.project.working_dir. The same project name shares
+# volumes; launching from here manages that stack unless the user picks a new name.
 compose_other_working_dirs() {
+  local project="${1:-$PROJECT_NAME}"
   docker ps \
-    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.project=${project}" \
     --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
     | grep -v '^$' | sort -u | grep -vxF "$SCRIPT_DIR" || true
+}
+
+# Compose project names: lowercase letter or digit, then [a-z0-9_-]*.
+valid_compose_project_name() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+}
+
+sanitize_compose_project_name() {
+  local raw
+  raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9_-' '-')"
+  raw="${raw#-}"
+  raw="${raw%-}"
+  printf '%s' "$raw"
+}
+
+# Default name for a second copy: this directory, or the repo root, or pipeshub-2.
+suggest_separate_project_name() {
+  local base candidate
+  candidate="$(basename "$SCRIPT_DIR")"
+  base="$(sanitize_compose_project_name "$candidate")"
+  if [[ -z "$base" || "$base" == "docker-compose" || "$base" == "$DEFAULT_PROJECT" ]]; then
+    if [[ -f "${SCRIPT_DIR}/../../Dockerfile" ]]; then
+      candidate="$(basename "$(cd "${SCRIPT_DIR}/../.." && pwd)")"
+      base="$(sanitize_compose_project_name "$candidate")"
+    fi
+  fi
+  if [[ -z "$base" || "$base" == "$DEFAULT_PROJECT" || "$base" == "docker-compose" ]]; then
+    base="pipeshub-2"
+  fi
+  printf '%s' "$base"
+}
+
+# PIPESHUB_PROJECT wins. Else COMPOSE_PROJECT_NAME in this directory's .env so
+# --stop / --uninstall only tear down this copy. Else the default name.
+resolve_project_name() {
+  if [[ -n "${PIPESHUB_PROJECT:-}" ]]; then
+    printf '%s' "$PIPESHUB_PROJECT"
+    return
+  fi
+  local from_env=""
+  if [[ -f "${ENV_FILE:-}" ]]; then
+    from_env="$(get_existing_val COMPOSE_PROJECT_NAME "")"
+  fi
+  if [[ -n "$from_env" ]]; then
+    printf '%s' "$from_env"
+    return
+  fi
+  printf '%s' "${DEFAULT_PROJECT:-pipeshub-ai}"
+}
+
+# Exec in the app service (Compose name, not a pinned container_name).
+compose_app_exec() {
+  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" exec -T pipeshub-ai "$@"
+}
+
+app_service_is_running() {
+  docker ps \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=pipeshub-ai" \
+    --format '{{.ID}}' 2>/dev/null | grep -q .
 }
 
 # Return 0 if a RUNNING container in our project already publishes the given host
@@ -410,6 +476,15 @@ if ! docker info >/dev/null 2>&1; then
 fi
 success "Docker daemon is running"
 
+# Resolve which Compose project this directory manages (needed for --stop too).
+if [[ -n "${PIPESHUB_PROJECT:-}" ]] && ! valid_compose_project_name "$PIPESHUB_PROJECT"; then
+  die "PIPESHUB_PROJECT must be lowercase letters, digits, hyphens, or underscores, starting with a letter or digit (got: ${PIPESHUB_PROJECT})."
+fi
+PROJECT_NAME="$(resolve_project_name)"
+if [[ "$PROJECT_NAME" != "$DEFAULT_PROJECT" && -z "${PIPESHUB_PORT:-}" ]]; then
+  DEFAULT_APP_PORT=3200
+fi
+
 # ==============================================================================
 # 2b. EARLY-EXIT COMMANDS (--stop, --uninstall)
 # These run without resource checks since they operate on an existing deployment.
@@ -417,6 +492,7 @@ success "Docker daemon is running"
 if $FLAG_STOP; then
   header "Stopping PipesHub"
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+  PROJECT_NAME="$(resolve_project_name)"
   # Enable ALL profiles so `down` removes every profile-gated container
   # (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which profile this
   # .env currently selects. Otherwise a container started under a different
@@ -425,7 +501,7 @@ if $FLAG_STOP; then
   # previously-active profile too.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down --remove-orphans
-  success "PipesHub stopped. Data volumes are preserved."
+  success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
   exit 0
 fi
@@ -439,6 +515,7 @@ if $FLAG_UNINSTALL; then
     [[ "${_confirm:-N}" =~ ^[Yy]$ ]] || { info "Aborted — nothing was changed."; exit 0; }
   fi
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+  PROJECT_NAME="$(resolve_project_name)"
   # Enable ALL profiles so down -v includes every profile-gated service's
   # volume (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which
   # profile was active for this deployment.  Without this, volumes from a
@@ -446,24 +523,75 @@ if $FLAG_UNINSTALL; then
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
   docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v --remove-orphans
-  success "PipesHub stopped and all data volumes removed."
+  success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
 fi
 
 # ==============================================================================
-# 2c. CROSS-DIRECTORY DEPLOYMENT GUARD
-# Warn before launching if PipesHub is already running from another directory.
+# 2c. EXISTING DEPLOYMENT
+# Fresh install (nothing running as pipeshub-ai): unchanged, that project, port 3000.
+# Default project already running from another directory: update it, start a
+# separate named copy here, or abort. --yes never invents a second stack.
 # ==============================================================================
-_OTHER_DIRS="$(compose_other_working_dirs)"
-if [[ -n "$_OTHER_DIRS" ]]; then
-  header "Existing deployment detected"
-  warn "PipesHub (project '${PROJECT_NAME}') is already running from another directory:"
-  while IFS= read -r _d; do [[ -n "$_d" ]] && warn "    $_d"; done <<< "$_OTHER_DIRS"
-  warn "Container names, network, and data volumes are shared by project name, so"
-  warn "launching from here manages that same stack rather than a separate one."
+_warn_takeover() {
+  warn "The same Compose project name shares data volumes, so launching from here"
+  warn "manages that stack rather than starting an independent one."
   warn "If this directory has a different .env, its secrets may not match the existing"
   warn "data volumes and can cause database auth failures."
   warn "Recommended: manage PipesHub from one directory, or run --uninstall there first."
+}
+
+_OTHER_DIRS="$(compose_other_working_dirs)"
+if [[ -n "$_OTHER_DIRS" && -z "${PIPESHUB_PROJECT:-}" && "$PROJECT_NAME" == "$DEFAULT_PROJECT" ]]; then
+  header "Existing deployment detected"
+  warn "PipesHub (project '${DEFAULT_PROJECT}') is already running from another directory:"
+  while IFS= read -r _d; do [[ -n "$_d" ]] && warn "    $_d"; done <<< "$_OTHER_DIRS"
+  if $FLAG_YES; then
+    _warn_takeover
+    warn "Non-interactive (--yes): managing the existing '${PROJECT_NAME}' stack from here."
+    warn "To install a separate copy instead: PIPESHUB_PROJECT=my-copy PIPESHUB_PORT=3200 $0 --yes"
+  else
+    printf "\n  ${BOLD}What do you want to do?${RESET}\n"
+    printf "  [1] Update the existing stack (same data, same port)\n"
+    printf "  [2] Install a separate instance here (new data, different port)\n"
+    printf "  [3] Abort (default)\n"
+    printf "  Choice [${CYAN}1-3${RESET}, press Enter to abort]: "
+    read -r _reply
+    case "${_reply:-3}" in
+      1)
+        _warn_takeover
+        ;;
+      2)
+        warn "A second instance is a full extra copy (databases and RAM)."
+        warn "On a machine that is already running PipesHub, prefer the slim deployment type."
+        INSTALL_SEPARATE=true
+        DEFAULT_APP_PORT=3200
+        _suggest="$(suggest_separate_project_name)"
+        while true; do
+          prompt_input PROJECT_NAME "Compose project name?" "$_suggest"
+          PROJECT_NAME="$(printf '%s' "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]')"
+          if ! valid_compose_project_name "$PROJECT_NAME"; then
+            warn "Use lowercase letters, digits, hyphens, or underscores, starting with a letter or digit."
+            continue
+          fi
+          if [[ "$PROJECT_NAME" == "$DEFAULT_PROJECT" ]]; then
+            warn "That name is the stack that is already running. Pick a different name, or choose [1] to update it."
+            continue
+          fi
+          break
+        done
+        success "Separate instance project: ${PROJECT_NAME} (default port ${DEFAULT_APP_PORT})"
+        ;;
+      *)
+        die "Aborted to avoid clashing with the deployment in the directory above."
+        ;;
+    esac
+  fi
+elif [[ -n "$_OTHER_DIRS" ]]; then
+  header "Existing deployment detected"
+  warn "PipesHub (project '${PROJECT_NAME}') is already running from another directory:"
+  while IFS= read -r _d; do [[ -n "$_d" ]] && warn "    $_d"; done <<< "$_OTHER_DIRS"
+  _warn_takeover
   if ! $FLAG_YES; then
     printf "\n  ${BOLD}Continue and manage the existing deployment from here?${RESET} [y/N]: "
     read -r _reply
@@ -584,14 +712,18 @@ if $FLAG_UPGRADE; then
   info "Upgrade mode — reusing existing .env."
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
-elif $ENV_EXISTS && ! $FLAG_RECONFIGURE; then
+elif $ENV_EXISTS && ! $FLAG_RECONFIGURE && ! $INSTALL_SEPARATE; then
   # .env exists and --reconfigure was not requested: always reuse without prompting.
-  # Use --reconfigure to overwrite.
+  # Use --reconfigure to overwrite. A newly chosen separate instance must not
+  # inherit the original stack's project name or port from this file.
   info "Existing .env found — reusing. Pass --reconfigure to overwrite."
   set -a; . "$ENV_FILE"; set +a
   SKIP_WIZARD=true
 else
   SKIP_WIZARD=false
+  if $INSTALL_SEPARATE && $ENV_EXISTS; then
+    info "Separate instance — existing .env will be backed up and rewritten."
+  fi
 fi
 
 # ==============================================================================
@@ -784,7 +916,7 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 10. PORT SELECTION ──────────────────────────────────────────────────────
   header "Port selection"
 
-  DESIRED_PORT="${PIPESHUB_PORT:-3000}"
+  DESIRED_PORT="${PIPESHUB_PORT:-$DEFAULT_APP_PORT}"
   if ! $FLAG_YES; then
     prompt_input DESIRED_PORT "Port to expose PipesHub on?" "$DESIRED_PORT"
   fi
@@ -879,6 +1011,9 @@ IMAGE_TAG=${IMAGE_TAG}
 IMAGE_SOURCE=${IMAGE_SOURCE}
 # Override sandbox image tag for local builds; leave blank to use compose default
 SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE}
+
+# ── Compose project (isolates volumes/network from other copies on this host) ─
+COMPOSE_PROJECT_NAME=${PROJECT_NAME}
 
 # ── Compose profiles (controls which optional containers start) ──────────────
 # Values: graph-arango | graph-neo4j | kv-etcd | broker-kafka  (comma-separated)
@@ -985,6 +1120,9 @@ fi  # end wizard
 if [[ -f "$ENV_FILE" ]] && ! chmod 600 "$ENV_FILE"; then
   die "Could not restrict permissions on $ENV_FILE"
 fi
+
+# Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
+persist_env_var "COMPOSE_PROJECT_NAME" "$PROJECT_NAME"
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY
@@ -1105,6 +1243,7 @@ if ${SKIP_WIZARD:-false}; then
 fi
 
 printf "\n"
+printf "  %-22s %s\n" "Compose project:" "$PROJECT_NAME"
 printf "  %-22s %s\n" "Image source:"  "${IMAGE_SOURCE:-prebuilt}"
 printf "  %-22s %s\n" "Image tag:"     "${IMAGE_TAG:-latest}"
 printf "  %-22s %s\n" "Graph DB:"      "${DATA_STORE:-(unset)}"
@@ -1231,7 +1370,7 @@ fi
 
 # ==============================================================================
 # 16. HEALTH WAIT
-# Uses docker exec so curl and python3 run inside the container — no host deps.
+# Uses compose exec so curl and python3 run inside the app service — no host deps.
 # ==============================================================================
 header "Waiting for PipesHub to become healthy"
 
@@ -1259,10 +1398,10 @@ check_host_reachable() {
 # — on first run it downloads its model and can sit 'unhealthy' for minutes
 # without blocking core usability (mirrors the compose healthcheck).
 app_is_healthy() {
-  docker exec pipeshub-ai \
+  compose_app_exec \
     curl -sf http://localhost:3000/api/v1/health/services \
     -o /tmp/pipeshub_hc.json 2>/dev/null || return 1
-  docker exec pipeshub-ai python3 -c "
+  compose_app_exec python3 -c "
 import json, sys
 d = json.load(open('/tmp/pipeshub_hc.json'))
 s = d.get('services', {}) or {}
@@ -1386,12 +1525,12 @@ docker_iptables_disabled() {
 }
 
 container_has_outbound_internet() {
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai' || return 1
-  if docker exec pipeshub-ai sh -c \
+  app_service_is_running || return 1
+  if compose_app_exec sh -c \
       'command -v curl >/dev/null 2>&1 && curl -sf -m 8 -4 -o /dev/null https://1.1.1.1/ 2>/dev/null'; then
     return 0
   fi
-  docker exec pipeshub-ai sh -c \
+  compose_app_exec sh -c \
     'command -v wget >/dev/null 2>&1 && wget -q -T 8 -O /dev/null https://1.1.1.1/ 2>/dev/null'
 }
 
@@ -1406,11 +1545,11 @@ warn_container_outbound_connectivity() {
     warn "  Detected: /etc/docker/daemon.json has \"iptables\": false (Docker is not managing NAT for containers)."
     warn "    Fix: remove that setting or set \"iptables\": true, then: sudo systemctl restart docker"
   fi
-  warn "  Diagnose: docker exec pipeshub-ai curl -s -o /dev/null -m 6 -w '%{http_code}\\n' https://1.1.1.1/"
+  warn "  Diagnose: docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} exec -T pipeshub-ai curl -s -o /dev/null -m 6 -w '%{http_code}\\n' https://1.1.1.1/"
   warn "  Docs: deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity"
 }
 
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai'; then
+if app_service_is_running; then
   warn_container_outbound_connectivity
 fi
 

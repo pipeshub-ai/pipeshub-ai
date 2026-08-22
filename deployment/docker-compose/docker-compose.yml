@@ -24,7 +24,6 @@ services:
   # ---------------------------------------------------------------------------
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
-    container_name: pipeshub-ai
     restart: always
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
@@ -304,7 +303,6 @@ services:
   mongodb:
     # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
-    container_name: mongodb
     restart: always
     # Shared ~16 GB hosts: WiredTiger otherwise grabs ~half of RAM. Cap cache at
     # 1 GB / container at 2 GB. Sibling deploy.limits (app/graph/vector) are OOM
@@ -334,7 +332,6 @@ services:
 
   redis:
     image: redis:bookworm
-    container_name: redis
     restart: always
     command: >
       sh -c "redis-server
@@ -353,7 +350,6 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
-    container_name: qdrant
     restart: always
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
@@ -397,7 +393,6 @@ services:
     build:
       context: ../../deployment/sandbox
       dockerfile: Dockerfile
-    container_name: sandbox-image
     restart: "no"
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
@@ -409,7 +404,6 @@ services:
   arango:
     profiles: ["graph-arango"]
     image: arangodb:3.12.4
-    container_name: arango
     restart: always
     environment:
       - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-}
@@ -429,7 +423,6 @@ services:
   neo4j:
     profiles: ["graph-neo4j"]
     image: neo4j:5.26.0
-    container_name: neo4j
     restart: always
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-}
@@ -465,7 +458,6 @@ services:
   etcd:
     profiles: ["kv-etcd"]
     image: quay.io/coreos/etcd:v3.5.17
-    container_name: etcd
     restart: always
     command: >
       etcd
@@ -493,7 +485,6 @@ services:
   zookeeper:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-zookeeper:7.9.0
-    container_name: zookeeper
     restart: always
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
@@ -512,7 +503,6 @@ services:
   kafka-1:
     profiles: ["broker-kafka"]
     image: confluentinc/cp-kafka:7.9.0
-    container_name: kafka-1
     restart: always
     depends_on:
       zookeeper:
@@ -577,4 +567,3 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
-    name: pipeshub-ai_network

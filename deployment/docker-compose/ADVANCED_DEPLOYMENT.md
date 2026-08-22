@@ -10,6 +10,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Standalone one-command install](#standalone-one-command-install)
 - [Deployment types (slim vs. full)](#deployment-types-slim-vs-full)
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
+- [A second instance on the same host](#a-second-instance-on-the-same-host)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
 - [Container outbound connectivity](#container-outbound-connectivity)
@@ -82,7 +83,8 @@ All variables are optional. When set, they suppress the corresponding interactiv
 | `PIPESHUB_KV_STORE` | `etcd` \| `redis` | per deploy type |
 | `PIPESHUB_VERSION` | image tag, e.g. `latest`, `slim`, `0.7.0` | `latest` / `local` |
 | `PIPESHUB_IMAGE_SOURCE` | `prebuilt` \| `local` | `prebuilt` |
-| `PIPESHUB_PORT` | host port | `3000` |
+| `PIPESHUB_PORT` | host port | `3000` (`3200` for a second copy) |
+| `PIPESHUB_PROJECT` | Compose project name | `pipeshub-ai` |
 | `PIPESHUB_PUBLIC_URL` | public HTTPS URL | _(none)_ |
 
 ### Example — fully non-interactive slim install
@@ -104,6 +106,34 @@ PIPESHUB_VERSION=0.7.0 \
 ```
 
 `--print-env-only` writes `.env` and prints the Compose command without starting containers, which is useful for inspecting the generated config in a pipeline before launch.
+
+---
+
+## A second instance on the same host
+
+The first install is always Compose project `pipeshub-ai` on port `3000` (or the next free port). The installer does **not** ask new users for a project name.
+
+If `pipeshub-ai` is already running from another directory, the interactive installer offers:
+
+1. **Update the existing stack** — manage that copy from this directory (same data and port).
+2. **Install a separate instance here** — new project name, new volumes, default port **3200**. This is a full extra copy (RAM); prefer slim.
+3. **Abort**
+
+`--yes` without `PIPESHUB_PROJECT` always targets `pipeshub-ai`. It never creates a second stack on its own.
+
+```bash
+# Scripted second copy (does not touch the stack on port 3000)
+PIPESHUB_PROJECT=pipeshub-eval PIPESHUB_PORT=3200 PIPESHUB_DEPLOY_TYPE=slim \
+  ./install.sh --yes
+```
+
+The installer writes `COMPOSE_PROJECT_NAME` into `.env`. `--stop` and `--uninstall` in that directory read it, so they tear down **this** copy only.
+
+Container names are `{project}-{service}-1` (Compose default). Exec into the app with the service name, not a hardcoded container name:
+
+```bash
+docker compose -p pipeshub-eval exec -T pipeshub-ai bash
+```
 
 ---
 
@@ -208,13 +238,14 @@ browser or host shell.
 
 - **Add model** for a cloud provider hangs or fails with a connectivity / timeout error
 - Connectors fail OAuth or sync with network errors
-- Host can reach the internet, but `docker exec pipeshub-ai curl …` times out
+- Host can reach the internet, but `docker compose exec pipeshub-ai curl …` times out
 
 ### Diagnose
 
 ```bash
 # From the host — should return quickly (404 is fine; 000 means no route)
-docker exec pipeshub-ai curl -s -o /dev/null -m 6 -w "%{http_code}\n" https://1.1.1.1/
+docker compose -p pipeshub-ai exec -T pipeshub-ai \
+  curl -s -o /dev/null -m 6 -w "%{http_code}\n" https://1.1.1.1/
 ```
 
 The installer prints a **warning** (not a failure) when this check fails, so
