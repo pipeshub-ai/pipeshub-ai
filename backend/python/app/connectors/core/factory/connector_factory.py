@@ -14,7 +14,6 @@ from app.connectors.core.registry.connector import (
     FormsConnector,
     MeetConnector,
     SlidesConnector,
-    ZendeskConnector,
 )
 from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.task_manager import sync_task_manager
@@ -75,6 +74,7 @@ from app.connectors.sources.servicenow.servicenow.connector import ServiceNowCon
 from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zendesk.connector import ZendeskConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
@@ -129,6 +129,7 @@ class ConnectorFactory:
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
+        "zendesk": ZendeskConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
@@ -147,7 +148,6 @@ class ConnectorFactory:
         'forms': FormsConnector,
         'slides': SlidesConnector,
         'docs': DocsConnector,
-        'zendesk': ZendeskConnector,
         'airtable': AirtableConnector,
     }
 
