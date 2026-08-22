@@ -2916,3 +2916,21 @@ def get_stt_model(
         )
 
     raise ValueError(f"Unsupported STT provider: {provider}")
+
+
+def get_output_limit_kwargs(config: dict, limit: int = 4096) -> dict[str, int]:
+    """
+    Resolve output-limit options for LLM invocations based on the provider.
+    
+    This avoids hard-coding provider names and switch/if chains inside 
+    downstream logic (like OCR strategies), keeping provider specifics 
+    encapsulated in the aimodels factory and relying on the provider capability registry.
+    """
+    from app.config.ai_models.registry import ai_model_registry
+
+    provider_id = config.get("provider", "") if config else ""
+    provider_meta = ai_model_registry.get_provider(provider_id)
+    if provider_meta and "outputLimitKey" in provider_meta and provider_meta["outputLimitKey"]:
+        return {provider_meta["outputLimitKey"]: limit}
+        
+    return {}

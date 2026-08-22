@@ -27,6 +27,7 @@ _COMPAT_ENDPOINT_EMB = AIModelField(
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#0078D4") \
+    .with_output_limit_key("max_tokens") \
     .add_field(_COMPAT_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(model_field("e.g. deepseek-ai/DeepSeek-V3"), ModelCapability.TEXT_GENERATION) \

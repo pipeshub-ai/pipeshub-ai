@@ -25,6 +25,7 @@ def AIModelProvider(
     is_popular: bool = False,
     fields: dict[str, list[AIModelField]] | None = None,
     model_name: str | None = None,
+    output_limit_key: str | None = None,
 ) -> Callable[[type], type]:
     """Decorator that attaches ``_provider_metadata`` to a class."""
 
@@ -49,6 +50,7 @@ def AIModelProvider(
             "isPopular": is_popular,
             "fields": _fields_to_dict(fields or {}),
             "modelName": model_name,
+            "outputLimitKey": output_limit_key,
         }
         cls._is_ai_model_provider = True  # type: ignore[attr-defined]
         return cls
@@ -78,6 +80,7 @@ class AIModelProviderBuilder:
         self._color = "#888888"
         self._is_popular = False
         self._model_name: str | None = None
+        self._output_limit_key: str | None = None
         self._shared_fields: list[AIModelField] = []
         self._capability_fields: dict[str, list[AIModelField]] = {}
 
@@ -112,6 +115,11 @@ class AIModelProviderBuilder:
     def with_model_name(self, name: str) -> AIModelProviderBuilder:
         """Default model name for system-provided providers (shown in UI, no user input needed)."""
         self._model_name = name
+        return self
+
+    def with_output_limit_key(self, key: str) -> AIModelProviderBuilder:
+        """The kwargs dictionary key used to specify maximum output tokens for this provider (e.g. 'max_tokens' or 'num_predict')."""
+        self._output_limit_key = key
         return self
 
     # -- field setters ------------------------------------------------------
@@ -154,6 +162,7 @@ class AIModelProviderBuilder:
             is_popular=self._is_popular,
             fields=self._build_fields(),
             model_name=self._model_name,
+            output_limit_key=self._output_limit_key,
         )
 
 

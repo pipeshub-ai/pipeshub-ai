@@ -21,6 +21,7 @@ from .common_fields import (
     .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
     .with_icon("/icons/ai-models/bedrock-color.svg") \
     .with_color("#0078D4") \
+    .with_output_limit_key("max_tokens") \
     .add_field(AWS_ACCESS_KEY_ID, ModelCapability.TEXT_GENERATION) \
     .add_field(AWS_SECRET_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(REGION, ModelCapability.TEXT_GENERATION) \

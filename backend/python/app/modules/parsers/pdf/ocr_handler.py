@@ -3,6 +3,7 @@ from typing import Any, Dict
 
 from app.config.constants.ai_models import OCRProvider
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.pdf_utils import calculate_exact_image_union_area
 
 
 class OCRStrategy(ABC):
@@ -50,8 +51,15 @@ class OCRStrategy(ABC):
                 else 0
             )
             low_density = text_density < LOW_DENSITY_THRESHOLD
+            
+            image_area_ratio = 0.0
+            if images and page_area > 0:
+                union_area = calculate_exact_image_union_area(images, float(page.width), float(page.height))
+                image_area_ratio = union_area / page_area
+                
+            is_image_heavy = image_area_ratio > 0.5
 
-            return (has_minimal_text and has_significant_images) or low_density
+            return (has_minimal_text and has_significant_images) or low_density or is_image_heavy
 
         except Exception as e:
             logger.warning(f"❌ Error in needs_ocr function: {str(e)}")
