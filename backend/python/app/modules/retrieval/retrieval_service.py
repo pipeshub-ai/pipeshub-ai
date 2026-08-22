@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 import traceback
+import re
 from typing import Any
 
 from langchain_core.documents import Document
@@ -67,6 +68,20 @@ valid_group_labels = [
         GroupType.TEXT_SECTION.value,
         GroupType.CODE.value,
     ]
+
+
+def personalize_gmail_weburl(weburl: str, viewer_email: str) -> str:
+    """If the URL is a Gmail `authuser=` link, replace whatever email is present
+    with the viewing user's email so the link opens correctly for them.
+
+    Uses a lambda replacement to avoid backreference/escaping issues.
+    """
+    if not weburl or not viewer_email:
+        return weburl
+    if weburl.startswith("https://mail.google.com/mail?authuser="):
+        return re.sub(r"(authuser=)[^&#]+", lambda m: m.group(1) + viewer_email, weburl)
+    return weburl
+
 
 class RetrievalService:
     def __init__(
@@ -477,10 +492,8 @@ class RetrievalService:
                         result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
-                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                            user_email = user.get("email") if user else None
-                            if user_email:
-                                weburl = weburl.replace("{user.email}", user_email)
+                        user_email = user.get("email") if user else None
+                        weburl = personalize_gmail_weburl(weburl, user_email)
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
                         result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
@@ -644,10 +657,8 @@ class RetrievalService:
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
-                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                        user_email = user.get("email") if user else None
-                        if user_email:
-                            weburl = weburl.replace("{user.email}", user_email)
+                    user_email = user.get("email") if user else None
+                    weburl = personalize_gmail_weburl(weburl, user_email)
                     fallback_mimetype = "text/html"
 
                 if weburl:
