@@ -108,13 +108,14 @@ const createOAuthApiHandler = (
  * Build query string from request query parameters.
  */
 const buildQueryString = (req: AuthenticatedUserRequest): string => {
-  const { page, limit, search } = req.query;
+  const { page, limit, search, scope } = req.query;
   const queryParams = new URLSearchParams();
-  
+
   if (page) queryParams.append('page', String(page));
   if (limit) queryParams.append('limit', String(limit));
   if (search) queryParams.append('search', String(search));
-  
+  if (scope) queryParams.append('scope', String(scope));
+
   const queryString = queryParams.toString();
   return queryString ? `?${queryString}` : '';
 };
