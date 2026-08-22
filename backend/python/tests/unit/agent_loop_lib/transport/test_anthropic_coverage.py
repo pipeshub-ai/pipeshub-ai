@@ -589,3 +589,18 @@ class TestStream:
         with pytest.raises(TransportError):
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
+
+    async def test_apply_prompt_cache_string_content(self) -> None:
+        transport = _transport()
+        transport._client.messages.create = AsyncMock(return_value=_response())
+        long_prompt = "x" * 350
+        messages = [
+            UserMessage(content=long_prompt),
+            AssistantMessage(content="ok"),
+            UserMessage(content="next turn"),
+        ]
+        await transport.complete(messages)
+        _, kwargs = transport._client.messages.create.call_args
+        formatted_messages = kwargs["messages"]
+        assert formatted_messages[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
