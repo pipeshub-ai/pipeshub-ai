@@ -172,6 +172,9 @@ class ConfigurationService:
                     "port": int(os.getenv("QDRANT_PORT", "6333")),
                     "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
                     "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
+                    # Needed for managed Qdrant Cloud (TLS on 6333/6334).
+                    "https": os.getenv("QDRANT_HTTPS", "false").lower() == "true",
+                    "prefer_grpc": os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true",
                 }
         elif key == config_node_constants.OPENSEARCH.value:
             # OpenSearch configuration fallback
