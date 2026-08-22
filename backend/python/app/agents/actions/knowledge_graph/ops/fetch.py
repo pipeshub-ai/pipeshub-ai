@@ -128,6 +128,12 @@ async def execute_fetch_record(
             "\n\nCite facts from the above using each block's `[refN]` id "
             "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
         )
+        occurrence_note = _occurrence_count_note(
+            context.tool_state.get("query") or "",
+            result["records"],
+        )
+        if occurrence_note:
+            text += "\n\n" + occurrence_note
         not_available = result.get("not_available_ids", [])
         if not_available:
             if record_id_shortener is not None:
@@ -147,3 +153,35 @@ async def execute_fetch_record(
         return ToolOutput(success=True, data=text), ref_mapper
 
     return _to_tool_output(result), citation_ref_mapper
+
+
+def _occurrence_count_note(query: str, records: list[dict[str, Any]]) -> str:
+    """If the user asked how often a phrase appears, count it over full records.
+
+    Args:
+        query: Original user query from ``tool_state["query"]``.
+        records: Fetched record dicts (full block text, not the truncated prompt).
+
+    Returns:
+        Markdown occurrence-count note, or ``""`` when the query is not a tally.
+    """
+    from app.modules.agents.record_escalation.occurrence_count import (
+        count_occurrences,
+        format_occurrence_count_note,
+        parse_occurrence_phrase,
+        record_plain_text,
+    )
+
+    phrase = parse_occurrence_phrase(query)
+    if not phrase:
+        return ""
+
+    per_record: list[tuple[str, str, int]] = []
+    for record in records:
+        rid = str(record.get("id") or "")
+        if not rid:
+            continue
+        name = str(record.get("record_name") or record.get("recordName") or "")
+        n = count_occurrences(record_plain_text(record), phrase)
+        per_record.append((rid, name, n))
+    return format_occurrence_count_note(phrase=phrase, per_record=per_record)
