@@ -12,6 +12,7 @@ class OCRProvider(Enum):
     VLM_OCR = "vlmOCR"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+ORCAROUTER_BASE_URL = "https://api.orcarouter.ai/v1"
 
 class AzureOpenAILLM(Enum):
     AZURE_OPENAI_VERSION = "2025-04-01-preview"
