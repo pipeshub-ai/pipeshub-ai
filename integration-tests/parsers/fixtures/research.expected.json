@@ -812,7 +812,14 @@
         "language": null,
         "execution_context": null,
         "is_executable": false,
-        "dependencies": null
+        "dependencies": null,
+        "kind": null,
+        "signature": null,
+        "docstring": null,
+        "decorators": null,
+        "qualified_name": null,
+        "start_line": null,
+        "end_line": null
       },
       "media_metadata": null,
       "file_metadata": null,

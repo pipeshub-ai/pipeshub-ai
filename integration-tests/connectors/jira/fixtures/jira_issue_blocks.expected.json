@@ -1556,7 +1556,14 @@
         "dependencies": null,
         "execution_context": null,
         "is_executable": false,
-        "language": "http"
+        "language": "http",
+        "kind": null,
+        "signature": null,
+        "docstring": null,
+        "decorators": null,
+        "qualified_name": null,
+        "start_line": null,
+        "end_line": null
       },
       "comments": [],
       "data": "POST /api/v2/auth/login HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\n  \"username\": \"john.doe@example.com\",\n  \"password\": \"********\"\n}",
