@@ -645,6 +645,12 @@ class TestHandleRecordUpdatesDeep:
 
     async def test_deleted_record(self, connector):
         from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        existing = MagicMock()
+        existing.id = "rec-123"
+        existing.record_name = "file-123"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=existing
+        )
         update = RecordUpdate(
             record=None, is_new=False, is_updated=False, is_deleted=True,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -652,7 +658,7 @@ class TestHandleRecordUpdatesDeep:
         )
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_called_once_with(
-            record_id="file-123"
+            record_id="rec-123"
         )
 
     async def test_new_record_no_op(self, connector):
