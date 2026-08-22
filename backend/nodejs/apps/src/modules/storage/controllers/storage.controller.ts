@@ -849,10 +849,11 @@ export class StorageController {
   ): Promise<void> {
     try {
       const { documentId } = req.params;
+      const orgId = extractOrgId(req);
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: req.user?.orgId,
+        orgId,
       });
 
       if (!document || !document.documentPath) {
