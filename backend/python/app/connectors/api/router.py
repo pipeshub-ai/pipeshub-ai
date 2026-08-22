@@ -61,6 +61,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -6615,8 +6616,48 @@ async def _ensure_connector_initialized(
     is_admin: bool,
     logger: logging.Logger,
 ) -> BaseConnector | None:
+    """Return the live connector for ``connector_id``, building it at most once.
+
+    Concurrent callers all miss the ``connectors_map`` check and would each
+    build their own instance — every one with its own HTTP client and its own
+    ResiliencePolicy, multiplying the connector's rate limit by the number of
+    racers. The lock lets the first caller build while the rest wait and then
+    re-check.
+    """
+    if hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+        return container.connectors_map.get(connector_id)
+
+    async with connector_init_lock(connector_id):
+        return await _build_and_store_connector(
+            container=container,
+            connector_id=connector_id,
+            connector_type=connector_type,
+            connector_registry=connector_registry,
+            graph_provider=graph_provider,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            logger=logger,
+        )
+
+
+async def _build_and_store_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    connector_type: str,
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    *,
+    is_admin: bool,
+    logger: logging.Logger,
+) -> BaseConnector | None:
     """
     Ensure connector is initialized in container. If not, initialize it.
+
+    Callers must hold ``connector_init_lock(connector_id)``; the existence check
+    below is the re-check that makes the lock effective.
 
     Args:
         container: App container

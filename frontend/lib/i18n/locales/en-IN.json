@@ -1674,6 +1674,7 @@
       "configPanelTitle": "{{name}} Configuration",
       "instance": "Instance",
       "emailVisibilityDocLink": "Email visibility setup guide →",
+      "personalConnectorLink": "Use {{name}} instead →",
       "toasts": {
         "loadError": "Failed to load connectors",
         "syncStarted": "{{name}} is now syncing",
@@ -1782,6 +1783,7 @@
         "redirectUrlHelperNonOauth": "Register the redirect/callback URL in your identity provider, then complete the fields below.",
         "noAuthRequired": "No authentication required for this connector",
         "emailVisibilityDocLink": "Email visibility setup guide →",
+        "personalConnectorLink": "Use {{name}} instead →",
         "oauthAppNameLabel": "OAuth app name",
         "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
         "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",

@@ -69,6 +69,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
@@ -128,6 +129,7 @@ class ConnectorFactory:
         "postgresql": PostgreSQLConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
+        "notionpersonal": NotionPersonalConnector,
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,

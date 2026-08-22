@@ -86,7 +86,9 @@ class GraphProviderProtocol(Protocol):
     async def record_inherits_permissions(self, connector_id: str, external_record_id: str) -> bool: ...
 
     # Bulk fetch methods
-    async def fetch_records_by_type(self, connector_id: str, record_type: str) -> List[Dict[str, Any]]: ...
+    async def fetch_records_by_type(
+        self, connector_id: str, record_type: str, *, scoped: bool = False
+    ) -> List[Dict[str, Any]]: ...
 
     # New edge-coverage helpers (Jira test plan)
     async def count_records_by_type(self, connector_id: str, record_type: str, *, scoped: bool = False) -> int: ...
@@ -112,6 +114,13 @@ class GraphProviderProtocol(Protocol):
     async def get_typed_record_by_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[Record]: ...
+
+    # Sync checkpoints. ``sync_point_key`` is the unqualified key a connector builds with
+    # ``generate_record_sync_point_key`` — the stored ``syncPointKey`` prefixes it with
+    # org / connector / data-point type, so lookup matches on the suffix.
+    async def get_sync_point(
+        self, connector_id: str, sync_point_key: str
+    ) -> Optional[Dict[str, Any]]: ...
 
     # Edge lookup (step 3 edge validation framework)
     async def find_edges_between(

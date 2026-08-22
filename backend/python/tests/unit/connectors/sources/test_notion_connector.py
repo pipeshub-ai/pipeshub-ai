@@ -11,7 +11,10 @@ import pytest
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.block_parser import NotionBlockParser
-from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.notion.connector import (
+    NotionConnector,
+    UnconvertibleImageError,
+)
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -63,6 +66,7 @@ def _make_connector():
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
+    data_entities_processor.reindex_existing_records = AsyncMock()
     data_store_provider = MagicMock()
     # Set up transaction context manager
     mock_tx = MagicMock()
@@ -812,11 +816,16 @@ class TestNotionConnectorCleanup:
     async def test_reindex_records_with_records(self):
         connector = _make_connector()
         record = MagicMock()
+        record.id = "rec-1"
+        record.external_record_id = "page-1"
+        record.record_type = RecordType.FILE
         await connector.reindex_records([record])
-        # Should not raise (TODO implementation)
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            [record]
+        )
 
 
-class TestNotionSyncUsers:
+class TestNotionSyncUsersWorkspace:
     @pytest.mark.asyncio
     async def test_sync_users_person_and_bot(self):
         """Tests full user sync with person users, bot workspace extraction, and email retrieval."""
@@ -858,7 +867,45 @@ class TestNotionSyncUsers:
         assert connector.workspace_name == "My Workspace"
         connector._create_workspace_record_group.assert_awaited_once()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
-        connector._add_users_to_workspace_permissions.assert_awaited()
+        connector._add_users_to_workspace_permissions.assert_awaited_once_with(
+            ["alice@example.com"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_users_grants_workspace_perms_after_bot_page(self):
+        connector = _make_connector()
+        person_page = _make_api_response(success=True, data={
+            "results": [{"id": "person-1", "type": "person", "name": "Alice"}],
+            "has_more": True,
+            "next_cursor": "bot-page",
+        })
+        bot_page = _make_api_response(success=True, data={
+            "results": [{
+                "id": "bot-1", "type": "bot",
+                "bot": {"workspace_id": "ws-1", "workspace_name": "My Workspace"},
+            }],
+            "has_more": False,
+            "next_cursor": None,
+        })
+        retrieve_response = _make_api_response(success=True, data={
+            "id": "person-1",
+            "type": "person",
+            "name": "Alice",
+            "person": {"email": "alice@example.com"},
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[person_page, bot_page])
+        mock_ds.retrieve_user = AsyncMock(return_value=retrieve_response)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._create_workspace_record_group = AsyncMock()
+        connector._add_users_to_workspace_permissions = AsyncMock()
+        connector._transform_to_app_user = MagicMock(return_value=MagicMock(email="alice@example.com"))
+
+        await connector._sync_users()
+
+        connector._add_users_to_workspace_permissions.assert_awaited_once_with(
+            ["alice@example.com"]
+        )
 
     @pytest.mark.asyncio
     async def test_sync_users_api_failure_raises(self):
@@ -1571,6 +1618,7 @@ class TestNotionSyncObjectsByType:
             return_value=MagicMock(search=AsyncMock(return_value=search_resp))
         )
         mock_record = MagicMock()
+        mock_record.external_record_id = "p1"
         connector._transform_to_webpage_record = AsyncMock(return_value=mock_record)
         connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
 
@@ -1593,6 +1641,45 @@ class TestNotionSyncObjectsByType:
 
         with pytest.raises(Exception, match="Notion API error"):
             await connector._sync_objects_by_type("page")
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_mid_pagination_error_does_not_update_sync_point(self):
+        """Descending search + mid-run failure must not commit a poisoned checkpoint."""
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": "2024-01-01T00:00:00.000Z"}
+        )
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page_batch1 = {
+            "id": "p-new",
+            "last_edited_time": "2024-06-02T10:00:00Z",
+            "url": "https://notion.so/p-new",
+            "parent": {"type": "workspace"},
+        }
+        first_resp = _make_api_response(
+            data={"results": [page_batch1], "has_more": True, "next_cursor": "cursor-2"}
+        )
+        second_resp = _make_api_response(success=False, error="Rate limited")
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(
+                search=AsyncMock(side_effect=[first_resp, second_resp])
+            )
+        )
+        mock_record = MagicMock()
+        mock_record.record_name = "New"
+        mock_record.external_record_id = "p-new"
+        connector._transform_to_webpage_record = AsyncMock(return_value=mock_record)
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        with pytest.raises(Exception, match="Notion API error"):
+            await connector._sync_objects_by_type("page")
+
+        connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.pages_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_pages_first_sync_initializes_sync_point(self):
@@ -1687,18 +1774,15 @@ class TestNotionSyncUsers:
             ],
             "has_more": False,
         })
-        empty_resp = _make_api_response(data={
-            "results": [],
-            "has_more": False,
-        })
         mock_ds = MagicMock()
-        mock_ds.list_users = AsyncMock(side_effect=[users_list_resp, empty_resp])
+        mock_ds.list_users = AsyncMock(return_value=users_list_resp)
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         connector._create_workspace_record_group = AsyncMock()
 
         await connector._sync_users()
         connector.data_entities_processor.on_new_app_users.assert_not_called()
         assert connector.workspace_id == "ws1"
+        assert mock_ds.list_users.await_count == 1
 
     @pytest.mark.asyncio
     async def test_pagination(self):
@@ -1727,6 +1811,34 @@ class TestNotionSyncUsers:
 
         await connector._sync_users()
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_bot_only_page_advances_cursor(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+
+        bots_page = _make_api_response(data={
+            "results": [
+                {"id": "b1", "type": "bot", "bot": {"workspace_id": "ws1", "workspace_name": "My WS"}},
+                {"id": "b2", "type": "bot", "bot": {}},
+            ],
+            "has_more": True,
+            "next_cursor": "cursor-bots-next",
+        })
+        empty_page = _make_api_response(data={
+            "results": [],
+            "has_more": False,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[bots_page, empty_page])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._create_workspace_record_group = AsyncMock()
+
+        await connector._sync_users()
+
+        assert mock_ds.list_users.await_count == 2
+        assert mock_ds.list_users.await_args_list[1].kwargs["start_cursor"] == "cursor-bots-next"
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_api_error_raises(self):
@@ -2105,6 +2217,7 @@ def _make_connector_fullcov():
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
+    dep.reindex_existing_records = AsyncMock()
     dsp = MagicMock()
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2633,6 +2746,21 @@ class TestReindexRecords:
         record = _make_webpage_record()
         await conn.reindex_records([record])
         conn.logger.info.assert_any_call("Starting reindex for 1 Notion records")
+        conn.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            [record]
+        )
+
+    @pytest.mark.asyncio
+    async def test_updated_record_goes_through_on_new_records(self):
+        conn = _make_connector_fullcov()
+        record = _make_webpage_record(external_revision_id="old")
+        updated = _make_webpage_record(external_revision_id="new")
+        conn._check_and_fetch_updated_record = AsyncMock(return_value=(updated, []))
+        await conn.reindex_records([record])
+        conn.data_entities_processor.on_new_records.assert_awaited_once_with(
+            [(updated, [])]
+        )
+        conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_is_raised(self):
@@ -2640,6 +2768,106 @@ class TestReindexRecords:
         conn.logger.info = MagicMock(side_effect=Exception("boom"))
         with pytest.raises(Exception):
             await conn.reindex_records([_make_webpage_record()])
+
+    @pytest.mark.asyncio
+    async def test_updated_page_keeps_existing_workspace_group(self):
+        conn = _make_connector_fullcov()
+        conn.workspace_id = None
+        record = _make_webpage_record(
+            id="rec-1",
+            record_group_id="rg-1",
+            external_record_group_id="ws-1",
+            external_revision_id="old",
+        )
+        page = {
+            "id": record.external_record_id,
+            "object": "page",
+            "archived": False,
+            "in_trash": False,
+            "last_edited_time": "new",
+            "url": "https://notion.so/page",
+            "properties": {"title": {"title": [{"plain_text": "Updated"}]}},
+            "parent": {"type": "workspace", "workspace": True},
+        }
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_page=AsyncMock(return_value=_api_resp(data=page))
+        ))
+
+        updated, perms = await conn._check_and_fetch_updated_record(record)
+
+        assert updated.id == "rec-1"
+        assert updated.record_group_id == "rg-1"
+        assert updated.external_record_group_id == "ws-1"
+        assert updated.inherit_permissions is True
+        assert perms == []
+
+    @pytest.mark.asyncio
+    async def test_check_and_fetch_updated_datasource_preserves_parent(self):
+        conn = _make_connector_fullcov()
+        conn.workspace_id = "ws-1"
+        record = _make_webpage_record(
+            id="rec-ds-1",
+            record_type=RecordType.DATASOURCE,
+            external_record_id="ds-1",
+            record_group_id="rg-1",
+            external_record_group_id="ws-1",
+            external_revision_id="old",
+            parent_external_record_id="parent-page-1",
+        )
+        ds_payload = {
+            "id": "ds-1",
+            "object": "data_source",
+            "archived": False,
+            "in_trash": False,
+            "last_edited_time": "new",
+            "url": "https://notion.so/ds-1",
+            "title": [{"plain_text": "Updated DS"}],
+            "parent": {"type": "database_id", "database_id": "db-1"},
+        }
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_data_source_by_id=AsyncMock(return_value=_api_resp(data=ds_payload))
+        ))
+        conn._get_database_parent_page_id = AsyncMock(return_value="parent-page-1")
+
+        updated, _ = await conn._check_and_fetch_updated_record(record)
+
+        assert updated is not None
+        assert updated.parent_external_record_id == "parent-page-1"
+        assert updated.parent_record_type == RecordType.WEBPAGE
+        conn._get_database_parent_page_id.assert_awaited_once_with("db-1")
+
+    @pytest.mark.asyncio
+    async def test_check_and_fetch_updated_datasource_skips_on_parent_lookup_failure(self):
+        conn = _make_connector_fullcov()
+        record = _make_webpage_record(
+            id="rec-ds-1",
+            record_type=RecordType.DATASOURCE,
+            external_record_id="ds-1",
+            external_revision_id="old",
+            parent_external_record_id="parent-page-1",
+        )
+        ds_payload = {
+            "id": "ds-1",
+            "object": "data_source",
+            "archived": False,
+            "in_trash": False,
+            "last_edited_time": "new",
+            "url": "https://notion.so/ds-1",
+            "title": [{"plain_text": "Updated DS"}],
+            "parent": {"type": "database_id", "database_id": "db-1"},
+        }
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_data_source_by_id=AsyncMock(return_value=_api_resp(data=ds_payload))
+        ))
+        conn._get_database_parent_page_id = AsyncMock(
+            side_effect=RuntimeError("Failed to retrieve database")
+        )
+        conn._transform_to_webpage_record = AsyncMock()
+
+        result = await conn._check_and_fetch_updated_record(record)
+
+        assert result is None
+        conn._transform_to_webpage_record.assert_not_awaited()
 
 
 # ===================================================================
@@ -2761,21 +2989,16 @@ class TestSyncUsers:
     async def test_sync_users_bot_without_workspace_id(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.list_users = AsyncMock(side_effect=[
-            _api_resp(True, {
-                "results": [
-                    {"id": "bot-1", "type": "bot", "bot": {}},
-                ],
-                "has_more": False,
-            }),
-            _api_resp(True, {
-                "results": [],
-                "has_more": False,
-            }),
-        ])
+        ds.list_users = AsyncMock(return_value=_api_resp(True, {
+            "results": [
+                {"id": "bot-1", "type": "bot", "bot": {}},
+            ],
+            "has_more": False,
+        }))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
         await conn._sync_users()
         assert conn.workspace_id is None
+        assert ds.list_users.await_count == 1
 
 
 # ===================================================================
@@ -3020,9 +3243,29 @@ class TestGetFreshDatasource:
     async def test_no_access_token_raises(self):
         conn = _make_connector_fullcov()
         conn.notion_client = MagicMock()
-        conn.config_service.get_config = AsyncMock(return_value={"credentials": {}})
-        with pytest.raises(Exception, match="No OAuth"):
+        conn.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN"}, "credentials": {}}
+        )
+        with pytest.raises(Exception, match="No access token"):
             await conn._get_fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_api_token_auth(self):
+        conn = _make_connector_fullcov()
+        internal = MagicMock()
+        internal.access_token = None
+        internal.headers = {"Authorization": "Bearer ntn_old"}
+        conn.notion_client = MagicMock()
+        conn.notion_client.get_client.return_value = internal
+        conn.config_service.get_config = AsyncMock(
+            return_value={
+                "auth": {"authType": "API_TOKEN", "apiToken": "ntn_new"},
+                "credentials": {},
+            }
+        )
+        ds = await conn._get_fresh_datasource()
+        assert ds is not None
+        assert internal.headers["Authorization"] == "Bearer ntn_new"
 
     @pytest.mark.asyncio
     async def test_token_unchanged(self):
@@ -3033,7 +3276,10 @@ class TestGetFreshDatasource:
         conn.notion_client = MagicMock()
         conn.notion_client.get_client.return_value = internal
         conn.config_service.get_config = AsyncMock(
-            return_value={"credentials": {"access_token": "token-abc"}}
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "token-abc"},
+            }
         )
         ds = await conn._get_fresh_datasource()
         assert ds is not None
@@ -3047,7 +3293,10 @@ class TestGetFreshDatasource:
         conn.notion_client = MagicMock()
         conn.notion_client.get_client.return_value = internal
         conn.config_service.get_config = AsyncMock(
-            return_value={"credentials": {"access_token": "new-token"}}
+            return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "new-token"},
+            }
         )
         ds = await conn._get_fresh_datasource()
         assert internal.access_token == "new-token"
@@ -4522,17 +4771,17 @@ class TestGetDatabaseParentPageId:
     async def test_api_failure(self):
         conn = _make_connector_fullcov()
         ds = MagicMock()
-        ds.retrieve_database = AsyncMock(return_value=_api_resp(False))
+        ds.retrieve_database = AsyncMock(return_value=_api_resp(False, error="rate limited"))
         conn._get_fresh_datasource = AsyncMock(return_value=ds)
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result is None
+        with pytest.raises(RuntimeError, match="Failed to retrieve database"):
+            await conn._get_database_parent_page_id("db-1")
 
     @pytest.mark.asyncio
     async def test_exception(self):
         conn = _make_connector_fullcov()
         conn._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        result = await conn._get_database_parent_page_id("db-1")
-        assert result is None
+        with pytest.raises(Exception, match="fail"):
+            await conn._get_database_parent_page_id("db-1")
 
     @pytest.mark.asyncio
     async def test_block_parent_no_block_id(self):
@@ -4789,6 +5038,15 @@ class TestCreateWorkspaceRecordGroup:
         conn.workspace_name = "My Workspace"
         await conn._create_workspace_record_group()
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_existing_record_group_is_left_alone(self):
+        conn = _make_connector_fullcov()
+        conn.workspace_id = "ws-1"
+        conn.workspace_name = "My Workspace"
+        conn._mock_tx.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        await conn._create_workspace_record_group()
+        conn.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_is_raised(self):
@@ -5479,7 +5737,10 @@ class TestCreatePageLevelCommentGroups:
             [({"id": "c1", "discussion_id": "t1"}, "page-1")],
             "page-1", parser,
         )
-        assert blocks == []
+        # The unmatched attachment produces no block. The comment body still does —
+        # it is what makes the comment searchable.
+        assert [b for b in blocks if b.sub_type == BlockSubType.CHILD_RECORD] == []
+        assert [b.data for b in blocks] == ["x"]
 
 
 class _FakeHttpxStreamContext:
@@ -5761,8 +6022,12 @@ class TestSyncObjectsByTypeExtended:
         conn._transform_to_webpage_record = AsyncMock(return_value=_make_webpage_record(record_type=RecordType.DATASOURCE))
         conn.data_entities_processor.on_new_records = AsyncMock()
 
-        await conn._sync_objects_by_type("data_source")
+        with pytest.raises(RuntimeError, match="parent fail"):
+            await conn._sync_objects_by_type("data_source")
         conn.logger.error.assert_called()
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+        conn._transform_to_webpage_record.assert_not_awaited()
+        conn.pages_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_page_attachment_fetch_error_continues(self):
@@ -5995,6 +6260,75 @@ class TestConvertImageBlocksToBase64:
         assert block.format == DataFormat.BASE64
         assert "uri" in block.data
 
+    def _session_raising(self, exc):
+        class _FakeGetContext:
+            async def __aenter__(self):
+                raise exc
+
+            async def __aexit__(self, *_args):
+                pass
+
+        class _FakeSession:
+            def get(self, *_args, **_kwargs):
+                return _FakeGetContext()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+        return _FakeSession
+
+    @staticmethod
+    def _image_block():
+        return Block(
+            id="img-1", index=0, type=BlockType.IMAGE, format=DataFormat.TXT,
+            data="caption", source_id="img-block-1",
+            public_data_link="https://prod-files-secure.s3.amazonaws.com/x.png?X-Amz-Expires=3600",
+        )
+
+    @pytest.mark.asyncio
+    async def test_expired_signed_url_403_is_retryable(self):
+        """Notion serves images as S3 pre-signed URLs that expire after an hour;
+        a 403 means "refetch the block", not "this image is unusable"."""
+        conn = _make_connector_fullcov()
+        block = self._image_block()
+        exc = aiohttp.ClientResponseError(
+            request_info=MagicMock(), history=(), status=403, message="Request has expired"
+        )
+
+        with patch(
+            "app.connectors.sources.notion.connector.aiohttp.ClientSession",
+            self._session_raising(exc),
+        ), pytest.raises(Exception) as err:
+            await conn._convert_image_blocks_to_base64([block], None)
+
+        assert not isinstance(err.value, UnconvertibleImageError)
+        assert block.format is DataFormat.TXT  # untouched, so the retry can redo it
+
+    @pytest.mark.asyncio
+    async def test_gone_image_404_is_demoted_to_text(self):
+        """A genuinely missing object must not make the page unstreamable — but a
+        skipped image cannot stay an IMAGE block either: indexing hard-fails any
+        image whose format is not base64, which would kill the whole record."""
+        conn = _make_connector_fullcov()
+        block = self._image_block()
+        block.data = "a caption"
+        exc = aiohttp.ClientResponseError(
+            request_info=MagicMock(), history=(), status=404, message="Not Found"
+        )
+
+        with patch(
+            "app.connectors.sources.notion.connector.aiohttp.ClientSession",
+            self._session_raising(exc),
+        ):
+            await conn._convert_image_blocks_to_base64([block], None)
+
+        assert block.type is BlockType.TEXT
+        assert block.data == "a caption"
+        assert block.public_data_link is None
+
 
 class TestAttachmentTraversal:
     @pytest.mark.asyncio
@@ -6113,3 +6447,101 @@ class TestResolveTableRowChildrenFailures:
         )]
         await conn._resolve_table_row_children(blocks)
         conn._batch_get_or_create_child_records.assert_not_awaited()
+
+
+class TestNotionConnectorResilience:
+    def test_declares_notion_rate_limit(self):
+        config = NotionConnector._connector_metadata["resilienceConfig"]
+        assert config["enabled"] is True
+        assert config["rate_limit"] == 3  # Notion allows ~3 req/s per integration
+        assert config["max_retries"] == 3
+        assert config["max_delay"] == 60.0
+
+    def test_policy_built_from_decorator(self):
+        connector = _make_connector()
+        policy = connector.resilience
+        assert policy is not None
+        assert policy.rate_limit == 3
+        assert policy.max_retries == 3
+
+    def test_policy_is_cached_across_reinit(self):
+        """init() reruns on live connectors after auth failures; rebuilding the
+        policy there would reset the limiter and drop an armed backoff."""
+        connector = _make_connector()
+        first = connector.resilience
+        assert connector.resilience is first
+
+        async def arm_and_reread() -> None:
+            first.pause(30)
+            armed = first._resume_at
+            assert armed > 0  # pause() is a no-op without a running loop
+            assert connector.resilience._resume_at == armed
+
+        asyncio.run(arm_and_reread())
+
+    def test_connectors_hold_independent_policies(self):
+        assert _make_connector().resilience is not _make_connector().resilience
+
+    @pytest.mark.asyncio
+    async def test_init_passes_policy_to_client(self):
+        connector = _make_connector()
+        with patch(
+            "app.connectors.sources.notion.connector.NotionClient.build_from_services",
+            new=AsyncMock(return_value=MagicMock()),
+        ) as build:
+            assert await connector.init() is True
+        assert build.await_args.kwargs["resilience"] is connector.resilience
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_pooled_http_client(self):
+        connector = _make_connector()
+        http_client = AsyncMock()
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = http_client
+
+        await connector.cleanup()
+
+        http_client.close.assert_awaited_once()
+        assert connector.notion_client is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_survives_close_failure(self):
+        connector = _make_connector()
+        http_client = AsyncMock()
+        http_client.close.side_effect = RuntimeError("boom")
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = http_client
+
+        await connector.cleanup()
+
+        assert connector.notion_client is None
+
+    @pytest.mark.asyncio
+    async def test_reinit_closes_previous_http_client(self):
+        """Rebuilding the client on a live connector must not strand its pool."""
+        connector = _make_connector()
+        stale_http = AsyncMock()
+        connector.notion_client = MagicMock()
+        connector.notion_client.get_client.return_value = stale_http
+
+        with patch(
+            "app.connectors.sources.notion.connector.NotionClient.build_from_services",
+            new=AsyncMock(return_value=MagicMock()),
+        ):
+            assert await connector.init() is True
+
+        stale_http.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reinit_keeps_the_same_policy(self):
+        connector = _make_connector()
+        policy = connector.resilience
+
+        with patch(
+            "app.connectors.sources.notion.connector.NotionClient.build_from_services",
+            new=AsyncMock(return_value=MagicMock()),
+        ):
+            await connector.init()
+            await connector.init()
+
+        assert connector.resilience is policy
